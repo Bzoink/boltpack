@@ -1,0 +1,8 @@
+# UTF-8 Character Encoding
+# Used as master encoding for all templates
+# Target platforms: Linux, Windows, macOS, modern Unix, Plan 9, Haiku, most others
+
+ICONV_NAME=UTF-8
+LOCALE=en_US.UTF-8
+DESCRIPTION=UTF-8 (Unicode, default for modern systems)
+PLATFORMS=linux,windows,macos,freebsd,openbsd,netbsd,solaris,haiku,plan9,illumos

@@ -1,0 +1,12 @@
+LIBRARY boltpack
+EXPORTS
+    OpenArchive
+    ReadHeader
+    ReadHeaderEx
+    ProcessFile
+    CloseArchive
+    PackFiles
+    DeleteFiles
+    GetPackerCaps
+    SetChangeVolProc
+    SetProcessDataProc

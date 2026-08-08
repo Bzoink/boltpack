@@ -1,0 +1,103 @@
+name: Release
+
+# Triggered by pushing a version tag (e.g. git tag v1.0 && git push --tags).
+# Builds everything that GitHub-hosted runners can cross-compile with standard
+# apt packages and uploads the packages to a draft release.  Vintage/exotic
+# targets (Amiga, Atari, DOS, RISC OS, Haiku, etc.) must be built locally and
+# uploaded separately with:  ./scripts/release.sh upload
+# Publish the release (make it public) with:  ./scripts/release.sh publish
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and upload release binaries
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Toolchains available from standard Ubuntu packages ─────────────────
+      # linux x86-64  : system gcc (already present)
+      # linux musl    : musl-tools (musl-gcc wrapper)
+      # linux arm32   : gcc-arm-linux-gnueabihf
+      # linux arm64   : gcc-aarch64-linux-gnu
+      # linux riscv64 : gcc-riscv64-linux-gnu
+      # windows 32/64 : gcc-mingw-w64-i686 / gcc-mingw-w64-x86-64
+      # wasm          : emscripten (via apt, available on ubuntu-22.04)
+      #
+      # NOT available here — build locally and upload with release.sh:
+      #   Amiga (m68k-amigaos-gcc), Atari (m68k-atari-mint-gcc),
+      #   Haiku (x86_64-unknown-haiku-gcc), RISC OS (arm-unknown-riscos-gcc),
+      #   AROS, MorphOS, AmigaOS4, macOS (osxcross), DOS, OS/2, Sinclair QL, etc.
+      - name: Install cross-compilation toolchains
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            gcc make \
+            musl-tools \
+            gcc-arm-linux-gnueabihf \
+            gcc-aarch64-linux-gnu \
+            gcc-riscv64-linux-gnu \
+            gcc-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 \
+            jq
+
+      - name: Build Linux x86-64
+        run: make
+
+      - name: Build Linux musl (static)
+        run: make musl
+
+      - name: Build Linux ARM32
+        run: make arm
+
+      - name: Build Linux ARM64
+        run: make arm64
+
+      - name: Build Linux RISC-V 64
+        run: make riscv
+
+      - name: Build Windows 32-bit
+        run: make win32
+
+      - name: Build Windows 64-bit
+        run: make win64
+
+      - name: Package all built targets
+        run: bash scripts/create-packages.sh
+
+      - name: Generate checksums
+        run: |
+          sha256sum dist/boltpack-* > dist/SHA256SUMS.txt 2>/dev/null || true
+
+      # Upload to a draft release so it stays invisible until you publish.
+      # Creates the release if it does not exist yet; otherwise adds assets
+      # to the existing draft.  Using gh CLI so the tag is created automatically
+      # from the pushed tag ref — no separate git tag push needed.
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          # Create the draft if it does not exist yet (idempotent)
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "BoltPack $TAG" \
+              --notes-file RELEASE-NOTES.md \
+              --draft
+          fi
+
+          # Upload / replace all packages and checksums
+          for f in dist/boltpack-*.tar.gz dist/boltpack-*.zip \
+                   dist/boltpack-*.lha dist/boltpack-*.img dist/boltpack-*.tar \
+                   dist/SHA256SUMS.txt; do
+            [ -f "$f" ] || continue
+            gh release upload "$TAG" "$f" --clobber
+          done

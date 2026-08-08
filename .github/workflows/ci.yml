@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build and test (Linux x86-64)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc make
+
+      - name: Build
+        run: make
+
+      - name: Run unit tests
+        run: make unit-test
+
+  build-static:
+    name: Build static binary (musl)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q musl-tools
+
+      - name: Build musl static binary
+        run: make musl
+
+      - name: Smoke-test static binary
+        run: ./build/musl/boltpack --help || true

@@ -1,0 +1,8 @@
+# BoltPack archive
+# https://github.com/Bzoink/boltpack
+#
+# Magic file for file(1). Install to /etc/magic.d/ or ~/.local/share/magic/
+
+0	string		BOLT		BoltPack archive
+>4	leshort		x		\b, version %d
+>12	byte		x		\b, creator OS %d

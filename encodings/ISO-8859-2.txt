@@ -1,0 +1,7 @@
+# ISO-8859-2 Character Encoding
+# Used for Central and Eastern European systems
+
+ICONV_NAME=ISO-8859-2
+LOCALE=en_US.ISO-8859-2
+DESCRIPTION=ISO-8859-2 Central/Eastern European (for Polish, Czech, Hungarian systems)
+PLATFORMS=freebsd-ce,linux-ce,atari-ce

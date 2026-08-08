@@ -1,0 +1,6 @@
+/* resource.rc -- Windows resources for BoltPack FLTK GUI */
+
+#include <windows.h>
+#include "resource.h"
+
+IDI_BOLTPACK ICON "../../../resources/pics/boltpack_logo_rounded.ico"
