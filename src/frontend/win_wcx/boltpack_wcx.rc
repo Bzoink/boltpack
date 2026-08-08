@@ -1,0 +1,5 @@
+#include <windows.h>
+
+/* Icon embedded in the DLL so Windows shell and Total Commander
+ * can display it for .bolt files and in the plugin list. */
+IDI_BOLTPACK ICON "../../../resources/pics/boltpack_logo_rounded.ico"

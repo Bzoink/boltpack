@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=BoltPack
+Comment=Lightweight cross-platform file archiver
+Exec=boltpack-gui %F
+Icon=boltpack
+Terminal=false
+Type=Application
+Categories=Archiver;Utility;
+MimeType=application/x-boltpack;
+StartupNotify=true

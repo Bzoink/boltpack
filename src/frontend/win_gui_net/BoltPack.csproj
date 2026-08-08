@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>BoltPack</AssemblyName>
+    <RootNamespace>BoltPack</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\..\..\\resources\pics\boltpack_logo_rounded.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Company>Tony Mattsson</Company>
+    <Copyright>Copyright (C) 2026 Tony Mattsson</Copyright>
+    <Description>BoltPack File Archiver</Description>
+  </PropertyGroup>
+</Project>

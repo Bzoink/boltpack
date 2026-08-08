@@ -1,0 +1,7 @@
+# Shift-JIS Character Encoding
+# Used for Japanese Amiga systems and Japanese DOS/Windows variants
+
+ICONV_NAME=SHIFT_JIS
+LOCALE=ja_JP.SHIFT_JIS
+DESCRIPTION=Shift-JIS (Japanese, for Amiga JP and Japanese DOS/Windows)
+PLATFORMS=amiga-jp,dos-jp,windows-jp

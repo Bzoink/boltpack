@@ -1,0 +1,4 @@
+#include <windows.h>
+
+/* Embed the standard BoltPack icon in the Windows CLI executable. */
+IDI_BOLTPACK ICON "../../../resources/pics/boltpack_logo_rounded.ico"

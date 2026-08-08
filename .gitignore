@@ -1,0 +1,41 @@
+# Build outputs
+build/
+dist/
+*.bolt
+
+# Cross-compilation dependencies (built locally, not committed)
+compilation/
+
+# Editor files
+*.swp
+*~
+.vscode/
+
+# Test data
+TestCase/
+test/corpus/
+
+# Generated installers and packaging staging
+staging/
+
+# .NET GUI build outputs
+src/frontend/win_gui_net/obj/
+
+# Draft release ID (local state file, not for version control)
+.release-id
+
+# AI
+CLAUDE.md
+AGENTS.md
+.github/copilot-instructions.md
+
+# Python bytecode (embeds absolute source paths)
+__pycache__/
+*.pyc
+
+# Internal working notes (kept locally, not part of the public repo)
+code-analysis.md
+docs/fluff-improvement-plan.md
+
+# One-off migration script, superseded (targeted fluff stream version 0x05)
+scripts/rewrite_fluff_rc.py

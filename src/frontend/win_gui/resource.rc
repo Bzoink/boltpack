@@ -1,0 +1,119 @@
+/* resource.rc -- Win32 resources for BoltPack GUI */
+
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+#define BP_STRINGIFY2(x) #x
+#define BP_STRINGIFY(x) BP_STRINGIFY2(x)
+#define BP_VERSION_STRING BP_STRINGIFY(BP_VERSION_MAJOR) "." BP_STRINGIFY(BP_VERSION_MINOR) ".0"
+#define BP_APP_NAME_STRING "BoltPack " BP_VERSION_STRING
+
+/* ---- Icon -------------------------------------------------------------- */
+
+IDI_BOLTPACK ICON "../../../resources/pics/boltpack_logo_rounded.ico"
+
+/* ---- Menu -------------------------------------------------------------- */
+
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "&Archive"
+    BEGIN
+        MENUITEM "&Open...\tCtrl+O",        IDM_OPEN
+        MENUITEM "&Extract Files...\tCtrl+E", IDM_EXTRACT, GRAYED
+        MENUITEM "&Close\tCtrl+W",          IDM_CLOSE, GRAYED
+        MENUITEM "&Validate\tCtrl+T",       IDM_VALIDATE, GRAYED
+        MENUITEM "Archive &Information",    IDM_INFO, GRAYED
+        MENUITEM SEPARATOR
+        MENUITEM "Create &New...\tCtrl+N",  IDM_CREATE
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",                   IDM_EXIT
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&Documentation...",       IDM_DOC
+        MENUITEM "&About BoltPack...",      IDM_ABOUT
+    END
+END
+
+/* ---- Accelerator Table ------------------------------------------------- */
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "O",    IDM_OPEN,     VIRTKEY, CONTROL
+    "E",    IDM_EXTRACT,  VIRTKEY, CONTROL
+    "W",    IDM_CLOSE,    VIRTKEY, CONTROL
+    "T",    IDM_VALIDATE, VIRTKEY, CONTROL
+    "N",    IDM_CREATE,   VIRTKEY, CONTROL
+END
+
+/* ---- About Dialog ------------------------------------------------------ */
+
+IDD_ABOUT DIALOGEX 0, 0, 220, 120
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About BoltPack"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT   BP_APP_NAME_STRING,         IDC_ABOUT_NAME,      15, 15, 190, 12
+    LTEXT   "A lightweight file archiver for vintage and modern systems",
+                                         IDC_ABOUT_DESC,      15, 32, 190, 18
+    LTEXT   "Copyright (C) 2026 Tony Mattsson",
+                                         IDC_ABOUT_COPYRIGHT, 15, 55, 190, 12
+    LTEXT   "Released under the GNU General Public License v2",
+                                         IDC_ABOUT_LICENSE,   15, 70, 190, 12
+    DEFPUSHBUTTON "OK",                  IDOK,                85, 92, 50, 14
+END
+
+/* ---- Progress Dialog --------------------------------------------------- */
+
+IDD_PROGRESS DIALOGEX 0, 0, 360, 100
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION
+CAPTION "BoltPack"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT   "",                          IDC_PROG_FILE,      10, 10, 340, 12
+    LTEXT   "",                          IDC_PROG_COUNT,     10, 26, 340, 12
+    CONTROL "", IDC_PROG_BAR, PROGRESS_CLASSA, 0, 10, 45, 340, 16
+    PUSHBUTTON "Cancel",                 IDC_PROG_CANCEL,    155, 72, 50, 14
+END
+
+/* ---- Documentation Dialog ---------------------------------------------- */
+
+IDD_DOC DIALOGEX 0, 0, 340, 280
+STYLE DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX
+CAPTION "BoltPack Documentation"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    EDITTEXT    IDC_DOC_TEXT, 5, 5, 330, 250,
+                ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL
+    DEFPUSHBUTTON "Close", IDOK, 145, 260, 50, 14
+END
+
+/* ---- Version Info ------------------------------------------------------ */
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     BP_VERSION_MAJOR, BP_VERSION_MINOR, 0, 0
+PRODUCTVERSION  BP_VERSION_MAJOR, BP_VERSION_MINOR, 0, 0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription",  "BoltPack File Archiver"
+            VALUE "FileVersion",      BP_VERSION_STRING
+            VALUE "InternalName",     "boltpack-gui"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Tony Mattsson"
+            VALUE "OriginalFilename", "boltpack-gui.exe"
+            VALUE "ProductName",      "BoltPack"
+            VALUE "ProductVersion",   BP_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -1,0 +1,7 @@
+# ISO-8859-1 (Latin-1) Character Encoding
+# Used for Western European systems and as fallback for vintage platforms
+
+ICONV_NAME=ISO-8859-1
+LOCALE=en_US.ISO-8859-1
+DESCRIPTION=ISO-8859-1 Western European (fallback for RISC OS, Atari, older systems)
+PLATFORMS=riscos,atari,amiga-classic,dos,os2,x68k
