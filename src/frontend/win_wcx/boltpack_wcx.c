@@ -12,7 +12,7 @@
  * Valid values:
  *   0 = Stored (no compression)
  *   1 = LZSS (small-memory LZ77)
- *   2 = miniLZO (default if not set)
+ *   2 = fastlz (default if not set)
  *   3 = Fluff (LZ77+FSE/tANS, best ratio on all targets)
  *   4 = zstd (Zstandard, best ratio on modern 64-bit; BOLTPACK_ZSTD builds only)
  *
@@ -26,7 +26,7 @@
  * directory and configure via Configuration -> Packer plugins.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Released under the GNU General Public License v2 (GPL-2.0)
+ * Released under the BSD 2-Clause License
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -373,7 +373,7 @@ typedef struct wcx_entry {
     bp_uint32 comp_size;
     bp_uint32 mtime;
     int       is_dir;
-    int       method;               /* 0=stored, 1=LZSS, 2=LZO, 3=fluff, 4=zstd */
+    int       method;               /* 0=stored, 1=LZSS, 2=fastlz, 3=fluff, 4=zstd */
 } wcx_entry_t;
 
 /* bp_archive_list callback: append one entry to arc->entries[]. */
@@ -571,13 +571,13 @@ static tProcessDataProc g_proc_cb;
 
 /*
  * Get the configured compression method from the registry.
- * Returns: 0 (stored), 1 (LZSS), 2 (miniLZO -- default), 3 (fluff),
+ * Returns: 0 (stored), 1 (LZSS), 2 (fastlz -- default), 3 (fluff),
  *          or 4 (zstd, modern builds only)
  */
 static int get_compression_method(void)
 {
     HKEY hKey;
-    DWORD method = 2;  /* default: miniLZO */
+    DWORD method = 2;  /* default: fastlz */
     DWORD size = sizeof(DWORD);
     DWORD regType;
     LONG ret;
@@ -597,7 +597,7 @@ static int get_compression_method(void)
         return 2;  /* value doesn't exist, use default */
     }
 
-    /* Validate: accept 0-4; fall back to miniLZO for unknown values */
+    /* Validate: accept 0-4; fall back to fastlz for unknown values */
     if (method > 4) {
         return 2;
     }
@@ -880,7 +880,7 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
     rc = bp_compress_init();
     if (rc != BP_OK) return E_BAD_DATA;
 
-    /* Get compression method from registry (defaults to miniLZO) */
+    /* Get compression method from registry (defaults to fastlz) */
     method = get_compression_method();
 
     /* If the archive already exists, append in-place. */

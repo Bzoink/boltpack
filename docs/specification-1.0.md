@@ -42,7 +42,7 @@ Topics **not** covered here (see separate documentation):
 - ANSI C99 / ISO C (for portable type definitions)
 - RFC 1962 — The PPP Compression Control Protocol (LZW reference)
 - RFC 1950 — ZLIB Compressed Data Format (Huffman coding patterns)
-- miniLZO 2.10 documentation for LZO1X-1 (method 2)
+- fastlz 0.5.0 documentation (method 2)
 
 ### 1.3 Terminology
 
@@ -123,7 +123,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
 | 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
 | 20+N   | 4    | `checksum`        | u32 LE | Checksum of uncompressed payload, per `checksum_type`                     |
-| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=LZSS, 2=LZO1X-1, 3=fluff, 4=zstd)         |
+| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=LZSS, 2=fastlz, 3=fluff, 4=zstd)         |
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
@@ -320,18 +320,22 @@ while (output_bytes_remaining > 0) {
 Method 1 archives produced by any conforming BoltPack implementation MUST be
 decompressable by any other conforming implementation regardless of platform.
 
-### 3.3 Method 2: miniLZO (LZO1X-1)
+### 3.3 Method 2: fastlz
 
 **ID:** `2`  
-**Codec:** LZO1X-1 (Fast variant)  
-**Library:** miniLZO 2.10  
+**Codec:** fastlz (levels 1 and 2)
+**Library:** fastlz 0.5.0
 **Decompressor complexity:** Linear O(N); ~200 lines of C89  
-**Speed:** ~730 MB/s decompression (modern 64-bit system)  
-**Compression ratio:** ~47% (curated corpus average)
+**Speed:** ~700 MB/s decompression (modern 64-bit system)
+**Compression ratio:** ~47% (curated corpus average, level 2)
+
+> **Note:** Method 2 was LZO1X in pre-1.5.0 BoltPack builds. As of 1.5.0 it is
+> fastlz, and pre-1.5.0 archives using method 2 are not readable by 1.5.0.
 
 **Specification:**
 
-Blocks are encoded using the **LZO1X-1 format** as defined by the miniLZO 2.10 library. The reference implementation is `lzo1x_decompress_safe()` in `minilzo.c`.
+Blocks are encoded using the **fastlz** format as defined by fastlz 0.5.0.
+The reference implementation is `fastlz_decompress()` in `lib/fastlz/fastlz.c`.
 
 Compressed format:
 
@@ -340,26 +344,26 @@ token_stream:  a sequence of (literal_run, match) pairs
 
 literal_run:   0 or more uncompressed bytes
 
-match:         3–258 bytes from a position 1–16384 bytes back in
-               the uncompressed stream
+match:         3–264 bytes from a position 1–8191 bytes back (level 1)
+               or 1–65535+8191 bytes back (level 2)
 
-encoding:      variable-length opcodes (1–4 bytes per match)
-               determine run length and match distance
+encoding:      byte-aligned control bytes; the top 3 bits of the first
+               byte select the level (level 1 = 001, level 2 = 010)
 ```
 
-Full specification for LZO1X is beyond this document; implementers MUST refer to:
+Full specification for the fastlz bitstream is in the fastlz source;
+implementers MUST refer to:
 
-1. `lib/minilzo-2.10/minilzo.c` (reference implementation)
-2. `lib/minilzo-2.10/README.LZO` (format overview)
-3. miniLZO official website: <http://www.oberhumer.com/opensource/lzo/>
+1. `lib/fastlz/fastlz.c` (reference implementation)
+2. `src/core/mini/fastlz_decomp.c` (clean-room C89 decoder for 16-bit targets)
 
 **Decompression requirements:**
 
-- MUST use safe decompression (`lzo1x_decompress_safe()` equivalent).
+- MUST use a bound-checked decompressor (equivalent to `fastlz_decompress()`).
 - MUST validate that decompressed size matches `block_orig_size` byte-for-byte.
 - MUST reject corrupted compressed data (return `ERR_CORRUPT`).
 
-**Decoder status:** Stable, widely tested, suitable for all platforms including vintage systems.
+**Decoder status:** Stable, widely tested, suitable for all platforms including vintage systems (16-bit builds decompress via the clean-room decoder).
 
 ### 3.4 Method 3: Fluff (LZ77 + FSE/tANS)
 
@@ -367,7 +371,8 @@ Full specification for LZO1X is beyond this document; implementers MUST refer to
 **Codec:** Fluff  
 **Decompressor complexity:** Moderate (~1000 lines of C89)  
 **Speed:** ~467 MB/s decompression (modern 64-bit system)  
-**Compression ratio:** ~29% on curated corpus (best ratio of the three methods)
+**Compression ratio:** ~29% on curated corpus (best ratio among the non-zstd
+methods)
 
 #### 3.4.1 Overview
 
@@ -1231,7 +1236,7 @@ Every BoltPack reader **MUST:**
 Full v1.0 implementations SHOULD support all compressed methods:
 
 1. **Method 1** — LZSS
-2. **Method 2** — miniLZO
+2. **Method 2** — fastlz
 3. **Method 3** — Fluff
 4. **Method 4** — zstd (modern 32/64-bit targets only; return `ERR_METHOD` on vintage/16-bit builds)
 5. **Method 4** — zstd (modern builds)
@@ -1245,7 +1250,7 @@ Every BoltPack writer **SHOULD:**
 3. Set creator fields accurately (OS, CPU, BoltPack version).
 4. Choose compression method based on file characteristics:
    - Method 3 (fluff) for text, source code, and other ratio-sensitive data.
-   - Method 2 (LZO1X-1) for binary data and fast general-purpose compression.
+   - Method 2 (fastlz) for binary data and fast general-purpose compression.
    - Method 1 (LZSS) for constrained-memory or 16-bit targets.
    - Method 0 (stored) if compression saves < 1% (see Section 9.3).
 5. Compute correct CRC-32 checksum.
@@ -1331,7 +1336,7 @@ if (result != 0) {
 }
 ```
 
-The library is self-contained (includes LZSS, miniLZO, and fluff codecs) and compiles with strict ANSI C89.
+The library is self-contained (includes LZSS, fastlz, and fluff codecs) and compiles with strict ANSI C89.
 
 ### 11.2 Repository Test Coverage
 
@@ -1355,7 +1360,7 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 - **Fluff:** BoltPack's native LZ77+Huffman codec (method 3).
 - **Little-endian:** Least-significant byte first; canonical byte order for this format.
 - **Metadata:** File creation time, platform origin, entry type.
-- **Method:** Compression algorithm (0=stored, 1=LZSS, 2=LZO1X-1, 3=fluff).
+- **Method:** Compression algorithm (0=stored, 1=LZSS, 2=fastlz, 3=fluff).
 - **Payload:** Uncompressed content of an entry.
 - **UTF-8:** Unicode text encoding for file names and paths.
 
@@ -1363,7 +1368,7 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 
 ## B. References
 
-- **miniLZO:** <http://www.oberhumer.com/opensource/lzo/> (LZO1X-1 specification)
+- **fastlz:** <https://github.com/ariya/FastLZ> (fastlz bitstream specification)
 - **RFC 1950:** ZLIB Compressed Data Format Specification (Huffman coding, Adler-32)
 - **ANSI C89/C90:** ISO C language standard (for portable type definitions)
 - **ZIP format:** PKWARE AppNote (for design inspiration and compatibility lessons)

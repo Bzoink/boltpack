@@ -181,7 +181,7 @@ This creates:
 
 - `dist/boltpack-<version>-source-macos9-ppc.tar.gz`
 
-The package includes `src/core`, `lib/minilzo-2.10`, the PowerPC frontend
+The package includes `src/core`, `lib/fastlz`, the PowerPC frontend
 under `src/frontend/macos9/`, the matching Classic Mac resource source
 `src/frontend/macos9/boltpack.r`, and a root-level `build-notes.md` with the
 CodeWarrior project settings and library list.

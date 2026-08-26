@@ -16,7 +16,7 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 | ------ | ------- | ------------------------------ | ----------------------------------------------- |
 | 0      | Stored  | `src/core/archiver.c`          | Fallback for incompressible data                |
 | 1      | LZSS    | `src/core/lzss.c`              | Small-memory LZ77, especially for mini builds   |
-| 2      | miniLZO | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
+| 2      | fastlz  | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
 | 3      | Fluff   | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
 | 4      | zstd    | `src/core/zstd_wrap.c` wrapper | Best-ratio codec; modern 32/64-bit targets only |
 
@@ -123,26 +123,35 @@ The public API asks for `LZSS_WORK_SIZE` bytes for both compression and
 Decompression. In practice the decoder uses only the ring-buffer portion, but
 the fixed-size API keeps call sites simple across all targets.
 
-## 4. Method 2: miniLZO
+## 4. Method 2: fastlz
 
 ### 4.1 Overview
 
-Method 2 wraps vendored miniLZO 2.10. BoltPack does not define a custom LZO
-bitstream; it uses the library's `LZO1X-1` block format through the wrapper in
-`src/core/compress.c`.
+Method 2 wraps the vendored fastlz 0.5.0 codec (`lib/fastlz/`, MIT-licensed,
+C89-ported). It uses fastlz's byte-aligned LZ77 block format through the
+wrapper in `src/core/compress.c`. fastlz has two compression levels: level 1
+uses an 8 KB window (faster, worse ratio) and level 2 uses a 64 KB window
+(slower, better ratio). The `-2` flag in the frontends selects fastlz; the
+`-l 1` selects level 1, `-l 2` selects level 2, and omitting `-l` (auto)
+selects `fastlz_compress()`, which picks level 1 below 64 KB and level 2 at
+or above it (BoltPack's typical 32 KB blocks use level 1). Values 3–9 are
+accepted for compatibility with the other codecs and clamp to level 2.
 
 ### 4.2 Current Wrapper Behavior
 
-1. Compression uses the library's normal `LZO1X-1` encoder.
-1. Decompression uses the safe decoder path.
+1. Compression uses `fastlz_compress` (auto-select) or `fastlz_compress_level`
+   (when a level is requested).
+1. Decompression uses the bound-checked `fastlz_decompress`, which never
+   writes past the output buffer.
 1. The wrapper validates sizes and converts library failures into BoltPack
    error codes.
 1. The archive layer may still fall back to stored if the compressed block does
    not beat the 99% threshold.
 
-miniLZO remains the fast general-purpose method in the full build. On some
-small-model mini targets it is unavailable, which is why method 1 LZSS exists
-alongside it.
+fastlz is the default fast general-purpose method in the full build. Its
+compressor needs an 8192-entry stack hash table (~32 KB on 32-bit), so it is
+not compiled for 16-bit targets; 16-bit builds decompress fastlz via the
+clean-room `src/core/mini/fastlz_decomp.c` module.
 
 ## 5. Method 3: Fluff
 
@@ -375,7 +384,7 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | ------ | ------------------------------------------------------------ | --------------------------------------------------------- |
 | 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
 | 1      | Fixed 14,900-byte work buffer                                | Same API-sized work buffer; decoder uses the ring portion |
-| 2      | miniLZO library work memory managed by the wrapper           | Output buffer plus library decoder state                  |
+| 2      | None (heap); ~32 KB stack hash table during compress        | Output buffer (clean-room decoder on 16-bit)            |
 | 3      | `fluff_ctx_t` is about 2 MB plus per-block token buffers     | Current decoder also reuses `fluff_ctx_t` for block state |
 | 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
 
@@ -399,7 +408,7 @@ planning material and discarded codec variants are intentionally left out.
 ## 9. References
 
 1. Haruhiko Okumura, original LZSS design and binary-search-tree matcher.
-1. miniLZO 2.10, vendored in `lib/minilzo-2.10/`.
+1. fastlz 0.5.0, vendored in `lib/fastlz/`; by Ariya Hidayat; MIT license.
 1. J. Duda, “Asymmetric numeral systems,” arXiv:0902.0271, 2009 — theoretical
    basis for the FSE/tANS entropy coder in Fluff.
 1. zstd 1.5.7, vendored in `lib/zstd/`; by Meta Platforms / Yann Collet;

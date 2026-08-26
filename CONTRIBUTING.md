@@ -101,7 +101,7 @@ the core; `fluff_fast.c` (OpenMP) is a frontend-layer concern.
    * ANSI C (C89/C90) only.
    *
    * Copyright (C) 2026 Tony Mattsson
-   * Licensed under the GNU General Public License v2
+   * Licensed under the BSD 2-Clause License
    */
   ```
 
@@ -142,6 +142,6 @@ cannot cover the vintage platforms, so portability review is done by reading.
 
 ## License
 
-BoltPack is licensed under the **GNU General Public License v2**. By submitting
-a contribution you agree to license it under the same terms. Contributors are
-credited in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+BoltPack is licensed under the **BSD 2-Clause "Simplified" License**. By
+submitting a contribution you agree to license it under the same terms.
+Contributors are credited in [CONTRIBUTORS.md](CONTRIBUTORS.md).

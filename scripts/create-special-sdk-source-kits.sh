@@ -139,7 +139,8 @@ stage_common() {
     local frontend="$2"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
-    copy_tree "$PROJROOT/lib/minilzo-2.10" "$kitdir/lib/minilzo-2.10"
+    copy_tree "$PROJROOT/lib/fastlz" "$kitdir/lib/fastlz"
+    copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/$frontend" "$kitdir/src/frontend/$frontend"
     copy_file "$PROJROOT/docs/BUILD.md" "$kitdir/docs/BUILD.md"
     copy_file "$PROJROOT/docs/frontends.md" "$kitdir/docs/frontends.md"

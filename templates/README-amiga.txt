@@ -29,7 +29,7 @@ COMPRESSION
 -----------
 
 -F          Use Fluff (best for big screens)
--M 1        Use miniLZO (fastest)
+            fastlz is the default method
 -0          No compression
 
 AMIGA NOTES

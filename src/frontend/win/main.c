@@ -7,7 +7,7 @@
  * may be needed: mkdir() signature, header differences, etc.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../../core/archiver.h"
@@ -1670,8 +1670,12 @@ static void usage_basic(void)
         "\nCommon options:\n"
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0               Store only (no compression)\n"
+        "  -1               LZSS compression\n"
+        "  -2               fastlz compression (default)\n"
         "  -F               Use fluff compression\n"
-        "  -Z               Use zstd compression (modern builds)\n"
+        "  -Z               Use zstd compression (modern builds)\n");
+    fprintf(stderr,
+        "  -l N             Compression level (fastlz: 1-2; fluff/zstd: 1-9)\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
@@ -1709,11 +1713,11 @@ static void usage_advanced(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F/-Z)\n"
         "  -0               Store only (no compression)\n"
         "  -1               LZSS compression\n"
-        "  -2               miniLZO compression (default)\n"
+        "  -2               fastlz compression (default)\n"
         "  -F               Use fluff compression (defaults to 256k blocks)\n"
         "  -Z               Use zstd compression (defaults to 256k blocks, method 4)\n");
     fprintf(stderr,
-        "  -l N             Compression level 1-9 (fluff: 1=fast/worst, 8=default; zstd: 3=default)\n"
+        "  -l N             Compression level (fastlz: 1-2; fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
         "  -j N             Parallel fluff jobs/threads (fast-fluff Windows builds)\n"
         "  -g N             Fluff blocks per history group (fast-fluff Windows builds)\n"
         "  --single-thread  Disable automatic parallel fluff\n");
@@ -2140,7 +2144,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "miniLZO", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -2466,7 +2470,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
-    bp_uint8 method = BP_METHOD_LZO1X;
+    bp_uint8 method = BP_METHOD_FASTLZ;
     int opt_level = 0; /* 0 = use default (no -l flag given) */
     const char *out_dir = NULL;
     int force = 0;
@@ -2557,8 +2561,8 @@ int main(int argc, char **argv)
             method = BP_METHOD_LZSS;
             i++;
         } else if (strcmp(argv[i], "-2") == 0 ||
-                   strcmp(argv[i], "--minilzo") == 0) {
-            method = BP_METHOD_LZO1X;
+                   strcmp(argv[i], "--fastlz") == 0) {
+            method = BP_METHOD_FASTLZ;
             i++;
         } else if (strcmp(argv[i], "-F") == 0 ||
                    strcmp(argv[i], "--fluff") == 0) {

@@ -48,7 +48,7 @@ priority issues are in the read path:
   API arguments from a caller you control
 - Missing hardening flags in a build you configured yourself
 - Vulnerabilities in vendored third-party code that are already public upstream
-  — report those to miniLZO or zstd; do tell us so we can update the vendored
+  — report those to fastlz or zstd; do tell us so we can update the vendored
   copy
 - Archive corruption that is detected and reported correctly (`BP_ERR_CHECKSUM`,
   `BP_ERR_CORRUPT`, `BP_ERR_TRUNCATED`) — that is the format working as designed

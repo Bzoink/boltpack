@@ -102,17 +102,18 @@ No runtime detection is needed — the compiler resolves the branch at build tim
 All code in the **compression** and **archiver** layers must compile as strict C89. This means:
 
 - **No C99 features**: no `//` comments, no mixed declarations and code, no `<stdint.h>`, no `<stdbool.h>`, no variable-length arrays, no designated initializers.
-- **No `long long`**: use `unsigned long` (at least 32 bits per C89). miniLZO handles 64-bit sizes internally where needed.
+- **No `long long`**: use `unsigned long` (at least 32 bits per C89). fastlz handles 64-bit sizes internally where needed.
 - **Declare all variables at the top** of each block.
 - **No compiler extensions** (`__attribute__`, `__declspec`, `#pragma` packing) in core code. Use these only in platform-specific frontend code, guarded by `#ifdef`.
 
 **Exception:** `bp_off_t` in `bp_types.h` uses `__int64` (MSVC) or `__extension__ long long` (GCC/Clang) on 32-bit hosts to support files larger than 2 GB. On LP64 hosts, `long` is already 64 bits. This is the only compiler extension in the core, justified by the impossibility of expressing a 64-bit signed offset in portable C89 on ILP32 platforms.
 
-**Third-party C99 exemption:** `lib/minilzo-2.10/` and `lib/zstd/` are compiled as
-C99 (or later) because those libraries use features unavailable in C89. They are
-isolated behind thin C89-compatible wrapper headers (`src/core/compress.c` for
-miniLZO; `src/core/zstd_wrap.h` / `src/core/zstd_wrap.c` for zstd). All other
-code in `src/core/` and `src/frontend/` must remain strict C89.
+**Third-party C99 exemption:** `lib/zstd/` is compiled as C99 (or later)
+because that library uses features unavailable in C89. It is isolated behind a
+thin C89-compatible wrapper (`src/core/zstd_wrap.h` / `src/core/zstd_wrap.c`).
+`lib/fastlz/` is a C89 port of upstream fastlz and compiles with the same
+`-ansi -pedantic` flags as the core. All code in `src/core/` and
+`src/frontend/` must remain strict C89.
 
 **Availability of method 4 (zstd):** The zstd codec (`lib/zstd/`) is linked only
 when the `BOLTPACK_ZSTD` preprocessor flag is set. Modern targets (Linux, macOS,
@@ -185,13 +186,13 @@ These work correctly on both big-endian (PowerPC, 68k) and little-endian (x86) h
 ### Memory allocation
 
 - Use `malloc` / `free` from `<stdlib.h>` (available on all targets).
-- Keep allocations small and predictable. miniLZO needs ~64 KB (32-bit) or ~128 KB (64-bit) for compression work memory.
+- Keep allocations small and predictable. fastlz needs no heap work memory (its compressor uses a ~32 KB stack hash table on 32/64-bit; it is not compiled on 16-bit).
 - Avoid deep recursion — stack sizes on vintage systems may be small (as low as 4–8 KB on some platforms).
 
 ### String handling
 
 - Use standard `<string.h>` functions: `memcpy`, `memset`, `memcmp`, `strlen`, `strncpy`.
-- miniLZO provides its own portable `lzo_memcpy` etc. as fallbacks.
+- fastlz provides its own portable byte-by-byte copy path as a fallback.
 - File names in the archive are UTF-8. Frontends convert to/from native encoding (e.g., MacRoman on classic Mac OS).
 
 ## Build Procedure Boundaries
@@ -293,9 +294,9 @@ cd amiga-gcc && make all
 
 ```sh
 m68k-amigaos-gcc -noixemul -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/amiga/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/amiga/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -319,9 +320,9 @@ The MorphOS SDK is distributed by the MorphOS team. Includes a ppc-morphos GCC c
 # Download from https://www.morphos-team.net/
 # Unpack and set PATH to SDK/bin
 ppc-morphos-gcc -noixemul -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/morphos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/morphos/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -350,9 +351,9 @@ cd build-djgpp && ./build-djgpp.sh 12.2.0
 
 ```sh
 i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/dos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/dos/main.c lib/fastlz/fastlz.c \
     -o boltpack.exe
 ```
 
@@ -371,9 +372,9 @@ sudo dnf install mingw64-gcc
 
 ```sh
 x86_64-w64-mingw32-gcc -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/win/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/win/main.c lib/fastlz/fastlz.c \
     -o boltpack.exe
 ```
 
@@ -391,9 +392,9 @@ Vincent Rivière's cross-toolchain is the standard for Atari development from Li
 
 ```sh
 m68k-atari-mint-gcc -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/atari/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/atari/main.c lib/fastlz/fastlz.c \
     -o boltpack.tos
 ```
 
@@ -412,9 +413,9 @@ cd gccsdk/gcc4 && ./build-world
 
 ```sh
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -O2 \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/riscos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/riscos/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -457,9 +458,9 @@ export PATH=$WATCOM/binl64:$PATH
 
 ```sh
 wcl386 -bt=os2v2 -ansi -ox \
-    -Isrc/core -Ilib/minilzo-2.10 \
+    -Isrc/core -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/os2/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/os2/main.c lib/fastlz/fastlz.c \
     -fe=boltpack.exe
 ```
 
@@ -486,11 +487,11 @@ The 8086/8088 running MS-DOS is a supported target. BoltPack's C89 core compiles
 - `bp_uint32` (`unsigned long`) — 32 bits on all 16-bit C89 compilers
 - `bp_uint64` as `{lo, hi}` struct — just two `unsigned long` values
 - All LE read/write helpers — operate at the byte level, no width assumptions
-- miniLZO — internally uses `unsigned long` for buffer offsets via `lzo_uint`, already handling 16-bit `int`
+- fastlz — decompression uses byte indices and unsigned lengths that fit 16-bit `int` for the ≤32 KB mini blocks
 
 ### Memory model
 
-The compiler must be set to **large** or **huge** memory model (far pointers for both code and data). Small and medium models limit data segments to 64 KB, which is too tight for the LZO work buffer.
+The compiler must be set to **compact**, **large**, or **huge** memory model (far pointers for data). fastlz decompression needs no work buffer, so block-size + output buffers are the only data requirements.
 
 | Memory model | Code pointers | Data pointers | Max single allocation | Suitable? |
 | ------------ | ------------- | ------------- | --------------------- | --------- |
@@ -512,13 +513,13 @@ On 16-bit compilers, `sizeof(int)` is 2. Code must never use `int` for values th
 
 ### Performance
 
-An 8088 at 4.77 MHz running LZO will be slow but functional. LZO's byte-level operations (no bit shifting, no Huffman) make it significantly faster than DEFLATE on hardware without a barrel shifter. Expect compression throughput in the low KB/s range — useful for floppy-sized archives, not hard disk images.
+An 8088 at 4.77 MHz running fastlz decompression will be slow but functional. fastlz's byte-level operations (no bit shifting, no Huffman) make it significantly faster than DEFLATE on hardware without a barrel shifter. Expect decompression throughput in the low KB/s range — useful for floppy-sized archives, not hard disk images.
 
 ## 8-Bit Systems — Not Supported
 
 8-bit systems (6502-based: C64, Apple II, Atari 800; Z80-based: ZX Spectrum, CP/M; 6809-based: CoCo) are **not** BoltPack targets. The constraints are fundamental:
 
-- **64 KB total address space** — miniLZO's 64 KB compression work buffer alone fills memory. No room for the program, I/O buffers, or stack.
+- **64 KB total address space** — fastlz's 64 KB compression work buffer alone fills memory. No room for the program, I/O buffers, or stack.
 - **No conformant C89 compilers** — cc65 (6502) is close but has `int` = 16 bits, `long` = 32 bits via software emulation at dozens of cycles per operation. SDCC (Z80) has similar limitations.
 - **Arithmetic speed** — 32-bit `unsigned long` operations on a 1 MHz 8-bit CPU take hundreds of cycles per addition. Processing archive headers would be painfully slow.
 - **No realistic file I/O** — most 8-bit systems lack a hierarchical filesystem. Disk I/O is often sector-level.
@@ -529,6 +530,6 @@ The `creator_cpu` table includes `6502/65C816` and `Z80` for identification purp
 
 Before claiming a platform is supported, verify:
 
-1. `lzo_init()` succeeds (catches sizeof/alignment surprises)
+1. fastlz compress/decompress round-trips a known test block
 2. Compress and decompress a known test block, verify checksum
 3. Create a small archive on one platform, extract on another — byte-identical results

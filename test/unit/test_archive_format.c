@@ -2,12 +2,12 @@
  * test_archive_format.c -- unit tests for archive create / list / test / info
  *
  * Uses a memory-backed bp_io_t to exercise the full archiver API without
- * touching the filesystem.  Tests Stored, LZSS, miniLZO, and Fluff methods.
+ * touching the filesystem.  Tests Stored, LZSS, fastlz, and Fluff methods.
  *
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include <stdio.h>
@@ -685,9 +685,9 @@ int main(void)
     test_list_method("list (LZSS)", BP_METHOD_LZSS);
     test_integrity_method("test (LZSS)", BP_METHOD_LZSS);
 
-    UNIT_SECTION("Archive format: miniLZO method");
-    test_list_method("list (miniLZO)", BP_METHOD_LZO1X);
-    test_integrity_method("test (miniLZO)", BP_METHOD_LZO1X);
+   UNIT_SECTION("Archive format: fastlz method");
+   test_list_method("list (fastlz)", BP_METHOD_FASTLZ);
+   test_integrity_method("test (fastlz)", BP_METHOD_FASTLZ);
 
     UNIT_SECTION("Archive format: Fluff method");
     test_list_method("list (Fluff)", BP_METHOD_FLUFF);

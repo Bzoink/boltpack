@@ -550,7 +550,8 @@ do_x68k() {
 # ---- 16-bit targets (Open Watcom) ----------------------------------------
 # Requires Open Watcom 2.0 at /opt/watcom (or wcc on PATH).
 # The mini archiver (src/core/mini/) is used instead of the full archiver.
-# miniLZO is excluded on 16-bit; stored-only compression is used.
+# fastlz compression (the 8192-entry stack hash table) is too large for
+# 16-bit; the mini build uses stored/LZSS compression and can decode fastlz.
 
 _check_watcom() {
     if command -v wcc >/dev/null 2>&1; then

@@ -7,7 +7,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include <stdio.h>

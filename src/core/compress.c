@@ -1,72 +1,90 @@
 /*
- * compress.c -- compression layer for BoltPack (miniLZO wrapper)
+ * compress.c -- compression layer for BoltPack (fastlz wrapper)
  *
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "compress.h"
-#include "../../lib/minilzo-2.10/minilzo.h"
+
+#include "../../lib/fastlz/fastlz.h"
 #include <stdlib.h>
 #include <string.h>
 
+/* fastlz takes signed int lengths.  Full builds have at least 32-bit int;
+ * keep the explicit limit here so the public bp_uint32 API cannot silently
+ * turn a large length into a negative value. */
+#if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
+#define BP_FASTLZ_MAX_INT 32767UL
+#else
+#define BP_FASTLZ_MAX_INT 2147483647UL
+#endif
+
 int bp_compress_init(void)
 {
-    if (lzo_init() != LZO_E_OK) {
+    return BP_OK; /* fastlz needs no init */
+}
+
+int bp_compress_block_level(const bp_uint8 *src, bp_uint32 src_len,
+                            bp_uint8 *dst, bp_uint32 *dst_len,
+                            bp_uint8 method_level)
+{
+    int r;
+    int flz_level;
+
+    if (src == NULL || dst == NULL || dst_len == NULL || src_len == 0u ||
+        src_len > BP_FASTLZ_MAX_INT) {
+        return BP_ERR_INVALID_ARG;
+    }
+
+    /* Map the BoltPack method_level (0, 1-9) to a fastlz level (1 or 2).
+     * 0 = auto-select (fastlz_compress), 1 = L1, 2 = L2, 3-9 clamp to L2. */
+    switch (method_level) {
+        case 1:
+            flz_level = 1;
+            r = fastlz_compress_level(flz_level, src, (int)src_len, dst);
+            break;
+        case 2:
+        default:
+            flz_level = 2;
+            r = fastlz_compress_level(flz_level, src, (int)src_len, dst);
+            break;
+        case 0:
+            r = fastlz_compress(src, (int)src_len, dst);
+            break;
+    }
+
+    if (r <= 0) {
         return BP_ERR_COMPRESS;
     }
+    *dst_len = (bp_uint32)r;
     return BP_OK;
 }
 
 int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                       bp_uint8 *dst, bp_uint32 *dst_len)
 {
-    int r;
-    lzo_uint out_len;
-    bp_uint8 *workmem;
-
-    if (src == NULL || dst == NULL || dst_len == NULL) {
-        return BP_ERR_INVALID_ARG;
-    }
-
-    workmem = (bp_uint8 *)malloc(LZO1X_1_MEM_COMPRESS);
-    if (workmem == NULL) {
-        return BP_ERR_NOMEM;
-    }
-
-    out_len = 0;
-    r = lzo1x_1_compress(src, (lzo_uint)src_len,
-                         dst, &out_len,
-                         workmem);
-    free(workmem);
-
-    if (r != LZO_E_OK) {
-        return BP_ERR_COMPRESS;
-    }
-    *dst_len = (bp_uint32)out_len;
-    return BP_OK;
+    return bp_compress_block_level(src, src_len, dst, dst_len, 0);
 }
 
 int bp_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
                         bp_uint8 *dst, bp_uint32 *dst_len)
 {
     int r;
-    lzo_uint out_len;
 
-    if (src == NULL || dst == NULL || dst_len == NULL) {
+    if (src == NULL || dst == NULL || dst_len == NULL || src_len == 0u ||
+        src_len > BP_FASTLZ_MAX_INT || *dst_len == 0u ||
+        *dst_len > BP_FASTLZ_MAX_INT) {
         return BP_ERR_INVALID_ARG;
     }
 
-    out_len = (lzo_uint)*dst_len;
-    r = lzo1x_decompress_safe(src, (lzo_uint)src_len,
-                              dst, &out_len,
-                              NULL);
-    if (r != LZO_E_OK) {
+    r = fastlz_decompress(src, (int)src_len, dst, (int)*dst_len);
+    if (r <= 0) {
         return BP_ERR_DECOMPRESS;
     }
-    *dst_len = (bp_uint32)out_len;
+    *dst_len = (bp_uint32)r;
     return BP_OK;
 }
 
@@ -77,12 +95,22 @@ int bp_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
  * to build it. */
 bp_uint32 bp_checksum(bp_uint32 adler, const bp_uint8 *data, bp_uint32 len)
 {
-    /* lzo_adler32 returns the constant 1 when data is NULL, discarding the
-     * running value; an empty chunk must leave the checksum unchanged. */
+    bp_uint32 s1;
+    bp_uint32 s2;
+    bp_uint32 i;
+
     if (len == 0) {
         return adler;
     }
-    return (bp_uint32)lzo_adler32((lzo_uint32_t)adler, data, (lzo_uint)len);
+
+    s1 = adler & 0xFFFFUL;
+    s2 = (adler >> 16) & 0xFFFFUL;
+
+    for (i = 0; i < len; i++) {
+        s1 = (s1 + data[i]) % 65521UL;
+        s2 = (s2 + s1)      % 65521UL;
+    }
+    return (s2 << 16) | s1;
 }
 #endif /* BP_ENABLE_ADLER32 */
 
@@ -146,5 +174,5 @@ bp_uint32 bp_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
 
 bp_uint32 bp_compress_work_size(void)
 {
-    return (bp_uint32)LZO1X_1_MEM_COMPRESS;
+    return 0; /* fastlz needs no work buffer */
 }

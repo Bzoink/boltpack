@@ -2,7 +2,7 @@
  * NativeMethods.cs -- P/Invoke declarations for boltpack_core.dll
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 using System;
@@ -174,7 +174,7 @@ namespace BoltPack
         public const byte BP_OS_WINDOWS = 0x09;
         public const byte BP_METHOD_STORED = 0;
         public const byte BP_METHOD_LZSS = 1;
-        public const byte BP_METHOD_LZO1X = 2;
+        public const byte BP_METHOD_FASTLZ = 2;
         public const byte BP_METHOD_FLUFF = 3;
 
         public static string MethodName(int m)
@@ -183,7 +183,7 @@ namespace BoltPack
             {
                 case BP_METHOD_STORED: return "Stored";
                 case BP_METHOD_LZSS: return "LZSS";
-                case BP_METHOD_LZO1X: return "miniLZO";
+                case BP_METHOD_FASTLZ: return "fastlz";
                 case BP_METHOD_FLUFF: return "fluff";
                 default: return "?";
             }

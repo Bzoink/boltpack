@@ -5,7 +5,7 @@
  * from C, C++, and Objective-C frontends alike.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_HELP_TEXT_H
@@ -16,7 +16,7 @@
 #define BP_APP_NAME      "BoltPack"
 #define BP_APP_VERSION   BP_STRINGIFY(BP_VERSION_MAJOR) "." BP_STRINGIFY(BP_VERSION_MINOR)
 #define BP_COPYRIGHT     "Copyright (C) 2026 Tony Mattsson"
-#define BP_LICENSE       "Released under the GNU General Public License v2"
+#define BP_LICENSE       "Released under the BSD 2-Clause License"
 #define BP_DESCRIPTION   "A lightweight file archiver for vintage and modern systems"
 
 static const char bp_help_text[] =
@@ -63,7 +63,7 @@ static const char bp_help_text[] =
     "BoltPack supports four compression methods:\n"
     "  Stored  - No compression\n"
     "  LZSS    - Small-memory LZ77 for 16-bit systems\n"
-    "  miniLZO - Fast general-purpose (default)\n"
+    "  fastlz - Fast general-purpose (default)\n"
     "  fluff   - Best compression ratio\n"
     "\n"
     "Keyboard Shortcuts\n"

@@ -3,7 +3,7 @@
  *
  * Target: Open Watcom C 16-bit, compact model, Windows system.
  * Compiler:  wcc -bt=windows -mc -0 -za -DSIZEOF_INT=2 -DSIZEOF_LONG=4
- *            -DLZO_CFG_16BIT_OK -DBP_MINI
+ *             -DBP_MINI
  *            -DBP_CREATOR_OS=BP_OS_WIN16 -DBP_CREATOR_CPU=BP_CPU_8086
  * Linker:    wlink system windows
  * Binary:    BPMINI.EXE
@@ -18,7 +18,7 @@
  * ANSI C (C89/C90) with Watcom-specific directory scanning.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../../core/mini/archiver.h"
@@ -802,7 +802,7 @@ static int cmd_info(const char *arc_path)
 
 #ifdef __WATCOMC__
     {
-        static const char * const mn[4] = {"stored","LZSS","miniLZO","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
         int j;
         int mfirst;
         write(1, "Entries:  ", 10); bp_wulong(1, (unsigned long)info.entry_count); write(1, "\n", 1);
@@ -830,7 +830,7 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_compressed, buf);
     printf("Comp:     %s\n", buf);
     {
-        static const char * const mn[4] = {"stored","LZSS","miniLZO","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:  ");
@@ -869,7 +869,7 @@ static void usage(void)
         "  -q                             quiet mode\n"
         "Compression:\n"
         "  create:   store (0), LZSS (1)\n"
-        "  extract:  store (0), LZSS (1), miniLZO (2)\n");
+        "  extract:  store (0), LZSS (1), fastlz (2)\n");
 #else
     fputs(PROG_NAME " " BP_VER "  BoltPack mini for Windows 3.x (Win16)\n"
           "Usage:\n"
@@ -885,7 +885,7 @@ static void usage(void)
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), miniLZO (2)\n",
+          "  extract:  store (0), LZSS (1), fastlz (2)\n",
           stderr);
 #endif
 }

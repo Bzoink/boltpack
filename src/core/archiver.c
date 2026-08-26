@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "archiver.h"
@@ -81,7 +81,7 @@ static int bp_method_is_supported(bp_uint8 method)
 {
     if (method == BP_METHOD_STORED) return 1;
     if (method == BP_METHOD_LZSS)   return 1;
-    if (method == BP_METHOD_LZO1X)  return 1;
+    if (method == BP_METHOD_FASTLZ) return 1;
     if (method == BP_METHOD_FLUFF)  return 1;
 #ifdef BOLTPACK_ZSTD
     if (method == BP_METHOD_ZSTD)   return 1;
@@ -94,8 +94,8 @@ static bp_uint32 bp_method_compress_bound(bp_uint8 method, bp_uint32 src_len)
     if (method == BP_METHOD_LZSS) {
         return src_len + src_len / 8 + 16;
     }
-    if (method == BP_METHOD_LZO1X) {
-        return src_len + src_len / 16 + 64 + 3;
+    if (method == BP_METHOD_FASTLZ) {
+        return BP_FASTLZ_BOUND(src_len);
     }
     if (method == BP_METHOD_FLUFF) {
         return fluff_compress_bound(src_len);
@@ -851,8 +851,10 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                         rc = BP_ERR_COMPRESS;
                         goto seq_done;
                     }
-                } else if (actual_method == BP_METHOD_LZO1X) {
-                    rc = bp_compress_block(in_buf, chunk, out_buf, &comp_len);
+                } else if (actual_method == BP_METHOD_FASTLZ) {
+                    rc = bp_compress_block_level(in_buf, chunk, out_buf,
+                                                 &comp_len,
+                                                 ar->method_level);
                     if (rc != BP_OK) goto seq_done;
                 } else if (actual_method == BP_METHOD_FLUFF) {
                     rc = fluff_compress_block_ctx(in_buf, chunk, out_buf,
@@ -1861,7 +1863,7 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
                 /* Distance-based LZSS decode needs no scratch buffer. */
                 rc = lzss_decompress(in_buf, comp_sz, dec_buf, orig_sz, NULL);
                 if (rc != BP_OK) { free(in_buf); free(dec_buf); return rc; }
-            } else if (entry->method == BP_METHOD_LZO1X) {
+            } else if (entry->method == BP_METHOD_FASTLZ) {
                 /* compressed block */
                 dec_len = orig_sz;
                 rc = bp_decompress_block(in_buf, comp_sz, dec_buf, &dec_len);

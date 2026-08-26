@@ -12,7 +12,7 @@
  * are big-endian (network byte order).
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define _XOPEN_SOURCE 600

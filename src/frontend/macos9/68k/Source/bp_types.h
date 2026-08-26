@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only. No compiler extensions.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_TYPES_H
@@ -25,9 +25,9 @@ typedef struct {
 
 /* --- BoltPack version --------------------------------------------------- */
 
-#define BP_VERSION_MAJOR  0
-#define BP_VERSION_MINOR  1
-#define AUTHOR_MESSAGE    "Copyright (C) 2026 Tony Mattsson; Released under GNU GPLv2"
+#define BP_VERSION_MAJOR  1
+#define BP_VERSION_MINOR  5
+#define AUTHOR_MESSAGE    "Copyright (C) 2026 Tony Mattsson; Released under BSD-2-Clause"
 
 /* --- Format constants --------------------------------------------------- */
 
@@ -70,7 +70,7 @@ typedef struct {
 /* Compression methods */
 #define BP_METHOD_STORED   0
 #define BP_METHOD_LZSS     1
-#define BP_METHOD_LZO1X    2
+#define BP_METHOD_FASTLZ   2  /* fastlz; was LZO1X in pre-1.5.0 builds */
 #define BP_METHOD_FLUFF    3
 
 /* Checksum types */

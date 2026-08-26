@@ -98,17 +98,17 @@ def build_fluff_chain(chain_depth: int, build_dir: str) -> str | None:
     linux_main = os.path.join(os.path.dirname(__file__), '..', '..', 'src',
                                'frontend', 'linux', 'main.c')
     linux_main = os.path.normpath(linux_main)
-    minilzo_src = os.path.join(LIBDIR, 'minilzo-2.10', 'minilzo.c')
+    fastlz_src = os.path.join(LIBDIR, 'fastlz', 'fastlz.c')
 
     cmd = [
         'gcc', '-ansi', '-pedantic', '-Wall',
         '-O2',
         f'-DFLUFF_MAX_CHAIN={chain_depth}',
         '-I', SRCDIR,
-        '-I', os.path.join(LIBDIR, 'minilzo-2.10'),
+        '-I', os.path.join(LIBDIR, 'fastlz'),
         '-I', os.path.join(LIBDIR, 'miniz'),
         fluff_src, archiver_src, compress_src, codepage_src,
-        minilzo_src, linux_main,
+        fastlz_src, linux_main,
         '-o', binary,
     ]
 

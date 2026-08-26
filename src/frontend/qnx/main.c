@@ -13,7 +13,7 @@
  * QNX Momentics IDE ships qcc / q++ for each supported target.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define BP_CREATOR_OS  BP_OS_QNX

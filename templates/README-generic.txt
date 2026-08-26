@@ -11,7 +11,7 @@ platforms — from an 8088 PC running DOS to a modern x86-64 Linux box, includin
 AmigaOS, Atari TOS, Classic Mac OS, RISC OS, Haiku, Plan 9, and many more.
 
 Key features:
-  * Three compression methods: Stored, miniLZO (fast), Fluff (best compression)
+  * Five compression methods where supported: Stored, LZSS, fastlz, Fluff, zstd
   * Cross-platform compatibility: strict ANSI C89 implementation
   * Small binaries: ~50 KB standalone executable
   * 64-bit file support and block-based compression
@@ -25,7 +25,7 @@ Create an archive:
 
 Create with compression:
   boltpack c -F myarchive.blt file1 file2    (best ratio)
-  boltpack c -M 1 myarchive.blt file1        (fast decompression)
+  boltpack c -2 myarchive.blt file1          (fast decompression)
   boltpack c -0 myarchive.blt file1          (no compression)
 
 Extract:
@@ -49,7 +49,9 @@ OPTIONS
 -------
 
 -F, --fluff           Use Fluff codec (best compression, 29%)
--M 1                  Use miniLZO (fast, 47%)
+-2, --fastlz          Use fastlz (fast, 47%)
+-1, --lzss            Use LZSS (small-memory)
+-Z, --zstd            Use zstd (where supported)
 -0, --stored          No compression (stored)
 -r, --recursive       Include directories recursively
 -q, --quiet           Suppress progress messages
@@ -58,15 +60,17 @@ COMPRESSION METHODS
 -------------------
 
 Stored (0):     No compression, instant speed
-miniLZO (1):    Fast (730 MB/s decompress), 47% ratio, good compatibility
-Fluff (2):      Best ratio (29%), modern systems
+LZSS (1):       Small-memory compression
+fastlz (2):     Fast decompression, good compatibility
+Fluff (3):      Best ratio, modern systems
+zstd (4):       Best general-purpose ratio, modern systems
 
-Default: miniLZO for maximum speed
+Default: fastlz for maximum speed
 
 LICENSE
 -------
 
-BoltPack is licensed under the GNU General Public License v2 (GPLv2).
+BoltPack is licensed under the BSD 2-Clause License.
 See the included LICENSE file for full details.
 
 DOCUMENTATION
@@ -95,8 +99,8 @@ A: Ensure the .bolt file is intact (check file size). Try listing first:
    boltpack l archive.blt
 
 Q: Decompression is slow
-A: If using Fluff (-F), this is normal on slow systems. Use miniLZO:
-   boltpack c -M 1 archive.blt <files>
+A: If using Fluff (-F), this is normal on slow systems. Use fastlz:
+   boltpack c -2 archive.blt <files>
 
 Q: File names appear garbled
 A: BoltPack stores all paths as UTF-8. If your system uses a different

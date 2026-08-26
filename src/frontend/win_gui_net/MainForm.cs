@@ -2,7 +2,7 @@
  * MainForm.cs -- main window for BoltPack WinForms GUI
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 using System;
@@ -678,7 +678,7 @@ namespace BoltPack
                         Marshal.WriteByte(arPtr, i, 0);
 
                     int rc = NativeMethods.bp_dll_archive_create(arPtr,
-                        ioHandle.AddrOfPinnedObject(), 0, NativeMethods.BP_METHOD_LZO1X);
+                        ioHandle.AddrOfPinnedObject(), 0, NativeMethods.BP_METHOD_FASTLZ);
 
                     if (rc != NativeMethods.BP_OK)
                     {

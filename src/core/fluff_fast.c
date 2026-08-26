@@ -19,7 +19,7 @@
  * or resource-constrained targets.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #if !defined(__STDC_VERSION__) || (__STDC_VERSION__ < 201112L)

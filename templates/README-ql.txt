@@ -75,7 +75,7 @@ QL NOTES
 COMPRESSION
 -----------
 
-Default method: miniLZO
+Default method: fastlz
 
 -0        No compression
 -F        Fluff compression

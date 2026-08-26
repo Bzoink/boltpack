@@ -61,7 +61,7 @@ build_with_sources() {
 
     echo "Building $label with $compiler..."
     if "$compiler" $cflags \
-        -Isrc/core -Ilib/minilzo-2.10 \
+        -Isrc/core -Ilib/fastlz \
         "$@" \
         -o "$outdir/$output"; then
         echo "Built: $outdir/$output"
@@ -82,7 +82,7 @@ build_amigaos4() {
         "boltpack" "AmigaOS 4.x CLI" \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        src/frontend/amigaos4/main.c lib/minilzo-2.10/minilzo.c
+        src/frontend/amigaos4/main.c lib/fastlz/fastlz.c
 }
 
 build_morphos() {
@@ -96,7 +96,7 @@ build_morphos() {
         "boltpack" "MorphOS CLI" \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        src/frontend/morphos/main.c lib/minilzo-2.10/minilzo.c
+        src/frontend/morphos/main.c lib/fastlz/fastlz.c
 }
 
 build_aros() {
@@ -110,7 +110,7 @@ build_aros() {
         "boltpack" "AROS CLI" \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        src/frontend/aros/main.c lib/minilzo-2.10/minilzo.c
+        src/frontend/aros/main.c lib/fastlz/fastlz.c
 }
 
 build_riscos() {
@@ -124,7 +124,7 @@ build_riscos() {
         "boltpack,ff8" "RISC OS CLI" \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        src/frontend/riscos/main.c lib/minilzo-2.10/minilzo.c
+        src/frontend/riscos/main.c lib/fastlz/fastlz.c
 }
 
 build_ql() {
@@ -141,13 +141,13 @@ build_ql() {
     if (
         cd src/frontend/ql &&
         "$compiler" $cflags \
-            -I../../core -I../../../lib/minilzo-2.10 \
+            -I../../core -I../../../lib/fastlz \
             ../../core/archiver.c \
             ../../core/compress.c \
             ../../core/fluff.c \
             ../../core/bp_codepage.c \
             main.c \
-            ../../../lib/minilzo-2.10/minilzo.c \
+            ../../../lib/fastlz/fastlz.c \
             -o "../../../$outdir/boltpack"
     ); then
         echo "Built: $outdir/boltpack"
@@ -168,7 +168,7 @@ build_x68k() {
         "boltpack.x" "Sharp X68000 CLI" \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/bp_codepage.c \
-        src/frontend/x68k/main.c lib/minilzo-2.10/minilzo.c
+        src/frontend/x68k/main.c lib/fastlz/fastlz.c
 }
 
 build_target() {

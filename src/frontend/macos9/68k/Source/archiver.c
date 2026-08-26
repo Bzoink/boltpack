@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "archiver.h"
@@ -282,7 +282,7 @@ int bp_archive_add_entry(bp_archive_t *ar, const char *name,
                 /* update checksum */
                 adler = bp_checksum_typed(BP_CKSUM_CRC32, adler, in_buf, chunk);
 
-                if (actual_method == BP_METHOD_LZO1X) {
+                if (actual_method == BP_METHOD_FASTLZ) {
                     rc = bp_compress_block(in_buf, chunk, out_buf, &comp_len);
                     if (rc != BP_OK) {
                         free(in_buf); free(out_buf);

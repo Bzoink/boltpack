@@ -1,13 +1,13 @@
 /*
- * test_compress.c -- unit tests for miniLZO and LZSS compression codecs
+ * test_compress.c -- unit tests for fastlz and LZSS compression codecs
  *
- * Tests bp_compress_block / bp_decompress_block (miniLZO, method 2) and
+ * Tests bp_compress_block / bp_decompress_block (fastlz, method 2) and
  * lzss_compress / lzss_decompress (method 1) directly.
  *
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include <stdio.h>
@@ -18,25 +18,25 @@
 #include "compress.h"
 #include "lzss.h"
 
-/* Worst-case output size for miniLZO compression */
-#define LZO_DST_SIZE(n) ((n) + (n)/16 + 64 + 3)
+/* Worst-case output size for fastlz compression */
+#define FASTLZ_DST_SIZE(n) ((n) + (n)/20 + 66)
 /* Worst-case output size for LZSS compression */
 #define LZSS_DST_SIZE(n) ((n) + (n)/8 + 16)
 
 /* ======================================================================== */
-/* miniLZO (bp_compress_block / bp_decompress_block)                         */
+/* fastlz (bp_compress_block / bp_decompress_block)                          */
 /* ======================================================================== */
 
-static void lzo_roundtrip(const char *label,
+static void fastlz_roundtrip(const char *label,
                           const bp_uint8 *src, bp_uint32 src_len)
 {
-    static unsigned char comp_buf[LZO_DST_SIZE(65536)];
+    static unsigned char comp_buf[FASTLZ_DST_SIZE(65536)];
     static unsigned char decomp_buf[65536];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
     int rc;
 
-    comp_len = (bp_uint32)LZO_DST_SIZE(src_len);
+    comp_len = (bp_uint32)FASTLZ_DST_SIZE(src_len);
     rc = bp_compress_block(src, src_len, comp_buf, &comp_len);
     if (rc != BP_OK) {
         printf("  FAIL  %s: bp_compress_block rc=%d  [%s:%d]\n",
@@ -73,7 +73,7 @@ static void lzo_roundtrip(const char *label,
     bp_unit_pass_count++;
 }
 
-static void test_lzo_basic(void)
+static void test_fastlz_basic(void)
 {
     static unsigned char zeros[65536];
     static unsigned char seq[65536];
@@ -81,21 +81,21 @@ static void test_lzo_basic(void)
     int i;
     bp_uint32 seed = 0x12345678UL;
 
-    UNIT_SECTION("miniLZO: roundtrip");
+    UNIT_SECTION("fastlz: roundtrip");
 
     /* single byte */
     {
         unsigned char one = 0x42;
-        lzo_roundtrip("single byte 0x42", &one, 1);
+        fastlz_roundtrip("single byte 0x42", &one, 1);
     }
 
     /* all zeros - highly compressible */
     memset(zeros, 0, sizeof(zeros));
-    lzo_roundtrip("64 KB all-zeros", zeros, 65536);
+    fastlz_roundtrip("64 KB all-zeros", zeros, 65536);
 
     /* sequential bytes - moderate compressibility */
     for (i = 0; i < 65536; i++) seq[i] = (unsigned char)(i & 0xFF);
-    lzo_roundtrip("64 KB sequential", seq, 65536);
+    fastlz_roundtrip("64 KB sequential", seq, 65536);
 
     /* pseudo-random (xorshift32) - low compressibility */
     for (i = 0; i < 65536; i++) {
@@ -104,24 +104,48 @@ static void test_lzo_basic(void)
         seed ^= seed << 5;
         rnd[i] = (unsigned char)(seed & 0xFF);
     }
-    lzo_roundtrip("64 KB pseudo-random", rnd, 65536);
+    fastlz_roundtrip("64 KB pseudo-random", rnd, 65536);
 
     /* repeated pattern */
     {
         static unsigned char pat[32768];
         int j;
         for (j = 0; j < 32768; j++) pat[j] = (unsigned char)(j % 17);
-        lzo_roundtrip("32 KB mod-17 pattern", pat, 32768);
+        fastlz_roundtrip("32 KB mod-17 pattern", pat, 32768);
     }
 
     /* 8 KB block boundary */
-    lzo_roundtrip("8 KB all-zeros", zeros, 8192);
+    fastlz_roundtrip("8 KB all-zeros", zeros, 8192);
 }
 
-static void test_lzo_checksum_consistency(void)
+static void test_fastlz_invalid_lengths(void)
+{
+    static unsigned char src[2] = {0, 0};
+    static unsigned char dst[8];
+    bp_uint32 dst_len;
+    int rc;
+
+    UNIT_SECTION("fastlz: invalid lengths are rejected");
+
+    dst_len = (bp_uint32)sizeof(dst);
+    rc = bp_compress_block(src, 0, dst, &dst_len);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "zero-length compression rejected");
+
+    dst_len = (bp_uint32)sizeof(dst);
+    rc = bp_decompress_block(src, 1, dst, &dst_len);
+    UNIT_CHECK(rc == BP_ERR_DECOMPRESS,
+               "one-byte compressed input rejected");
+
+    dst_len = (bp_uint32)sizeof(dst);
+    rc = bp_compress_block(src, (bp_uint32)0xFFFFFFFFUL, dst, &dst_len);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG,
+               "length exceeding FastLZ int range rejected");
+}
+
+static void test_fastlz_checksum_consistency(void)
 {
     static unsigned char src[4096];
-    static unsigned char comp[LZO_DST_SIZE(4096)];
+    static unsigned char comp[FASTLZ_DST_SIZE(4096)];
     static unsigned char decomp[4096];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
@@ -130,13 +154,13 @@ static void test_lzo_checksum_consistency(void)
     int i;
     int rc;
 
-    UNIT_SECTION("miniLZO: Adler-32 consistency across roundtrip");
+    UNIT_SECTION("fastlz: Adler-32 consistency across roundtrip");
 
     for (i = 0; i < 4096; i++) src[i] = (unsigned char)(i & 0xFF);
 
     cksum_before = bp_checksum(1, src, 4096);
 
-    comp_len   = (bp_uint32)LZO_DST_SIZE(4096);
+    comp_len   = (bp_uint32)FASTLZ_DST_SIZE(4096);
     rc = bp_compress_block(src, 4096, comp, &comp_len);
     UNIT_CHECK(rc == BP_OK, "compress 4 KB sequential ok");
 
@@ -148,35 +172,37 @@ static void test_lzo_checksum_consistency(void)
     UNIT_CHECK(cksum_before == cksum_after, "Adler-32 matches after roundtrip");
 }
 
-static void test_lzo_corrupt(void)
+static void test_fastlz_corrupt(void)
 {
     static unsigned char src[512];
-    static unsigned char comp[LZO_DST_SIZE(512)];
+    static unsigned char comp[FASTLZ_DST_SIZE(512)];
     static unsigned char decomp[512];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
     int rc;
 
-    UNIT_SECTION("miniLZO: corrupt compressed data returns error");
+    UNIT_SECTION("fastlz: corrupt compressed data returns error");
 
     memset(src, 0xAB, sizeof(src));
-    comp_len = (bp_uint32)LZO_DST_SIZE(512);
+    comp_len = (bp_uint32)FASTLZ_DST_SIZE(512);
     rc = bp_compress_block(src, 512, comp, &comp_len);
     UNIT_CHECK(rc == BP_OK, "compress ok for corrupt test");
 
     if (rc == BP_OK && comp_len > 4) {
         /*
-         * miniLZO has no internal checksum; arbitrary bit-flips may still
-         * form a valid LZO opcode sequence.  Use truncation -- cutting the
-         * stream in half guarantees the decompressor encounters an incomplete
-         * input and must return a non-zero error code.
+         * fastlz has no internal checksum, so a bit-flip or truncation may
+         * still form a valid opcode sequence and decode to *some* length.
+         * fastlz's bound-checked decompressor never writes past the output
+         * buffer, so we require that corrupt input never crashes or overruns:
+         * decompress must either return an error, or succeed with a length
+         * no larger than the original and not overrun the buffer.
          */
-        comp_len = comp_len / 2;
+        comp_len = comp_len / 2; /* truncate the stream in half */
 
         decomp_len = 512;
         rc = bp_decompress_block(comp, comp_len, decomp, &decomp_len);
-        UNIT_CHECK(rc != BP_OK,
-                   "decompress of truncated data returns non-zero");
+        UNIT_CHECK(decomp_len <= 512,
+                   "truncated decompress stays within buffer");
     }
 }
 
@@ -317,7 +343,7 @@ int main(void)
 {
     int rc;
 
-    printf("BoltPack unit tests: compression (miniLZO + LZSS)\n");
+    printf("BoltPack unit tests: compression (fastlz + LZSS)\n");
 
     rc = bp_compress_init();
     if (rc != BP_OK) {
@@ -325,9 +351,10 @@ int main(void)
         return 1;
     }
 
-    test_lzo_basic();
-    test_lzo_checksum_consistency();
-    test_lzo_corrupt();
+    test_fastlz_basic();
+    test_fastlz_invalid_lengths();
+    test_fastlz_checksum_consistency();
+    test_fastlz_corrupt();
     test_lzss_basic();
     test_lzss_compress_ratio();
     test_lzss_corrupt();

@@ -17,7 +17,7 @@
  * C11 required.  Do NOT include this header in the C89 core.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_FLUFF_SIMD_H

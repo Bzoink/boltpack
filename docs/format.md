@@ -58,7 +58,7 @@ Each file entry is stored sequentially after the header. It consists of an entry
 | 4+N    | 8    | `original_size`   | Uncompressed file size in bytes                                                                                          |
 | 12+N   | 8    | `compressed_size` | Compressed data size in bytes (all blocks combined)                                                                      |
 | 20+N   | 4    | `checksum`        | Adler-32 of the **uncompressed** data (all blocks)                                                                       |
-| 24+N   | 1    | `method`          | Compression method: `0` = stored, `1` = LZSS LZ77, `2` = LZO1X-1, `3` = fluff LZ77+FSE, `4` = zstd (modern targets only) |
+| 24+N   | 1    | `method`          | Compression method: `0` = stored, `1` = LZSS LZ77, `2` = fastlz, `3` = fluff LZ77+FSE, `4` = zstd (modern targets only) |
 | 25+N   | 1    | `checksum_type`   | Checksum algorithm: `0` = Adler-32                                                                                       |
 | 26+N   | 4    | `block_size`      | Max uncompressed block size (0 = single block)                                                                           |
 | 30+N   | 1    | `entry_type`      | `0` = data, `1` = Mac resource fork, `2` = metadata, `3` = symlink, `4` = directory                                      |
@@ -139,7 +139,7 @@ The `version` field in the archive header is the **format version**, not the Bol
 
 **Rules:**
 
-- If `archive.version > reader.version` → **refuse to open** with `BP_ERR_VERSION`. Do not attempt partial extraction. BoltPack is open source (GPL v2) — users can always obtain a newer version.
+- If `archive.version > reader.version` → **refuse to open** with `BP_ERR_VERSION`. Do not attempt partial extraction. BoltPack is open source (BSD-2-Clause) — users can always obtain a newer version.
 - If `archive.version <= reader.version` → **extract normally**. The reader must support all format versions up to and including its own.
 - If `archive.version == 0` or `archive.version > 0xFFFE` → **reject as corrupt** (`BP_ERR_CORRUPT`). Version 0 is never valid.
 
@@ -292,9 +292,8 @@ On vintage platforms, `fseek()`/`ftell()` use `long` (32-bit), limiting practica
 
 ### Checksum
 
-**Adler-32** (via `lzo_adler32()` from miniLZO) is used for file integrity checking. It is:
+**Adler-32** is used for file integrity checking. It is:
 
-- Already built into miniLZO — zero additional code
 - Very fast (faster than CRC-32)
 - Adequate for detecting accidental corruption
 
@@ -473,7 +472,7 @@ Frontends on platforms that don't understand the metadata simply skip `entry_typ
 - **Empty files** (0 bytes) are valid. `original_size=0`, `compressed_size=0`, `checksum` is the Adler-32 of zero bytes (`1`), no compressed blocks follow the entry header.
 - **Compression method field** allows future addition of alternative compressors without breaking format compatibility.
 - **Stored (method 0)** is used when compression does not reduce size (incompressible data). The archiver compresses each block, compares sizes, and falls back to stored if the compressed block is not smaller than the original.
-- **Checksums are per-file, not per-block.** The `checksum` field in the entry header covers the entire uncompressed file data across all blocks. A corrupt block is detectable at the file level but the specific bad block is not pinpointable from the checksum alone. Block-level checksums were considered but omitted to keep the format simple and block headers small (8 bytes). The LZO and fluff decompressors still detect many corruption cases through internal consistency checks.
+- **Checksums are per-file, not per-block.** The `checksum` field in the entry header covers the entire uncompressed file data across all blocks. A corrupt block is detectable at the file level but the specific bad block is not pinpointable from the checksum alone. Block-level checksums were considered but omitted to keep the format simple and block headers small (8 bytes). The fastlz and fluff decompressors still detect many corruption cases through internal consistency checks.
 - **Archive creation requires seekable output.** The header contains `archive_size` and the footer contains `table_offset`, both unknown until all entries are written. The archiver seeks back to patch the header after finalizing. This means archives cannot be created on non-seekable outputs (pipes, stdout). Extraction and listing do support sequential reading — the footer is read first (seek to end minus 20 bytes), then the file table, then individual entries by offset.
 
 ### Forward Compatibility (`header_size`)

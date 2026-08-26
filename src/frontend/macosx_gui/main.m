@@ -8,7 +8,7 @@
  * Build:          clang -framework Cocoa -ObjC -fobjc-arc -O2 ...
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #import <Cocoa/Cocoa.h>
@@ -129,7 +129,7 @@ static const char *method_name(int m)
     switch (m) {
     case BP_METHOD_STORED: return "Stored";
     case BP_METHOD_LZSS:   return "LZSS";
-    case BP_METHOD_LZO1X:  return "miniLZO";
+    case BP_METHOD_FASTLZ:  return "fastlz";
     case BP_METHOD_FLUFF:  return "fluff";
     case BP_METHOD_ZSTD:   return "zstd";
     default:               return "?";
@@ -139,7 +139,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "miniLZO", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -225,7 +225,7 @@ static const char *cpu_name(int cpu)
 
 #define BP_GUI_COL_COUNT 6
 
-static int g_compression_method = BP_METHOD_LZO1X;
+static int g_compression_method = BP_METHOD_FASTLZ;
 static int g_compression_level  = 1;
 static int g_fluff_multithread  = 0;
 
@@ -285,7 +285,7 @@ static void load_compression_prefs(void)
     NSNumber *level = [defs objectForKey:kPrefsLevel];
     NSNumber *fluffMT = [defs objectForKey:kPrefsFluffMT];
 
-    g_compression_method = BP_METHOD_LZO1X;
+    g_compression_method = BP_METHOD_FASTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
 
@@ -2185,7 +2185,13 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
         fclose(outFp);
         return;
     }
-    ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
+    /* FastLZ uses the selected block size to auto-select its level.  Do not
+     * pass Fluff's 3/6/9 chain-depth values to the FastLZ wrapper: values
+     * above 2 clamp to level 2 and make every preset the same. */
+    if (g_compression_method == BP_METHOD_FASTLZ)
+        ar.method_level = 0;
+    else
+        ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
 
 #ifdef BOLTPACK_FAST_FLUFF
     if (g_compression_method == BP_METHOD_FLUFF && g_fluff_multithread) {
@@ -2315,7 +2321,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
         [col setWidth:s_default_col_widths[i]];
     }
 
-    g_compression_method = BP_METHOD_LZO1X;
+    g_compression_method = BP_METHOD_FASTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
 
@@ -2360,7 +2366,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
 
     NSPopUpButton *methodPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, methodPopupY, 190, 26) pullsDown:NO];
     [methodPopup addItemsWithTitles:[NSArray arrayWithObjects:
-        @"Stored", @"LZSS", @"miniLZO", @"fluff", nil]];
+        @"Stored", @"LZSS", @"fastlz", @"fluff", nil]];
     [methodPopup selectItemAtIndex:g_compression_method];
 
     NSTextField *levelLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, levelLabelY, 110, 20)];
@@ -2382,7 +2388,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     [noteLabel setSelectable:NO];
     [noteLabel setFont:[NSFont systemFontOfSize:11]];
     [noteLabel setStringValue:
-        @"Stored: no compression, for all systems.  LZSS: lighter compression for 16-bit systems and up.  miniLZO: fast, light compression for 32-bit and 64-bit systems.  fluff: medium compression for 32-bit and 64-bit systems."];
+        @"Stored: no compression, for all systems.  LZSS: lighter compression for 16-bit systems and up.  fastlz: fast, light compression for 32-bit and 64-bit systems.  fluff: medium compression for 32-bit and 64-bit systems."];
     [[noteLabel cell] setWraps:YES];
     [[noteLabel cell] setScrollable:NO];
     [[noteLabel cell] setLineBreakMode:NSLineBreakByWordWrapping];
@@ -2413,7 +2419,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     g_compression_level = (int)[levelPopup indexOfSelectedItem];
     if (g_compression_method < BP_METHOD_STORED ||
         g_compression_method > BP_METHOD_FLUFF)
-        g_compression_method = BP_METHOD_LZO1X;
+        g_compression_method = BP_METHOD_FASTLZ;
     if (g_compression_level < 0 || g_compression_level > 2)
         g_compression_level = s_method_default_level[g_compression_method];
 #ifdef BOLTPACK_FAST_FLUFF
@@ -2703,7 +2709,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     [a setInformativeText:
         @"A lightweight file archiver for vintage and modern systems\n\n"
         @"Copyright (C) 2026 Tony Mattsson\n"
-        @"Released under the GNU General Public License v2"];
+        @"Released under the BSD 2-Clause License"];
     [a runModal];
 }
 

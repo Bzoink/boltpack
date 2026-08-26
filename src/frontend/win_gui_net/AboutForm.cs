@@ -2,7 +2,7 @@
  * AboutForm.cs -- About dialog for BoltPack WinForms GUI
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 using System;
@@ -40,7 +40,7 @@ namespace BoltPack
             var copyrightLabel = new Label
             {
                 Text = "Copyright \u00A9 2026 Tony Mattsson\n"
-                     + "Released under the GNU General Public License v2",
+                     + "Released under the BSD 2-Clause License",
                 Location = new Point(20, 92),
                 Size = new Size(290, 36),
                 ForeColor = Color.Gray

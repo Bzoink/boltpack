@@ -11,7 +11,7 @@
  * -ansi -pedantic, so this file may use WinSock/Win32 APIs freely.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../linux/bp_net.h"

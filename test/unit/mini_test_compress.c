@@ -6,12 +6,12 @@
  * 32/64-bit (GCC) builds.
  *
  * On 16-bit (SIZEOF_INT < 4): only Stored (0) and LZSS (1) are available;
- * miniLZO (2) returns BP_ERR_UNSUPPORTED_METHOD.
+ * fastlz (2) returns BP_ERR_UNSUPPORTED_METHOD.
  *
  * ANSI C (C89/C90) only.  No long long, no VLA, no <stdint.h>.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include <stdio.h>
@@ -19,9 +19,10 @@
 #include "test_runner.h"
 #include "bp_types.h"       /* resolved via -Isrc/core */
 #include "mini/compress.h"  /* resolved via -Isrc/core; internally includes ../bp_types.h */
+#include "mini/fastlz_decomp.h"
 
 /* Worst-case buffer sizes */
-#define MINI_LZO_DST(n)  ((n) + (n)/16 + 64 + 3)
+#define MINI_FASTLZ_DST(n)  ((n) + (n)/20 + 66)
 #define MINI_LZSS_DST(n) ((n) + (n)/8  + 16)
 
 /* ======================================================================== */
@@ -49,7 +50,7 @@ static void mini_roundtrip(const char *label,
 
     /*
      * LZSS decompressor needs the EXACT original size as dst_len.
-     * Other methods (Stored, LZO) use it as buffer capacity and update it.
+     * Other methods (Stored, FastLZ) use it as buffer capacity and update it.
      * Passing src_len is correct for all three: roundtrip guarantees
      * decompressed size == original size, and the buffer is always >=.
      */
@@ -149,40 +150,40 @@ static void test_lzss(void)
 }
 
 /* ======================================================================== */
-/* miniLZO (method 2) -- 32/64-bit only                                     */
+/* fastlz (method 2) -- 32/64-bit only                                      */
 /* ======================================================================== */
 
-static void test_minilzo(void)
+static void test_fastlz(void)
 {
     static unsigned char src[4096];
-    static unsigned char comp[MINI_LZO_DST(4096)];
+    static unsigned char comp[MINI_FASTLZ_DST(4096)];
     static unsigned char decomp[4096];
     int i;
 
-    UNIT_SECTION("Mini: miniLZO (method 2)");
+    UNIT_SECTION("Mini: fastlz (method 2)");
 
 #if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
     /*
-     * On 16-bit builds miniLZO is excluded.  Verify the expected error code.
+     * On 16-bit builds fastlz is excluded.  Verify the expected error code.
      */
     {
         bp_uint32 comp_len = (bp_uint32)sizeof(comp);
         int rc;
         src[0] = 0;
         rc = bp_mini_compress_block(src, 1, comp, &comp_len,
-                                     BP_METHOD_LZO1X);
+                                     BP_METHOD_FASTLZ);
         UNIT_CHECK(rc == BP_ERR_UNSUPPORTED_METHOD,
-                   "miniLZO returns BP_ERR_UNSUPPORTED_METHOD on 16-bit");
+                   "fastlz returns BP_ERR_UNSUPPORTED_METHOD on 16-bit");
     }
 #else
     memset(src, 0, sizeof(src));
-    mini_roundtrip("4 KB all-zeros", BP_METHOD_LZO1X,
+    mini_roundtrip("4 KB all-zeros", BP_METHOD_FASTLZ,
                     src, (bp_uint32)sizeof(src),
                     comp, (bp_uint32)sizeof(comp),
                     decomp, (bp_uint32)sizeof(decomp));
 
     for (i = 0; i < 4096; i++) src[i] = (unsigned char)(i & 0xFF);
-    mini_roundtrip("4 KB sequential", BP_METHOD_LZO1X,
+    mini_roundtrip("4 KB sequential", BP_METHOD_FASTLZ,
                     src, (bp_uint32)sizeof(src),
                     comp, (bp_uint32)sizeof(comp),
                     decomp, (bp_uint32)sizeof(decomp));
@@ -214,6 +215,31 @@ static void test_fluff_unsupported(void)
                                    comp, &comp_len, BP_METHOD_FLUFF);
     UNIT_CHECK(rc == BP_ERR_UNSUPPORTED_METHOD,
                "Fluff decompress returns BP_ERR_UNSUPPORTED_METHOD");
+}
+
+static void test_fastlz_decoder_invalid(void)
+{
+    static unsigned char src[1] = {0};
+    static unsigned char dst[1];
+    bp_uint32 dst_len;
+    int rc;
+
+    UNIT_SECTION("Mini: fastlz decoder rejects invalid input");
+
+    dst_len = 1;
+    rc = bp_fastlz_decompress(src, 1, dst, &dst_len);
+    UNIT_CHECK(rc == FASTLZ_D_ERR && dst_len == 0,
+               "one-byte fastlz input is rejected");
+
+    dst_len = 1;
+    rc = bp_fastlz_decompress(src, 65536UL, dst, &dst_len);
+    UNIT_CHECK(rc == FASTLZ_D_ERR && dst_len == 0,
+               "oversized fastlz input is rejected");
+
+    dst_len = 1;
+    rc = bp_fastlz_decompress(NULL, 1, dst, &dst_len);
+    UNIT_CHECK(rc == FASTLZ_D_ERR && dst_len == 0,
+               "null fastlz input is rejected");
 }
 
 /* ======================================================================== */
@@ -299,10 +325,10 @@ int main(void)
 
     test_stored();
     test_lzss();
-    test_minilzo();
+    test_fastlz();
+    test_fastlz_decoder_invalid();
     test_fluff_unsupported();
     test_mini_checksum();
     test_checksum_consistency();
-
     return UNIT_REPORT();
 }
