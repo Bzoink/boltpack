@@ -1,20 +1,20 @@
 /*
- * compress.c -- mini compression layer for BoltPack (stored + miniLZO)
+ * compress.c -- mini compression layer for BoltPack (stored + LZSS + fastlz)
  *
  * ANSI C (C89/C90) only.  No fluff dependency.
  *
  * 16-bit systems (DOS, Win16, OS/2 1.x, CP/M-86):
  *   Compression:   stored (0) and LZSS (1) only.
- *     miniLZO compression needs a 64 KB work buffer (LZO1X_1_MEM_COMPRESS)
- *     and is too CPU-intensive for 8088/8086 with segmented memory.
- *     Method 2 returns BP_ERR_UNSUPPORTED_METHOD for compression.
- *   Decompression: stored (0), LZSS (1), and miniLZO (2).
- *     lzo1x_decompress_safe needs no work buffer and works correctly with
+ *     fastlz compression needs an 8192-entry hash table on the stack
+ *     (32 KB on 32-bit, 64 KB on 64-bit) and is too large for 8086/286
+ *     stacks.  Method 2 returns BP_ERR_UNSUPPORTED_METHOD for compression.
+ *   Decompression: stored (0), LZSS (1), and fastlz (2).
+ *     fastlz decompression needs no work buffer and works correctly with
  *     block sizes <= 32 KB (well within a 64 KB segment).
  *   Adler-32 is computed inline.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "compress.h"
@@ -23,7 +23,7 @@
 #include <string.h>
 
 #if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
-/* ---- 16-bit path: stored + LZSS compress; stored + LZSS + LZO decompress - */
+/* ---- 16-bit path: stored + LZSS compress; stored + LZSS + fastlz decompress - */
 
 /*
  * LZSS work buffer, heap-allocated on the first compress call and cached
@@ -33,7 +33,7 @@
  */
 static bp_uint8 *lzss_work_16 = NULL;
 
-#include "lzo_decomp.h"
+#include "fastlz_decomp.h"
 
 int bp_mini_compress_init(void)
 {
@@ -83,18 +83,18 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         rc = lzss_decompress(src, src_len, dst, *dst_len, NULL);
         return rc;
     }
-    if (method == BP_METHOD_LZO1X) {
+    if (method == BP_METHOD_FASTLZ) {
         int r;
-        r = bp_lzo1x_decompress(src, src_len, dst, dst_len);
-        if (r != LZO1X_D_OK) return BP_ERR_DECOMPRESS;
+        r = bp_fastlz_decompress(src, src_len, dst, dst_len);
+        if (r != FASTLZ_D_OK) return BP_ERR_DECOMPRESS;
         return BP_OK;
     }
     return BP_ERR_UNSUPPORTED_METHOD;
 }
 
 #ifdef BP_ENABLE_ADLER32
-/* Adler-32 inline (no miniLZO available on 16-bit).  Retired as an archive
- * checksum in favour of CRC-32; compiled only under BP_ENABLE_ADLER32. */
+/* Adler-32 inline.  Retired as an archive checksum in favour of CRC-32;
+ * compiled only under BP_ENABLE_ADLER32. */
 bp_uint32 bp_mini_checksum(bp_uint32 adler,
                            const bp_uint8 *data, bp_uint32 len)
 {
@@ -119,34 +119,25 @@ bp_uint32 bp_mini_compress_work_size(void)
 }
 
 #else
-/* ---- 32/64-bit path: stored + miniLZO ----------------------------------- */
+/* ---- 32/64-bit path: stored + LZSS + fastlz ------------------------------ */
 
-#include "../../../lib/minilzo-2.10/minilzo.h"
-
-/* LZO work memory, heap-allocated on the first LZO compress call and cached
- * for the process lifetime (never freed; calls never overlap).  Lazy
- * allocation keeps extract/list/test/info from paying the 64 KB cost. */
-static bp_uint8 *lzo_workmem = NULL;
+#include "../../../lib/fastlz/fastlz.h"
 
 int bp_mini_compress_init(void)
 {
-    if (lzo_init() != LZO_E_OK) {
-        return BP_ERR_COMPRESS;
-    }
-    return BP_OK;
+    return BP_OK; /* fastlz needs no init */
 }
 
 int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                            bp_uint8 *dst, bp_uint32 *dst_len,
                            bp_uint8 method)
 {
-    lzo_uint out_len;
     int r;
 
     if (src == NULL || dst == NULL || dst_len == NULL) {
         return BP_ERR_INVALID_ARG;
     }
-    if (method != BP_METHOD_STORED && method != BP_METHOD_LZO1X &&
+    if (method != BP_METHOD_STORED && method != BP_METHOD_FASTLZ &&
         method != BP_METHOD_LZSS) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
@@ -166,19 +157,12 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
         return (*dst_len > 0) ? BP_OK : BP_ERR_COMPRESS;
     }
 
-    /* method == BP_METHOD_LZO1X */
-    if (lzo_workmem == NULL) {
-        lzo_workmem = (bp_uint8 *)malloc((size_t)LZO1X_1_MEM_COMPRESS);
-        if (lzo_workmem == NULL) {
-            return BP_ERR_NOMEM;
-        }
-    }
-    out_len = 0;
-    r = lzo1x_1_compress(src, (lzo_uint)src_len, dst, &out_len, lzo_workmem);
-    if (r != LZO_E_OK) {
+    /* method == BP_METHOD_FASTLZ */
+    r = fastlz_compress(src, (int)src_len, dst);
+    if (r <= 0) {
         return BP_ERR_COMPRESS;
     }
-    *dst_len = (bp_uint32)out_len;
+    *dst_len = (bp_uint32)r;
     return BP_OK;
 }
 
@@ -186,13 +170,12 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
                              bp_uint8 *dst, bp_uint32 *dst_len,
                              bp_uint8 method)
 {
-    lzo_uint out_len;
     int r;
 
     if (src == NULL || dst == NULL || dst_len == NULL) {
         return BP_ERR_INVALID_ARG;
     }
-    if (method != BP_METHOD_STORED && method != BP_METHOD_LZO1X &&
+    if (method != BP_METHOD_STORED && method != BP_METHOD_FASTLZ &&
         method != BP_METHOD_LZSS) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
@@ -210,28 +193,43 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         return rc;
     }
 
-    /* method == BP_METHOD_LZO1X */
-    out_len = (lzo_uint)*dst_len;
-    r = lzo1x_decompress_safe(src, (lzo_uint)src_len, dst, &out_len, NULL);
-    if (r != LZO_E_OK) {
+    /* method == BP_METHOD_FASTLZ */
+    r = fastlz_decompress(src, (int)src_len, dst, (int)*dst_len);
+    if (r <= 0) {
         return BP_ERR_DECOMPRESS;
     }
-    *dst_len = (bp_uint32)out_len;
+    *dst_len = (bp_uint32)r;
     return BP_OK;
 }
 
 #ifdef BP_ENABLE_ADLER32
-/* Adler-32 via miniLZO.  Retired as an archive checksum; see 16-bit variant. */
+/* Adler-32 inline.  Retired as an archive checksum in favour of CRC-32;
+ * compiled only under BP_ENABLE_ADLER32. */
 bp_uint32 bp_mini_checksum(bp_uint32 adler,
                            const bp_uint8 *data, bp_uint32 len)
 {
-    return (bp_uint32)lzo_adler32((lzo_uint32_t)adler, data, (lzo_uint)len);
+    bp_uint32 s1;
+    bp_uint32 s2;
+    bp_uint32 i;
+
+    if (len == 0) {
+        return adler;
+    }
+
+    s1 = adler & 0xFFFFUL;
+    s2 = (adler >> 16) & 0xFFFFUL;
+
+    for (i = 0; i < len; i++) {
+        s1 = (s1 + data[i]) % 65521UL;
+        s2 = (s2 + s1)      % 65521UL;
+    }
+    return (s2 << 16) | s1;
 }
 #endif /* BP_ENABLE_ADLER32 */
 
 bp_uint32 bp_mini_compress_work_size(void)
 {
-    return (bp_uint32)LZO1X_1_MEM_COMPRESS;
+    return 0; /* fastlz needs no work buffer */
 }
 
 #endif /* SIZEOF_INT < 4 */

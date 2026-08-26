@@ -5,7 +5,7 @@
  * Mac Toolbox / Appearance Manager / Drag Manager.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 
@@ -73,7 +73,7 @@
 /* Method selection dialog items (rDlgMixed = 129 repurposed) */
 #define kMethodStored       1
 #define kMethodLZSS         2
-#define kMethodLZO          3
+#define kMethodFastLZ          3
 #define kMethodFluff        4
 #define kMethodCancel       5
 
@@ -626,7 +626,7 @@ static bp_uint32 ChooseBlockSize(void)
 
     freeMem = LargestFreeBlock();
 
-    /* need block_size * 2 + 64K for LZO work buffer + 512K headroom */
+    /* need block_size * 2 + 512K headroom */
     if (freeMem > (long)(BP_BLOCK_256K * 2 + 65536 + 524288))
         return BP_BLOCK_256K;
     if (freeMem > (long)(BP_BLOCK_64K * 2 + 65536 + 524288))
@@ -689,7 +689,7 @@ static int EnsureFluffMemoryAvailable(const char *logPrefix)
     StrAppendLongDec(buf, &pos, (long)sizeof(buf), kFluffMinLargestBlock);
     LogWrite(buf);
 
-    ShowErrorStr("Fluff needs about 2.25 MB in app heap or temporary memory. Increase memory or use miniLZO.");
+    ShowErrorStr("Fluff needs about 2.25 MB in app heap or temporary memory. Increase memory or use fastlz.");
     return 0;
 }
 
@@ -1184,7 +1184,7 @@ static int AskCompressionMethod(void)
     dlg = GetNewDialog(rDlgMixed, nil, (WindowPtr)-1);
     if (dlg == nil) return -1;
 
-    SetDialogDefaultItem(dlg, kMethodLZO);
+    SetDialogDefaultItem(dlg, kMethodFastLZ);
     SetDialogCancelItem(dlg, kMethodCancel);
     ShowWindow(GetDialogWindow(dlg));
 
@@ -1192,7 +1192,7 @@ static int AskCompressionMethod(void)
         ModalDialog(nil, &item);
         if (item == kMethodStored) { result = BP_METHOD_STORED; break; }
         if (item == kMethodLZSS)   { result = BP_METHOD_LZSS;   break; }
-        if (item == kMethodLZO)    { result = BP_METHOD_LZO1X;  break; }
+        if (item == kMethodFastLZ)    { result = BP_METHOD_FASTLZ;  break; }
         if (item == kMethodFluff)  {
             if (!EnsureFluffMemoryAvailable("AskCompressionMethod: fluff blocked largest=")) {
                 continue;

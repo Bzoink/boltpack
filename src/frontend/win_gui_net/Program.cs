@@ -2,7 +2,7 @@
  * Program.cs -- entry point for BoltPack WinForms GUI
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 using System;

@@ -5,7 +5,7 @@
  * Mac Toolbox / Appearance Manager / Drag Manager / Navigation Services.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../../core/archiver.h"
@@ -459,7 +459,7 @@ static bp_uint32 ChooseBlockSize(void)
     freeMem = TempFreeMem();
     if (freeMem <= 0) freeMem = FreeMem();
 
-    /* need block_size * 2 + 64K for LZO work buffer + 512K headroom */
+    /* need block_size * 2 + 64K for FastLZ stack/hash overhead + 512K headroom */
     if (freeMem > (long)(BP_BLOCK_256K * 2 + 65536 + 524288))
         return BP_BLOCK_256K;
     if (freeMem > (long)(BP_BLOCK_64K * 2 + 65536 + 524288))
@@ -473,11 +473,11 @@ static bp_uint32 ChooseBlockSize(void)
 
 /* ---- ChooseCompressionMethod ------------------------------------------
  * Returns compression method for archive creation.
- * Currently defaults to miniLZO; fluff can be enabled via menu in future.
+ * Currently defaults to fastlz; fluff can be enabled via menu in future.
  */
 static bp_uint8 ChooseCompressionMethod(void)
 {
-    return BP_METHOD_LZO1X;  /* Default: miniLZO */
+    return BP_METHOD_FASTLZ;  /* Default: fastlz */
 }
 
 /* ==== Error Display ===================================================== */

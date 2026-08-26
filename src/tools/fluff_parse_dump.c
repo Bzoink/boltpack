@@ -21,7 +21,7 @@
  * ANSI C (C89/C90) only -- no compiler extensions.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define FLUFF_DEBUG_PARSE 1

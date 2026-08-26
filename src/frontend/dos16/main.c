@@ -3,7 +3,7 @@
  *
  * Target: Open Watcom C 16-bit, compact memory model (-mc).
  * Compiler:  wcc -bt=dos -mc -0 -za -DSIZEOF_INT=2 -DSIZEOF_LONG=4
- *            -DLZO_CFG_16BIT_OK -DBP_MINI
+ *             -DBP_MINI
  *            -DBP_CREATOR_OS=BP_OS_DOS -DBP_CREATOR_CPU=BP_CPU_8086
  * Linker:    wlink system dos
  * Binary:    BPMINI.EXE
@@ -18,7 +18,7 @@
  * ANSI C (C89/C90) with Watcom-specific directory scanning.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../../core/mini/archiver.h"
@@ -845,7 +845,7 @@ static int cmd_info(const char *arc_path)
 
 #ifdef __WATCOMC__
     {
-        static const char * const mn[4] = {"stored","LZSS","miniLZO","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
         int j;
         int mfirst;
         write(1, "Archive:     ", 13); bp_wstr(1, arc_path); write(1, "\n", 1);
@@ -877,7 +877,7 @@ static int cmd_info(const char *arc_path)
     printf("Version:     %u\n", (unsigned)info.version);
     printf("Creator OS:  %s\n", os_name(info.creator_os));
     {
-        static const char * const mn[4] = {"stored","LZSS","miniLZO","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:     ");
@@ -924,7 +924,7 @@ static void usage(void)
         "  -q                             quiet mode\n"
         "Compression:\n"
         "  create:   store (0), LZSS (1)\n"
-        "  extract:  store (0), LZSS (1), miniLZO (2)\n");
+        "  extract:  store (0), LZSS (1), fastlz (2)\n");
 #else
     fputs(PROG_NAME " " BP_VER "  BoltPack mini for DOS (16-bit)\n"
           "Usage:\n"
@@ -940,7 +940,7 @@ static void usage(void)
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), miniLZO (2)\n",
+          "  extract:  store (0), LZSS (1), fastlz (2)\n",
           stderr);
 #endif
 }

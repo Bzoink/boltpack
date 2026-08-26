@@ -59,7 +59,7 @@ BEGIN
                                          IDC_ABOUT_DESC,      15, 32, 190, 18
     LTEXT   "Copyright (C) 2026 Tony Mattsson",
                                          IDC_ABOUT_COPYRIGHT, 15, 55, 190, 12
-    LTEXT   "Released under the GNU General Public License v2",
+    LTEXT   "Released under the BSD 2-Clause License",
                                          IDC_ABOUT_LICENSE,   15, 70, 190, 12
     DEFPUSHBUTTON "OK",                  IDOK,                85, 92, 50, 14
 END

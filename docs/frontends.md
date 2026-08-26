@@ -21,7 +21,7 @@ Every frontend must:
 The current CLI frontends follow one method-selection convention unless a
 platform explicitly documents a smaller subset:
 
-- no compression flag: miniLZO default
+- no compression flag: fastlz default
 - `-0`: stored
 - `-1`: LZSS
 - `-F`: Fluff
@@ -108,9 +108,9 @@ Or directly:
 
 ```sh
 gcc -ansi -pedantic -Wall -Wextra -O2 \
-    -Ilib/minilzo-2.10 \
+    -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c \
-    src/frontend/linux/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/linux/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -177,8 +177,8 @@ fast-fluff controls below.
 | Flag   | Description                                                                               |
 | ------ | ----------------------------------------------------------------------------------------- |
 | `-1`   | Use LZSS compression                                                                      |
-| `-2`   | Use miniLZO compression explicitly (the default method)                                   |
-| `-l N` | Fluff compression level 1-9                                                               |
+| `-2`   | Use fastlz compression explicitly (the default method)                                   |
+| `-l N` | fastlz level 1-2; Fluff/zstd level 1-9                                                   |
 | `-j N` | Use fast-fluff with `N` worker threads (fast-fluff CLI builds only)                       |
 | `-g N` | Group `N` Fluff blocks per shared-history batch before reset (fast-fluff CLI builds only) |
 
@@ -249,7 +249,7 @@ Valid values:
 | ----- | ----------------- | ------------------------------------ |
 | `0`   | Stored            | No compression                       |
 | `1`   | LZSS              | Small-memory LZ77                    |
-| `2`   | miniLZO (default) | Fast general-purpose compression     |
+| `2`   | fastlz (default) | Fast general-purpose compression     |
 | `3`   | fluff             | LZ77+Huffman, best compression ratio |
 
 ### TC WCX: Build
@@ -347,9 +347,9 @@ Cross-compile from Linux:
 
 ```sh
 i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
-    -Ilib/minilzo-2.10 \
+    -Ilib/fastlz \
     src/core/compress.c src/core/archiver.c \
-    src/frontend/dos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/dos/main.c lib/fastlz/fastlz.c \
     -o boltpack.exe
 ```
 
@@ -427,9 +427,9 @@ Or directly:
 
 ```sh
 m68k-amigaos-gcc -noixemul -ansi -Wall -Wextra -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/amiga/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/amiga/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -580,9 +580,9 @@ Or directly:
 
 ```sh
 m68k-atari-mint-gcc -ansi -Wall -Wextra -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/atari/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/atari/main.c lib/fastlz/fastlz.c \
   -o build/atari/boltpack.tos
 ```
 
@@ -695,7 +695,7 @@ Measured on Atari systems using the shared compression core used by both the
 CLI and GEM GUI frontends. These are practical reference values, not hard
 guarantees:
 
-| Machine        | RAM  | LZSS     | miniLZO | Fluff    |
+| Machine        | RAM  | LZSS     | fastlz | Fluff    |
 | -------------- | ---- | -------- | ------- | -------- |
 | 68000 @ 8 MHz  | 4 MB | 1.1 kB/s | 27 kB/s | 1.2 kB/s |
 | 68030 @ 16 MHz | 4 MB | 4.9 kB/s | 81 kB/s | 4.1 kB/s |
@@ -752,11 +752,11 @@ GUI tried to add directory entries during archive creation.
 | File                             | Role                                            |
 | -------------------------------- | ----------------------------------------------- |
 | `src/core/archiver.c`            | Archive format read/write                       |
-| `src/core/compress.c`            | LZO compression wrapper                         |
+| `src/core/compress.c`            | fastlz compression wrapper                         |
 | `src/core/lzss.c`                | LZSS codec                                      |
 | `src/core/fluff.c`               | fluff codec                                     |
 | `src/core/bp_codepage.c`         | code page helpers                               |
-| `lib/minilzo-2.10/minilzo.c`     | miniLZO library                                 |
+| `lib/fastlz/fastlz.c`     | fastlz library                                 |
 | `src/frontend/macos9/main.c`     | GUI frontend                                    |
 | `src/frontend/macos9/boltpack.r` | Resources (icons, menus, dialogs, app identity) |
 
@@ -783,7 +783,7 @@ GUI tried to add directory entries during archive creation.
 | Processor      | Schedule for 750 (G3)                                |
 | Optimization   | Level 2                                              |
 | C dialect      | ANSI C, ANSI Strict off (Toolbox headers require it) |
-| Access paths   | `src/core/`, `lib/minilzo-2.10/`                     |
+| Access paths   | `src/core/`, `lib/fastlz/`                     |
 
 ### Resources (ResEdit)
 
@@ -994,9 +994,9 @@ The iMac G3 has at least 32 MB RAM. The application requests a 2 MB preferred he
 
 - Default block size: `BP_BLOCK_64K` (65536 bytes)
 - Maximum supported: `BP_BLOCK_256K` (262144 bytes)
-- LZO compression working buffer: ~64 KB
-- Total memory per operation: block buffer + LZO work buffer + output buffer ≈ block_size × 2 + 64 KB
-- At 256K blocks: ~576 KB — well within the 2 MB heap
+- fastlz compression work buffer: none (only the 32 KB stack hash table during compress)
+- Total memory per operation: block buffer + output buffer ≈ block_size × 2 + 66
+- At 256K blocks: ~512 KB — well within the 2 MB heap
 
 Block size auto-detection: query available memory with `FreeMem()` or `TempFreeMem()` and select the largest block size that fits comfortably (leaving at least 512 KB free for Toolbox, dialogs, and Drag Manager).
 
@@ -1007,7 +1007,7 @@ Unlike CLI frontends that expose command-line flags (`-F`, `-0`, `-1`), the Mac 
 ```c
 static bp_uint8 ChooseCompressionMethod(void)
 {
-    return BP_METHOD_LZO1X;  /* Currently: miniLZO (default) */
+    return BP_METHOD_FASTLZ;  /* Currently: fastlz (default) */
 }
 ```
 
@@ -1015,11 +1015,11 @@ This architecture allows future extension to show a dialog menu enabling users t
 
 - **LZSS** (method 1): Small-memory LZ77 for compatibility-focused archives
 - **Fluff** (method 3): LZ77+Huffman compression (best ratio)
-- **miniLZO** (method 2): Fast, small blocks only (current default)
+- **fastlz** (method 2): Fast, small blocks only (current default)
 - **Stored** (method 0): No compression (for pre-compressed data)
 
 The underlying archiver already supports all four methods. The Mac OS 9 GUI
-currently hard-codes miniLZO and would need a dialog or menu control to expose
+currently hard-codes fastlz and would need a dialog or menu control to expose
 the broader choice.
 
 ### Preferences
@@ -1071,9 +1071,9 @@ Or directly (ARM64):
 
 ```sh
 arm64-apple-macosx11-clang -ansi -pedantic -Wall -Wextra -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/macosx/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/macosx/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -1227,8 +1227,8 @@ macOS CLI surface.
 | Option              | Description                        |
 | ------------------- | ---------------------------------- |
 | `-1`, `--lzss`      | Use LZSS compression               |
-| `-2`, `--minilzo`   | Use miniLZO compression explicitly |
-| `-l N`, `--level N` | Fluff compression level 1-9        |
+| `-2`, `--fastlz`   | Use fastlz compression explicitly |
+| `-l N`, `--level N` | fastlz level 1-2; Fluff/zstd level 1-9 |
 | `--store`           | Long-form alias for `-0`           |
 | `--fluff`           | Long-form alias for `-F`           |
 | `--block-size N`    | Long-form alias for `-b`           |
@@ -1257,9 +1257,9 @@ Or directly (cross-compilation from Linux):
 
 ```sh
 x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
-    src/frontend/haiku/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/haiku/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -1323,8 +1323,8 @@ Haiku CLI surface.
 | Option              | Description                        |
 | ------------------- | ---------------------------------- |
 | `-1`, `--lzss`      | Use LZSS compression               |
-| `-2`, `--minilzo`   | Use miniLZO compression explicitly |
-| `-l N`, `--level N` | Fluff compression level 1-9        |
+| `-2`, `--fastlz`   | Use fastlz compression explicitly |
+| `-l N`, `--level N` | fastlz level 1-2; Fluff/zstd level 1-9 |
 | `--store`           | Long-form alias for `-0`           |
 | `--fluff`           | Long-form alias for `-F`           |
 | `--block-size N`    | Long-form alias for `-b`           |
@@ -1360,10 +1360,10 @@ Or directly:
 
 ```sh
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/archiver.c src/core/compress.c src/core/lzss.c \
     src/core/fluff.c src/core/bp_codepage.c \
-    src/frontend/riscos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/riscos/main.c lib/fastlz/fastlz.c \
     -o boltpack,ff8
 ```
 
@@ -1483,9 +1483,9 @@ Or directly (cross-compilation with `os2-gcc`):
 
 ```sh
 os2-gcc -ansi -Wall -Wextra -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
-    src/frontend/os2/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/os2/main.c lib/fastlz/fastlz.c \
     -o build/os2/boltpack.exe
 ```
 
@@ -1571,9 +1571,9 @@ Drive prefixes (`C:\`, `C:`) are stripped. Backslashes are normalised to forward
 Plan 9 uses a native build system; cross-compilation from Linux is not supported via the Makefile. Build on a Plan 9 or 9front system:
 
 ```text
-8c -FTVw -I /sys/include -I src/core -I lib/minilzo-2.10 \
+8c -FTVw -I /sys/include -I src/core -I lib/fastlz \
     src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
-    src/frontend/plan9/main.c lib/minilzo-2.10/minilzo.c
+    src/frontend/plan9/main.c lib/fastlz/fastlz.c
 8l -o /386/boltpack *.8
 ```
 
@@ -1663,13 +1663,13 @@ Or directly:
 mkdir -p build/ql
 cd src/frontend/ql
 qcc -O \
-  -I../../core -I../../../lib/minilzo-2.10 \
+  -I../../core -I../../../lib/fastlz \
   ../../core/archiver.c \
   ../../core/compress.c \
   ../../core/fluff.c \
   ../../core/bp_codepage.c \
   main.c \
-  ../../../lib/minilzo-2.10/minilzo.c \
+  ../../../lib/fastlz/fastlz.c \
   -o ../../../build/ql/boltpack
 ```
 
@@ -1767,10 +1767,10 @@ Or directly:
 
 ```sh
 m68k-x680x-human-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/archiver.c src/core/compress.c src/core/lzss.c \
     src/core/bp_codepage.c \
-    src/frontend/x68k/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/x68k/main.c lib/fastlz/fastlz.c \
     -o build/x68k/boltpack.x
 ```
 
@@ -1897,9 +1897,9 @@ This is a thin wrapper around `src/frontend/linux/main.c`. z/OS provides a POSIX
 
 ```sh
 xlc -ansi -O2 \
-    -I src/core -I lib/minilzo-2.10 \
+    -I src/core -I lib/fastlz \
     src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
-    src/frontend/zos/main.c lib/minilzo-2.10/minilzo.c \
+    src/frontend/zos/main.c lib/fastlz/fastlz.c \
     -o boltpack
 ```
 
@@ -2268,7 +2268,7 @@ because GEM headers are not strict C89 compliant.
 
 The file list displays entries in a formatted single-line layout with compact
 sizes and packed-size percentage semantics. Archive creation now uses a
-dedicated **Compression** menu with checkmarked Stored, LZSS, miniLZO, and
+dedicated **Compression** menu with checkmarked Stored, LZSS, fastlz, and
 Fluff choices; Fluff selection is gated against the current largest free memory
 block reported by `AvailMem(MEMF_ANY | MEMF_LARGEST)`.
 

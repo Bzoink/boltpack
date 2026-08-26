@@ -10,11 +10,11 @@
  * all Plan 9-specific and do not exist in standard POSIX or C99 headers.
  *
  * Build on a Plan 9 / 9front system:
- *   8c -FTVw -I /sys/include -I <src/core> -I <lib/minilzo-2.10> \
+ *   8c -FTVw -I /sys/include -I <src/core> -I <lib/fastlz> \
  *       src/core/archiver.c src/core/compress.c             \
  *       src/core/bp_codepage.c                               \
  *       src/frontend/plan9/main.c                            \
- *       lib/minilzo-2.10/minilzo.c                           \
+ *       lib/fastlz/fastlz.c                           \
  *   8l -o /386/boltpack *.8
  *   (Use 6c/6l for AMD64, arm/arm64 as appropriate.)
  *
@@ -22,7 +22,7 @@
  *   Bytes 0-1 : lower 16 bits of Dir.mode (rwxrwxrwx + Plan 9 extension bits)
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define BP_CREATOR_OS  BP_OS_PLAN9
@@ -715,7 +715,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "miniLZO", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -959,7 +959,7 @@ main(int argc, char *argv[])
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_LZO1X;
+    bp_uint8   method     = BP_METHOD_FASTLZ;
     const char *out_dir   = nil;
     int        force = 0, dry_run = 0, i, r;
 

@@ -22,7 +22,7 @@
  *   they are silently skipped.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define BP_CREATOR_OS  BP_OS_QL
@@ -876,7 +876,7 @@ int main(int argc, char **argv)
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_LZO1X;
+    bp_uint8   method     = BP_METHOD_FASTLZ;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
 

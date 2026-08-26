@@ -3,7 +3,7 @@
 ![BoltPack](resources/pics/boltpack_logo_wb.png)
 
 [![CI](https://github.com/Bzoink/boltpack/actions/workflows/ci.yml/badge.svg)](https://github.com/Bzoink/boltpack/actions/workflows/ci.yml)
-[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE.md)
+[![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue.svg)](LICENSE.md)
 [![Latest Release](https://img.shields.io/github/v/release/Bzoink/boltpack?label=download)](https://github.com/Bzoink/boltpack/releases/latest)
 
 Lightweight file archiver designed for maximum portability — from an 8088 PC
@@ -86,14 +86,15 @@ expert tuning switches.
 
 | Flag | Method  | ID  | Description                                               |
 | ---- | ------- | --- | --------------------------------------------------------- |
-| —    | miniLZO | 2   | Default — fast general-purpose compression                |
+| `-2` | fastlz  | 2   | Default — fast general-purpose compression                |
 | `-0` | Stored  | 0   | No compression; raw byte copy                             |
 | `-1` | LZSS    | 1   | Small-memory LZ77; suited for 16-bit targets              |
 | `-F` | Fluff   | 3   | High compression ratio; LZ77 + FSE/tANS                   |
 | `-Z` | zstd    | 4   | Best compression ratio; modern 32/64-bit only; zstd 1.5.7 |
 
-Fluff supports compression levels 1–9 via `-l N` (default 8). When `-F` is used
-without `-b`, block size is set to 256 KB automatically.
+fastlz accepts levels 1–2 via `-l N`; omitting `-l` auto-selects its level.
+Fluff and zstd support levels 1–9. When `-F` or `-Z` is used without `-b`, block
+size is set to 256 KB automatically.
 
 On OpenMP-enabled modern builds, selecting Fluff auto-enables multi-processor
 compression for larger workloads. Use `--single-thread` to force the sequential
@@ -148,7 +149,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
 | [docs/specification-1.0.md](docs/specification-1.0.md) | Normative archive and codec rules                         |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
-| [docs/algorithms.md](docs/algorithms.md)               | LZSS, miniLZO, and Fluff implementation details           |
+| [docs/algorithms.md](docs/algorithms.md)               | LZSS, fastlz, and Fluff implementation details           |
 | [docs/portability.md](docs/portability.md)             | Supported platforms, C89 constraints, and toolchain notes |
 | [docs/frontends.md](docs/frontends.md)                 | Frontend responsibilities and platform integration guide  |
 | [docs/BUILD.md](docs/BUILD.md)                         | Native build procedures and platform-specific caveats     |
@@ -163,7 +164,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 src/core/        Archive core + compression layer (strict C89)
 src/core/mini/   16-bit mini variant core
 src/frontend/    One frontend per platform
-lib/             Vendored miniLZO 2.10 and zstd 1.5.7
+lib/             Vendored fastlz 0.5.0 and zstd 1.5.7
 docs/            Full documentation set
 test/            Unit tests, integration tests, and fixtures
 scripts/         Build, packaging, and release scripts
@@ -189,9 +190,9 @@ for the third-party algorithms and libraries incorporated into BoltPack.
 
 ## License
 
-BoltPack is free software; you can redistribute it and/or modify it under the
-terms of the **GNU General Public License v2** — see [LICENSE.md](LICENSE.md).
+BoltPack is licensed under the **BSD 2-Clause "Simplified" License** — see
+[LICENSE.md](LICENSE.md).
 
-This distribution includes **miniLZO 2.10** by Markus F.X.J. Oberhumer, also
-licensed under GPL v2 (`lib/minilzo-2.10/COPYING`), and **zstd 1.5.7** by Meta
-Platforms / Yann Collet under the BSD 2-Clause license (`lib/zstd/`).
+This distribution includes **fastlz 0.5.0** by Ariya Hidayat, licensed under
+the MIT license (`lib/fastlz/LICENSE`), and **zstd 1.5.7** by Meta Platforms /
+Yann Collet under the BSD 2-Clause license (`lib/zstd/`).

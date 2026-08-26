@@ -55,10 +55,10 @@ build_target() {
     echo "Building $label with $COMPILER..."
 
     "$COMPILER" $CLI_CFLAGS \
-        -Isrc/core -Ilib/minilzo-2.10 \
+        -Isrc/core -Ilib/fastlz \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        lib/minilzo-2.10/minilzo.c \
+        lib/fastlz/fastlz.c \
         "src/frontend/$target/main.c" \
         -o "$outdir/boltpack"
 

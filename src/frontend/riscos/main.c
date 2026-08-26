@@ -44,11 +44,11 @@
  *
  * Cross-compilation from Linux:
  *   arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -O2 \
- *       -I src/core -I lib/minilzo-2.10                      \
+ *       -I src/core -I lib/fastlz                      \
  *       src/core/compress.c src/core/archiver.c              \
  *       src/core/bp_codepage.c                               \
  *       src/frontend/riscos/main.c                           \
- *       lib/minilzo-2.10/minilzo.c                           \
+ *       lib/fastlz/fastlz.c                           \
  *       -o boltpack,ff8
  *
  * The output filename uses RISC OS filetype-in-name convention.
@@ -57,7 +57,7 @@
  * ANSI C (C89/C90) throughout.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #define BP_CREATOR_OS  BP_OS_RISCOS
@@ -1737,7 +1737,7 @@ static void usage(void)
         "\nOptions:\n"
         "  -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k (default: 32k)\n"
         "  -0        Store only (no compression)\n"
-        "  -F        Use fluff LZ77+Huffman compression (better ratio than miniLZO)\n"
+        "  -F        Use fluff LZ77+Huffman compression (better ratio than fastlz)\n"
         "  -q        Quiet (summary only)\n"
         "  -qq       Silent (errors only)\n"
         "  -o PATH   Output directory for extraction (RISC OS path with '.')\n"
@@ -1751,7 +1751,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32   block_size = 0;
-    bp_uint8    method     = BP_METHOD_LZO1X;
+    bp_uint8    method     = BP_METHOD_FASTLZ;
     const char *out_dir    = NULL;
     int force   = 0;
     int dry_run = 0;

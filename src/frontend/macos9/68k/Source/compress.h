@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_COMPRESS_H
@@ -16,14 +16,14 @@
  * Returns BP_OK on success. */
 int bp_compress_init(void);
 
-/* Compress a single block using LZO1X-1.
- * dst must be at least (src_len + src_len/16 + 64 + 3) bytes.
+/* Compress a single block using fastlz (auto-select level).
+ * dst must be at least (src_len + src_len/20 + 66) bytes.
  * *dst_len is set to the actual compressed size on output.
  * Returns BP_OK on success. */
 int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                       bp_uint8 *dst, bp_uint32 *dst_len);
 
-/* Decompress a single block using LZO1X (safe variant).
+/* Decompress a single block using fastlz.
  * dst must be at least orig_len bytes.
  * *dst_len should be set to orig_len on input; updated on output.
  * Returns BP_OK on success. */
@@ -46,7 +46,7 @@ bp_uint32 bp_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
                             const bp_uint8 *data, bp_uint32 len);
 bp_uint32 bp_checksum_seed(bp_uint8 ck_type);
 
-/* Required size for compression work memory */
+/* Required size for compression work memory (fastlz needs none). */
 bp_uint32 bp_compress_work_size(void);
 
 #endif /* BP_COMPRESS_H */

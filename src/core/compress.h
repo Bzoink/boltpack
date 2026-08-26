@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_COMPRESS_H
@@ -12,18 +12,31 @@
 
 #include "bp_types.h"
 
+/* Worst-case output size for fastlz compression: src + src/20 + 66. */
+#define BP_FASTLZ_BOUND(n) ((bp_uint32)((n) + (n)/20 + 66))
+
 /* Initialize the compression subsystem. Call once at startup.
- * Returns BP_OK on success. */
+ * fastlz needs no initialisation; returns BP_OK. */
 int bp_compress_init(void);
 
-/* Compress a single block using LZO1X-1.
- * dst must be at least (src_len + src_len/16 + 64 + 3) bytes.
+/* Compress a single block using fastlz, auto-selecting the level.
+ * dst must be at least BP_FASTLZ_BOUND(src_len) bytes.
  * *dst_len is set to the actual compressed size on output.
  * Returns BP_OK on success. */
 int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                       bp_uint8 *dst, bp_uint32 *dst_len);
 
-/* Decompress a single block using LZO1X (safe variant).
+/* Compress a single block using fastlz at an explicit level.
+ * method_level: 0 = auto-select (fastlz_compress; L1 < 64 KB, else L2),
+ *               1 = force L1, 2 = force L2, 3-9 clamp to L2.
+ * dst must be at least BP_FASTLZ_BOUND(src_len) bytes.
+ * *dst_len is set to the actual compressed size on output.
+ * Returns BP_OK on success. */
+int bp_compress_block_level(const bp_uint8 *src, bp_uint32 src_len,
+                            bp_uint8 *dst, bp_uint32 *dst_len,
+                            bp_uint8 method_level);
+
+/* Decompress a single block using FastLZ.
  * dst must be at least orig_len bytes.
  * *dst_len should be set to orig_len on input; updated on output.
  * Returns BP_OK on success. */
@@ -53,7 +66,7 @@ bp_uint32 bp_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
  * 1 for Adler-32, 0 for CRC-32. */
 bp_uint32 bp_checksum_seed(bp_uint8 ck_type);
 
-/* Required size for compression work memory */
+/* Required size for compression work memory (fastlz needs none). */
 bp_uint32 bp_compress_work_size(void);
 
 #endif /* BP_COMPRESS_H */

@@ -13,7 +13,7 @@ Usage (standalone -- generates a sample set in a temp dir):
     python3 test/gen_testdata.py [output_dir]
 
 Copyright (C) 2026 Tony Mattsson
-Licensed under the GNU General Public License v2
+Licensed under the BSD 2-Clause License
 """
 
 import hashlib

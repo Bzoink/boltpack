@@ -317,9 +317,7 @@ create_totalcmd_plugin_package() {
     cp "$plugin_path" "$tmpdir/$plugin_name"
     cp "$config_path" "$tmpdir/boltpack-config.exe"
     cp "$TOTALCMD_PLUGIN_README" "$tmpdir/README.txt"
-    if [ -f "$PROJROOT/LICENSE" ]; then
-        cp "$PROJROOT/LICENSE" "$tmpdir/LICENSE"
-    fi
+    cp "$PROJROOT/LICENSE.md" "$tmpdir/LICENSE"
 
     cat > "$tmpdir/pluginst.inf" <<EOF
 [plugininstall]
@@ -769,12 +767,8 @@ create_package() {
         done
     fi
     
-    # Copy LICENSE
-    if [ -f "$PROJROOT/LICENSE" ]; then
-        cp "$PROJROOT/LICENSE" "$stagindir/LICENSE"
-    else
-        echo "GNU General Public License v2 (assumed)" > "$stagindir/LICENSE"
-    fi
+    # Copy the complete project and third-party license bundle.
+    cp "$PROJROOT/LICENSE.md" "$stagindir/LICENSE"
     
     # Copy/process README
     local template_file="$TEMPLATESDIR/$template"

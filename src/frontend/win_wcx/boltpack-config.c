@@ -16,7 +16,7 @@
  * Or run without arguments to open the GUI dialog.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Released under the GNU General Public License v2 (GPL-2.0)
+ * Released under the BSD 2-Clause License
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -32,7 +32,7 @@
 static int get_compression_method(void)
 {
     HKEY hKey;
-    DWORD method = 2;  /* default: miniLZO */
+    DWORD method = 2;  /* default: fastlz */
     DWORD size = sizeof(DWORD);
     DWORD regType;
     LONG ret;
@@ -86,7 +86,7 @@ static const char *method_name(int method)
     switch (method) {
     case 0: return "Stored (no compression)";
     case 1: return "LZSS (small-memory LZ77)";
-    case 2: return "miniLZO (fast, good ratio)";
+    case 2: return "fastlz (fast, good ratio)";
     case 3: return "Fluff (LZ77+FSE/tANS, best ratio)";
     case 4: return "zstd (Zstandard, best ratio; modern 64-bit builds)";
     default: return "Unknown";
@@ -99,7 +99,7 @@ static const char *method_name(int method)
 
 #define IDC_STORED   100
 #define IDC_LZSS     101
-#define IDC_MINILZO  102
+#define IDC_FASTLZ  102
 #define IDC_FLUFF    103
 #define IDC_ZSTD     104
 #define IDC_OK       IDOK
@@ -128,7 +128,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             break;
         case 2:
         default:
-            SendDlgItemMessageA(hwnd, IDC_MINILZO, BM_SETCHECK, BST_CHECKED, 0);
+            SendDlgItemMessageA(hwnd, IDC_FASTLZ, BM_SETCHECK, BST_CHECKED, 0);
             break;
         }
         return TRUE;
@@ -144,7 +144,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             } else if (SendDlgItemMessageA(hwnd, IDC_ZSTD, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                 method = 4;
             } else {
-                method = 2; /* miniLZO default */
+                method = 2; /* fastlz default */
             }
 
             if (set_compression_method(method) == 0) {
@@ -203,7 +203,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "\nCompression methods:\n");
             fprintf(stderr, "  0 = Stored (no compression)\n");
             fprintf(stderr, "  1 = LZSS (small-memory LZ77)\n");
-            fprintf(stderr, "  2 = miniLZO (default, fast)\n");
+            fprintf(stderr, "  2 = fastlz (default, fast)\n");
             fprintf(stderr, "  3 = Fluff (best compression ratio)\n");
             fprintf(stderr, "  4 = zstd (best ratio; modern 64-bit builds only)\n");
             return 1;

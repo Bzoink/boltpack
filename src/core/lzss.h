@@ -24,7 +24,7 @@
  *   bit = 0 => next 2 bytes are a (distance, length) match token.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_LZSS_H

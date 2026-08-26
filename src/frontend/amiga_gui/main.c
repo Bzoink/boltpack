@@ -9,12 +9,12 @@
  *
  * Cross-compilation from Linux:
  *   m68k-amigaos-gcc -noixemul -ansi -Wall -O2                \
- *       -I src/core -I lib/minilzo-2.10                        \
+ *       -I src/core -I lib/fastlz                        \
  *       src/core/compress.c src/core/archiver.c                \
  *       src/core/bp_codepage.c                                 \
  *       src/core/fluff.c src/core/lzss.c                       \
  *       src/frontend/amiga_gui/main.c                          \
- *       lib/minilzo-2.10/minilzo.c                             \
+ *       lib/fastlz/fastlz.c                             \
  *       -lasl -lgadtools -lworkbench                           \
  *       -o build/amiga/boltpack-gui
  *
@@ -23,7 +23,7 @@
  * ANSI C (C89/C90) in the portable code sections.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "../../core/archiver.h"
@@ -96,7 +96,7 @@
 #define MN_INFO        9
 #define MN_METHOD_STORED  10
 #define MN_METHOD_LZSS    11
-#define MN_METHOD_LZO1X   12
+#define MN_METHOD_FASTLZ   12
 #define MN_METHOD_FLUFF   13
 
 /* Gadget IDs */
@@ -166,7 +166,7 @@ typedef struct {
 } amiga_progress_ui_t;
 
 static amiga_progress_ui_t *active_progress;
-static bp_uint8 current_method = BP_METHOD_LZO1X;
+static bp_uint8 current_method = BP_METHOD_FASTLZ;
 static char status_lines[STATUS_LINE_COUNT][160];
 static int gather_count;
 static char **gather_files;
@@ -427,7 +427,7 @@ static const char *method_name(int m)
     switch (m) {
         case 0: return "Stored";
         case 1: return "LZSS";
-        case 2: return "miniLZO";
+        case 2: return "fastlz";
         case 3: return "fluff";
     }
     return "?";
@@ -436,7 +436,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "miniLZO", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1052,17 +1052,17 @@ static void sync_compression_menu_checks(void)
 {
     struct MenuItem *stored;
     struct MenuItem *lzss;
-    struct MenuItem *lzo1x;
+    struct MenuItem *fastlz;
     struct MenuItem *fluff;
 
     stored = find_menu_item_by_id(MN_METHOD_STORED);
     lzss   = find_menu_item_by_id(MN_METHOD_LZSS);
-    lzo1x  = find_menu_item_by_id(MN_METHOD_LZO1X);
+    fastlz  = find_menu_item_by_id(MN_METHOD_FASTLZ);
     fluff  = find_menu_item_by_id(MN_METHOD_FLUFF);
 
     if (stored) stored->Flags &= (UWORD)~CHECKED;
     if (lzss)   lzss->Flags   &= (UWORD)~CHECKED;
-    if (lzo1x)  lzo1x->Flags  &= (UWORD)~CHECKED;
+    if (fastlz)  fastlz->Flags  &= (UWORD)~CHECKED;
     if (fluff)  fluff->Flags  &= (UWORD)~CHECKED;
 
     switch (current_method) {
@@ -1075,10 +1075,10 @@ static void sync_compression_menu_checks(void)
         case BP_METHOD_FLUFF:
             if (fluff) fluff->Flags |= CHECKED;
             break;
-        case BP_METHOD_LZO1X:
+        case BP_METHOD_FASTLZ:
         default:
-            current_method = BP_METHOD_LZO1X;
-            if (lzo1x) lzo1x->Flags |= CHECKED;
+            current_method = BP_METHOD_FASTLZ;
+            if (fastlz) fastlz->Flags |= CHECKED;
             break;
     }
 
@@ -1100,7 +1100,7 @@ static int ensure_selected_method_available(void)
         return 1;
 
     show_fluff_memory_alert(avail);
-    current_method = BP_METHOD_LZO1X;
+    current_method = BP_METHOD_FASTLZ;
     sync_compression_menu_checks();
     refresh_idle_status();
     return 0;
@@ -1133,7 +1133,7 @@ static void show_about_dialog(void)
 
     format_size((double)amiga_largest_free_block(), free_buf);
     sprintf(msg,
-            "BoltPack 1.1\nPortable archive format\nStored, LZSS, miniLZO, fluff\nLargest free block: %s",
+            "BoltPack 1.1\nPortable archive format\nStored, LZSS, fastlz, fluff\nLargest free block: %s",
             free_buf);
     show_requester("About BoltPack", msg);
 }
@@ -1213,7 +1213,7 @@ static struct NewMenu new_menus[] = {
     { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("Stored"),        NULL, CHECKIT, 0, (APTR)MN_METHOD_STORED },
     { NM_ITEM,  USTR("LZSS"),          NULL, CHECKIT, 0, (APTR)MN_METHOD_LZSS },
-    { NM_ITEM,  USTR("miniLZO"),       NULL, CHECKIT | CHECKED, 0, (APTR)MN_METHOD_LZO1X },
+    { NM_ITEM,  USTR("fastlz"),       NULL, CHECKIT | CHECKED, 0, (APTR)MN_METHOD_FASTLZ },
     { NM_ITEM,  USTR("Fluff"),         NULL, CHECKIT, 0, (APTR)MN_METHOD_FLUFF },
 
     { NM_TITLE, USTR("Help"),           NULL, 0, 0, NULL },
@@ -2091,8 +2091,8 @@ static void event_loop(void)
                                     case MN_METHOD_LZSS:
                                         select_compression_method(BP_METHOD_LZSS);
                                         break;
-                                    case MN_METHOD_LZO1X:
-                                        select_compression_method(BP_METHOD_LZO1X);
+                                    case MN_METHOD_FASTLZ:
+                                        select_compression_method(BP_METHOD_FASTLZ);
                                         break;
                                     case MN_METHOD_FLUFF:
                                         select_compression_method(BP_METHOD_FLUFF);
@@ -2103,7 +2103,7 @@ static void event_loop(void)
                                         show_requester("Documentation",
                                             "See README for full documentation.\n\n"
                                             "Use Compression to choose Stored, LZSS,\n"
-                                            "miniLZO or Fluff for new archives.\n"
+                                            "fastlz or Fluff for new archives.\n"
                                             "Drop .bolt/.blt files to open them.\n"
                                             "Drop other files or drawers to archive them.");
                                         break;

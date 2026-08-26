@@ -29,7 +29,7 @@
  * lzss_decompress() uses no work buffer at all.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "lzss.h"

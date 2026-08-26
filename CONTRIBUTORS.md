@@ -9,14 +9,14 @@ and all platform frontends.
 
 The following people's prior work is incorporated into BoltPack:
 
-### Markus Franz Xaver Johannes Oberhumer
+### Ariya Hidayat
 
-**miniLZO 2.10** — fast, portable LZO data compression library.
-Vendored in `lib/minilzo-2.10/`. Licensed under the GNU General Public
-License v2.
+**fastlz 0.5.0** — byte-aligned LZ77 compression library.
+Vendored in `lib/fastlz/` (C89-ported for BoltPack's strict core rules).
+Licensed under the MIT license.
 
-- Home page: <https://www.oberhumer.com/opensource/lzo/>
-- Contact: <markus@oberhumer.com>
+- Home page: <https://github.com/ariya/FastLZ>
+- Contact: <ariya.hidayat@gmail.com>
 
 ### Haruhiko Okumura
 

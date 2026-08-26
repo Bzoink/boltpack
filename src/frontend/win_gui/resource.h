@@ -2,7 +2,7 @@
  * resource.h -- resource IDs for BoltPack Win32 GUI
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_RESOURCE_H

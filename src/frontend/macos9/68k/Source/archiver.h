@@ -4,7 +4,7 @@
  * ANSI C (C89/C90) only.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_ARCHIVER_H
@@ -40,7 +40,7 @@ typedef struct {
     bp_io_t        *io;
     bp_uint32       file_count;
     bp_uint32       block_size;
-    bp_uint8        method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_LZO1X, or BP_METHOD_FLUFF */
+    bp_uint8        method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_FASTLZ, or BP_METHOD_FLUFF */
     bp_uint8        method_level;  /* reserved; ignored by all current methods */
     bp_uint8        creator_os;
     bp_uint8        creator_cpu;
@@ -60,7 +60,7 @@ typedef struct {
 
 /* Initialize archive context for creation.
  * block_size: one of BP_BLOCK_* constants (0 = auto).
- * method: BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_LZO1X, or
+ * method: BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_FASTLZ, or
  * BP_METHOD_FLUFF. */
 int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
                       bp_uint32 block_size, bp_uint8 method);

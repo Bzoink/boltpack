@@ -11,7 +11,7 @@
  * Compiled only when BOLTPACK_NET is defined.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #ifndef BP_NET_CLI_H

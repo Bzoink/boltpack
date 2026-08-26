@@ -46,7 +46,7 @@ COMPRESSION
 -----------
 
 -F              Fluff (best compression)
--M 1            miniLZO (fastest)
+                 fastlz is the default method
 -0              Stored (no compression)
 
 RISC OS FEATURES
@@ -90,12 +90,12 @@ MEMORY REQUIREMENTS
 Memory needed depends on compression method:
 
 - Stored (no compression):        ~8 KB (minimal)
-- miniLZO (default):              ~64 KB free memory
+- fastlz (default):              ~32 KB free memory
 - Fluff (best compression):       ~256 KB free memory during decompression
 
 Block sizes scale from 8 KB (memory-constrained systems) to 256 KB (modern).
 
-Suitable for RISC OS 3.1+ on machines with 2 MB+ RAM (miniLZO) or 4 MB+ RAM (fluff).
+Suitable for RISC OS 3.1+ on machines with 2 MB+ RAM (fastlz) or 4 MB+ RAM (fluff).
 
 TROUBLESHOOTING
 ---------------
@@ -116,7 +116,7 @@ COMPRESSION COMPARISONS
 -----------------------
 
 Fluff (-F):      29% ratio, best for archive storage
-miniLZO (-M 1):  47% ratio, fastest decompression
+fastlz (default): 47% ratio, fastest decompression
 Stored (-0):     100% size, instant (for pre-compressed)
 
 Example:

@@ -2,7 +2,7 @@
  * archiver.c -- mini archive read/write for BoltPack
  *
  * Implements the full .bolt format but caps capabilities at:
- *   - Methods 0 (stored), 2 (miniLZO); method 1 (LZSS, stub) only
+ *   - Methods 0 (stored), 1 (LZSS), and 2 (fastlz)
  *   - Block size <= BP_MINI_MAX_BLOCK_SIZE  (32 KB)
  *   - Entry count <= BP_MINI_MAX_ENTRIES   (65 535)
  *   - File size   <= 4 GB (original_size.hi must be 0)
@@ -12,7 +12,7 @@
  * ANSI C (C89/C90) only.  No fluff dependency.
  *
  * Copyright (C) 2026 Tony Mattsson
- * Licensed under the GNU General Public License v2
+ * Licensed under the BSD 2-Clause License
  */
 
 #include "archiver.h"
@@ -148,9 +148,9 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
         return BP_ERR_UNSUPPORTED_METHOD;
     }
 
-    /* On 16-bit systems miniLZO is not available; silently fall back to stored. */
+    /* On 16-bit systems fastlz compression is not available; silently fall back to stored. */
 #if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
-    if (method == BP_METHOD_LZO1X) {
+    if (method == BP_METHOD_FASTLZ) {
         method = BP_METHOD_STORED;
     }
     /* LZSS (method 1) is now supported on 16-bit; no fallback needed. */
@@ -305,10 +305,14 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
     if (!bp_u64_is_zero(file_size)) {
         bp_uint64 remaining = file_size;
         bp_uint32 bsize = ar->block_size;
+        bp_uint32 lzss_bound;
+        bp_uint32 fastlz_bound;
         int any_compressed_block = 0;
 
-        /* LZSS worst case: src+src/8+16; LZO worst case: src+src/16+64+3 */
-        out_buf_size = bsize + bsize / 8 + 16;
+        /* Allocate for the larger of the LZSS and fastlz worst-case bounds. */
+        lzss_bound = bsize + bsize / 8 + 16;
+        fastlz_bound = bsize + bsize / 20 + 66;
+        out_buf_size = (lzss_bound > fastlz_bound) ? lzss_bound : fastlz_bound;
         in_buf  = (bp_uint8 *)malloc((size_t)bsize);
         out_buf = (bp_uint8 *)malloc((size_t)out_buf_size);
         if (in_buf == NULL || out_buf == NULL) {
@@ -332,7 +336,7 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
 
             adler = bp_mini_checksum_typed(BP_CKSUM_CRC32, adler, in_buf, chunk);
 
-            if (actual_method == BP_METHOD_LZO1X ||
+            if (actual_method == BP_METHOD_FASTLZ ||
                     actual_method == BP_METHOD_LZSS) {
                 rc = bp_mini_compress_block(in_buf, chunk, out_buf, &comp_len,
                                             actual_method);
