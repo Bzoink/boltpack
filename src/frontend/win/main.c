@@ -1675,7 +1675,10 @@ static void usage_basic(void)
         "  -F               Use fluff compression\n"
         "  -Z               Use zstd compression (modern builds)\n");
     fprintf(stderr,
-        "  -l N             Compression level (boltlz: 1-2; fluff/zstd: 1-9)\n"
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
@@ -1684,7 +1687,7 @@ static void usage_basic(void)
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.blt folder\n"
-        "  boltpack extract backup.blt -o out\n"
+        "  boltpack extract -o out backup.blt\n"
         "  boltpack create -F --single-thread backup.blt folder\n");
     fprintf(stderr,
         "\nFor advanced compression options, run: boltpack help advanced\n");
@@ -1717,7 +1720,10 @@ static void usage_advanced(void)
         "  -F               Use fluff compression (defaults to 256k blocks)\n"
         "  -Z               Use zstd compression (defaults to 256k blocks, method 4)\n");
     fprintf(stderr,
-        "  -l N             Compression level (boltlz: 1-2; fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
         "  -j N             Parallel fluff jobs/threads (fast-fluff Windows builds)\n"
         "  -g N             Fluff blocks per history group (fast-fluff Windows builds)\n"
         "  --single-thread  Disable automatic parallel fluff\n");
@@ -2584,6 +2590,15 @@ int main(int argc, char **argv)
                 return 1;
             }
             i += 2;
+        } else if (strcmp(argv[i], "--light") == 0) {
+            opt_level = -1;
+            i++;
+        } else if (strcmp(argv[i], "--standard") == 0) {
+            opt_level = -2;
+            i++;
+        } else if (strcmp(argv[i], "--best") == 0) {
+            opt_level = -3;
+            i++;
         } else if (strcmp(argv[i], "-j") == 0 ||
                    strcmp(argv[i], "--threads") == 0) {
             if (i + 1 >= argc) {
@@ -2643,6 +2658,37 @@ int main(int argc, char **argv)
             usage();
             return 1;
         }
+    }
+
+    if (opt_level < 0) {
+        if (method == BP_METHOD_BOLTLZ)
+            opt_level = (opt_level == -1) ? 1 : 2;
+        else if (method == BP_METHOD_FLUFF)
+            opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 8 : 9);
+        else if (method == BP_METHOD_ZSTD)
+            opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 3 : 9);
+    }
+    if (opt_level < 0) {
+        fprintf(stderr,
+                "boltpack: quality presets are only supported for BoltLZ, Fluff, and zstd\n");
+        return 1;
+    }
+    if (opt_level > 0) {
+        if (method == BP_METHOD_BOLTLZ && opt_level > 2) {
+            fprintf(stderr, "boltpack: BoltLZ level must be 1-2\n");
+            return 1;
+        }
+        if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF &&
+            method != BP_METHOD_ZSTD) {
+            fprintf(stderr,
+                    "boltpack: -l is only supported for BoltLZ, Fluff, and zstd\n");
+            return 1;
+        }
+    }
+    if (command == 'x' && i + 1 < argc) {
+        fprintf(stderr,
+                "boltpack: extract options must precede the archive name\n");
+        return 1;
     }
 
 #ifndef BOLTPACK_FAST_FLUFF

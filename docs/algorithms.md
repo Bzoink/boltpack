@@ -63,6 +63,10 @@ Its defining traits are:
 1. Native 16-bit positions and lengths on 16-bit mini targets, whose block
    size is capped at 32 KiB.
 
+BoltLite has a fixed encoder configuration and exposes no compression levels
+or quality presets. Select it with `-1` / `--boltlite`; level options apply to
+BoltLZ, Fluff, and zstd instead.
+
 ### 3.2 Format-Fixed Parameters
 
 | Parameter            | Value    | Meaning                                      |
@@ -119,10 +123,12 @@ BoltPack binaries remain available to extract those archives.
 
 ## 4. Method 2: BoltLZ
 
-Method 2 uses the original C89 implementation in `src/core/boltlz.c`, with
-archive wrappers in `src/core/compress.c`. The default is Balanced; `-l 1`
-selects Fast, and `-l 2` selects Balanced. Levels 3–9 also select Balanced.
-Both modes use the same format-2 block decoder and a maximum 256 KiB block.
+Method 2 uses the C89 implementation in `src/core/boltlz.c`, with archive
+wrappers in `src/core/compress.c`. It supports two encoder levels: level 1
+(Fast) and level 2 (Balanced, the default). The CLI accepts only `-l 1` and
+`-l 2`; other numeric levels are rejected. `--light` selects Fast, while
+`--standard` and `--best` both select Balanced. Both modes use the same
+format-2 block decoder and a maximum 256 KiB block.
 
 Fast searches one hash candidate with adaptive skipping. Balanced searches
 two candidates plus the previous distance and uses bounded lazy matching.
