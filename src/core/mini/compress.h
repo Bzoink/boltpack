@@ -74,7 +74,8 @@ bp_uint32 bp_mini_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len);
 bp_uint32 bp_mini_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
                                  const bp_uint8 *data, bp_uint32 len);
 
-/* Initial value for a fresh checksum: 1 for Adler-32, 0 for CRC-32. */
+/* Initial value for a fresh checksum. CRC-32 is the only archive checksum
+ * currently supported and uses seed 0. */
 bp_uint32 bp_mini_checksum_seed(bp_uint8 ck_type);
 
 /* Return the size of the boltlz compression work memory buffer in bytes. */

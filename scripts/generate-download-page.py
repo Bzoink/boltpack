@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import hashlib
+import re
 import argparse
 from datetime import date
 from html import escape
@@ -870,12 +871,17 @@ def render_html(packages, version_str):
 
 
 def detect_version(dist_dir):
-    """Try to detect the release version from package filenames in dist/."""
+    """Return the newest version represented by package filenames in dist/."""
     try:
+        versions = []
         for entry in os.listdir(dist_dir):
             info = parse_package_name(entry)
             if info and info["version"]:
-                return info["version"]
+                versions.append(info["version"])
+        if versions:
+            return max(set(versions), key=lambda v: tuple(
+                int(part) for part in re.findall(r"\d+", v)
+            ))
     except OSError:
         pass
     return ""

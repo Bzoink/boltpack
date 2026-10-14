@@ -192,11 +192,10 @@ static int ends_with_sep(const char *s)
 static void path_join(char *buf, size_t bufsize, const char *dir,
                       const char *name)
 {
-    (void)bufsize;
     if (ends_with_sep(dir)) {
-        sprintf(buf, "%s%s", dir, name);
+        snprintf(buf, bufsize, "%s%s", dir, name);
     } else {
-        sprintf(buf, "%s/%s", dir, name);
+        snprintf(buf, bufsize, "%s/%s", dir, name);
     }
 }
 
@@ -485,6 +484,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     FILE *fp;
     bp_io_t *io;
 
+    if (!bp_name_is_safe(entry->name)) return NULL;
+
     /* Convert UTF-8 archive name to local codepage for filesystem and display */
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
                          DOS_CODEPAGE) != 0) {
@@ -492,6 +493,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         local_name[BP_MAX_PATH - 1] = '\0';
     }
 
+    if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
+        return NULL;
     if (ctx->out_dir) {
         path_join(path, sizeof(path), ctx->out_dir, local_name);
     } else {

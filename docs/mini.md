@@ -30,12 +30,12 @@ fit within the 8.3 filename limit.
 
 | Capability             | Mini limit                       | Notes                                                                                                       |
 | ---------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Compression methods    | 0 (stored), 1 (BoltLite), 2 (boltlz) | Methods 3 (fluff) and any method > 3: error + exit; boltlz compression is unavailable on 16-bit mini builds |
+| Compression methods    | 0 (stored), 1 (BoltLite), 2 (boltlz) | Methods 3 (Fluff) and above return unsupported-method; BoltLZ compression is unavailable on 16-bit mini builds |
 | Block size             | 8 KB – 32 KB                     | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`)                                                   |
 | Files per archive      | ≤ 65 535                         | Create rejects entry 65 536 and above                                                                       |
 | Uncompressed file size | ≤ 4 GB                           | `original_size.hi != 0` triggers error; display still shows the size                                        |
 | Practical archive size | ≤ 2 GB                           | `bp_off_t` is `long` on DOS; `fseek`/`ftell` cap at 2 GB                                                    |
-| Commands               | `c`, `x`, `l`, `t`, `i`          | `a` (append), `d` (delete), `-F` (fluff) → unsupported message                                              |
+| Commands               | `c`, `x`, `l`, `t`, `i`          | `a` (append), `d` (delete), `-F` (Fluff) → unsupported message                                               |
 
 Even when limits are exceeded in an existing archive, the `l` and `i` commands
 always enumerate and display all entries and their sizes correctly.
@@ -189,12 +189,12 @@ int bp_mini_archive_info(bp_io_t *io, bp_archive_info_t *info);
 
 Capability checks in `archiver.c`:
 
-- `bp_mini_archive_create`: rejects `block_size > 32KB` or `method > 1`.
+- `bp_mini_archive_create`: rejects `block_size > 32KB` or methods above BoltLZ; 16-bit builds reject BoltLZ compression because they have no encoder.
 - `bp_mini_archive_add_entry`: rejects `entry_count >= 65535` or
   `file_size.hi != 0`.
-- `bp_mini_archive_extract_all`: logs a warning per-entry when
-  `entry->method > 1` or `entry->original_size.hi != 0`, then skips those
-  entries and continues.
+- `bp_mini_archive_extract_all`: supports stored and BoltLite entries on all
+  mini targets, and BoltLZ entries where the decoder is available; logs and
+  skips unsupported methods or entries too large for the target.
 - `bp_mini_archive_list` / `bp_mini_archive_info`: no capability filtering —
   all entries are always enumerated and their sizes always displayed.
 
@@ -220,7 +220,7 @@ Modelled on `src/frontend/dos/main.c` with these differences:
 | Seek/tell    | `fseeko`/`ftello` (64-bit offsets) | `fseek`/`ftell` (`long`, 2 GB cap)                 |
 | Commands     | c, a, x, l, t, i, d, T             | c, x, l, t, i only                                 |
 | `-b` option  | 8 KB – 256 KB                      | 8 KB – 32 KB (capped at `BP_MINI_MAX_BLOCK_SIZE`)  |
-| `-F` flag    | selects fluff codec                | prints "Fluff not supported by mini" + exit 1      |
+| `-F` flag    | selects Fluff codec                | prints "Fluff not supported by mini" + exit 1      |
 | Path display | UTF-8 printed raw                  | `print_utf8_safe()` replaces bytes > 0x7E with `?` |
 | Memory model | flat 32-bit                        | Watcom compact model (far data heap)               |
 

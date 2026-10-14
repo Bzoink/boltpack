@@ -372,11 +372,10 @@ static int ends_with_slash(const char *s)
 static void path_join(char *buf, size_t bufsize, const char *dir,
                       const char *name)
 {
-    (void)bufsize;
     if (ends_with_slash(dir)) {
-        sprintf(buf, "%s%s", dir, name);
+        snprintf(buf, bufsize, "%s%s", dir, name);
     } else {
-        sprintf(buf, "%s/%s", dir, name);
+        snprintf(buf, bufsize, "%s/%s", dir, name);
     }
 }
 
@@ -770,6 +769,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     meta_extract_t *mex;
     bp_uint32       meta_sz;
 
+    if (!bp_name_is_safe(entry->name)) return NULL;
+
     /* Convert UTF-8 archive name to local codepage for filesystem access */
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
                          AMIGA_CP) != 0) {
@@ -777,6 +778,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         local_name[sizeof(local_name) - 1] = '\0';
     }
 
+    if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
+        return NULL;
     if (ctx->out_dir)
         path_join(path, sizeof(path), ctx->out_dir, local_name);
     else

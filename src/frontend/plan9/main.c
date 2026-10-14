@@ -512,8 +512,13 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     p9_io_t        *fctx;
     int             fd;
 
+    if (!bp_name_is_safe(entry->name)) return nil;
+    if (strlen(entry->name) >= sizeof(path) ||
+        (ctx->out_dir && strlen(ctx->out_dir) + strlen(entry->name) + 2 >= sizeof(path)))
+        return nil;
+
     if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, entry->name);
-    else              strcpy(path, entry->name);
+    else              snprint(path, sizeof(path), "%s", entry->name);
 
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;

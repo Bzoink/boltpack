@@ -3332,7 +3332,10 @@ static int fl_decompress_fse(const bp_uint8 *src, bp_uint32 src_len,
         raw_len  = fse_read_u32(src, hdr_pos); hdr_pos += 4;
     }
 
-    if (hdr_pos + fse_len + raw_len > src_len)
+    /* Use subtraction after validating the offset so malicious v0x07
+     * uint32 lengths cannot wrap the combined end offset. */
+    if (hdr_pos > src_len || fse_len > src_len - hdr_pos ||
+        raw_len > src_len - hdr_pos - fse_len)
         { rc = BP_ERR_CORRUPT; goto cleanup; }
 
     fse_bits_init_read(&fse_bits, src + hdr_pos, fse_len);

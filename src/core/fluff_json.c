@@ -58,9 +58,10 @@ static int json_write_string(fluff_json_t *w, const char *str)
     return json_write_data(w, str, strlen(str));
 }
 
-/* Escape value for JSON string (simple: handle quotes only) */
+/* Escape quotes, backslashes, and all JSON control bytes in a string. */
 static int json_write_escape(fluff_json_t *w, const char *str)
 {
+    static const char hex[] = "0123456789abcdef";
     const char *p = str;
     
     while (*p) {
@@ -72,12 +73,27 @@ static int json_write_escape(fluff_json_t *w, const char *str)
             if (json_write_string(w, "\\n") < 0) return -1;
         } else if (*p == '\r') {
             if (json_write_string(w, "\\r") < 0) return -1;
+        } else if ((unsigned char)*p < 0x20) {
+            char esc[7];
+            esc[0] = '\\'; esc[1] = 'u'; esc[2] = '0'; esc[3] = '0';
+            esc[4] = hex[((unsigned char)*p >> 4) & 0x0F];
+            esc[5] = hex[(unsigned char)*p & 0x0F];
+            esc[6] = '\0';
+            if (json_write_string(w, esc) < 0) return -1;
         } else {
             char ch = *p;
             if (json_write_data(w, &ch, 1) < 0) return -1;
         }
         p++;
     }
+    return 0;
+}
+
+static int json_write_key(fluff_json_t *w, const char *key)
+{
+    if (json_write_string(w, "\"") < 0 ||
+        json_write_escape(w, key) < 0 ||
+        json_write_string(w, "\":") < 0) return -1;
     return 0;
 }
 
@@ -136,11 +152,12 @@ int fluff_json_close(fluff_json_t *w)
     
     if (w == NULL) return 0;
     
-    /* Close any open sections */
-    json_write_string(w, "\"summary\":{}");
+    /* The caller closes all sections; close only the root object here. */
     json_write_string(w, "}");
     
     fluff_json_flush(w);
+
+    if (w->has_error) rc = -1;
     
     if (w->fp != NULL) {
         if (fclose(w->fp) != 0) rc = -1;
@@ -243,7 +260,8 @@ void fluff_json_write_summary_uint32(fluff_json_t *w, const char *key,
     
     if (w == NULL || w->has_error) return;
     
-    sprintf(buf, "\"%s\":%lu,", key, (unsigned long)value);
+    if (json_write_key(w, key) < 0) return;
+    sprintf(buf, "%lu,", (unsigned long)value);
     json_write_string(w, buf);
 }
 
@@ -254,7 +272,8 @@ void fluff_json_write_summary_int64(fluff_json_t *w, const char *key,
     
     if (w == NULL || w->has_error) return;
     
-    sprintf(buf, "\"%s\":%ld,", key, value);
+    if (json_write_key(w, key) < 0) return;
+    sprintf(buf, "%ld,", value);
     json_write_string(w, buf);
 }
 
@@ -265,7 +284,8 @@ void fluff_json_write_summary_double(fluff_json_t *w, const char *key,
     
     if (w == NULL || w->has_error) return;
     
-    sprintf(buf, "\"%s\":%.6f,", key, value);
+    if (json_write_key(w, key) < 0) return;
+    sprintf(buf, "%.6f,", value);
     json_write_string(w, buf);
 }
 
@@ -276,14 +296,15 @@ void fluff_json_write_summary_bool(fluff_json_t *w, const char *key,
     
     if (w == NULL || w->has_error) return;
     
-    sprintf(buf, "\"%s\":%s,", key, value ? "true" : "false");
+    if (json_write_key(w, key) < 0) return;
+    sprintf(buf, "%s,", value ? "true" : "false");
     json_write_string(w, buf);
 }
 
 void fluff_json_end_summary(fluff_json_t *w)
 {
     if (w == NULL || w->has_error) return;
-    /* Remove trailing comma and close summary object */
+    /* Consume any trailing comma from the field writer, then close. */
     json_write_string(w, "\"_dummy\":0}");
 }
 

@@ -1,4 +1,4 @@
-BoltPack v1.2 - Total Commander Plugin
+BoltPack v1.7 - Total Commander Plugin
 =======================================
 
 BoltPack is a lightweight file archiver for archiving and transferring
@@ -33,7 +33,7 @@ COMPRESSION METHODS
   Stored     No compression (fastest)
   BoltLite       Compact LZ77; best for very low-memory targets
   boltlz    Fast general-purpose compression (default)
-  Fluff      Best compression ratio (LZ77 + Huffman)
+  Fluff      Best compression ratio (LZ77 + FSE/tANS)
 
 FEATURES
 --------

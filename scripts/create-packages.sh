@@ -931,6 +931,11 @@ main() {
         for platform_dir in "$BUILDDIR"/*; do
             if [ -d "$platform_dir" ]; then
                 local platform=$(basename "$platform_dir")
+                # Build output folders and scratch tests are not release platforms.
+                case " ${!PLATFORM_FORMAT[*]} " in
+                    *" $platform "*) ;;
+                    *) continue ;;
+                esac
                 # Skip directories that don't have binaries
                 if ls "$platform_dir"/boltpack* >/dev/null 2>&1 || \
                    ls "$platform_dir"/bpmini* >/dev/null 2>&1 || \

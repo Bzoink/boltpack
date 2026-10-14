@@ -1301,6 +1301,9 @@ static int read_header(bp_io_t *io, bp_uint32 *file_count,
         return BP_ERR_VERSION;
     }
 
+    /* Format 5 reserves the 16-bit flags field at bytes 6-7. */
+    if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
+
     if (version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -1376,8 +1379,7 @@ static int verify_table_crc(bp_io_t *io, bp_uint16 version)
         bp_uint64 actual_sz  = bp_u64_add(tbl_off,
                                bp_u64_add(tbl_sz,
                                bp_u64_from_u32((bp_uint32)BP_FOOTER_SIZE)));
-        if (!bp_u64_is_zero(stored_sz) &&
-            bp_u64_cmp(stored_sz, actual_sz) != 0)
+        if (bp_u64_cmp(stored_sz, actual_sz) != 0)
             return BP_ERR_TRUNCATED;
     }
 
@@ -1462,6 +1464,12 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     entry->header_size = bp_read_le16(pre);
     entry->name_len    = bp_read_le16(pre + 2);
 
+    /* Fixed fields must fit inside the declared header before reading them. */
+    if (entry->name_len > 0xFFFFU - BP_ENTRY_FIXED ||
+        (bp_uint32)entry->header_size <
+            (bp_uint32)BP_ENTRY_FIXED + (bp_uint32)entry->name_len)
+        return BP_ERR_CORRUPT;
+
     entry->name = (char *)malloc((size_t)(entry->name_len + 1));
     if (entry->name == NULL) return BP_ERR_NOMEM;
     rc = io_read(io, entry->name, entry->name_len);
@@ -1482,6 +1490,12 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     entry->platform        = buf[27];
     entry->mtime           = bp_read_le64(buf + 28);
     entry->flags           = bp_read_le16(buf + 36);
+
+    /* Format 5 writes CRC-32 only; reject retired/unknown checksum kinds. */
+    if (entry->checksum_type != BP_CKSUM_CRC32) {
+        free(entry->name); entry->name = NULL;
+        return BP_ERR_CORRUPT;
+    }
 
     /* skip any unknown trailing header bytes (forward compatibility) */
     {
@@ -1966,6 +1980,9 @@ int bp_archive_extract_all(bp_io_t *io,
     if (io == NULL || open_fn == NULL) return BP_ERR_INVALID_ARG;
 
     rc = read_header(io, &file_count, &version);
+    if (rc != BP_OK) return rc;
+
+    rc = verify_table_crc(io, version);
     if (rc != BP_OK) return rc;
 
     /* pre-scan file table for overall progress total */

@@ -22,7 +22,7 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 
 The full archiver can read and write all five methods on modern targets.
 Constrained frontends (DOS 16-bit, Win16, Amiga, Atari, Classic Mac 68 K) may
-reject methods they do not ship and return `ERR_METHOD`.
+reject methods they do not ship and return `BP_ERR_UNSUPPORTED_METHOD`.
 
 ## 2. Method 0: Stored
 
@@ -209,9 +209,9 @@ with the strict-C89 decoder, but compresses blocks in parallel and groups
 consecutive blocks into shared-history batches (default group size `4`) so the
 ratio loss from resetting history stays bounded.
 
-The first block in each batch uses stream version `0x87`, which tells the
+The first block in each batch uses stream version `0x88`, which tells the
 decoder to reset the Fluff context before decoding that block. Later blocks in
-the same batch use the ordinary `0x07` header and can still refer back to the
+the same batch use the ordinary `0x08` header and can still refer back to the
 earlier blocks in that batch.
 
 ### 5.3 Current Encoder Pipeline
@@ -251,26 +251,33 @@ The current Fluff encoder is best understood as the following concrete stages.
 
 `fluff_decompress_block_ctx()` dispatches on the stream version byte:
 
-**Version `0x87` (FSE/tANS reset block) — grouped fast-fluff format:**
+**Version `0x88` (compact FSE/tANS reset block) — grouped fast-fluff format:**
 
-1. Validate the four-byte `F`, `L`, `0x87`, `18` stream header.
+1. Validate the four-byte `F`, `L`, `0x88`, `18` stream header.
 1. Reset the Fluff history window and repeat-distance state for the current
    context.
-1. Decode the remainder of the block exactly as version `0x07`.
+1. Decode the remainder of the block exactly as version `0x08`.
 
-**Version `0x07` (FSE/tANS) — current format:**
+**Version `0x08` (compact FSE/tANS) — current format:**
 
-1. Validate the four-byte `F`, `L`, `0x07`, `18` stream header.
-1. Read count tables from the fixed-size header (578 bytes lit/len + 96 bytes
-   dist).
-1. Build FSE decode tables from the count tables.
-1. Read initial ANS states and bitstream lengths from the header.
+1. Validate the four-byte `F`, `L`, `0x08`, `18` stream header.
+1. Parse the compact count-table header and scalar fields as described in
+   §5.2, then locate the FSE and raw extra-bit streams.
+1. Build FSE decode tables from the decoded count tables.
+1. Initialize ANS states from the compact header.
 1. Decode tokens forwards by advancing through the ANS decode table and reading
    backwards from the pre-written bitstreams.
 1. For each token: emit literal, or compute match length + distance (or
    reuse a rep distance), then copy via overlap-safe LZ77.
 1. Bulk-copy the finished block into the ring buffer so the next block can use
    cross-block references.
+
+**Versions `0x07`/`0x87` (legacy FSE/tANS) — legacy read-only:**
+
+1. Validate the four-byte `F`, `L`, `0x07` or `0x87`, `18` stream header.
+1. Read the fixed-size count tables, states, lengths, and FSE/raw streams.
+1. Build the FSE tables and decode the tokens as for `0x08`.
+1. Version `0x87` first resets the Fluff history window and repeat-distance state.
 
 **Version `0x06` (range coder) — legacy read-only:**
 
@@ -379,7 +386,7 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | Method | Compression-side working memory                              | Decompression-side working memory                         |
 | ------ | ------------------------------------------------------------ | --------------------------------------------------------- |
 | 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
-| 1      | Fixed 29,200-byte BST workspace                              | 18,432-byte hash-chain workspace; no decoder scratch            |
+| 1      | 18,432-byte hash-chain workspace                             | No decoder scratch                                               |
 | 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
 | 3      | `fluff_ctx_t` is about 2 MB plus per-block token buffers     | Current decoder also reuses `fluff_ctx_t` for block state |
 | 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
@@ -393,10 +400,7 @@ The current implementations are covered by the repository test suite in `test/`.
 Relevant checks include:
 
 1. `test/check_boltpack.py` for end-to-end archive behavior.
-1. `test/test_roundtrip.py` for cross-method round-trips.
-1. `test/test_fluff.py` for Fluff-specific regression coverage.
-1. `test/test_format.py` for format validation.
-1. `test/test_filenames.py` for path and encoding behavior.
+1. `make unit-test` for the C unit suites in `test/unit/`.
 
 The v1.0 codec documentation is meant to track the code that ships. Historical
 planning material and discarded codec variants are intentionally left out.

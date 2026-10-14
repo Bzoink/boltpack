@@ -54,10 +54,11 @@ fi
 # Build specified platforms
 print_step "Building binaries"
 for platform in "${PLATFORMS[@]}"; do
-    if make "$platform" 2>/dev/null; then
+    if make "$platform"; then
         print_success "Built $platform"
     else
-        echo "⚠ Skipped $platform (toolchain not available)"
+        echo "✗ Build failed for $platform; check the diagnostics above" >&2
+        exit 1
     fi
 done
 

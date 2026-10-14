@@ -547,10 +547,14 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     char  local_name[BP_MAX_PATH];
     FILE *fp; bp_io_t *io;
 
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), QL_CP) != 0)
-        strncpy(local_name, entry->name, sizeof(local_name) - 1);
+    if (!bp_name_is_safe(entry->name)) return NULL;
 
-    if (ctx->out_dir) {
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), QL_CP) != 0) {
+        strncpy(local_name, entry->name, sizeof(local_name) - 1);
+        local_name[sizeof(local_name) - 1] = '\0';
+    }
+
+    if (ctx->out_dir && ctx->out_dir[0]) {
         size_t odn = strlen(ctx->out_dir);
         if (ctx->out_dir[odn - 1] == '/')
             ql_join2(path, sizeof(path), ctx->out_dir, local_name);
@@ -558,6 +562,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             ql_join3(path, sizeof(path), ctx->out_dir, "/", local_name);
     } else {
         strncpy(path, local_name, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
     }
 
     if (entry->entry_type == BP_TYPE_DIR) {

@@ -1,0 +1,598 @@
+# Code Review
+
+Status: complete (276 of 276 files reviewed; all findings fixed).
+
+This document defines the review scope as the complete project file tree.
+The inventory includes tracked files and nonignored untracked project files
+present on 2026-10-14. It covers source, documentation, tests, fixtures,
+build and release scripts, packaging, and project assets. Ignored build
+outputs and files inside `.git/` are not part of the project inventory.
+
+Files in scope: 276.
+
+All findings below are retained as review history. Each finding now records its resolution.
+
+## Files in scope
+
+- `.github/workflows/ci.yml`
+  - Review result: Fixed. [P2] The musl smoke test suppresses failures with `|| true`, so it passes if the binary is missing or fails to start. Fix: Removed failure suppression from the musl smoke command so a missing or failing binary fails CI.
+- `.github/workflows/release.yml`
+  - Review result: Reviewed. No findings.
+- `.gitignore`
+  - Review result: Reviewed. No findings.
+- `.markdownlint.json`
+  - Review result: Reviewed. No findings.
+- `CONTRIBUTING.md`
+  - Review result: Reviewed. No findings.
+- `CONTRIBUTORS.md`
+  - Review result: Reviewed. No findings.
+- `LICENSE.md`
+  - Review result: Reviewed. No findings.
+- `Makefile`
+  - Review result: Reviewed. No findings.
+- `README.md`
+  - Review result: Fixed. [P2] The download table labels v1.4 as current and links to v1.4, while the release notes mark v1.5.0 stable and describe v1.6 and v1.7. Fix: Updated the current release label and all download filenames and links to v1.7.
+- `RELEASE-NOTES.md`
+  - Review result: Reviewed. No findings.
+- `SECURITY.md`
+  - Review result: Fixed. [P2] The supported-version table lists 1.4 as current even though the release notes mark 1.5.0 stable and document 1.6 and 1.7, which can misdirect vulnerability reports and updates. Fix: Updated the supported release to 1.7 and marked older versions unsupported.
+- `VERSION`
+  - Review result: Reviewed. No findings.
+- `VERSION_MINI`
+  - Review result: Reviewed. No findings.
+- `boltpack-gui.info`
+  - Review result: Reviewed. No source-text issue found; binary resource was not decoded or visually inspected.
+- `boltpack.info`
+  - Review result: Reviewed. No source-text issue found; binary resource was not decoded or visually inspected.
+- `build.sh`
+  - Review result: Fixed. [P2] `do_all` and `do_all_tiers` ignore every target failure with `|| true`, so these aggregate commands exit successfully even when an available toolchain's build fails. Fix: Aggregate target loops now collect failures and return a failing status while still attempting available targets.
+- `docs/BUILD.md`
+  - Review result: Fixed. [P2] The guide says `make` auto-detects platforms and gives `make install`, but the current Makefile defaults to the Linux frontend and defines no install target. It also directs Plan 9, z/OS, and OpenVMS users to `build/Makefile.*` files that are absent from the project inventory. Fix: Corrected default and named target instructions, removed nonexistent platform Makefile recipes, and documented manual binary installation.
+- `docs/DEPENDENCY-CHECKS.md`
+  - Review result: Reviewed. No findings.
+- `docs/README.md`
+  - Review result: Reviewed. No findings.
+- `docs/RELEASES.md`
+  - Review result: Fixed. [P2] The build command includes `make linux` and `make linux-arm64`, but the current Makefile has no such targets (`make` builds the default Linux target; `arm64` is the target name), so the documented build workflow stops with a missing-target error. Fix: Changed the build recipe to existing Makefile targets.
+- `docs/algorithms.md`
+  - Review result: Fixed. [P2] The memory table still describes BoltLite's retired 29,200-byte BST workspace and claims decoder scratch, contradicting the current implementation description earlier in the same file. The validation section also names four test scripts absent from the repository (`test_roundtrip.py`, `test_fluff.py`, `test_format.py`, and `test_filenames.py`), so those instructions cannot be followed. Fix: Updated the BoltLite memory table and replaced nonexistent test scripts with the actual unit and end-to-end entry points.
+- `docs/architecture.md`
+  - Review result: Fixed. [P2] Several user-facing details are stale: the checksum API and test procedure still specify Adler-32 although the current format requires CRC-32; the header check says versions `<=` supported while current readers require exact equality; and the `-F` example calls Fluff Huffman-based although the codec uses FSE/tANS. The compression-decision steps also say to store only when compressed size is at least the original, omitting the documented 1% savings threshold. Fix: Updated CRC-32 API and test details, exact version checks, Fluff codec terminology, and the 1% storage threshold.
+- `docs/boltlite-evaluation-2026-10-14.md`
+  - Review result: Reviewed. No findings.
+- `docs/boltlz-code-review.md`
+  - Review result: Fixed. [P2] The implementation-follow-up link targeted a nonexistent heading in `boltlz-development.md`. Fix: Linked it to the existing `#benchmarks-and-experiments` section.
+- `docs/boltlz-design.md`
+  - Review result: Reviewed. No findings.
+- `docs/boltlz-development.md`
+  - Review result: Reviewed. No findings.
+- `docs/boltlz-validation-2026-10-14.md`
+  - Review result: Fixed. [P2] The closing assessment says BoltLZ was integrated in archive format 4, but the opening report and current project documentation say format 5. Fix: Corrected the integrated archive format number to 5.
+- `docs/code-review.md`
+  - Review result: Reviewed. No findings.
+- `docs/format.md`
+  - Review result: Reviewed. No findings.
+- `docs/frontends.md`
+  - Review result: Fixed; resolutions are listed under each finding.
+    - Fixed finding [P2] The direct-build recipes for Linux, DOS, macOS, and Haiku omit `src/core/boltlite.c` and `src/core/fluff.c`, even though `archiver.c` calls those codecs; the recipes therefore cannot link the documented full-method CLI.
+      Resolution: Added both codec sources to manual builds, replaced fixed artifact versions with a version placeholder, and corrected Fluff terminology.
+    - Fixed finding [P2] The Total Commander install instructions hard-code `1.0` ZIP filenames, while the Makefile names these artifacts with the current `BP_VERSION` (now 1.7).
+      Resolution: Added both codec sources to manual builds, replaced fixed artifact versions with a version placeholder, and corrected Fluff terminology.
+    - Fixed finding [P2] Several option tables call Fluff “LZ77+Huffman,” but the current codec uses FSE/tANS, giving users the wrong description of the format.
+      Resolution: Added both codec sources to manual builds, replaced fixed artifact versions with a version placeholder, and corrected Fluff terminology.
+- `docs/mini.md`
+  - Review result: Fixed. [P2] The capability section says mini archive creation rejects methods above BoltLite and extraction skips BoltLZ entries, contradicting both this document's opening and `src/core/mini/archiver.c`, which supports method 2 on 32/64-bit builds and decodes method 2 on 16-bit builds. The verification instructions consequently describe behavior that the implementation does not use. Fix: Aligned capability and extraction behavior with method 2 support and unsupported-method handling.
+- `docs/portability.md`
+  - Review result: Fixed; resolutions are listed under each finding.
+    - Fixed finding [P2] It says every file under `src/frontend/` must remain C89, although the project includes C++, Objective-C, and C# frontends.
+      Resolution: Scoped C89 claims to the core, fixed manual codec source lists, and corrected the constrained-build memory description.
+    - Fixed finding [P2] The manual cross-build recipes omit `src/core/boltlite.c` and `src/core/fluff.c`, despite `archiver.c` calling those codecs, so they do not link the full CLI described by the guide.
+      Resolution: Scoped C89 claims to the core, fixed manual codec source lists, and corrected the constrained-build memory description.
+    - Fixed finding [P2] The 8-bit discussion still describes BoltLZ's 64 KiB encoder workspace as a shipped constraint, while the constrained mini build uses BoltLite for compression and only includes BoltLZ decoding on 16-bit targets.
+      Resolution: Scoped C89 claims to the core, fixed manual codec source lists, and corrected the constrained-build memory description.
+- `docs/specification-1.0.md`
+  - Review result: Fixed; resolutions are listed under each finding.
+    - Fixed finding [P1] The current Fluff encoder writes stream versions `0x08` and `0x88` (§3.4.1/3.4.6a), but the normative decoder pseudocode and requirements in §3.4.11–3.4.12 accept only `0x06`, `0x07`, and `0x87`; an implementation following those decoder instructions rejects archives emitted by this project.
+      Resolution: Updated Fluff decoder versions, actual repository checks, development status/date, exact archive version rules, and the unsupported-method code.
+    - Fixed finding [P2] The conformance section lists `test/test_roundtrip.py`, `test/test_fluff.py`, `test/test_format.py`, and `test/test_filenames.py`, none of which exist in the project; the only listed existing end-to-end script is `test/check_boltpack.py`.
+      Resolution: Updated Fluff decoder versions, actual repository checks, development status/date, exact archive version rules, and the unsupported-method code.
+    - Fixed finding [P2] The document contradicts itself on release state: its heading says “Development” with a July 2026 release date, while its final status calls it “Final (Stable release)” and says it was last updated June 2026. The release notes identify the current release separately.
+      Resolution: Updated Fluff decoder versions, actual repository checks, development status/date, exact archive version rules, and the unsupported-method code.
+    - Fixed finding [P2] Conformance instructions use undefined `ERR_METHOD` for unsupported codecs (including §9.1), while the documented API and implementation use `BP_ERR_UNSUPPORTED_METHOD`; implementers following the normative text will return the wrong status code.
+      Resolution: Updated Fluff decoder versions, actual repository checks, development status/date, exact archive version rules, and the unsupported-method code.
+- `encodings/ISO-8859-1.txt`
+  - Review result: Reviewed. No findings.
+- `encodings/ISO-8859-2.txt`
+  - Review result: Reviewed. No findings.
+- `encodings/Shift-JIS.txt`
+  - Review result: Reviewed. No findings.
+- `encodings/UTF-8.txt`
+  - Review result: Reviewed. No findings.
+- `lib/zstd/LICENSE`
+  - Review result: Reviewed. The vendored BSD license text is present; no findings.
+- `lib/zstd/README.zstd`
+  - Review result: Fixed. [P2] It calls the bundled license “BSD 2-Clause,” but `lib/zstd/LICENSE` contains the additional no-endorsement clause, which makes the supplied text a three-clause BSD license. Fix: Corrected the bundled license description to BSD 3-Clause.
+- `lib/zstd/zstd.c`
+  - Review result: Reviewed. The vendored amalgamation identifies zstd 1.5.7 consistently with its public header; no project-specific finding from this review.
+- `lib/zstd/zstd.h`
+  - Review result: Reviewed. Version macros and public API header are consistent with the bundled 1.5.7 amalgamation; no findings.
+- `lib/zstd/zstd_errors.h`
+  - Review result: Reviewed. No findings.
+- `magic/boltpack.magic`
+  - Review result: Reviewed. No findings.
+- `packaging/linux/boltpack-gui.desktop`
+  - Review result: Reviewed. No findings.
+- `packaging/totalcmd-plugin/README.txt`
+  - Review result: Fixed. [P2] The plugin guide identifies the product as v1.2, and describes Fluff as LZ77+Huffman; both are stale for the current v1.7/FSE-tANS implementation. Fix: Updated the product version and Fluff entropy-coder description.
+- `packaging/windows-installer/win-fltk-common.nsh`
+  - Review result: Fixed. [P2] `InstallDir` is hard-coded under `$LocalAppData` even though the installer offers an all-users mode and writes machine-wide registration in that mode; other Windows users cannot reliably use that installation path. Fix: Selects Program Files for all-users installation and LocalAppData for per-user installation.
+- `packaging/windows-installer/win32-fltk/boltpack-setup.nsi`
+  - Review result: Reviewed. No findings.
+- `packaging/windows-installer/win64-fltk/boltpack-setup.nsi`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack.svg`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_icon.icns`
+  - Review result: Reviewed. Decoded image dimensions and format; no findings.
+- `resources/pics/boltpack_icon.ico`
+  - Review result: Reviewed. Decoded image dimensions and format; no findings.
+- `resources/pics/boltpack_icon.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_logo.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_logo.svg`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_logo_rounded.ico`
+  - Review result: Reviewed. Decoded image dimensions and format; no findings.
+- `resources/pics/boltpack_logo_sq.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_logo_sq_96.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_logo_wb.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_magenta.png`
+  - Review result: Reviewed. No findings.
+- `resources/pics/boltpack_magenta.svg`
+  - Review result: Reviewed. No findings.
+- `scripts/build-and-release.sh`
+  - Review result: Fixed. [P2] The platform loop discards build diagnostics and treats every failed `make` as a missing-toolchain skip, so genuine source/link errors can be silently bypassed and the script proceeds to package stale or absent outputs. Fix: Preserved build diagnostics and now stops on a failed requested target instead of treating it as an unavailable toolchain.
+- `scripts/build-riscos.sh`
+  - Review result: Fixed. [P2] Its missing-SDK instructions tell users to rerun `dev/build-riscos.sh`, a path absent from the project; its package check also expands every matching old RISC OS ZIP into `[ -f ... ]`, which fails with “too many arguments” when more than one version is present in `dist/`. Fix: Corrected the rerun path and changed the package check to safely handle zero or multiple matching packages.
+- `scripts/create-classic-mac-source-kits.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/create-macos-source-kits.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/create-native-unix-source-kits.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/create-packages.sh`
+  - Review result: Fixed. [P1] The default scan treats any directory with a `boltpack*` or `bpmini*` file as a platform, then indexes its associative arrays under `set -u`. The current tree contains `build/mini-test/bpmini-test`, and the real `linux32mini` build has no platform metadata, so packaging-all aborts on these build outputs instead of skipping nonrelease directories as intended. Fix: Filters autodetected directories through the configured release-platform map before indexing package metadata.
+- `scripts/create-source-kits.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/create-special-sdk-source-kits.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/generate-download-page.py`
+  - Review result: Fixed. [P2] `detect_version()` returns the first package version from unsorted `os.listdir()` rather than the current release version, so a dist directory containing multiple releases can label the generated page with an arbitrary older version. Fix: Chooses the numerically newest package version rather than the first directory entry.
+- `scripts/macos/build-native.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/make_amiga_info_icons.py`
+  - Review result: Reviewed. No findings.
+- `scripts/merge_rsrc.py`
+  - Review result: Reviewed. No findings.
+- `scripts/native-unix/build-native.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/release.sh`
+  - Review result: Fixed. [P2] It computes the project root but leaves release ID, notes, and `dist/` paths relative to the caller's working directory, so invoking the script outside the checkout reads or writes the wrong files. After publish, it also prints a release URL on `tonybrix/boltpack` while API operations target `Bzoink/boltpack` and project links use Bzoink. Upload scans every versioned package in `dist/`, so stale artifacts left by earlier builds can be attached to the current release. Fix: Anchored execution and release state to the checkout, corrected the published URL, and restricted checksum/upload inputs to the current version.
+- `scripts/setup-aix.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-arm.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-e2k.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-haiku.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-hpux.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-illumos.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-irix.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-musl.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-os2.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-ql.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-riscv.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-solaris.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/setup-wasm.sh`
+  - Review result: Reviewed. No findings.
+- `scripts/special-sdk/build-sdk.sh`
+  - Review result: Fixed. [P2] The QL build omits `boltlite.c`, and the X68000 build omits `fluff.c`, even though `archiver.c` references both codec implementations; these documented SDK build targets fail at link time. Fix: Added the missing BoltLite source to QL and Fluff source to X68000 builds.
+- `src/core/archiver.c`
+  - Review result: Fixed; resolutions are listed under each finding.
+    - Fixed finding [P2] `bp_archive_extract_all()` validates the header CRC but never calls `verify_table_crc()` or validates the footer/table, unlike list, info, append, and test paths. Extraction can therefore report success for format-5 archives with corrupted file-table metadata or a missing/bad footer.
+      Resolution: Extraction validates the table/footer before processing; entry header sizes, reserved header flags, CRC-32 type, and final archive size are validated.
+    - Fixed finding [P2] `read_entry_header()` reads the fixed fields even when `header_size < BP_ENTRY_FIXED + name_len`; the format requires an exact minimum header size, but malformed entries are accepted and the stream position no longer matches the declared payload offset.
+      Resolution: Extraction validates the table/footer before processing; entry header sizes, reserved header flags, CRC-32 type, and final archive size are validated.
+    - Fixed finding [P2] Header reserved flags and `checksum_type` are not validated on read, despite format-5 requirements that header flags be zero and only CRC-32 checksum type 1 be accepted.
+      Resolution: Extraction validates the table/footer before processing; entry header sizes, reserved header flags, CRC-32 type, and final archive size are validated.
+- `src/core/archiver.h`
+  - Review result: Fixed. [P2] The `bp_archive_t.log_fn` field comment says diagnostics default to stderr, but `archiver.c` drops messages when no callback is set; callers relying on the documented default receive no log output. Fix: Corrected the log callback comment to state that messages are dropped when no callback is installed.
+- `src/core/boltlite.c`
+  - Review result: Reviewed. No findings.
+- `src/core/boltlite.h`
+  - Review result: Reviewed. No findings.
+- `src/core/boltlz.c`
+  - Review result: Reviewed. No findings from static inspection.
+- `src/core/boltlz.h`
+  - Review result: Reviewed. No findings.
+- `src/core/boltlz_config.h`
+  - Review result: Reviewed. No findings.
+- `src/core/boltpack_dll.c`
+  - Review result: Reviewed. No findings.
+- `src/core/boltpack_dll.h`
+  - Review result: Reviewed. No findings.
+- `src/core/bp_codepage.c`
+  - Review result: Fixed. [P1] `bp_utf8_to_local()` decodes 2- and 3-byte UTF-8 sequences without confirming enough continuation bytes remain; a truncated sequence can advance beyond the terminating NUL and read out of bounds on the next iteration. Validate the sequence length and continuation bytes before indexing. Fix: Checks UTF-8 continuation bytes and available sequence length before decoding.
+- `src/core/bp_codepage.h`
+  - Review result: Reviewed. No findings.
+- `src/core/bp_types.h`
+  - Review result: Reviewed. No findings.
+- `src/core/compress.c`
+  - Review result: Reviewed. No findings.
+- `src/core/compress.h`
+  - Review result: Fixed. [P2] `bp_checksum_seed()` is documented as returning 1 for Adler-32, but the current implementation always returns 0 and ignores the type because CRC-32 is now the only supported archive checksum. Fix: Corrected checksum seed documentation to CRC-32 seed zero.
+- `src/core/fluff.c`
+  - Review result: Fixed. [P1] The legacy 0x07 decoder adds attacker-controlled `hdr_pos`, `fse_len`, and `raw_len` in 32-bit arithmetic before checking `src_len`; overflow can bypass the bounds check and make the bit readers access beyond the input buffer. Fix: Replaced overflow-prone summed bounds checks with subtraction-based input bounds validation.
+- `src/core/fluff.h`
+  - Review result: Reviewed. No findings.
+- `src/core/fluff_fast.c`
+  - Review result: Fixed. [P2] Its header comment says the fast path patches stream versions 0x07/0x87, but the current codec emits 0x08/0x88, making the reset behavior documentation stale. Fix: Updated the fast-path version comment to 0x08/0x88.
+- `src/core/fluff_fast.h`
+  - Review result: Fixed. [P2] The API documentation still described 0x07/0x87 stream versions, while current Fluff streams use 0x08/0x88. Fix: Updated grouped reset documentation to use the compact 0x88 reset version and 0x08 continuation version.
+- `src/core/fluff_json.c`
+  - Review result: Fixed. [P2] `json_write_escape()` leaves JSON control bytes other than LF and CR unescaped, so metadata strings containing tabs or other U+0000–U+001F bytes produce invalid JSON; summary keys are also interpolated without escaping. Fix: Escapes all JSON control characters and serializes summary keys through the escaping helper.
+- `src/core/fluff_json.h`
+  - Review result: Reviewed. No findings.
+- `src/core/fluff_simd.h`
+  - Review result: Reviewed. No findings.
+- `src/core/fluff_trace.c`
+  - Review result: Fixed. [P2] `started_summary` is never set, so close never writes `total_events`; `fluff_trace_decompress_symbol()` also interpolates caller-provided `sym_type` into JSON without escaping, which can corrupt the output. Fix: Writes total event count and restricts symbol types to known literals before JSON serialization.
+- `src/core/fluff_trace.h`
+  - Review result: Reviewed. No findings.
+- `src/core/mini/archiver.c`
+  - Review result: Fixed. [P2] `bp_mini_archive_create()` accepts method 3 (Fluff), despite the mini API documenting support only through BoltLZ; creating a Fluff archive succeeds, then adding a nonempty file fails in the mini compressor. Fix: Rejects Fluff at archive creation while retaining stored, BoltLite, and supported BoltLZ methods.
+- `src/core/mini/archiver.h`
+  - Review result: Reviewed. No findings.
+- `src/core/mini/boltlz_decomp.c`
+  - Review result: Reviewed. No findings.
+- `src/core/mini/boltlz_decomp.h`
+  - Review result: Reviewed. No findings.
+- `src/core/mini/compress.c`
+  - Review result: Fixed. [P1] Stored-method decompression copies `src_len` bytes to `dst` without checking the caller-provided `*dst_len` in both build paths. A malformed block whose compressed size exceeds the declared output size can overwrite the destination buffer. Fix: Checks stored-block destination capacity before copying in both mini build paths.
+- `src/core/mini/compress.h`
+  - Review result: Reviewed. No findings.
+- `src/core/zstd_wrap.c`
+  - Review result: Reviewed. No findings.
+- `src/core/zstd_wrap.h`
+  - Review result: Fixed. [P2] The comments claim `bp_zstd_set_level()` accepts and maps a level, although the implementation is now a no-op and requires the level per compression call. Fix: Documents the setter as a no-op and describes per-call compression levels.
+- `src/frontend/aix/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/amiga/main.c`
+  - Review result: Fixed. [P1] Extraction joins archive-controlled names to the destination with unbounded `sprintf()` and does not reject `..` path components, allowing stack-buffer overflow and writes outside the selected destination. Fix: Rejects unsafe archive names and bounds extraction path construction.
+- `src/frontend/amiga_gui/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/amigaos4/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/aros/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/atari/main.c`
+  - Review result: Fixed. [P1] Extraction joins archive-controlled names to the destination with unbounded `sprintf()` and does not reject `..` path components, allowing stack-buffer overflow and writes outside the selected destination. Fix: Rejects unsafe archive names and bounds extraction path construction.
+- `src/frontend/atari_gui/main.c`
+  - Review result: Fixed. [P1] `extract_open_cb()` formats the destination and archive-controlled entry name into a fixed path buffer with unbounded `sprintf()`, permitting stack-buffer overflow from a long path. Fix: Rejects unsafe archive names and bounds the generated extraction path.
+- `src/frontend/common/bp_net_cli.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/cpm86/main.c`
+  - Review result: Fixed. [P2] Duplicate 8.3 output names are tracked only for the first 256 extracted entries; later colliding names are no longer detected and can overwrite earlier files. Fix: Skips entries after its collision-tracking capacity is reached.
+- `src/frontend/dos/main.c`
+  - Review result: Fixed. [P1] Extraction joins archive-controlled names to the destination with unbounded `sprintf()` and does not reject `..` path components, allowing stack-buffer overflow and writes outside the selected destination. Fix: Rejects unsafe archive names and bounds extraction path construction.
+- `src/frontend/dos16/main.c`
+  - Review result: Fixed. [P1] Extraction appends archive-controlled names to the selected destination without rejecting `..` components, so crafted mini archives can write outside the destination directory. Fix: Rejects unsafe mini archive names and checks destination path capacity.
+- `src/frontend/freebsd/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/gui_common/help_text.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/gui_common/logo_png.h`
+  - Review result: Reviewed. No source-text issue found; embedded PNG bytes were not decoded or visually inspected.
+- `src/frontend/haiku/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/haiku_gui/main.cpp`
+  - Review result: Reviewed. No findings.
+- `src/frontend/hpux/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/hurd/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/illumos/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/irix/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/linux/bp_net.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/linux/bp_net.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/linux/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/linux_gui/logo_png.h`
+  - Review result: Reviewed. No source-text issue found; embedded PNG bytes were not decoded or visually inspected.
+- `src/frontend/linux_gui/main.cpp`
+  - Review result: Fixed. [P1] The GUI extraction callback writes archive-controlled entry names under the selected directory without rejecting traversal components, allowing a crafted archive to overwrite files outside the destination. Fix: Rejects unsafe archive paths before opening extraction destinations.
+- `src/frontend/linuxmini/main.c`
+  - Review result: Fixed. [P1] Mini extraction writes archive-controlled entry names directly under the selected destination without rejecting `..` components, allowing crafted archives to write outside the destination. Fix: Rejects unsafe mini archive names and checks destination path capacity.
+- `src/frontend/macos9/68k/BoltPack`
+  - Review result: Reviewed. No source-text issue found; this classic Mac application resource was not decoded or executed.
+- `src/frontend/macos9/68k/Source/archiver.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/archiver.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltlite.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltlite.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltlz.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltlz.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltlz_config.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltpack.r`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/boltpack.rsrc.bin`
+  - Review result: Reviewed. Resource file was identified but not decoded or visually inspected.
+- `src/frontend/macos9/68k/Source/boltpack.rsrc.sit`
+  - Review result: Reviewed. Archive container was identified but its contents were not extracted or inspected.
+- `src/frontend/macos9/68k/Source/bp_codepage.c`
+  - Review result: Fixed. [P1] This copied implementation has the same truncated UTF-8 sequence out-of-bounds read as `src/core/bp_codepage.c`: 2- and 3-byte sequences are indexed without validating continuation bytes are present. Fix: Checks UTF-8 continuation bytes and available sequence length before decoding.
+- `src/frontend/macos9/68k/Source/bp_codepage.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/bp_types.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/compress.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/compress.h`
+  - Review result: Fixed. [P2] The copied header retains the stale `bp_checksum_seed()` contract that says Adler-32 uses seed 1, while the implementation always returns CRC-32 seed 0. Fix: Corrected checksum seed documentation to CRC-32 seed zero.
+- `src/frontend/macos9/68k/Source/fluff.c`
+  - Review result: Fixed. [P1] This copy has the legacy 0x07 decoder's 32-bit sum overflow in the `hdr_pos + fse_len + raw_len` input bounds check, which can permit out-of-bounds reads on malformed streams. Fix: Replaced overflow-prone summed bounds checks with subtraction-based input bounds validation.
+- `src/frontend/macos9/68k/Source/fluff.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/Source/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/compat/Appearance.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/compat/Controls.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/compat/Drag.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/compat/Folders.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/68k/compat/MacCompat.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macos9/boltpack.r`
+  - Review result: Fixed. [P2] The Rez `vers` resource reports application version 1.0, which is stale relative to the current project version and would show incorrect version information in the built app. Fix: Updated the Rez version string and About dialog to 1.7.
+- `src/frontend/macos9/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macosx/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macosx_gui/main.m`
+  - Review result: Reviewed. No findings.
+- `src/frontend/macosx_legacy_gui/main.m`
+  - Review result: Reviewed. No findings.
+- `src/frontend/mini_shared/mini_common.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/mini_shared/mini_common.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/morphos/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/netbsd/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/nextstep/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/openbsd/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/os2/main.c`
+  - Review result: Fixed. [P1] Extraction builds paths from archive-controlled names without rejecting traversal components and uses unbounded `sprintf()` in the path join; long or malicious names can overwrite the stack or write outside the chosen destination. Its UTF-8 fallback also omits explicit NUL termination after `strncpy()`. Fix: Rejects unsafe archive names, bounds path joins, and explicitly terminates conversion fallbacks.
+- `src/frontend/os2_16/main.c`
+  - Review result: Fixed. [P1] Mini extraction normalizes archive separators to backslashes but never rejects `..` components, allowing a crafted archive to write outside the selected output directory. Fix: Rejects unsafe mini archive names and checks destination path capacity.
+- `src/frontend/plan9/main.c`
+  - Review result: Fixed. [P1] Extraction copies archive-controlled names into a fixed buffer with `strcpy()` when no output directory is set and does not reject `..` path components when joining a destination; this permits stack overflow and path traversal. Fix: Rejects unsafe archive names, bounds the output path, and avoids unbounded copies.
+- `src/frontend/ql/main.c`
+  - Review result: Fixed. [P2] If UTF-8 conversion fails, the fallback `strncpy()` leaves `local_name` unterminated for long archive names; subsequent path operations can read beyond the buffer. Fix: Explicitly terminates conversion fallbacks and rejects unsafe archive paths.
+- `src/frontend/qnx/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/riscos/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/sco/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/solaris/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/tru64/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win/boltpack.rc`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win/bp_net_win.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win/main.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win16/main.c`
+  - Review result: Fixed. [P1] Mini extraction joins archive-controlled names to the output path and converts `/` to `\\` without rejecting parent-directory components, so crafted archives can write outside the chosen destination. Fix: Rejects unsafe mini archive names and checks destination path capacity.
+- `src/frontend/win_gui/main.c`
+  - Review result: Fixed. [P1] The GUI extraction callback converts archive names to Windows paths and opens them without rejecting traversal components, allowing crafted archives to overwrite files outside the selected destination. Fix: Rejects unsafe archive paths before opening extraction destinations.
+- `src/frontend/win_gui/resource.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui/resource.rc`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_fltk/main.cpp`
+  - Review result: Fixed. [P1] The GUI extraction callback joins archive-controlled names to the destination and opens the resulting path without rejecting `..` components, allowing writes outside the selected destination. Fix: Rejects unsafe archive paths before opening extraction destinations.
+- `src/frontend/win_gui_fltk/resource.h`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_fltk/resource.rc`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_net/AboutForm.cs`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_net/BoltPack.csproj`
+  - Review result: Fixed. [P2] The .NET assembly version is fixed at 1.0.0, so builds keep reporting an obsolete version as the application version changes. Fix: Updated the assembly version to 1.7.0.
+- `src/frontend/win_gui_net/DocForm.cs`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_net/MainForm.cs`
+  - Review result: Fixed. [P1] The extraction containment check uses a raw `StartsWith(root)` string prefix without requiring a path-separator boundary; a sibling such as `C:\\output-evil` passes when the selected root is `C:\\output`. Fix: Canonicalizes the extraction root with a trailing separator before containment checks.
+- `src/frontend/win_gui_net/NativeMethods.cs`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_net/Program.cs`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_gui_net/ProgressForm.cs`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_wcx/boltpack-config.c`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_wcx/boltpack-config.rc`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_wcx/boltpack.def`
+  - Review result: Reviewed. No findings.
+- `src/frontend/win_wcx/boltpack_wcx.c`
+  - Review result: Fixed. [P1] When Total Commander supplies a destination directory instead of a full destination filename, `ProcessFile()` appends the archive entry name and extracts it without path traversal validation, allowing a crafted archive to write outside the chosen directory. Fix: Rejects unsafe archive names in the extraction callback.
+- `src/frontend/win_wcx/boltpack_wcx.rc`
+  - Review result: Reviewed. No findings.
+- `src/frontend/x68k/main.c`
+  - Review result: Fixed. [P1] Extraction joins archive-controlled names to the selected Human68k path without rejecting `..` components; a crafted archive can write outside the selected destination. The conversion-failure fallback also omits NUL termination after `strncpy()`. Fix: Rejects unsafe archive paths and explicitly terminates conversion fallbacks.
+- `src/frontend/zos/main.c`
+  - Review result: Reviewed. No findings.
+- `src/tools/README.md`
+  - Review result: Reviewed. No findings.
+- `src/tools/analyze_bitstream.py`
+  - Review result: Reviewed. No findings.
+- `src/tools/analyze_corpus.py`
+  - Review result: Reviewed. No findings.
+- `src/tools/extract_fluff_block.py`
+  - Review result: Reviewed. No findings.
+- `src/tools/fluff_db_analyzer.py`
+  - Review result: Reviewed. No findings.
+- `src/tools/fluff_parse_dump.c`
+  - Review result: Reviewed. No findings.
+- `src/tools/inspect_rsrc.py`
+  - Review result: Reviewed. No findings.
+- `src/tools/probe_improvements.py`
+  - Review result: Reviewed. No findings.
+- `templates/README-amiga.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-generic.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-linux.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-ql-uqlx.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-ql.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-riscos.txt`
+  - Review result: Reviewed. No findings.
+- `templates/README-windows.txt`
+  - Review result: Reviewed. No findings.
+- `test/bench_boltlite.c`
+  - Review result: Reviewed. No findings.
+- `test/bench_boltlz.c`
+  - Review result: Reviewed. No findings.
+- `test/bench_boltlz.py`
+  - Review result: Reviewed. No findings.
+- `test/bench_corpus.py`
+  - Review result: Reviewed. No findings.
+- `test/check_boltpack.py`
+  - Review result: Reviewed. No findings.
+- `test/experiment_boltlz.py`
+  - Review result: Reviewed. No findings.
+- `test/fixtures/digests.txt`
+  - Review result: Reviewed. No findings.
+- `test/fuzz_boltlz.c`
+  - Review result: Reviewed. No findings.
+- `test/gen_testdata.py`
+  - Review result: Reviewed. No findings.
+- `test/prepare_boltlz_holdout.py`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz-holdout.json`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz-loop-baseline.md`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz-review-baseline.md`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz-speed-baseline.md`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_loop_base.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_loop_base.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_loop_base.json`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_loop_base_config.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_review_base.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_review_base.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_review_base.json`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_review_base_config.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_scalar_decoder.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_speed_base.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_speed_base.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_speed_base.json`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_speed_base_config.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_v2.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/boltlz_v2.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/LICENSE`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/README.md`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/lz4.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/lz4.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/lz4hc.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/lz4hc.h`
+  - Review result: Reviewed. No findings.
+- `test/reference/lz4/upstream.json`
+  - Review result: Reviewed. No findings.
+- `test/reference/lzss_method1_v4.c`
+  - Review result: Reviewed. No findings.
+- `test/reference/lzss_method1_v4.h`
+  - Review result: Reviewed. No findings.
+- `test/seed_boltlz_fuzz.py`
+  - Review result: Reviewed. No findings.
+- `test/test_bench_boltlz.py`
+  - Review result: Reviewed. No findings.
+- `test/unit/mini_test_compress.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_archive_format.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_boltlz.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_checksum.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_codepage.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_compress.c`
+  - Review result: Reviewed. No findings.
+- `test/unit/test_runner.h`
+  - Review result: Reviewed. No findings.
+- `test/validate_boltlz.py`
+  - Review result: Reviewed. No findings.
+## Review notes
+
+Per-file findings and their resolutions are recorded directly beneath each
+path. This was a static review and follow-up fix pass; no tests were run.

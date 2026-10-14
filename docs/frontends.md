@@ -109,7 +109,7 @@ Or directly:
 ```sh
 gcc -ansi -pedantic -Wall -Wextra -O2 \
      \
-    src/core/compress.c src/core/archiver.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c \
     src/frontend/linux/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -250,7 +250,7 @@ Valid values:
 | `0`   | Stored           | No compression                       |
 | `1`   | BoltLite             | Small-memory LZ77                    |
 | `2`   | boltlz (default) | Fast general-purpose compression     |
-| `3`   | fluff            | LZ77+Huffman, best compression ratio |
+| `3`   | fluff            | LZ77 + FSE/tANS, best compression ratio |
 
 ### TC WCX: Build
 
@@ -265,13 +265,13 @@ This produces:
 
 - **boltpack.wcx** / **boltpack.wcx64** — The plugin DLL for Total Commander
 - **boltpack-config.exe** — Configuration utility (dialog box or CLI)
-- **boltpack-1.0-totalcmd-plugin-win32.zip** / **boltpack-1.0-totalcmd-plugin-win64.zip** — Click-to-install plugin ZIP for Total Commander
+- **boltpack-<version>-totalcmd-plugin-win32.zip** / **boltpack-<version>-totalcmd-plugin-win64.zip** — Click-to-install plugin ZIP for Total Commander
 
 The FLTK installer targets also generate the matching Total Commander plugin ZIP:
 
 ```sh
-make win32-fltk-installer   # Also emits build/win32/boltpack-1.0-totalcmd-plugin-win32.zip
-make win64-fltk-installer   # Also emits build/win64/boltpack-1.0-totalcmd-plugin-win64.zip
+make win32-fltk-installer   # Also emits build/win32/boltpack-<version>-totalcmd-plugin-win32.zip
+make win64-fltk-installer   # Also emits build/win64/boltpack-<version>-totalcmd-plugin-win64.zip
 ```
 
 Release packaging also copies these installable plugin ZIPs into `dist/`, and
@@ -282,7 +282,7 @@ downloads.
 
 Preferred:
 
-1. Open `boltpack-1.0-totalcmd-plugin-win32.zip` or `boltpack-1.0-totalcmd-plugin-win64.zip` inside Total Commander.
+1. Open `boltpack-<version>-totalcmd-plugin-win32.zip` or `boltpack-<version>-totalcmd-plugin-win64.zip` inside Total Commander.
 2. Accept the plugin installation prompt.
 3. Run `boltpack-config.exe` to select your preferred compression method.
 
@@ -348,7 +348,7 @@ Cross-compile from Linux:
 ```sh
 i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
      \
-    src/core/compress.c src/core/archiver.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c \
     src/frontend/dos/main.c src/core/boltlz.c \
     -o boltpack.exe
 ```
@@ -387,7 +387,7 @@ Filenames are stored as-is (ASCII / codepage). Non-ASCII names may not round-tri
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77+Huffman compression            |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
@@ -428,7 +428,7 @@ Or directly:
 ```sh
 m68k-amigaos-gcc -noixemul -ansi -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/amiga/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -546,7 +546,7 @@ Within archive entry names, forward slashes are always used as directory separat
 | --------- | ------------------------------------------------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `AvailMem`) |
 | `-0`      | Store only (no compression)                                                           |
-| `-F`      | Use fluff LZ77+Huffman compression                                                    |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression                                                    |
 | `-1`      | Use BoltLite compression                                                                  |
 | `-q`      | Quiet (summary only)                                                                  |
 | `-qq`     | Silent (errors only)                                                                  |
@@ -581,7 +581,7 @@ Or directly:
 ```sh
 m68k-atari-mint-gcc -ansi -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/atari/main.c src/core/boltlz.c \
   -o build/atari/boltpack.tos
 ```
@@ -681,7 +681,7 @@ MYFILE.TXT       →   MYFILE.TXT
 | --------- | --------------------------------------------------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `Malloc(-1)`) |
 | `-0`      | Store only (no compression)                                                             |
-| `-F`      | Use fluff LZ77+Huffman compression                                                      |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression                                                      |
 | `-1`      | Use BoltLite compression                                                                    |
 | `-q`      | Quiet (summary only)                                                                    |
 | `-qq`     | Silent (errors only)                                                                    |
@@ -1014,7 +1014,7 @@ static bp_uint8 ChooseCompressionMethod(void)
 This architecture allows future extension to show a dialog menu enabling users to select:
 
 - **BoltLite** (method 1): Small-memory LZ77 for compatibility-focused archives
-- **Fluff** (method 3): LZ77+Huffman compression (best ratio)
+- **Fluff** (method 3): LZ77 + FSE/tANS compression (best ratio)
 - **boltlz** (method 2): Fast, small blocks only (current default)
 - **Stored** (method 0): No compression (for pre-compressed data)
 
@@ -1072,7 +1072,7 @@ Or directly (ARM64):
 ```sh
 arm64-apple-macosx11-clang -ansi -pedantic -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/macosx/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -1258,7 +1258,7 @@ Or directly (cross-compilation from Linux):
 ```sh
 x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/haiku/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -1456,7 +1456,7 @@ RISC OS uses Latin-1 (ISO 8859-1). File names are converted to UTF-8 on archive 
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77+Huffman compression            |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
@@ -1549,7 +1549,7 @@ Drive prefixes (`C:\`, `C:`) are stripped. Backslashes are normalised to forward
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77+Huffman compression            |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
@@ -1630,7 +1630,7 @@ Plan 9 was the first production operating system to adopt UTF-8, designed by Rob
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77+Huffman compression            |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
@@ -1736,7 +1736,7 @@ Sinclair QL uses ISO-8859-1 (Latin-1) for filenames. File names are converted to
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77+Huffman compression            |
+| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |

@@ -74,7 +74,7 @@ typedef struct {
     bp_uint8        creator_cpu;
     bp_progress_fn  progress_fn;
     void           *progress_data;
-    bp_log_fn       log_fn;         /* optional; NULL = write to stderr */
+    bp_log_fn       log_fn;         /* optional; NULL disables diagnostics */
     void           *log_data;
 
     /* internal state for create */

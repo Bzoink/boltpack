@@ -43,6 +43,10 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
     if (src_len > BP_MINI_MAX_BLOCK_SIZE)
         return BP_ERR_INVALID_ARG;
     if (method == BP_METHOD_STORED) {
+        if (src_len > *dst_len) {
+            *dst_len = 0;
+            return BP_ERR_OVERFLOW;
+        }
         memcpy(dst, src, (size_t)src_len);
         *dst_len = src_len;
         return BP_OK;
@@ -67,6 +71,10 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
     if (src == NULL || dst == NULL || dst_len == NULL)
         return BP_ERR_INVALID_ARG;
     if (method == BP_METHOD_STORED) {
+        if (src_len > *dst_len) {
+            *dst_len = 0;
+            return BP_ERR_OVERFLOW;
+        }
         memcpy(dst, src, (size_t)src_len);
         *dst_len = src_len;
         return BP_OK;
@@ -141,6 +149,10 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
     }
 
     if (method == BP_METHOD_STORED) {
+        if (src_len > *dst_len) {
+            *dst_len = 0;
+            return BP_ERR_OVERFLOW;
+        }
         memcpy(dst, src, (size_t)src_len);
         *dst_len = src_len;
         return BP_OK;
@@ -175,6 +187,10 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
     }
 
     if (method == BP_METHOD_STORED) {
+        if (src_len > *dst_len) {
+            *dst_len = 0;
+            return BP_ERR_OVERFLOW;
+        }
         memcpy(dst, src, (size_t)src_len);
         *dst_len = src_len;
         return BP_OK;

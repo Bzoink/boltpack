@@ -92,6 +92,15 @@ Function .onInit
   SetRegView 64
 !endif
   !insertmacro MULTIUSER_INIT
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    !ifdef BP_USE_PROGRAMFILES64
+      StrCpy $INSTDIR "$PROGRAMFILES64\BoltPack"
+    !else
+      StrCpy $INSTDIR "$PROGRAMFILES\BoltPack"
+    !endif
+  ${Else}
+    StrCpy $INSTDIR "$LocalAppData\Programs\BoltPack"
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit

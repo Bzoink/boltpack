@@ -659,54 +659,58 @@ do_linux_tier4() {
 }
 
 do_all_tiers() {
+    local failed=0
     echo "Building all fluff optimization tiers for Linux..."
     echo ""
-    do_linux_tier3 || true
-    do_linux_tier4 || true
+    do_linux_tier3 || failed=1
+    do_linux_tier4 || failed=1
     echo ""
     echo "Fluff tier binaries built:"
     ls -lh build/linux/boltpack-tier* 2>/dev/null || true
     echo ""
     echo "To benchmark: python3 test/bench_corpus.py"
+    return "$failed"
 }
 
 do_all() {
+    local failed=0
     echo "Building aggregate Linux-hosted targets..."
     echo ""
-    do_linux       || true
-    do_linux_static || true
-    do_linux_i386  || true
-    do_linux32mini || true
-    do_arm32       || true
-    do_arm64       || true
-    do_riscv       || true
-    do_musl        || true
-    do_hurd        || true
-    do_dos_djgpp   || true
-    do_win32       || true
-    do_win64       || true
-    do_win32_fltk_gui || true
-    do_win64_fltk_gui || true
-    do_linux_gui   || true
-    do_os2         || true
-    do_freebsd     || true
-    do_netbsd      || true
-    do_illumos     || true
-    do_haiku       || true
-    do_amiga_m68k  || true
-    do_atari       || true
-    do_macos9_68k  || true
-    do_e2k         || true
-    do_wasm        || true
-    do_dos16       || true
-    do_win16       || true
-    do_os2_16      || true
+    do_linux       || failed=1
+    do_linux_static || failed=1
+    do_linux_i386  || failed=1
+    do_linux32mini || failed=1
+    do_arm32       || failed=1
+    do_arm64       || failed=1
+    do_riscv       || failed=1
+    do_musl        || failed=1
+    do_hurd        || failed=1
+    do_dos_djgpp   || failed=1
+    do_win32       || failed=1
+    do_win64       || failed=1
+    do_win32_fltk_gui || failed=1
+    do_win64_fltk_gui || failed=1
+    do_linux_gui   || failed=1
+    do_os2         || failed=1
+    do_freebsd     || failed=1
+    do_netbsd      || failed=1
+    do_illumos     || failed=1
+    do_haiku       || failed=1
+    do_amiga_m68k  || failed=1
+    do_atari       || failed=1
+    do_macos9_68k  || failed=1
+    do_e2k         || failed=1
+    do_wasm        || failed=1
+    do_dos16       || failed=1
+    do_win16       || failed=1
+    do_os2_16      || failed=1
     echo ""
     echo "Done. Built binaries:"
     find build -name 'boltpack*' -type f 2>/dev/null | sort | while read f; do
         size=$(ls -lh "$f" | awk '{print $5}')
         printf "  %-40s %s\n" "$f" "$size"
     done
+    return "$failed"
 }
 
 do_win_fltk_installers() {

@@ -144,6 +144,7 @@ build_ql() {
             -I../../core  \
             ../../core/archiver.c \
             ../../core/compress.c \
+            ../../core/boltlite.c \
             ../../core/fluff.c \
             ../../core/bp_codepage.c \
             main.c \
@@ -167,6 +168,7 @@ build_x68k() {
     build_with_sources "$compiler" "$cflags" "${X68K_OUTDIR:-build/x68k}" \
         "boltpack.x" "Sharp X68000 CLI" \
         src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+        src/core/fluff.c \
         src/core/bp_codepage.c \
         src/frontend/x68k/main.c src/core/boltlz.c
 }

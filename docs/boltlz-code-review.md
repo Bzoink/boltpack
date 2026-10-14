@@ -7,7 +7,7 @@ improve the match-search loop and table layout. Compression improvements
 should follow, with an explicit limit on their speed cost.
 
 Implementation follow-up: the first batch has now been implemented and
-benchmarked. See [the development results](boltlz-development.md#code-review-speed-experiments)
+benchmarked. See [the development results](boltlz-development.md#benchmarks-and-experiments)
 for the selected changes and rejected alternatives. This document preserves
 the pre-change analysis; its source line numbers refer to the snapshot below.
 

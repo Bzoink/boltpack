@@ -158,6 +158,10 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     char path[BP_MAX_PATH];
     static bp_io_t io;
 
+    if (!bp_mini_name_is_safe(e->name)) return NULL;
+    if (ctx->dest[0] && strlen(ctx->dest) + strlen(e->name) + 2 >= sizeof(path))
+        return NULL;
+
     if (e->entry_type == BP_TYPE_DIR) {
 #ifdef __WATCOMC__
         join_sep(path, BP_MAX_PATH, ctx->dest, '\\', e->name);

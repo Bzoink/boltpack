@@ -24,33 +24,33 @@ to ease data transfer and archival between platforms.
 
 ## Downloads
 
-Pre-built binaries for the current release (**v1.4**) are below. Every release
+Pre-built binaries for the current release (**v1.7**) are below. Every release
 also ships `SHA256SUMS.txt` for verification.
 
 | Platform                      | Download                                                                                                                                   |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Linux x86-64                  | [boltpack-1.4-linux-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-linux-x86-64.tar.gz)             |
-| Linux x86-64 static (musl)    | [boltpack-1.4-musl-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-musl-x86-64.tar.gz)               |
-| Linux x86-64 GUI (FLTK)       | [boltpack-1.4-linux-gui-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-linux-gui-x86-64.tar.gz)     |
-| Linux ARM64                   | [boltpack-1.4-linux-arm64-ARM.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-linux-arm64-ARM.tar.gz)       |
-| Linux ARM32                   | [boltpack-1.4-linux-arm32-arm.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-linux-arm32-arm.tar.gz)       |
-| Linux RISC-V 64               | [boltpack-1.4-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-riscv-riscv64.tar.gz)           |
-| GNU Hurd x86-64               | [boltpack-1.4-hurd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-hurd-x86-64.tar.gz)               |
-| Windows 64-bit installer      | [boltpack-1.4-win64-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win64-setup.exe)                     |
-| Windows 64-bit CLI            | [boltpack-1.4-win64-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win64-x86-64.zip)                   |
-| Windows 64-bit GUI (FLTK)     | [boltpack-1.4-win64-fltk-gui-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win64-fltk-gui-x86-64.zip) |
-| Windows 32-bit installer      | [boltpack-1.4-win32-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win32-setup.exe)                     |
-| Windows 32-bit CLI            | [boltpack-1.4-win32-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win32-x86.zip)                         |
-| Windows 32-bit GUI (FLTK)     | [boltpack-1.4-win32-fltk-gui-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win32-fltk-gui-x86.zip)       |
-| Total Commander plugin 64-bit | [boltpack-1.4-totalcmd-plugin-win64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-totalcmd-plugin-win64.zip) |
-| Total Commander plugin 32-bit | [boltpack-1.4-totalcmd-plugin-win32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-totalcmd-plugin-win32.zip) |
-| Windows 3.x 16-bit (mini)     | [boltpack-1.4-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-win16-x86.zip)                         |
-| MS-DOS 16-bit (mini)          | [boltpack-1.4-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-dos16-x86.zip)                         |
-| OS/2 1.x 16-bit (mini)        | [boltpack-1.4-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-os2-16-x86.zip)                       |
-| Amiga 68k (CLI + GUI)         | [boltpack-1.4-amiga-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-amiga-m68k.zip)                       |
-| Atari TOS + GEM GUI           | [boltpack-1.4-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-atari-m68k.zip)                       |
-| Classic Mac OS 68k GUI        | [boltpack-1.4-mac68k.hqx](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-mac68k.hqx)                               |
-| WebAssembly                   | [boltpack-1.4-wasm-wasm32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.4/boltpack-1.4-wasm-wasm32.zip)                     |
+| Linux x86-64                  | [boltpack-1.7-linux-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-x86-64.tar.gz)             |
+| Linux x86-64 static (musl)    | [boltpack-1.7-musl-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-musl-x86-64.tar.gz)               |
+| Linux x86-64 GUI (FLTK)       | [boltpack-1.7-linux-gui-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-gui-x86-64.tar.gz)     |
+| Linux ARM64                   | [boltpack-1.7-linux-arm64-ARM.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-arm64-ARM.tar.gz)       |
+| Linux ARM32                   | [boltpack-1.7-linux-arm32-arm.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-arm32-arm.tar.gz)       |
+| Linux RISC-V 64               | [boltpack-1.7-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-riscv-riscv64.tar.gz)           |
+| GNU Hurd x86-64               | [boltpack-1.7-hurd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-hurd-x86-64.tar.gz)               |
+| Windows 64-bit installer      | [boltpack-1.7-win64-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-setup.exe)                     |
+| Windows 64-bit CLI            | [boltpack-1.7-win64-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-x86-64.zip)                   |
+| Windows 64-bit GUI (FLTK)     | [boltpack-1.7-win64-fltk-gui-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-fltk-gui-x86-64.zip) |
+| Windows 32-bit installer      | [boltpack-1.7-win32-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-setup.exe)                     |
+| Windows 32-bit CLI            | [boltpack-1.7-win32-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-x86.zip)                         |
+| Windows 32-bit GUI (FLTK)     | [boltpack-1.7-win32-fltk-gui-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-fltk-gui-x86.zip)       |
+| Total Commander plugin 64-bit | [boltpack-1.7-totalcmd-plugin-win64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-totalcmd-plugin-win64.zip) |
+| Total Commander plugin 32-bit | [boltpack-1.7-totalcmd-plugin-win32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-totalcmd-plugin-win32.zip) |
+| Windows 3.x 16-bit (mini)     | [boltpack-1.7-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win16-x86.zip)                         |
+| MS-DOS 16-bit (mini)          | [boltpack-1.7-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-dos16-x86.zip)                         |
+| OS/2 1.x 16-bit (mini)        | [boltpack-1.7-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-os2-16-x86.zip)                       |
+| Amiga 68k (CLI + GUI)         | [boltpack-1.7-amiga-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-amiga-m68k.zip)                       |
+| Atari TOS + GEM GUI           | [boltpack-1.7-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-atari-m68k.zip)                       |
+| Classic Mac OS 68k GUI        | [boltpack-1.7-mac68k.hqx](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-mac68k.hqx)                               |
+| WebAssembly                   | [boltpack-1.7-wasm-wasm32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-wasm-wasm32.zip)                     |
 
 Source kits for platforms that require a native build (macOS, Solaris, IRIX,
 HP-UX, AIX, OpenBSD, RISC OS, MorphOS, AROS, Sinclair QL, Sharp X68000, Haiku,
