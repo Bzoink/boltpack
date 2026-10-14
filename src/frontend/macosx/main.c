@@ -1740,8 +1740,12 @@ static void usage_basic(void)
         "  -0         Store only (no compression)\n"
         "  -1         BoltLite compression\n"
         "  -2         boltlz compression (default)\n"
-        "  -F         Use Fluff compression\n"
-        "  -l N       Compression level (boltlz: 1-2; Fluff/zstd: 1-9)\n"
+        "  -F         Use Fluff compression\n");
+    fprintf(stderr,
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
         "  -o PATH    Output directory for extraction\n"
         "  -f         Force overwrite existing files\n"
         "  -n         Dry run\n"
@@ -1749,7 +1753,7 @@ static void usage_basic(void)
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.bolt folder\n"
-        "  boltpack extract backup.bolt -o out\n"
+        "  boltpack extract -o out backup.bolt\n"
         "  boltpack create --fluff backup.bolt folder\n");
 #ifdef BOLTPACK_NET
     bp_net_cli_usage(stderr);
@@ -1779,8 +1783,12 @@ static void usage_advanced(void)
         "  -0, --store      Store only (no compression)\n"
         "  -1, --boltlite       Use BoltLite compression\n"
         "  -2, --boltlz    Use boltlz compression (default)\n"
-        "  -F, --fluff      Use Fluff compression\n"
-        "  -l N, --level N  boltlz level 1-2; Fluff/zstd level 1-9\n"
+        "  -F, --fluff      Use Fluff compression\n");
+    fprintf(stderr,
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
         "  --block-size N   Long-form alias for -b\n"
         "  --output PATH    Long-form alias for -o\n");
     fprintf(stderr,
@@ -1890,6 +1898,15 @@ int main(int argc, char **argv)
                 return 1;
             }
             i += 2;
+        } else if (strcmp(argv[i], "--light") == 0) {
+            opt_level = -1;
+            i++;
+        } else if (strcmp(argv[i], "--standard") == 0) {
+            opt_level = -2;
+            i++;
+        } else if (strcmp(argv[i], "--best") == 0) {
+            opt_level = -3;
+            i++;
         } else if (strcmp(argv[i], "-qq") == 0 ||
                    strcmp(argv[i], "--silent") == 0) {
             g_verbosity = VERB_SILENT; i++;
@@ -1917,6 +1934,37 @@ int main(int argc, char **argv)
             fprintf(stderr, "boltpack: unknown option: %s\n", argv[i]);
             usage(); return 1;
         }
+    }
+
+    if (opt_level < 0) {
+        if (method == BP_METHOD_BOLTLZ)
+            opt_level = (opt_level == -1) ? 1 : 2;
+        else if (method == BP_METHOD_FLUFF)
+            opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 8 : 9);
+        else if (method == BP_METHOD_ZSTD)
+            opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 3 : 9);
+    }
+    if (opt_level < 0) {
+        fprintf(stderr,
+                "boltpack: quality presets are only supported for BoltLZ, Fluff, and zstd\n");
+        return 1;
+    }
+    if (opt_level > 0) {
+        if (method == BP_METHOD_BOLTLZ && opt_level > 2) {
+            fprintf(stderr, "boltpack: BoltLZ level must be 1-2\n");
+            return 1;
+        }
+        if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF &&
+            method != BP_METHOD_ZSTD) {
+            fprintf(stderr,
+                    "boltpack: -l is only supported for BoltLZ, Fluff, and zstd\n");
+            return 1;
+        }
+    }
+    if (command == 'x' && i + 1 < argc) {
+        fprintf(stderr,
+                "boltpack: extract options must precede the archive name\n");
+        return 1;
     }
 
     if ((method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD)

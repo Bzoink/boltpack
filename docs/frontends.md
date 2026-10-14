@@ -178,7 +178,10 @@ fast-fluff controls below.
 | ------ | ----------------------------------------------------------------------------------------- |
 | `-1`   | Use BoltLite compression                                                                      |
 | `-2`   | Use boltlz compression explicitly (the default method)                                    |
-| `-l N` | boltlz level 1-2; Fluff/zstd level 1-9                                                    |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9                                     |
+| `--light` | Fast preset: BoltLZ 1; Fluff/zstd 1                                                   |
+| `--standard` | Default preset: BoltLZ 2; Fluff 8; zstd 3                                          |
+| `--best` | Highest preset: BoltLZ 2; Fluff/zstd 9                                                 |
 | `-j N` | Use fast-fluff with `N` worker threads (fast-fluff CLI builds only)                       |
 | `-g N` | Group `N` Fluff blocks per shared-history batch before reset (fast-fluff CLI builds only) |
 
@@ -1228,7 +1231,10 @@ macOS CLI surface.
 | ------------------- | -------------------------------------- |
 | `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
-| `-l N`, `--level N` | boltlz level 1-2; Fluff/zstd level 1-9 |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
+| `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
+| `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
+| `--best`            | Highest preset: BoltLZ 2; Fluff/zstd 9 |
 | `--store`           | Long-form alias for `-0`               |
 | `--fluff`           | Long-form alias for `-F`               |
 | `--block-size N`    | Long-form alias for `-b`               |
@@ -1324,7 +1330,10 @@ Haiku CLI surface.
 | ------------------- | -------------------------------------- |
 | `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
-| `-l N`, `--level N` | boltlz level 1-2; Fluff/zstd level 1-9 |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
+| `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
+| `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
+| `--best`            | Highest preset: BoltLZ 2; Fluff/zstd 9 |
 | `--store`           | Long-form alias for `-0`               |
 | `--fluff`           | Long-form alias for `-F`               |
 | `--block-size N`    | Long-form alias for `-b`               |

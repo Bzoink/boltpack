@@ -2,8 +2,10 @@
 
 BoltLZ is BoltPack's default general-purpose codec: archive method 2, raw
 block format 2, archive format 5. Balanced is the default. `-2` or `--boltlz`
-selects the codec, `-l 1` selects Fast, and `-l 2` selects Balanced. Levels
-3–9 also map to Balanced. Readers accept only archive format 5.
+selects the codec; `-l 1` selects Fast and `-l 2` selects Balanced. The CLI
+accepts only levels 1 and 2 and rejects other numeric levels. `--light` maps to
+Fast; `--standard` and `--best` both map to Balanced. Readers accept only
+archive format 5.
 
 The [design document](boltlz-design.md) explains the encoder and selected
 optimizations. The [specification](specification-1.0.md) defines the complete
