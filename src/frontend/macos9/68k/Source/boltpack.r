@@ -174,14 +174,14 @@ resource 'DLOG' (128) {
 
 /* ============================================================
  * Compression method dialog (rDlgMixed = 129) -> DITL 130
- * Items: 1=Stored  2=LZSS  3=fastlz  4=fluff  5=Cancel  6=prompt
+ * Items: 1=Stored  2=LZSS  3=boltlz  4=fluff  5=Cancel  6=prompt
  * ============================================================ */
 
 resource 'DITL' (130) {
     {
         /* 1 kMethodStored */ { 44,  20,  64, 145 }, Button     { enabled, "Stored" };
         /* 2 kMethodLZSS   */ { 44, 165,  64, 300 }, Button     { enabled, "LZSS" };
-        /* 3 kMethodFastLZ    */ { 80,  20, 100, 145 }, Button     { enabled, "fastlz" };
+        /* 3 kMethodBoltLZ    */ { 80,  20, 100, 145 }, Button     { enabled, "boltlz" };
         /* 4 kMethodFluff  */ { 80, 165, 100, 300 }, Button     { enabled, "fluff (best)" };
         /* 5 kMethodCancel */ {130, 107, 150, 213 }, Button     { enabled, "Cancel" };
         /* 6 prompt */        {  8,  20,  34, 300 }, StaticText { disabled,

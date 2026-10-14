@@ -459,7 +459,7 @@ static bp_uint32 ChooseBlockSize(void)
     freeMem = TempFreeMem();
     if (freeMem <= 0) freeMem = FreeMem();
 
-    /* need block_size * 2 + 64K for FastLZ stack/hash overhead + 512K headroom */
+    /* need block_size * 2 + 64K for BoltLZ stack/hash overhead + 512K headroom */
     if (freeMem > (long)(BP_BLOCK_256K * 2 + 65536 + 524288))
         return BP_BLOCK_256K;
     if (freeMem > (long)(BP_BLOCK_64K * 2 + 65536 + 524288))
@@ -473,11 +473,11 @@ static bp_uint32 ChooseBlockSize(void)
 
 /* ---- ChooseCompressionMethod ------------------------------------------
  * Returns compression method for archive creation.
- * Currently defaults to fastlz; fluff can be enabled via menu in future.
+ * Currently defaults to boltlz; fluff can be enabled via menu in future.
  */
 static bp_uint8 ChooseCompressionMethod(void)
 {
-    return BP_METHOD_FASTLZ;  /* Default: fastlz */
+    return BP_METHOD_BOLTLZ;  /* Default: boltlz */
 }
 
 /* ==== Error Display ===================================================== */

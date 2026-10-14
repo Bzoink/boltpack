@@ -540,7 +540,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -743,7 +743,7 @@ int main(int argc, char **argv)
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_FASTLZ;
+    bp_uint8   method     = BP_METHOD_BOLTLZ;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
 

@@ -64,14 +64,13 @@ This source kit is for native BoltPack builds on Classic Mac OS 9 PowerPC.
 - src/core/lzss.c
 - src/core/fluff.c
 - src/core/bp_codepage.c
-- lib/fastlz/fastlz.c
+- src/core/boltlz.c
 - src/frontend/macos9/main.c
 - src/frontend/macos9/boltpack.r
 
 ## Include Paths
 
 - src/core
-- lib/fastlz
 
 ## Common Libraries
 
@@ -104,7 +103,7 @@ Use MPW 3.5 with the PowerPC MrC compiler, PPCLink, and Rez. A practical
 workflow is:
 
 1. Open the extracted source kit in MPW Shell.
-2. Add `src:core` and `lib:fastlz` to the MrC include search path.
+2. Add `src:core` to the MrC include search path.
 3. Compile each C file listed above with MrC for PowerPC output.
 4. Compile `src:frontend:macos9:boltpack.r` with Rez.
 5. Link the resulting objects with PPCLink against the common libraries above
@@ -124,17 +123,17 @@ library paths to match your MPW installation.
 ```text
 NewFolder obj
 
-MrC -opt peep -i src:core -i lib:fastlz -o obj:archiver.o src:core:archiver.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:compress.o src:core:compress.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:lzss.o src:core:lzss.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:fluff.o src:core:fluff.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:bp_codepage.o src:core:bp_codepage.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:fastlz.o lib:fastlz:fastlz.c
-MrC -opt peep -i src:core -i lib:fastlz -o obj:main.o src:frontend:macos9:main.c
+MrC -opt peep -i src:core -o obj:archiver.o src:core:archiver.c
+MrC -opt peep -i src:core -o obj:compress.o src:core:compress.c
+MrC -opt peep -i src:core -o obj:lzss.o src:core:lzss.c
+MrC -opt peep -i src:core -o obj:fluff.o src:core:fluff.c
+MrC -opt peep -i src:core -o obj:bp_codepage.o src:core:bp_codepage.c
+MrC -opt peep -i src:core -o obj:boltlz.o src:core:boltlz.c
+MrC -opt peep -i src:core -o obj:main.o src:frontend:macos9:main.c
 Rez src:frontend:macos9:boltpack.r -o obj:boltpack.rsrc
 
 PPCLink -o BoltPack obj:archiver.o obj:compress.o obj:lzss.o obj:fluff.o \
-        obj:bp_codepage.o obj:fastlz.o obj:main.o \
+        obj:bp_codepage.o obj:boltlz.o obj:main.o \
         InterfaceLib AppearanceLib NavigationLib MathLib <MPW PPC C runtime>
 ```
 
@@ -159,7 +158,6 @@ stage_common() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
-    copy_tree "$PROJROOT/lib/fastlz" "$kitdir/lib/fastlz"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/macos9" "$kitdir/src/frontend/macos9"
     rm -rf "$kitdir/src/frontend/macos9/68k"

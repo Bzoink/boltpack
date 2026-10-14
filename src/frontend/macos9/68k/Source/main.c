@@ -73,7 +73,7 @@
 /* Method selection dialog items (rDlgMixed = 129 repurposed) */
 #define kMethodStored       1
 #define kMethodLZSS         2
-#define kMethodFastLZ          3
+#define kMethodBoltLZ          3
 #define kMethodFluff        4
 #define kMethodCancel       5
 
@@ -689,7 +689,7 @@ static int EnsureFluffMemoryAvailable(const char *logPrefix)
     StrAppendLongDec(buf, &pos, (long)sizeof(buf), kFluffMinLargestBlock);
     LogWrite(buf);
 
-    ShowErrorStr("Fluff needs about 2.25 MB in app heap or temporary memory. Increase memory or use fastlz.");
+    ShowErrorStr("Fluff needs about 2.25 MB in app heap or temporary memory. Increase memory or use boltlz.");
     return 0;
 }
 
@@ -1184,7 +1184,7 @@ static int AskCompressionMethod(void)
     dlg = GetNewDialog(rDlgMixed, nil, (WindowPtr)-1);
     if (dlg == nil) return -1;
 
-    SetDialogDefaultItem(dlg, kMethodFastLZ);
+    SetDialogDefaultItem(dlg, kMethodBoltLZ);
     SetDialogCancelItem(dlg, kMethodCancel);
     ShowWindow(GetDialogWindow(dlg));
 
@@ -1192,7 +1192,7 @@ static int AskCompressionMethod(void)
         ModalDialog(nil, &item);
         if (item == kMethodStored) { result = BP_METHOD_STORED; break; }
         if (item == kMethodLZSS)   { result = BP_METHOD_LZSS;   break; }
-        if (item == kMethodFastLZ)    { result = BP_METHOD_FASTLZ;  break; }
+        if (item == kMethodBoltLZ)    { result = BP_METHOD_BOLTLZ;  break; }
         if (item == kMethodFluff)  {
             if (!EnsureFluffMemoryAvailable("AskCompressionMethod: fluff blocked largest=")) {
                 continue;

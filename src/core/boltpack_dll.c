@@ -2,7 +2,7 @@
  * boltpack_dll.c -- thin DLL export wrapper for BoltPack archiver core
  *
  * Provides __stdcall-compatible exports for use from C# via P/Invoke.
- * Build with the core sources and fastlz sources into boltpack_core.dll.
+ * Build with the core sources and boltlz sources into boltpack_core.dll.
  *
  * ANSI C (C89/C90) - compiled with the core but lives in the GUI layer.
  *

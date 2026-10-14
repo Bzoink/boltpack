@@ -27,7 +27,7 @@ typedef struct {
     bp_uint64   original_size;
     bp_uint64   compressed_size;
     bp_uint32   checksum;      /* CRC-32 of uncompressed data */
-    bp_uint8    method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_FASTLZ */
+    bp_uint8    method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_BOLTLZ */
     bp_uint8    checksum_type; /* BP_CKSUM_CRC32 */
     bp_uint32   block_size;    /* 0 for dirs/empty; nonzero for data */
     bp_uint8    entry_type;    /* BP_TYPE_* */
@@ -68,7 +68,7 @@ typedef struct {
     bp_uint32  dir_count;
     bp_uint64  total_original;
     bp_uint64  total_compressed;
-    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=LZSS [2]=fastlz [3]=fluff [4]=zstd */
+    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=LZSS [2]=boltlz [3]=fluff [4]=zstd */
 } bp_mini_archive_info_t;
 
 /* ---- Utility ----------------------------------------------------------- */
@@ -85,15 +85,15 @@ void bp_mini_u64_print(bp_uint64 v);
 /*
  * Initialise mini archive context and write the archive header placeholder.
  *   block_size: one of BP_BLOCK_8K..BP_BLOCK_32K (capped to BP_MINI_MAX_BLOCK_SIZE).
- *   method:     BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_FASTLZ;
- *               returns BP_ERR_UNSUPPORTED_METHOD for method > BP_METHOD_FASTLZ.
+ *   method:     BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_BOLTLZ;
+ *               returns BP_ERR_UNSUPPORTED_METHOD for method > BP_METHOD_BOLTLZ.
  */
 int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
                            bp_uint32 block_size, bp_uint8 method);
 
 /*
  * Add one file or directory entry.
- *   Returns BP_ERR_UNSUPPORTED_METHOD if method > BP_METHOD_FASTLZ.
+ *   Returns BP_ERR_UNSUPPORTED_METHOD if method > BP_METHOD_BOLTLZ.
  *   Returns BP_ERR_OVERFLOW if file_size.hi != 0 (> 4 GB).
  *   Returns BP_ERR_OVERFLOW if entry count would exceed BP_MINI_MAX_ENTRIES.
  *   file_io may be NULL for directory entries.
@@ -135,7 +135,7 @@ typedef void (*bp_mini_extract_done_fn)(const bp_mini_entry_t *entry,
 
 /*
  * Extract all entries.  Per-entry capability checks:
- *   method > BP_METHOD_FASTLZ  -> prints warning, skips entry.
+ *   method > BP_METHOD_BOLTLZ  -> prints warning, skips entry.
  *   original_size.hi != 0     -> prints warning, skips entry.
  * open_fn returns NULL to skip; done_fn is called only for non-skipped entries.
  */

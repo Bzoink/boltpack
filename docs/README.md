@@ -22,7 +22,7 @@ make
 | `architecture.md`      | Layer boundaries, core interfaces, progress model, and error flow |
 | `specification-1.0.md` | Normative archive and codec rules                                 |
 | `format.md`            | Concise overview of the `.bolt` / `.blt` file format              |
-| `algorithms.md`        | LZSS, fastlz, and Fluff implementation behavior                  |
+| `algorithms.md`        | LZSS, boltlz, and Fluff implementation behavior                   |
 | `portability.md`       | Supported environments, C89 constraints, and toolchain reference  |
 | `frontends.md`         | Frontend responsibilities and platform-specific integration notes |
 
@@ -34,6 +34,15 @@ make
 | `mini.md`              | 16-bit mini variant architecture and capability limits |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
 | `RELEASES.md`          | Release workflow (maintainer reference)                |
+
+## Design Proposals
+
+| File                                                               | Purpose                                                                            |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| [boltlz-design.md](boltlz-design.md)                               | Custom BoltLZ successor: algorithm experiments, tradeoffs, and benchmark workflow  |
+| [boltlz-development.md](boltlz-development.md)                     | Experimental codec, block format, checks, and reproducible benchmark commands      |
+| [boltlz-code-review.md](boltlz-code-review.md)                     | Code analysis, measured operation counts, and speed-first optimization priorities  |
+| [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation, compiler coverage, and full-block robustness checks |
 
 ## Elsewhere in the Repository
 

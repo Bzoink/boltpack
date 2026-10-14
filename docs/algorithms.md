@@ -12,13 +12,13 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 
 ## 1. Methods at a Glance
 
-| Method | Name    | Implementation                 | Primary role                                    |
-| ------ | ------- | ------------------------------ | ----------------------------------------------- |
-| 0      | Stored  | `src/core/archiver.c`          | Fallback for incompressible data                |
-| 1      | LZSS    | `src/core/lzss.c`              | Small-memory LZ77, especially for mini builds   |
-| 2      | fastlz  | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
-| 3      | Fluff   | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
-| 4      | zstd    | `src/core/zstd_wrap.c` wrapper | Best-ratio codec; modern 32/64-bit targets only |
+| Method | Name   | Implementation                 | Primary role                                    |
+| ------ | ------ | ------------------------------ | ----------------------------------------------- |
+| 0      | Stored | `src/core/archiver.c`          | Fallback for incompressible data                |
+| 1      | LZSS   | `src/core/lzss.c`              | Small-memory LZ77, especially for mini builds   |
+| 2      | boltlz | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
+| 3      | Fluff  | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
+| 4      | zstd   | `src/core/zstd_wrap.c` wrapper | Best-ratio codec; modern 32/64-bit targets only |
 
 The full archiver can read and write all five methods on modern targets.
 Constrained frontends (DOS 16-bit, Win16, Amiga, Atari, Classic Mac 68 K) may
@@ -123,35 +123,37 @@ The public API asks for `LZSS_WORK_SIZE` bytes for both compression and
 Decompression. In practice the decoder uses only the ring-buffer portion, but
 the fixed-size API keeps call sites simple across all targets.
 
-## 4. Method 2: fastlz
+## 4. Method 2: BoltLZ
 
-### 4.1 Overview
+Method 2 uses the original C89 implementation in `src/core/boltlz.c`, with
+archive wrappers in `src/core/compress.c`. The default is Balanced; `-l 1`
+selects Fast, and `-l 2` selects Balanced. Levels 3–9 also select Balanced.
+Both modes use the same format-2 block decoder and a maximum 256 KiB block.
 
-Method 2 wraps the vendored fastlz 0.5.0 codec (`lib/fastlz/`, MIT-licensed,
-C89-ported). It uses fastlz's byte-aligned LZ77 block format through the
-wrapper in `src/core/compress.c`. fastlz has two compression levels: level 1
-uses an 8 KB window (faster, worse ratio) and level 2 uses a 64 KB window
-(slower, better ratio). The `-2` flag in the frontends selects fastlz; the
-`-l 1` selects level 1, `-l 2` selects level 2, and omitting `-l` (auto)
-selects `fastlz_compress()`, which picks level 1 below 64 KB and level 2 at
-or above it (BoltPack's typical 32 KB blocks use level 1). Values 3–9 are
-accepted for compatibility with the other codecs and clamp to level 2.
+Fast searches one hash candidate with adaptive skipping. Balanced searches
+two candidates plus the previous distance and uses bounded lazy matching.
+Both extend matches backwards through pending literals. The byte-oriented
+stream has combined literal/match tokens, canonical ULEB128 extensions,
+and a repeated-distance bit. The [normative specification](specification-1.0.md)
+defines the complete representation.
 
-### 4.2 Current Wrapper Behavior
+The core codec allocates no memory. The archive writer caches a 64 KiB
+workspace that supports both modes, avoiding per-block allocation. Fast
+needs 32 KiB workspace when used independently. Blocks up to 64 KiB use
+packed 16-bit entries internally; larger blocks use 32-bit entries. The
+public workspace sizes remain the worst case. Decompression needs no
+workspace beyond the declared input and output buffers, and accepts
+unaligned buffers without requiring padding.
 
-1. Compression uses `fastlz_compress` (auto-select) or `fastlz_compress_level`
-   (when a level is requested).
-1. Decompression uses the bound-checked `fastlz_decompress`, which never
-   writes past the output buffer.
-1. The wrapper validates sizes and converts library failures into BoltPack
-   error codes.
-1. The archive layer may still fall back to stored if the compressed block does
-   not beat the 99% threshold.
+Each block is compressed independently. The archive stores blocks verbatim
+when compression saves less than 1%. Input capacity and exact output length
+are checked, and archives carry file and block CRC-32 checksums. All
+GCC/Clang codec builds use `-O2`.
 
-fastlz is the default fast general-purpose method in the full build. Its
-compressor needs an 8192-entry stack hash table (~32 KB on 32-bit), so it is
-not compiled for 16-bit targets; 16-bit builds decompress fastlz via the
-clean-room `src/core/mini/fastlz_decomp.c` module.
+16-bit mini builds include the same decoder through the decoder-only build
+path and accept blocks within their existing 32 KiB memory limit. They
+continue to create Stored or LZSS archives. Other mini builds support
+BoltLZ Balanced compression.
 
 ## 5. Method 3: Fluff
 
@@ -384,7 +386,7 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | ------ | ------------------------------------------------------------ | --------------------------------------------------------- |
 | 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
 | 1      | Fixed 14,900-byte work buffer                                | Same API-sized work buffer; decoder uses the ring portion |
-| 2      | None (heap); ~32 KB stack hash table during compress        | Output buffer (clean-room decoder on 16-bit)            |
+| 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
 | 3      | `fluff_ctx_t` is about 2 MB plus per-block token buffers     | Current decoder also reuses `fluff_ctx_t` for block state |
 | 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
 
@@ -408,7 +410,6 @@ planning material and discarded codec variants are intentionally left out.
 ## 9. References
 
 1. Haruhiko Okumura, original LZSS design and binary-search-tree matcher.
-1. fastlz 0.5.0, vendored in `lib/fastlz/`; by Ariya Hidayat; MIT license.
 1. J. Duda, “Asymmetric numeral systems,” arXiv:0902.0271, 2009 — theoretical
    basis for the FSE/tANS entropy coder in Fluff.
 1. zstd 1.5.7, vendored in `lib/zstd/`; by Meta Platforms / Yann Collet;

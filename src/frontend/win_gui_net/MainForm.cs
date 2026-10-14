@@ -678,7 +678,7 @@ namespace BoltPack
                         Marshal.WriteByte(arPtr, i, 0);
 
                     int rc = NativeMethods.bp_dll_archive_create(arPtr,
-                        ioHandle.AddrOfPinnedObject(), 0, NativeMethods.BP_METHOD_FASTLZ);
+                        ioHandle.AddrOfPinnedObject(), 0, NativeMethods.BP_METHOD_BOLTLZ);
 
                     if (rc != NativeMethods.BP_OK)
                     {

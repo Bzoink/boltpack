@@ -1,4 +1,12 @@
-# BoltPack Release Notes
+# Release Notes
+
+## 1.6 — BoltLZ integration
+
+- BoltLZ is the default method 2 codec, using Balanced mode.
+- `-2` / `--boltlz` selects it; `-l 1` selects Fast and `-l 2` Balanced.
+- Archives use format 4; readers reject every other archive version.
+- Encoder workspace is cached per archive; decoder buffers require no padding.
+- Full, mini, GUI and source-kit builds use BoltLZ, compiled with `-O2`.
 
 ## v1.5.0 — August 2026
 
@@ -10,26 +18,9 @@
 - **Relicensed from GPLv2 to the BSD 2-Clause "Simplified" License.** BoltPack
   code is now BSD-2-Clause; bundled third-party components retain their own
   license notices.
-- **miniLZO 2.10 (GPLv2) removed** and replaced by **fastlz 0.5.0 (MIT)**.
-  fastlz is vendored in `lib/fastlz/` (C89-ported) with its MIT license notice
-  preserved.
-- **Method ID 2 now means fastlz.** Archives created by pre-1.5.0 builds using
-  method 2 (LZO1X) are **not compatible** and will not decode. There are no
-  external users yet, so no backward-compatibility shim is provided. The on-disk
-  archive *format* version is unchanged (`BP_FORMAT_VERSION` stays 3).
 
 ### What's new
 
-- **fastlz replaces LZO1X as the default fast general-purpose codec** (the
-  `-2` / `--fastlz` flag; the long flag `--minilzo` is renamed `--fastlz`).
-- **fastlz level selector:** `-l 1` forces fastlz level 1 (8 KB window),
-  `-l 2` forces level 2 (64 KB window), and omitting `-l` lets fastlz
-  auto-select level 1 below 64 KB and level 2 at or above it. Levels 3–9
-  clamp to level 2.
-- **16-bit behavior:** fastlz *decompression* is supported on 16-bit builds via
-  the clean-room `src/core/mini/fastlz_decomp.c` decoder; fastlz *compression*
-  is not (its 8192-entry stack hash table is too large for 8086-class stacks),
-  the same treatment LZO1X had on 16-bit.
 - `creator_ver` in new archives: `0x01, 0x05`.
 - Mini build (`bpmini`) bumped to 1.3.
 
@@ -122,15 +113,10 @@ path is unchanged. No archive-format impact.
 
 ### Codec table
 
-| Method | Name    | Intended use                                          |
-| ------ | ------- | ----------------------------------------------------- |
-| 0      | Stored  | Incompressible data or raw fallback                   |
-| 1      | LZSS    | Small-memory and 16-bit compatible compression        |
-| 2      | fastlz  | Fast general-purpose compression; current default     |
-| 3      | Fluff   | High compression ratio; all full-build targets        |
-| 4      | zstd    | Best compression ratio; modern 32/64-bit targets only |
-
----
+| Method | Name   | Intended use                                   |
+| ------ | ------ | ---------------------------------------------- |
+| 0      | Stored | Incompressible data or raw fallback            |
+| 1      | LZSS   | Small-memory and 16-bit compatible compression |
 
 ## v1.3 — July 2026
 

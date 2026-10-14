@@ -5,9 +5,9 @@ systems — DOS (8086+), CP/M-86, Windows 3.x (Win16), and OS/2 1.x — where
 `sizeof(int) == 2`. It reads and writes the standard `.bolt` format so archives
 are fully interchangeable with the full build. Fluff is removed from the
 dependency graph entirely. Method 1 (LZSS) is available on all mini targets and
-is the default compression method on the 16-bit frontends; method 2 (fastlz)
+is the default compression method on the 16-bit frontends; method 2 (boltlz)
 remains available only on the 32/64-bit mini builds (16-bit mini builds
-decompress fastlz via the clean-room `fastlz_decomp.c` decoder).
+decompress boltlz via the shared `boltlz_decomp.c` decoder).
 The binary is named `bpmini.exe` (or `bpmini.cmd` on CP/M-86) to
 fit within the 8.3 filename limit.
 
@@ -28,14 +28,14 @@ fit within the 8.3 filename limit.
 
 ## Capability Limits
 
-| Capability             | Mini limit                      | Notes                                                                                          |
-| ---------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Compression methods    | 0 (stored), 1 (LZSS), 2 (fastlz) | Methods 3 (fluff) and any method > 3: error + exit; fastlz compression is unavailable on 16-bit mini builds |
-| Block size             | 8 KB – 32 KB                    | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`)                                      |
-| Files per archive      | ≤ 65 535                        | Create rejects entry 65 536 and above                                                          |
-| Uncompressed file size | ≤ 4 GB                          | `original_size.hi != 0` triggers error; display still shows the size                           |
-| Practical archive size | ≤ 2 GB                          | `bp_off_t` is `long` on DOS; `fseek`/`ftell` cap at 2 GB                                       |
-| Commands               | `c`, `x`, `l`, `t`, `i`         | `a` (append), `d` (delete), `-F` (fluff) → unsupported message                                 |
+| Capability             | Mini limit                       | Notes                                                                                                       |
+| ---------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Compression methods    | 0 (stored), 1 (LZSS), 2 (boltlz) | Methods 3 (fluff) and any method > 3: error + exit; boltlz compression is unavailable on 16-bit mini builds |
+| Block size             | 8 KB – 32 KB                     | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`)                                                   |
+| Files per archive      | ≤ 65 535                         | Create rejects entry 65 536 and above                                                                       |
+| Uncompressed file size | ≤ 4 GB                           | `original_size.hi != 0` triggers error; display still shows the size                                        |
+| Practical archive size | ≤ 2 GB                           | `bp_off_t` is `long` on DOS; `fseek`/`ftell` cap at 2 GB                                                    |
+| Commands               | `c`, `x`, `l`, `t`, `i`          | `a` (append), `d` (delete), `-F` (fluff) → unsupported message                                              |
 
 Even when limits are exceeded in an existing archive, the `l` and `i` commands
 always enumerate and display all entries and their sizes correctly.
@@ -58,8 +58,8 @@ src/core/
     fluff.c/.h          ← full build only
     mini/
         archiver.c/.h   ← mini archiver (no fluff, capability checks)
-        compress.c/.h   ← mini compress (stored + LZSS + fastlz; fastlz compress on 32/64-bit only)
-        fastlz_decomp.c/.h ← clean-room fastlz decoder for 16-bit (decompress only)
+        compress.c/.h   ← mini compress (stored + LZSS + boltlz; boltlz compress on 32/64-bit only)
+        boltlz_decomp.c/.h ← shared boltlz decoder for 16-bit (decompress only)
 
 src/frontend/
     dos/                ← 32-bit DOS (DJGPP / DOS extender)
@@ -114,19 +114,15 @@ Two constants are added (active only when `BP_MINI` is defined):
 #endif
 ```
 
-### `src/core/mini/fastlz_decomp.c` / `fastlz_decomp.h`
+### `src/core/mini/boltlz_decomp.c` / `boltlz_decomp.h`
 
-fastlz *compression* needs an 8192-entry stack hash table (32 KB on 32-bit,
-64 KB on 64-bit), which is too large for the 4–8 KB stacks of 8086/286
-targets. fastlz *decompression* needs no such buffer, so 16-bit mini builds
-link a clean-room ANSI C89 decoder (`bp_fastlz_decompress`) that mirrors the
-fastlz 0.5.0 bitstream at both levels. It is array-index based (no raw
-pointer arithmetic), needs no standard-library headers, and handles
-overlapping (self-referential) matches byte-by-byte.
-
----
-
-## New Files
+This adapter validates the mini block limits and invokes the shared BoltLZ
+format-2 decoder. On 16-bit targets it includes the decoder-only build of
+`src/core/boltlz.c`; no encoder hash tables or encoder entry points are linked.
+Other mini builds link the full codec. The decoder checks declared buffers
+and requires no workspace or padding. Compression on 32/64-bit mini builds
+uses Balanced mode and a 64 KiB heap workspace; 16-bit creation uses Stored
+or LZSS and returns unsupported-method for BoltLZ compression.
 
 ### `src/core/mini/compress.h` / `compress.c`
 
@@ -148,17 +144,17 @@ bp_uint32 bp_mini_compress_work_size(void);
 
 Key behaviour:
 
-- `method > BP_METHOD_FASTLZ` returns `BP_ERR_UNSUPPORTED` immediately.
+- `method > BP_METHOD_BOLTLZ` returns `BP_ERR_UNSUPPORTED` immediately.
 - `src_len > BP_MINI_MAX_BLOCK_SIZE` returns `BP_ERR_INVALID_ARG`.
 - On 16-bit targets, a 29,200-byte LZSS scratch buffer (`LZSS_WORK_SIZE`) is
   heap-allocated on the first compress call and cached for the process
   lifetime. Extract, list, test, and info never allocate it; decompression
   needs no scratch. Heap placement keeps it off the 4–8 KB stack. Allocation
   failure returns `BP_ERR_NOMEM`.
-- On 16-bit targets, fastlz *compression* returns `BP_ERR_UNSUPPORTED_METHOD`;
-  fastlz *decompression* runs via the clean-room `fastlz_decomp.c` decoder.
-- On 32/64-bit targets, fastlz compress/decompress are wired directly to
-  `lib/fastlz/fastlz.c`; no heap work buffer is needed.
+- On 16-bit targets, boltlz *compression* returns `BP_ERR_UNSUPPORTED_METHOD`;
+  boltlz *decompression* runs via the shared `boltlz_decomp.c` decoder.
+- On 32/64-bit targets, boltlz compress/decompress are wired directly to
+  `src/core/boltlz.c`; a 64 KiB heap work buffer is used for Balanced compression.
 
 ### `src/core/mini/archiver.h` / `archiver.c`
 
@@ -379,7 +375,7 @@ Objects compiled:
 
 - `$(DOS16_OBJDIR)/archiver.obj` — from `src/core/mini/archiver.c`
 - `$(DOS16_OBJDIR)/compress.obj` — from `src/core/mini/compress.c`
-- `$(DOS16_OBJDIR)/fastlz_decomp.obj` — from `src/core/mini/fastlz_decomp.c`
+- `$(DOS16_OBJDIR)/boltlz_decomp.obj` — from `src/core/mini/boltlz_decomp.c`
 - `$(DOS16_OBJDIR)/main.obj` — from `src/frontend/dos16/main.c`
 
 Linked with `wlink system dos`.
@@ -422,21 +418,21 @@ keeping the code portable.
 
 ## Files Modified
 
-| File                         | Change                                           |
-| ---------------------------- | ------------------------------------------------ |
-| `src/core/bp_types.h`        | 16-bit `bp_uint32` override; `BP_MINI` constants |
-| `src/core/mini/compress.c`   | fastlz decompress via clean-room decoder on 16-bit |
-| `Makefile`                   | `dos16`, `cpm86`, `win16`, `os2_16` targets      |
-| `docs/portability.md`        | Mini platform rows and capability notes          |
+| File                       | Change                                           |
+| -------------------------- | ------------------------------------------------ |
+| `src/core/bp_types.h`      | 16-bit `bp_uint32` override; `BP_MINI` constants |
+| `src/core/mini/compress.c` | boltlz decompress via shared decoder on 16-bit   |
+| `Makefile`                 | `dos16`, `cpm86`, `win16`, `os2_16` targets      |
+| `docs/portability.md`      | Mini platform rows and capability notes          |
 
 ## Files Created
 
 | File                                     | Purpose                                       |
 | ---------------------------------------- | --------------------------------------------- |
-| `src/core/mini/compress.h`               | Mini compress API (stored + LZSS + fastlz)    |
+| `src/core/mini/compress.h`               | Mini compress API (stored + LZSS + boltlz)    |
 | `src/core/mini/compress.c`               | Mini compression wrapper — no fluff           |
-| `src/core/mini/fastlz_decomp.h`          | Clean-room fastlz decoder API (16-bit)        |
-| `src/core/mini/fastlz_decomp.c`          | Clean-room fastlz decoder (16-bit)            |
+| `src/core/mini/boltlz_decomp.h`          | Shared BoltLZ decoder API (16-bit)            |
+| `src/core/mini/boltlz_decomp.c`          | Shared BoltLZ decoder (16-bit)                |
 | `src/core/mini/archiver.h`               | Mini archiver API (subset of full)            |
 | `src/core/mini/archiver.c`               | Archiver with per-operation capability checks |
 | `src/frontend/mini_shared/mini_common.h` | Shared declarations for all mini frontends    |
@@ -454,7 +450,7 @@ keeping the code portable.
    `build/dos16/bpmini.exe`, zero errors under `-za`.
 2. `make cpm86` / `make win16` / `make os2_16` — each produces its binary with
    zero errors.
-3. `wcc -bt=dos -mc -0 -za ... src/core/mini/fastlz_decomp.c` in isolation —
+3. `wcc -bt=dos -mc -0 -za ... src/core/mini/boltlz_decomp.c` in isolation —
    must compile without errors.
 4. `make` on Linux — full build unaffected.
 5. `python3 test/check_boltpack.py` — all existing integration tests pass.
@@ -487,9 +483,9 @@ out.bolt file.txt`), then `bpmini x out.bolt` on any mini target — must
 
 ## Further Considerations
 
-### fastlz indices on 16-bit Watcom
+### boltlz indices on 16-bit Watcom
 
-Under Watcom compact model with 16-bit `int`, fastlz decompression uses
+Under Watcom compact model with 16-bit `int`, boltlz decompression uses
 `unsigned int` array indices and `unsigned long` (32-bit) public sizes. The
 32 KB block ceiling keeps valid indices within the 16-bit range, while input
 and far-distance arithmetic is checked before subtraction or addition can
@@ -503,12 +499,12 @@ The implementation must handle the full 64-bit range correctly — `bp_uint64.hi
 can legitimately be non-zero when listing large archives created on 64-bit
 systems.
 
-### Future `BP_MINI_NO_FASTLZ` Flag
+### Future `BP_MINI_NO_BOLTLZ` Flag
 
 If a future target needs stored-only mode (true real-mode small model with no
-room for the fastlz decode paths), a `BP_MINI_NO_FASTLZ` compile flag can
-strip fastlz from `src/core/mini/compress.c` cleanly. The mini layer already
-isolates fastlz behind `bp_mini_compress_block`, so the removal is a
+room for the boltlz decode paths), a `BP_MINI_NO_BOLTLZ` compile flag can
+strip boltlz from `src/core/mini/compress.c` cleanly. The mini layer already
+isolates boltlz behind `bp_mini_compress_block`, so the removal is a
 localised change.
 
 ### CP/M-86 Filename Collisions on Extract

@@ -68,8 +68,8 @@ typedef struct {
     bp_io_t        *io;
     bp_uint32       file_count;
     bp_uint32       block_size;
-    bp_uint8        method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_FASTLZ, or BP_METHOD_FLUFF */
-    bp_uint8        method_level;  /* compression level 1-9 for Fluff/zstd; 0 = codec default */
+    bp_uint8        method;        /* BP_METHOD_*; BoltLZ is the default codec */
+    bp_uint8        method_level;  /* BoltLZ: 1=Fast, 0/2-9=Balanced; other codecs: 0=default */
     bp_uint8        creator_os;
     bp_uint8        creator_cpu;
     bp_progress_fn  progress_fn;
@@ -98,14 +98,15 @@ typedef struct {
     bp_uint8       *seq_in_buf;          /* cached sequential compress input buffer */
     bp_uint8       *seq_out_buf;         /* cached sequential compress output buffer */
     bp_uint32       seq_buf_block_size;  /* block_size when seq bufs were allocated */
+    void           *seq_boltlz_work;     /* cached encoder workspace; released with archive */
 } bp_archive_t;
 
 /* --- Archive creation --------------------------------------------------- */
 
 /* Initialize archive context for creation.
  * block_size: one of BP_BLOCK_* constants (0 = auto).
- * method: BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_FASTLZ, or
- * BP_METHOD_FLUFF. */
+ * method: BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_BOLTLZ,
+ * BP_METHOD_FLUFF, or BP_METHOD_ZSTD when enabled. */
 int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
                       bp_uint32 block_size, bp_uint8 method);
 
@@ -248,7 +249,7 @@ typedef struct {
     bp_uint32   dir_count;
     bp_uint64   total_original;
     bp_uint64   total_compressed;
-    bp_uint32   method_counts[8]; /* file count per method: [0]=stored [1]=LZSS [2]=fastlz [3]=fluff [4]=zstd [5-7]=reserved */
+    bp_uint32   method_counts[8]; /* [0]=stored [1]=LZSS [2]=BoltLZ [3]=fluff [4]=zstd [5-7]=reserved */
 } bp_archive_info_t;
 
 /* Read archive header and file table to fill info struct. */

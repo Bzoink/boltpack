@@ -405,7 +405,7 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_original, buf);
     printf("Total:   %s\n", buf);
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods: ");
@@ -440,7 +440,7 @@ static void usage(void)
           "  -m1                            LZSS compression (default)\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), fastlz (2)\n",
+          "  extract:  store (0), LZSS (1), boltlz (2)\n",
           stderr);
 }
 
@@ -465,7 +465,7 @@ int main(int argc, char **argv)
             else if (strcmp(argv[i], "-m0") == 0)   { method = BP_METHOD_STORED; }
             else if (strcmp(argv[i], "-m1") == 0)   { method = BP_METHOD_LZSS;   }
             else if (strcmp(argv[i], "-m2") == 0)   {
-                fputs("bpmini: fastlz not supported on 16-bit\n", stderr);
+                fputs("bpmini: boltlz not supported on 16-bit\n", stderr);
                 return 1;
             }
         }

@@ -10,11 +10,11 @@
  * all Plan 9-specific and do not exist in standard POSIX or C99 headers.
  *
  * Build on a Plan 9 / 9front system:
- *   8c -FTVw -I /sys/include -I <src/core> -I <lib/fastlz> \
+ *   8c -FTVw -I /sys/include -I <src/core> \
  *       src/core/archiver.c src/core/compress.c             \
  *       src/core/bp_codepage.c                               \
  *       src/frontend/plan9/main.c                            \
- *       lib/fastlz/fastlz.c                           \
+ *       src/core/boltlz.c                           \
  *   8l -o /386/boltpack *.8
  *   (Use 6c/6l for AMD64, arm/arm64 as appropriate.)
  *
@@ -715,7 +715,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -959,7 +959,7 @@ main(int argc, char *argv[])
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_FASTLZ;
+    bp_uint8   method     = BP_METHOD_BOLTLZ;
     const char *out_dir   = nil;
     int        force = 0, dry_run = 0, i, r;
 

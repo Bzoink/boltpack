@@ -129,10 +129,10 @@ build_cli() {
     "$COMPILER" $CLI_CFLAGS \
         -arch "$arch_flag" \
         -DBP_CREATOR_CPU=$creator_cpu \
-        -Isrc/core -Ilib/fastlz \
+        -Isrc/core  \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        lib/fastlz/fastlz.c \
+        src/core/boltlz.c \
         src/frontend/macosx/main.c \
         -o "$outdir/boltpack"
 
@@ -176,10 +176,10 @@ build_gui() {
         -arch "$arch_flag" \
         -DBOLTPACK_FAST_FLUFF \
         -DBP_CREATOR_CPU=$creator_cpu \
-        -Isrc/core -Ilib/fastlz -Isrc/frontend/gui_common \
+        -Isrc/core  -Isrc/frontend/gui_common \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        lib/fastlz/fastlz.c \
+        src/core/boltlz.c \
         "$fast_fluff_obj" \
         src/frontend/macosx_gui/main.m \
         -framework Cocoa -fopenmp \
@@ -235,10 +235,10 @@ build_legacy_gui() {
         -arch "$arch_flag" \
         -DBOLTPACK_FAST_FLUFF \
         -DBP_CREATOR_CPU=$creator_cpu \
-        -Isrc/core -Ilib/fastlz -Isrc/frontend/gui_common \
+        -Isrc/core  -Isrc/frontend/gui_common \
         src/core/archiver.c src/core/compress.c src/core/lzss.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        lib/fastlz/fastlz.c \
+        src/core/boltlz.c \
         "$fast_fluff_obj" \
         src/frontend/macosx_legacy_gui/main.m \
         -framework Cocoa -framework Carbon -fopenmp \

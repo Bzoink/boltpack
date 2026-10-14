@@ -1,7 +1,7 @@
 /*
- * test_compress.c -- unit tests for fastlz and LZSS compression codecs
+ * test_compress.c -- unit tests for boltlz and LZSS compression codecs
  *
- * Tests bp_compress_block / bp_decompress_block (fastlz, method 2) and
+ * Tests bp_compress_block / bp_decompress_block (boltlz, method 2) and
  * lzss_compress / lzss_decompress (method 1) directly.
  *
  * ANSI C (C89/C90) only.
@@ -18,25 +18,25 @@
 #include "compress.h"
 #include "lzss.h"
 
-/* Worst-case output size for fastlz compression */
-#define FASTLZ_DST_SIZE(n) ((n) + (n)/20 + 66)
+/* Worst-case output size for boltlz compression */
+#define BOLTLZ_DST_SIZE(n) ((n) + (n)/63 + 16)
 /* Worst-case output size for LZSS compression */
 #define LZSS_DST_SIZE(n) ((n) + (n)/8 + 16)
 
 /* ======================================================================== */
-/* fastlz (bp_compress_block / bp_decompress_block)                          */
+/* boltlz (bp_compress_block / bp_decompress_block)                          */
 /* ======================================================================== */
 
-static void fastlz_roundtrip(const char *label,
+static void boltlz_roundtrip(const char *label,
                           const bp_uint8 *src, bp_uint32 src_len)
 {
-    static unsigned char comp_buf[FASTLZ_DST_SIZE(65536)];
+    static unsigned char comp_buf[BOLTLZ_DST_SIZE(65536)];
     static unsigned char decomp_buf[65536];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
     int rc;
 
-    comp_len = (bp_uint32)FASTLZ_DST_SIZE(src_len);
+    comp_len = (bp_uint32)BOLTLZ_DST_SIZE(src_len);
     rc = bp_compress_block(src, src_len, comp_buf, &comp_len);
     if (rc != BP_OK) {
         printf("  FAIL  %s: bp_compress_block rc=%d  [%s:%d]\n",
@@ -73,7 +73,7 @@ static void fastlz_roundtrip(const char *label,
     bp_unit_pass_count++;
 }
 
-static void test_fastlz_basic(void)
+static void test_boltlz_basic(void)
 {
     static unsigned char zeros[65536];
     static unsigned char seq[65536];
@@ -81,21 +81,21 @@ static void test_fastlz_basic(void)
     int i;
     bp_uint32 seed = 0x12345678UL;
 
-    UNIT_SECTION("fastlz: roundtrip");
+    UNIT_SECTION("boltlz: roundtrip");
 
     /* single byte */
     {
         unsigned char one = 0x42;
-        fastlz_roundtrip("single byte 0x42", &one, 1);
+        boltlz_roundtrip("single byte 0x42", &one, 1);
     }
 
     /* all zeros - highly compressible */
     memset(zeros, 0, sizeof(zeros));
-    fastlz_roundtrip("64 KB all-zeros", zeros, 65536);
+    boltlz_roundtrip("64 KB all-zeros", zeros, 65536);
 
     /* sequential bytes - moderate compressibility */
     for (i = 0; i < 65536; i++) seq[i] = (unsigned char)(i & 0xFF);
-    fastlz_roundtrip("64 KB sequential", seq, 65536);
+    boltlz_roundtrip("64 KB sequential", seq, 65536);
 
     /* pseudo-random (xorshift32) - low compressibility */
     for (i = 0; i < 65536; i++) {
@@ -104,28 +104,28 @@ static void test_fastlz_basic(void)
         seed ^= seed << 5;
         rnd[i] = (unsigned char)(seed & 0xFF);
     }
-    fastlz_roundtrip("64 KB pseudo-random", rnd, 65536);
+    boltlz_roundtrip("64 KB pseudo-random", rnd, 65536);
 
     /* repeated pattern */
     {
         static unsigned char pat[32768];
         int j;
         for (j = 0; j < 32768; j++) pat[j] = (unsigned char)(j % 17);
-        fastlz_roundtrip("32 KB mod-17 pattern", pat, 32768);
+        boltlz_roundtrip("32 KB mod-17 pattern", pat, 32768);
     }
 
     /* 8 KB block boundary */
-    fastlz_roundtrip("8 KB all-zeros", zeros, 8192);
+    boltlz_roundtrip("8 KB all-zeros", zeros, 8192);
 }
 
-static void test_fastlz_invalid_lengths(void)
+static void test_boltlz_invalid_lengths(void)
 {
     static unsigned char src[2] = {0, 0};
     static unsigned char dst[8];
     bp_uint32 dst_len;
     int rc;
 
-    UNIT_SECTION("fastlz: invalid lengths are rejected");
+    UNIT_SECTION("boltlz: invalid lengths are rejected");
 
     dst_len = (bp_uint32)sizeof(dst);
     rc = bp_compress_block(src, 0, dst, &dst_len);
@@ -139,13 +139,13 @@ static void test_fastlz_invalid_lengths(void)
     dst_len = (bp_uint32)sizeof(dst);
     rc = bp_compress_block(src, (bp_uint32)0xFFFFFFFFUL, dst, &dst_len);
     UNIT_CHECK(rc == BP_ERR_INVALID_ARG,
-               "length exceeding FastLZ int range rejected");
+               "length exceeding BoltLZ int range rejected");
 }
 
-static void test_fastlz_checksum_consistency(void)
+static void test_boltlz_checksum_consistency(void)
 {
     static unsigned char src[4096];
-    static unsigned char comp[FASTLZ_DST_SIZE(4096)];
+    static unsigned char comp[BOLTLZ_DST_SIZE(4096)];
     static unsigned char decomp[4096];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
@@ -154,13 +154,13 @@ static void test_fastlz_checksum_consistency(void)
     int i;
     int rc;
 
-    UNIT_SECTION("fastlz: Adler-32 consistency across roundtrip");
+    UNIT_SECTION("boltlz: Adler-32 consistency across roundtrip");
 
     for (i = 0; i < 4096; i++) src[i] = (unsigned char)(i & 0xFF);
 
     cksum_before = bp_checksum(1, src, 4096);
 
-    comp_len   = (bp_uint32)FASTLZ_DST_SIZE(4096);
+    comp_len   = (bp_uint32)BOLTLZ_DST_SIZE(4096);
     rc = bp_compress_block(src, 4096, comp, &comp_len);
     UNIT_CHECK(rc == BP_OK, "compress 4 KB sequential ok");
 
@@ -172,27 +172,27 @@ static void test_fastlz_checksum_consistency(void)
     UNIT_CHECK(cksum_before == cksum_after, "Adler-32 matches after roundtrip");
 }
 
-static void test_fastlz_corrupt(void)
+static void test_boltlz_corrupt(void)
 {
     static unsigned char src[512];
-    static unsigned char comp[FASTLZ_DST_SIZE(512)];
+    static unsigned char comp[BOLTLZ_DST_SIZE(512)];
     static unsigned char decomp[512];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
     int rc;
 
-    UNIT_SECTION("fastlz: corrupt compressed data returns error");
+    UNIT_SECTION("boltlz: corrupt compressed data returns error");
 
     memset(src, 0xAB, sizeof(src));
-    comp_len = (bp_uint32)FASTLZ_DST_SIZE(512);
+    comp_len = (bp_uint32)BOLTLZ_DST_SIZE(512);
     rc = bp_compress_block(src, 512, comp, &comp_len);
     UNIT_CHECK(rc == BP_OK, "compress ok for corrupt test");
 
     if (rc == BP_OK && comp_len > 4) {
         /*
-         * fastlz has no internal checksum, so a bit-flip or truncation may
+         * boltlz has no internal checksum, so a bit-flip or truncation may
          * still form a valid opcode sequence and decode to *some* length.
-         * fastlz's bound-checked decompressor never writes past the output
+         * boltlz's bound-checked decompressor never writes past the output
          * buffer, so we require that corrupt input never crashes or overruns:
          * decompress must either return an error, or succeed with a length
          * no larger than the original and not overrun the buffer.
@@ -204,6 +204,51 @@ static void test_fastlz_corrupt(void)
         UNIT_CHECK(decomp_len <= 512,
                    "truncated decompress stays within buffer");
     }
+}
+
+static void test_boltlz_wrapper_modes(void)
+{
+    static bp_uint8 source[4096], encoded[BP_BOLTLZ_BOUND(4096)];
+    static bp_uint8 reference[BP_BOLTLZ_BOUND(4096)];
+    bp_uint32 actual, expected;
+    void *work;
+    int level, rc;
+    bp_uint32 i;
+    for (i = 0; i < sizeof(source); i++)
+        source[i] = (bp_uint8)((i * i + 19 * i + (i / 43) * 7) % 23);
+    work = malloc((size_t)bp_compress_work_size());
+    if (!work) exit(2);
+    UNIT_SECTION("BoltLZ: wrapper modes and exact capacity");
+    for (level = 0; level <= 2; level++) {
+        actual = sizeof(encoded);
+        expected = sizeof(reference);
+        rc = bp_compress_block_level(source, sizeof(source), encoded, &actual,
+                                      (bp_uint8)level);
+        if (boltlz_compress(source, sizeof(source), reference, &expected, work,
+                           level == 1 ? BOLTLZ_FAST : BOLTLZ_BALANCED) != BP_OK)
+            exit(2);
+        UNIT_CHECK(rc == BP_OK && actual == expected &&
+                   memcmp(encoded, reference, expected) == 0,
+                   "wrapper selects the documented encoder mode");
+        actual = expected;
+        rc = bp_compress_block_work(source, sizeof(source), encoded, &actual,
+                                    work, (bp_uint8)level);
+        UNIT_CHECK(rc == BP_OK && actual == expected,
+                   "reusable-work wrapper honours exact encoded capacity");
+        actual = expected - 1;
+        rc = bp_compress_block_work(source, sizeof(source), encoded, &actual,
+                                    work, (bp_uint8)level);
+        UNIT_CHECK(rc == BP_ERR_OVERFLOW && actual == 0,
+                   "reusable-work wrapper rejects one-byte-short capacity");
+    }
+    actual = sizeof(encoded);
+    expected = sizeof(reference);
+    if (boltlz_compress(source, sizeof(source), encoded, &actual, work, BOLTLZ_FAST) != BP_OK ||
+        boltlz_compress(source, sizeof(source), reference, &expected, work, BOLTLZ_BALANCED) != BP_OK)
+        exit(2);
+    UNIT_CHECK(actual != expected || memcmp(encoded, reference, actual) != 0,
+               "mode-selection fixture distinguishes Fast from Balanced");
+    free(work);
 }
 
 /* ======================================================================== */
@@ -343,7 +388,7 @@ int main(void)
 {
     int rc;
 
-    printf("BoltPack unit tests: compression (fastlz + LZSS)\n");
+    printf("BoltPack unit tests: compression (boltlz + LZSS)\n");
 
     rc = bp_compress_init();
     if (rc != BP_OK) {
@@ -351,10 +396,11 @@ int main(void)
         return 1;
     }
 
-    test_fastlz_basic();
-    test_fastlz_invalid_lengths();
-    test_fastlz_checksum_consistency();
-    test_fastlz_corrupt();
+    test_boltlz_basic();
+    test_boltlz_wrapper_modes();
+    test_boltlz_invalid_lengths();
+    test_boltlz_checksum_consistency();
+    test_boltlz_corrupt();
     test_lzss_basic();
     test_lzss_compress_ratio();
     test_lzss_corrupt();

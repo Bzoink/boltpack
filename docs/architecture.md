@@ -14,7 +14,7 @@
 ├─────────────────────────────────┤
 │        Archiver Core            │  ← packing/unpacking, archive format logic
 ├─────────────────────────────────┤
-│      Compression Layer          │  ← LZSS, fastlz, fluff codec engines
+│      Compression Layer          │  ← LZSS, boltlz, fluff codec engines
 └─────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ bp_uint32 bp_checksum(bp_uint32 adler, const bp_uint8 *data, bp_uint32 len);
 ```
 
 The current implementation supports five archive methods: stored raw blocks
-(method `0`), LZSS (method `1`), fastlz (method `2`), Fluff (method `3`), and
+(method `0`), LZSS (method `1`), boltlz (method `2`), Fluff (method `3`), and
 zstd (method `4`) on modern builds.
 The archiver core decides which codec to invoke for a block and may still store
 an individual block raw when a compressed method misses the 99% threshold.
@@ -240,15 +240,15 @@ The CLI frontend implements the `bp_io_t` callbacks using standard C file functi
 
 **Commands:**
 
-| Command | Description |
-|-----------|------------------------------------||
-| `boltpack c archive.bolt file1 dir1 ...` | Create archive (directories are recursed automatically) |
-| `boltpack x archive.bolt [file ...]` | Extract (recreates directory structure) |
-| `boltpack l archive.bolt` | List archive contents |
-| `boltpack t archive.bolt` | Test archive integrity |
-| `boltpack a archive.bolt file1 dir1 ...` | Append files to an existing archive |
-| `boltpack i archive.bolt` | Show archive information (format version, entry count, sizes, compression ratio) |
-| `boltpack d archive.bolt file1 dir1/ ...` | Delete entries from archive |
+| Command                                   | Description                                                                      |
+| ----------------------------------------- | -------------------------------------------------------------------------------- |
+| `boltpack c archive.bolt file1 dir1 ...`  | Create archive (directories are recursed automatically)                          |
+| `boltpack x archive.bolt [file ...]`      | Extract (recreates directory structure)                                          |
+| `boltpack l archive.bolt`                 | List archive contents                                                            |
+| `boltpack t archive.bolt`                 | Test archive integrity                                                           |
+| `boltpack a archive.bolt file1 dir1 ...`  | Append files to an existing archive                                              |
+| `boltpack i archive.bolt`                 | Show archive information (format version, entry count, sizes, compression ratio) |
+| `boltpack d archive.bolt file1 dir1/ ...` | Delete entries from archive                                                      |
 
 **Options:**
 
@@ -256,8 +256,8 @@ The CLI frontend implements the `bp_io_t` callbacks using standard C file functi
 - **`-0`** (`c`, `a`): Store only — skip compression.
 - **`-F`** (`c`, `a`): Use Fluff compression. When no `-b` is given, block size is automatically set to 256 KB to match Fluff's window size.
 - **`-1`** (`c`, `a`): Use LZSS compression.
-- **`-2`** (`c`, `a`): Use fastlz compression. `-l 1` selects level 1; `-l 2` selects level 2; omitting `-l` lets fastlz auto-select.
-- **`-l N`** (`c`, `a`): Set fastlz level 1–2, or Fluff/zstd level 1–9. For Fluff, level 1 is fastest (chain depth 8), level 8 is the default (chain depth 256), and level 9 is slowest/best (chain depth 512).
+- **`-2`** (`c`, `a`): Use boltlz compression. `-l 1` selects level 1; `-l 2` selects level 2; omitting `-l` selects Balanced.
+- **`-l N`** (`c`, `a`): Set boltlz level 1–2, or Fluff/zstd level 1–9. For Fluff, level 1 is fastest (chain depth 8), level 8 is the default (chain depth 256), and level 9 is slowest/best (chain depth 512).
 - **`-q`** (all): Quiet — show only progress.
 - **`-qq`** (all): Silent — suppress all output.
 - **`-o PATH`** (`x`): Output directory for extraction.
@@ -320,7 +320,7 @@ The archiver core makes per-block decisions about whether to compress or store:
 
 This is automatic and per-block — a single file can have a mix of compressed and stored blocks (e.g., a mostly-text file with an embedded JPEG section).
 
-If the user passes `-0` (store-only), the archiver skips `bp_compress_block()` entirely for every block and writes all data as method 0. This is useful for archives of already-compressed data (JPEGs, MP3s, ZIPs) where attempting fastlz on every block wastes CPU time.
+If the user passes `-0` (store-only), the archiver skips `bp_compress_block()` entirely for every block and writes all data as method 0. This is useful for archives of already-compressed data (JPEGs, MP3s, ZIPs) where attempting boltlz on every block wastes CPU time.
 
 ### Test Command (`boltpack t`)
 
@@ -363,42 +363,19 @@ The `boltpack d` command rebuilds the archive without the specified entries, raw
 
 BoltPack uses block-based compression so that memory usage is bounded and predictable, regardless of how large the files being archived are.
 
-Per-file memory during compression (fastlz):
+Per-archive memory during BoltLZ compression:
 
-- 1 × `block_size` for the uncompressed input block
-- 1 × `block_size + block_size/20 + 66` for the compressed output block (worst case)
-- No heap work memory (fastlz's compressor uses a ~32 KB stack hash table on 32/64-bit)
+- One input block and an output buffer of `n + floor(n / 63) + 16` bytes.
+- A reusable 64 KiB heap workspace that covers both encoder modes.
+- No large compressor table on the stack.
 
-| Block size | Input buf | Output buf (worst case) | Compress stack hash | **Compress total** | **Decompress total** |
-| ---------- | --------- | ----------------------- | ------------------- | ------------------- | -------------------- |
-| 256 KB     | 256 KB    | 273 KB                  | 32 KB               | ~561 KB             | ~529 KB              |
-| 64 KB      | 64 KB     | 69 KB                   | 32 KB               | ~165 KB             | ~133 KB              |
-| 32 KB      | 32 KB     | 35 KB                   | 32 KB               | ~99 KB              | ~67 KB               |
-| 16 KB      | 16 KB     | 18 KB                   | 32 KB               | ~66 KB              | ~34 KB               |
-| 8 KB       | 8 KB      | 9 KB                    | 32 KB               | ~49 KB              | ~17 KB               |
-
-Decompression needs no work buffer — only the input and output buffers.
-
-LZSS (method 1) uses a fixed 14,900-byte work buffer (`LZSS_WORK_SIZE`) for both
-compression and decompression — far smaller than fastlz's stack hash table,
-making it suitable for 16-bit and memory-constrained systems.
-
-### Why not larger blocks?
-
-fastlz level 1 uses a fixed sliding match window of **8 KB**, and level 2 uses
-**64 KB** (only when the block is ≥ 64 KB). For the default 32 KB blocks (level 1),
-the window is the full 32 KB. Larger blocks only reach the level-2 64 KB window
-and its higher ratio when the block is ≥ 64 KB.
-
-- **8 KB block**: 8 KB usable window (level 1)
-- **16 KB block**: 16 KB usable window (level 1)
-- **32 KB block**: 32 KB usable window (level 1)
-- **64 KB block**: 64 KB usable window (level 2) — **Maximum ratio**
-- **256 KB block**: 64 KB usable window — Same ratio; fewer block headers
-
-Block headers cost 8 bytes each (`block_comp_size` + `block_orig_size`). For a 1 MB file, the difference between 64 KB blocks (128 bytes of headers) and 256 KB blocks (32 bytes) is 96 bytes — negligible. Blocks larger than 64 KB cannot improve fastlz compression because level 2's window is capped at 64 KB.
-
-The 256 KB tier exists as a convenience for modern systems — fewer loop iterations and syscalls — but 64 KB already extracts the full performance of fastlz level 2. The smaller tiers (8–32 KB) are deliberate trade-offs for memory-constrained systems, accepting slightly worse compression in exchange for running at all.
+The standalone Fast encoder requires 32 KiB workspace and Balanced 64 KiB.
+At blocks up to 64 KiB, the implementation uses packed 16-bit entries;
+public allocation sizes cover larger blocks as well. Decoding needs no
+separate workspace. Both modes can reference the entire independent block,
+up to 256 KiB. Larger blocks often improve ratio, but the benefit depends
+on the data and the codec being compared. Block headers contain sizes and
+CRC-32 and occupy 12 bytes.
 
 The file table is read into memory for listing and extraction. For archives with huge numbers of files on low-memory systems, the archiver could fall back to sequential scanning (reading entry headers one by one), but the table approach is preferred.
 
@@ -582,13 +559,12 @@ boltpack/
 ├── dev/                Docker images and vendor setup scripts for cross-compilation
 ├── docs/               Documentation
 ├── lib/
-│   ├── fastlz/           Third-party: fastlz source (MIT, C89-ported)
 │   └── zstd/             Third-party: zstd source
 ├── magic/              file(1) magic definition for .bolt files
 ├── src/
 │   ├── core/
 │   │   ├── bp_types.h      Portable type definitions, constants, bp_io_t, bp_progress_t
-│   │   ├── compress.c      Compression layer (wraps fastlz)
+│   │   ├── compress.c      Compression layer (wraps boltlz)
 │   │   ├── compress.h
 │   │   ├── archiver.c      Archiver core (format read/write)
 │   │   ├── archiver.h

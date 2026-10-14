@@ -97,7 +97,7 @@ static const char *method_name(int m)
     switch (m) {
     case BP_METHOD_STORED: return "Stored";
     case BP_METHOD_LZSS:   return "LZSS";
-    case BP_METHOD_FASTLZ:  return "fastlz";
+    case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
     default:               return "?";
     }
@@ -106,7 +106,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1016,7 +1016,7 @@ static void DoCreate(void)
     ar.progress_fn   = progress_cb;
     ar.progress_data = &g_progress;
 
-    rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_FASTLZ);
+    rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
     if (rc != BP_OK) {
         DestroyWindow(g_progress.hDlg);
         fclose(fp);
@@ -1290,7 +1290,7 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         ar.progress_fn   = progress_cb;
         ar.progress_data = &g_progress;
 
-        rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_FASTLZ);
+        rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
         if (rc == BP_OK) {
             for (i = 0; i < nother && !g_progress.cancelled; i++) {
                 const char *base = strrchr(others[i], '\\');

@@ -1709,11 +1709,11 @@ static void usage_basic(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0               Store only (no compression)\n"
         "  -1               LZSS compression\n"
-        "  -2               fastlz compression (default)\n"
+        "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression\n"
         "  -Z               Use zstd compression (modern builds)\n");
     fprintf(stderr,
-        "  -l N             Compression level (fastlz: 1-2; fluff/zstd: 1-9)\n"
+        "  -l N             Compression level (boltlz: 1-2; fluff/zstd: 1-9)\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
@@ -1752,11 +1752,11 @@ static void usage_advanced(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F/-Z)\n"
         "  -0               Store only (no compression)\n"
         "  -1               LZSS compression\n"
-        "  -2               fastlz compression\n"
+        "  -2               boltlz compression\n"
         "  -F               Use fluff compression (defaults to 256k blocks)\n"
         "  -Z               Use zstd compression (defaults to 256k blocks, method 4)\n");
     fprintf(stderr,
-        "  -l N             Compression level (fastlz: 1-2; fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
+        "  -l N             Compression level (boltlz: 1-2; fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
         "  -j N             Parallel threads for fluff and zstd compression (modern builds)\n");
     fprintf(stderr,
         "  -g N             Fluff blocks per history group (fast-fluff Linux builds, including arm64)\n"
@@ -2212,7 +2212,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -2893,7 +2893,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
-    bp_uint8 method = BP_METHOD_FASTLZ;
+    bp_uint8 method = BP_METHOD_BOLTLZ;
     int opt_level = 0; /* 0 = use default (no -l flag given) */
     const char *out_dir = NULL;
     int force = 0;
@@ -2975,8 +2975,8 @@ int main(int argc, char **argv)
             method = BP_METHOD_LZSS;
             i++;
         } else if (strcmp(argv[i], "-2") == 0 ||
-                   strcmp(argv[i], "--fastlz") == 0) {
-            method = BP_METHOD_FASTLZ;
+                   strcmp(argv[i], "--boltlz") == 0) {
+            method = BP_METHOD_BOLTLZ;
             i++;
         } else if (strcmp(argv[i], "-F") == 0 ||
                    strcmp(argv[i], "--fluff") == 0) {

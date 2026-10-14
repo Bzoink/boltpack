@@ -876,7 +876,7 @@ int main(int argc, char **argv)
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_FASTLZ;
+    bp_uint8   method     = BP_METHOD_BOLTLZ;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
 

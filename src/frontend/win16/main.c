@@ -802,7 +802,7 @@ static int cmd_info(const char *arc_path)
 
 #ifdef __WATCOMC__
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         write(1, "Entries:  ", 10); bp_wulong(1, (unsigned long)info.entry_count); write(1, "\n", 1);
@@ -830,7 +830,7 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_compressed, buf);
     printf("Comp:     %s\n", buf);
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:  ");
@@ -869,7 +869,7 @@ static void usage(void)
         "  -q                             quiet mode\n"
         "Compression:\n"
         "  create:   store (0), LZSS (1)\n"
-        "  extract:  store (0), LZSS (1), fastlz (2)\n");
+        "  extract:  store (0), LZSS (1), boltlz (2)\n");
 #else
     fputs(PROG_NAME " " BP_VER "  BoltPack mini for Windows 3.x (Win16)\n"
           "Usage:\n"
@@ -885,7 +885,7 @@ static void usage(void)
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), fastlz (2)\n",
+          "  extract:  store (0), LZSS (1), boltlz (2)\n",
           stderr);
 #endif
 }

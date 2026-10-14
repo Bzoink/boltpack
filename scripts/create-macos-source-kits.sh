@@ -123,7 +123,6 @@ stage_common() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
-    copy_tree "$PROJROOT/lib/fastlz" "$kitdir/lib/fastlz"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/macosx" "$kitdir/src/frontend/macosx"
     copy_file "$PROJROOT/resources/pics/boltpack_icon.png" \

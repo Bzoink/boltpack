@@ -238,9 +238,9 @@ Section /o "Windows Explorer context menu" SecContextMenu
   WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\001create_fluff" "Icon" "$INSTDIR\boltpack-gui.exe"
   WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\001create_fluff\command" "" "$\"$INSTDIR\boltpack-gui.exe$\" --shell-create-fluff %*"
 
-  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_fastlz" "MUIVerb" "Create archive (fastlz)"
-  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_fastlz" "Icon" "$INSTDIR\boltpack-gui.exe"
-  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_fastlz\command" "" "$\"$INSTDIR\boltpack-gui.exe$\" --shell-create-fastlz %*"
+  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_boltlz" "MUIVerb" "Create archive (boltlz)"
+  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_boltlz" "Icon" "$INSTDIR\boltpack-gui.exe"
+  WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\002create_boltlz\command" "" "$\"$INSTDIR\boltpack-gui.exe$\" --shell-create-boltlz %*"
 
   WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\003extract" "MUIVerb" "Extract archive"
   WriteRegStr SHCTX "${CONTEXT_MENU_ROOT}\shell\003extract" "Icon" "$INSTDIR\boltpack-gui.exe"

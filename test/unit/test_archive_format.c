@@ -2,7 +2,7 @@
  * test_archive_format.c -- unit tests for archive create / list / test / info
  *
  * Uses a memory-backed bp_io_t to exercise the full archiver API without
- * touching the filesystem.  Tests Stored, LZSS, fastlz, and Fluff methods.
+ * touching the filesystem.  Tests Stored, LZSS, boltlz, and Fluff methods.
  *
  * ANSI C (C89/C90) only.
  *
@@ -275,8 +275,8 @@ static void test_header_bytes(void)
         UNIT_CHECK(mem.buf[3] == 0x54, "magic[3] == 'T'");
 
         /* format version (little-endian uint16) */
-        UNIT_CHECK(mem.buf[4] == 0x03 && mem.buf[5] == 0x00,
-                   "format version == 3 (little-endian)");
+        UNIT_CHECK(mem.buf[4] == BP_FORMAT_VERSION && mem.buf[5] == 0x00,
+                   "format version == 4 (little-endian)");
 
         /* file_count (little-endian uint32 at offset 8) must be 2 */
         UNIT_CHECK(mem.buf[8] == 2 && mem.buf[9] == 0 &&
@@ -481,7 +481,7 @@ static void test_info(void)
 
         rc = bp_archive_info(&io, &info);
         UNIT_CHECK(rc == BP_OK, "bp_archive_info returns BP_OK");
-        UNIT_CHECK(info.version == 3, "info.version == 3");
+        UNIT_CHECK(info.version == BP_FORMAT_VERSION, "info.version == BP_FORMAT_VERSION");
         UNIT_CHECK(info.file_count == 2, "info.file_count == 2");
         UNIT_CHECK(info.total_original.lo == FILE1_LEN + FILE2_LEN,
                    "info.total_original correct");
@@ -663,6 +663,34 @@ static void test_checksum_corruption(void)
 /* main                                                                      */
 /* ======================================================================== */
 
+static void test_previous_versions_rejected(void)
+{
+    MemIO mem;
+    bp_io_t io;
+    bp_archive_info_t info;
+    bp_uint16 version;
+    int rc;
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.cap = MEM_IO_CAP;
+    UNIT_SECTION("Archive format: version 4 only");
+    for (version = 1; version < BP_FORMAT_VERSION; version++) {
+        rc = create_test_archive(&mem, BP_METHOD_BOLTLZ);
+        if (rc != BP_OK) { UNIT_CHECK(0, "prepare version-rejection fixture"); break; }
+        bp_write_le16(mem.buf + 4, version);
+        bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                      bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+        io = make_mem_io(&mem);
+        UNIT_CHECK(bp_archive_list(&io, list_cb, NULL) == BP_ERR_VERSION,
+                   "list rejects previous version with valid header CRC");
+        UNIT_CHECK(bp_archive_info(&io, &info) == BP_ERR_VERSION,
+                   "info rejects previous version with valid header CRC");
+        UNIT_CHECK(bp_archive_test(&io, test_cb, NULL) == BP_ERR_VERSION,
+                   "test rejects previous version with valid header CRC");
+    }
+    free(mem.buf);
+}
+
 int main(void)
 {
     int rc;
@@ -676,6 +704,7 @@ int main(void)
     }
 
     test_header_bytes();
+    test_previous_versions_rejected();
 
     UNIT_SECTION("Archive format: Stored method");
     test_list_method("list (Stored)", BP_METHOD_STORED);
@@ -685,9 +714,9 @@ int main(void)
     test_list_method("list (LZSS)", BP_METHOD_LZSS);
     test_integrity_method("test (LZSS)", BP_METHOD_LZSS);
 
-   UNIT_SECTION("Archive format: fastlz method");
-   test_list_method("list (fastlz)", BP_METHOD_FASTLZ);
-   test_integrity_method("test (fastlz)", BP_METHOD_FASTLZ);
+   UNIT_SECTION("Archive format: boltlz method");
+   test_list_method("list (boltlz)", BP_METHOD_BOLTLZ);
+   test_integrity_method("test (boltlz)", BP_METHOD_BOLTLZ);
 
     UNIT_SECTION("Archive format: Fluff method");
     test_list_method("list (Fluff)", BP_METHOD_FLUFF);

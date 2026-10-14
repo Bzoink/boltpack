@@ -31,7 +31,7 @@ COMPRESSION OPTIONS
 -------------------
 
 -F, --fluff    Use Fluff codec (best ratio, 29%)
--2, --fastlz   Use fastlz (fast, 47%)
+-2, --boltlz   Use boltlz (fast, 47%)
 -1, --lzss     Use LZSS (small-memory)
 -Z, --zstd     Use zstd (best general-purpose ratio)
 -0             No compression (stored)

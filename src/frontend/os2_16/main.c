@@ -556,7 +556,7 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_compressed, buf);
     printf("Comp size:   %s\n", buf);
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:     ");
@@ -592,7 +592,7 @@ static void usage(void)
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), fastlz (2)\n",
+          "  extract:  store (0), LZSS (1), boltlz (2)\n",
           stderr);
 }
 
