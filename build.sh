@@ -153,16 +153,12 @@ build_make_target() {
 # ---- targets -------------------------------------------------------------
 
 do_linux() {
-    build_target linux cc "" "-fuse-ld=bfd" "" linux "-ansi -pedantic" "ENABLE_FAST_FLUFF=1"
+    build_target linux gcc "" "-fuse-ld=bfd" "" linux "-ansi -pedantic" "ENABLE_FAST_FLUFF=1"
 }
 
 do_linux_static() {
-    build_target linux cc "" "-fuse-ld=bfd -static" ""
-    # Rename to distinguish from dynamic build
-    if [ -f build/linux/boltpack ]; then
-        cp build/linux/boltpack build/linux/boltpack-static
-        echo "  OK    build/linux/boltpack-static"
-    fi
+    build_target linux gcc "" "-fuse-ld=bfd -static" "" linux "-ansi -pedantic" \
+        "BUILDDIR=build/linux-static TARGET=build/linux-static/boltpack"
 }
 
 do_linux_i386() {
@@ -415,7 +411,7 @@ do_atari() {
 }
 
 do_macos9_68k() {
-    local cc="/usr/retro68/bin/m68k-apple-macos-gcc"
+    local cc="/opt/retro68/toolchain/bin/m68k-apple-macos-gcc"
     if [ ! -x "$cc" ]; then
         echo "  SKIP  macos9-68k ($cc not found)"
         return 0
@@ -724,8 +720,10 @@ do_win_fltk_installers() {
     # win64 FLTK installer
     if [ -f "compilation/fltk-win64/lib/libfltk.a" ] && \
        [ -f "staging/win64/package/README.txt" ]; then
-        echo "  BUILD Windows installer (win64 FLTK)"
-        if [ -n "$VERBOSE" ]; then
+        if [ -f "build/win64-fltk-gui/boltpack-$(cat VERSION)-win64-setup.exe" ]; then
+            echo "  OK    reuse build/win64-fltk-gui/boltpack-$(cat VERSION)-win64-setup.exe"
+        elif [ -n "$VERBOSE" ]; then
+            echo "  BUILD Windows installer (win64 FLTK)"
             if make win64-fltk-installer 2>&1 | sed 's/^/        /'; then
                 echo "  OK    build/win64-fltk-gui/boltpack-*-win64-setup.exe"
                 built_any=1
@@ -733,6 +731,7 @@ do_win_fltk_installers() {
                 echo "  FAIL  win64 FLTK installer"
             fi
         else
+            echo "  BUILD Windows installer (win64 FLTK)"
             if make win64-fltk-installer >/dev/null 2>&1; then
                 echo "  OK    build/win64-fltk-gui/boltpack-*-win64-setup.exe"
                 built_any=1
@@ -747,12 +746,17 @@ do_win_fltk_installers() {
             echo "  SKIP  win64 FLTK installer (staging/win64/package not ready)"
         fi
     fi
+    if [ -f build/win64-fltk-gui/boltpack-"$(cat VERSION)"-win64-setup.exe ]; then
+        cp build/win64-fltk-gui/boltpack-"$(cat VERSION)"-win64-setup.exe dist/
+    fi
 
     # win32 FLTK installer
     if [ -f "compilation/fltk-win32/lib/libfltk.a" ] && \
        [ -f "staging/win32/package/README.txt" ]; then
-        echo "  BUILD Windows installer (win32 FLTK)"
-        if [ -n "$VERBOSE" ]; then
+        if [ -f "build/win32-fltk-gui/boltpack-$(cat VERSION)-win32-setup.exe" ]; then
+            echo "  OK    reuse build/win32-fltk-gui/boltpack-$(cat VERSION)-win32-setup.exe"
+        elif [ -n "$VERBOSE" ]; then
+            echo "  BUILD Windows installer (win32 FLTK)"
             if make win32-fltk-installer 2>&1 | sed 's/^/        /'; then
                 echo "  OK    build/win32-fltk-gui/boltpack-*-win32-setup.exe"
                 built_any=1
@@ -760,6 +764,7 @@ do_win_fltk_installers() {
                 echo "  FAIL  win32 FLTK installer"
             fi
         else
+            echo "  BUILD Windows installer (win32 FLTK)"
             if make win32-fltk-installer >/dev/null 2>&1; then
                 echo "  OK    build/win32-fltk-gui/boltpack-*-win32-setup.exe"
                 built_any=1
@@ -773,6 +778,9 @@ do_win_fltk_installers() {
         else
             echo "  SKIP  win32 FLTK installer (staging/win32/package not ready)"
         fi
+    fi
+    if [ -f build/win32-fltk-gui/boltpack-"$(cat VERSION)"-win32-setup.exe ]; then
+        cp build/win32-fltk-gui/boltpack-"$(cat VERSION)"-win32-setup.exe dist/
     fi
 
     return 0

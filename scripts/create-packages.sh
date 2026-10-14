@@ -86,6 +86,7 @@ BUILD_DATE=$(date '+%Y-%m-%d')
 
 declare -A PLATFORM_FORMAT=(
     [linux]="tar.gz"
+    [linux-static]="tar.gz"
     [linux-arm32]="tar.gz"
     [linux-arm64]="tar.gz"
     [linux-ppc]="tar.gz"
@@ -134,6 +135,7 @@ declare -A PLATFORM_FORMAT=(
 
 declare -A PLATFORM_ENCODING=(
     [linux]="UTF-8"
+    [linux-static]="UTF-8"
     [linux-arm32]="UTF-8"
     [linux-arm64]="UTF-8"
     [linux-ppc]="UTF-8"
@@ -182,6 +184,7 @@ declare -A PLATFORM_ENCODING=(
 
 declare -A PLATFORM_TEMPLATE=(
     [linux]="README-linux.txt"
+    [linux-static]="README-linux.txt"
     [linux-arm32]="README-linux.txt"
     [linux-arm64]="README-linux.txt"
     [linux-ppc]="README-linux.txt"
@@ -261,7 +264,7 @@ get_cpu_from_platform() {
         linux-x86|dos|dos16|win16|os2-16|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
         wasm)                                  echo "wasm32" ;;
-        linux|linux-gui|musl|haiku|freebsd|netbsd|openbsd|macosx|solaris|illumos|hurd|zos|win64|win64-fltk-gui|irix|tru64|qnx|plan9|nextstep|zos)  echo "x86-64" ;;
+        linux|linux-static|linux-gui|musl|haiku|freebsd|netbsd|openbsd|macosx|solaris|illumos|hurd|zos|win64|win64-fltk-gui|irix|tru64|qnx|plan9|nextstep|zos)  echo "x86-64" ;;
         *)                                     echo "unknown" ;;
     esac
 }
