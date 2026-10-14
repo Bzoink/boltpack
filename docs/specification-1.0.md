@@ -1,17 +1,13 @@
 # BoltPack Specification v1.0
 
-**Format Version:** 3 (readers also accept 2)  
-**Software Version:** 1.3  
-**Status:** Stable  
+**Format Version:** 4 (only)
+**Software Version:** 1.6
+**Status:** Development
 **Release Date:** 2026-07-04
 
-> **Format version history.** Version 3 widened the file-table records to
-> carry each entry's `method`, `header_size`, and payload `checksum`, and
-> added a CRC-32 over the archive header and file table (stored in the
-> header's former reserved area). Entry headers and compressed-data layout
-> are byte-for-byte identical to version 2, so a v2 archive is a valid v3
-> archive apart from those two additions. Conforming v3 readers MUST also
-> read version 2 (§10.2).
+> **Archive format 4.** Method 2 uses BoltLZ format 2. Readers accept only
+> version 4 and reject every other archive version with `BP_ERR_VERSION`.
+> The header, file-table, entry, and block CRC-32 fields are mandatory.
 
 ## 1. Introduction
 
@@ -42,7 +38,7 @@ Topics **not** covered here (see separate documentation):
 - ANSI C99 / ISO C (for portable type definitions)
 - RFC 1962 — The PPP Compression Control Protocol (LZW reference)
 - RFC 1950 — ZLIB Compressed Data Format (Huffman coding patterns)
-- fastlz 0.5.0 documentation (method 2)
+- BoltLZ format 2, defined in §3.3 (method 2)
 
 ### 1.3 Terminology
 
@@ -84,28 +80,25 @@ A BoltPack archive consists of three sequential sections:
 | Offset | Size | Field            | Type   | Description                                                            |
 | ------ | ---- | ---------------- | ------ | ---------------------------------------------------------------------- |
 | 0      | 4    | `magic`          | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT")                           |
-| 4      | 2    | `format_version` | u16 LE | `0x0003` (v3); readers also accept `0x0002` (v2)                       |
+| 4      | 2    | `format_version` | u16 LE | `0x0004`; readers reject every other archive version                 |
 | 6      | 2    | `flags`          | u16 LE | Reserved; must be `0x0000`. Fail with `ERR_CORRUPT` if nonzero.        |
 | 8      | 4    | `file_count`     | u32 LE | Number of entries (0 to 4,294,967,295)                                 |
 | 12     | 1    | `creator_os`     | u8     | Platform that created the archive (see Section 2.6)                    |
 | 13     | 1    | `creator_cpu`    | u8     | CPU architecture of creator (see Section 2.7)                          |
 | 14     | 2    | `creator_ver`    | u8, u8 | BoltPack version (major, minor) at offset 14 and 15                    |
-| 16     | 8    | `archive_size`   | u64 LE | Total size of `.bolt` file in bytes (v3: normative; v2: informational) |
-| 24     | 4    | `table_crc`      | u32 LE | v3: CRC-32 of the file-table region. v2: reserved (`0`).               |
-| 28     | 4    | `header_crc`     | u32 LE | v3: CRC-32 of header bytes `[0, 28)`. v2: reserved (`0`).              |
+| 16     | 8    | `archive_size`   | u64 LE | Total size of `.bolt` file in bytes                                 |
+| 24     | 4    | `table_crc`      | u32 LE | CRC-32 of the file-table region                                      |
+| 28     | 4    | `header_crc`     | u32 LE | CRC-32 of header bytes `[0, 28)`                                     |
 
 **Validation:**
 
 - `magic != 0x544C4F42` → `ERR_NOT_ARCHIVE`
-- `format_version == 0` or `format_version > 0xFFFE` → `ERR_CORRUPT`
-- `format_version > max_supported_by_reader` → `ERR_VERSION`
+- `format_version != 4` → `BP_ERR_VERSION`
 - `flags != 0x0000` → `ERR_CORRUPT`
-- For v3: `header_crc != CRC-32(header[0..28))` → `ERR_CORRUPT`; and after
-  reading the file table, `table_crc != CRC-32(table region)` → `ERR_CORRUPT`.
-  (In v2 these two fields are reserved and MUST be ignored on read.)
-- For v3: `archive_size != actual_file_size` → `ERR_TRUNCATED`. A reader MUST
-  verify this after reading the footer. A writer MUST store the correct total
-  file size. (In v2 the field is informational only; a reader MAY ignore it.)
+- `header_crc != CRC-32(header[0..28))` → `ERR_CORRUPT`; after reading the
+  file table, `table_crc != CRC-32(table region)` → `ERR_CORRUPT`.
+- `archive_size != actual_file_size` → `ERR_TRUNCATED`. A reader MUST verify
+  this after reading the footer. A writer MUST store the correct total size.
 
 **Byte order:** All multi-byte integers are **little-endian** on all platforms. Decoders running on big-endian hosts (PowerPC, 68k, SPARC, Alpha) must byte-swap when reading. The swap cost is negligible (~10 lines of C89 code).
 
@@ -123,7 +116,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
 | 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
 | 20+N   | 4    | `checksum`        | u32 LE | Checksum of uncompressed payload, per `checksum_type`                     |
-| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=LZSS, 2=fastlz, 3=fluff, 4=zstd)         |
+| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=LZSS, 2=BoltLZ, 3=fluff, 4=zstd)          |
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
@@ -131,7 +124,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 32+N   | 8    | `mtime`           | u64 LE | Modification time (Unix epoch seconds, UTC)                               |
 | 40+N   | 2    | `flags`           | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently.          |
 
-**Entry flags (v3):**
+**Entry flags (format 4):**
 
 | Bit(s) | Constant                   | Description                                                      |
 | ------ | -------------------------- | ---------------------------------------------------------------- |
@@ -145,7 +138,7 @@ When bit 15 is set, bits 0–11 encode the 12-bit Unix permission+type-low field
 
 **Key constraints:**
 
-- `header_size` **MUST** equal `4 + name_len + 38` for format version 3.
+- `header_size` **MUST** equal `4 + name_len + 38` for format version 4.
 - `name_len` MUST NOT be zero (empty names forbidden).
 - `name` MUST be valid UTF-8; decoder MAY reject on invalid sequences.
 - `name` MUST NOT contain `..` components or absolute paths (security check).
@@ -170,18 +163,7 @@ The entire `compressed_size` bytes are treated as one uncompressed chunk. Decomp
 
 **Case 2: `block_size > 0` (blocked)**
 
-The payload is a sequence of block headers + block data. The block header
-layout differs between format versions:
-
-**v2 block header (8 bytes):**
-
-| Offset | Size | Field             | Type   | Description                                      |
-| ------ | ---- | ----------------- | ------ | ------------------------------------------------ |
-| 0      | 4    | `block_comp_size` | u32 LE | Size of this block's compressed data             |
-| 4      | 4    | `block_orig_size` | u32 LE | Uncompressed size of this block (≤ `block_size`) |
-| 8      | M    | `block_data`      | bytes  | Compressed block data (M = `block_comp_size`)    |
-
-**v3 block header (12 bytes):**
+The payload is a sequence of 12-byte block headers followed by block data:
 
 | Offset | Size | Field             | Type   | Description                                             |
 | ------ | ---- | ----------------- | ------ | ------------------------------------------------------- |
@@ -191,7 +173,7 @@ layout differs between format versions:
 | 12     | M    | `block_data`      | bytes  | Compressed block data (M = `block_comp_size`)           |
 
 The `block_crc` field covers the compressed bytes **before** decompression. A
-v3 reader MUST verify `block_crc` before decompressing; mismatch → `ERR_CHECKSUM`.
+reader MUST verify `block_crc` before decompressing; mismatch → `ERR_CHECKSUM`.
 
 **Semantics:**
 
@@ -201,8 +183,8 @@ v3 reader MUST verify `block_crc` before decompressing; mismatch → `ERR_CHECKS
   Method 0 always uses raw blocks; methods 1-4 MAY also use raw blocks when a
   compression attempt fails the 99% threshold rule.
 - Total uncompressed bytes from all blocks MUST equal `original_size`.
-- Total compressed bytes from all blocks MUST equal `compressed_size`
-  (including block headers: 8 bytes each in v2, 12 bytes each in v3).
+- Total compressed bytes from all blocks MUST equal `compressed_size`, including
+  the 12-byte headers.
 - Decompressor reads blocks sequentially until `original_size` bytes have been produced.
 
 **Block size recommendations** (for implementers choosing a block size when creating archives):
@@ -223,7 +205,7 @@ A reader MAY accept any block size; it only needs to allocate `block_size + code
 
 ### 3.1 Method 0: Stored (Uncompressed)
 
-**ID:** `0`  
+**ID:** `0`
 **Decoder complexity:** Trivial (byte copy)
 
 For data that does not compress well, method 0 stores payload verbatim:
@@ -235,9 +217,9 @@ For data that does not compress well, method 0 stores payload verbatim:
 
 ### 3.2 Method 1: LZSS (LZ77 Sliding Window)
 
-**ID:** `1`  
-**Codec:** LZSS (Okumura / Haruhiko Okumura variant, 1989)  
-**Decompressor complexity:** ~60 lines of C89; 2 048 bytes RAM  
+**ID:** `1`
+**Codec:** LZSS (Okumura / Haruhiko Okumura variant, 1989)
+**Decompressor complexity:** ~60 lines of C89; 2 048 bytes RAM
 **Status:** Implemented in `src/core/lzss.c`
 
 #### 3.2.1 Algorithm Parameters (Format-Fixed)
@@ -320,57 +302,52 @@ while (output_bytes_remaining > 0) {
 Method 1 archives produced by any conforming BoltPack implementation MUST be
 decompressable by any other conforming implementation regardless of platform.
 
-### 3.3 Method 2: fastlz
+### 3.3 Method 2: BoltLZ
 
-**ID:** `2`  
-**Codec:** fastlz (levels 1 and 2)
-**Library:** fastlz 0.5.0
-**Decompressor complexity:** Linear O(N); ~200 lines of C89  
-**Speed:** ~700 MB/s decompression (modern 64-bit system)
-**Compression ratio:** ~47% (curated corpus average, level 2)
+**Method ID:** `2`
+**Codec:** BoltLZ format 2, original BSD-2-Clause C89 implementation
+**Maximum uncompressed block size:** 262,144 bytes
 
-> **Note:** Method 2 was LZO1X in pre-1.5.0 BoltPack builds. As of 1.5.0 it is
-> fastlz, and pre-1.5.0 archives using method 2 are not readable by 1.5.0.
+Each compressed block MUST begin with byte `0x02`. The remaining stream is
+an ordered sequence of tokens and their payloads. Both encoder modes use
+this representation; the compression level is not stored in the stream.
 
-**Specification:**
+| Token bits | Meaning                                                               |
+| ---------- | --------------------------------------------------------------------- |
+| 7          | Reuse the previous positive match distance when set                   |
+| 6–4        | Literal length: values 0–6 are inline; 7 adds a ULEB128 extension     |
+| 3–0        | Match length: values 0–14 mean 4–18 bytes; 15 adds an extension to 19 |
 
-Blocks are encoded using the **fastlz** format as defined by fastlz 0.5.0.
-The reference implementation is `fastlz_decompress()` in `lib/fastlz/fastlz.c`.
+Payload order is: token, optional literal-length extension, literal bytes,
+optional match-length extension, and explicit distance unless bit 7 is set.
+Length extensions and distances MUST be canonical unsigned LEB128, with at
+most three bytes. A terminal byte zero after an earlier byte is noncanonical;
+a continuation bit on the third byte or a third-byte payload above 16 is
+invalid. All decoded lengths MUST fit the declared output block.
 
-Compressed format:
+An explicit match distance MUST be positive and no greater than the number
+of bytes already produced. It becomes the previous distance for later reuse.
+The previous distance is initially invalid and persists through literals.
+Matches copy from already-produced output, allowing overlap byte by byte.
 
-```text
-token_stream:  a sequence of (literal_run, match) pairs
+A final literal-only sequence MUST have bit 7 clear, low four bits zero,
+and at least one literal. Its literals MUST consume the exact remaining
+compressed input and complete the exact expected output. A block MAY end
+immediately after a match. The one-byte stream `0x02` represents empty output;
+archive empty entries use Stored and have no data blocks.
 
-literal_run:   0 or more uncompressed bytes
-
-match:         3–264 bytes from a position 1–8191 bytes back (level 1)
-               or 1–65535+8191 bytes back (level 2)
-
-encoding:      byte-aligned control bytes; the top 3 bits of the first
-               byte select the level (level 1 = 001, level 2 = 010)
-```
-
-Full specification for the fastlz bitstream is in the fastlz source;
-implementers MUST refer to:
-
-1. `lib/fastlz/fastlz.c` (reference implementation)
-2. `src/core/mini/fastlz_decomp.c` (clean-room C89 decoder for 16-bit targets)
-
-**Decompression requirements:**
-
-- MUST use a bound-checked decompressor (equivalent to `fastlz_decompress()`).
-- MUST validate that decompressed size matches `block_orig_size` byte-for-byte.
-- MUST reject corrupted compressed data (return `ERR_CORRUPT`).
-
-**Decoder status:** Stable, widely tested, suitable for all platforms including vintage systems (16-bit builds decompress via the clean-room decoder).
+Readers MUST reject unknown block versions, noncanonical/truncated fields,
+invalid distances, extra sequences, or input/output overruns. Decoders MUST
+operate within the declared buffers without caller-supplied padding. The
+reference implementation is `boltlz_decompress()` in `src/core/boltlz.c`.
+The conservative encoder output bound is `n + floor(n / 63) + 16` bytes.
 
 ### 3.4 Method 3: Fluff (LZ77 + FSE/tANS)
 
-**ID:** `3`  
-**Codec:** Fluff  
-**Decompressor complexity:** Moderate (~1000 lines of C89)  
-**Speed:** ~467 MB/s decompression (modern 64-bit system)  
+**ID:** `3`
+**Codec:** Fluff
+**Decompressor complexity:** Moderate (~1000 lines of C89)
+**Speed:** ~467 MB/s decompression (modern 64-bit system)
 **Compression ratio:** ~29% on curated corpus (best ratio among the non-zstd
 methods)
 
@@ -929,16 +906,16 @@ The zstd frame format is documented at <https://github.com/facebook/zstd/blob/de
 
 ### 4.1 CRC-32 Checksum (checksum_type = 1) — current
 
-**Checksum type:** `1` (CRC-32)  
-**Polynomial:** IEEE 802.3 reflected `0xEDB88320` (zlib-compatible)  
+**Checksum type:** `1` (CRC-32)
+**Polynomial:** IEEE 802.3 reflected `0xEDB88320` (zlib-compatible)
 **Detection:** All 1- and 2-bit errors, all odd numbers of bit errors, all
 bursts ≤ 32 bits; longer bursts with probability 1 − 2⁻³²
 
-CRC-32 is the **only** payload checksum current writers emit. In v3, writers
-MUST write `checksum_type = 1`; any other value → `ERR_CORRUPT` on read. Seed
+CRC-32 is the **only** payload checksum current writers emit. Writers MUST
+write `checksum_type = 1`; any other value → `ERR_CORRUPT` on read. Seed
 the running value with `0`, fold each uncompressed block in stream order, and
 compare the final value against the entry's `checksum` field. The archive
-**header**, **file table**, and (v3) each **block** are protected by CRC-32
+**header**, **file table**, and each **block** are protected by CRC-32
 (§2.2, §2.3.2).
 
 **Validation:**
@@ -968,7 +945,7 @@ required to, and no conforming writer of this generation produces it.
 
 Decompressor MUST perform the following checks during and after decompression:
 
-1. **Format validation:** Method ID is one of {0, 1, 2, 3}.
+1. **Format validation:** Method ID is one of {0, 1, 2, 3, 4}.
 1. **Size tracking:** Decompressed output equals `block_orig_size` for each block.
 1. **Distance validity:** Match distances do not exceed available history.
 1. **End-of-block marker:** Fluff blocks terminate with symbol 256.
@@ -986,14 +963,7 @@ Failure of any check → `ERR_CORRUPT`; abort extraction.
 
 **Offset:** Stored in footer; typically at end of archive before footer.
 
-**Format — v2 table header (8 bytes):**
-
-| Offset | Size | Field         | Type   | Description                                  |
-| ------ | ---- | ------------- | ------ | -------------------------------------------- |
-| 0      | 4    | `table_magic` | u32 LE | `0x544C4254` (bytes: `54 42 4C 54` = "TBLT") |
-| 4      | 4    | `entry_count` | u32 LE | Number of directory entries                  |
-
-**Format — v3 table header (16 bytes):**
+**Table header (16 bytes):**
 
 | Offset | Size | Field         | Type   | Description                                  |
 | ------ | ---- | ------------- | ------ | -------------------------------------------- |
@@ -1003,7 +973,7 @@ Failure of any check → `ERR_CORRUPT`; abort extraction.
 
 The `total_orig` field allows readers to display total uncompressed size without
 scanning each entry record. Writers MUST store the correct sum; readers SHOULD
-use it in preference to iterating records. (In v2 only 8 bytes are present.)
+use it in preference to iterating records.
 
 Followed by `entry_count` records:
 
@@ -1017,22 +987,19 @@ Followed by `entry_count` records:
 | 19+N   | 1    | `platform`        | u8     | Metadata platform origin                |
 | 20+N   | 8    | `mtime`           | u64 LE | Modification time (Unix epoch)          |
 | 28+N   | 8    | `offset`          | u64 LE | Byte offset of entry from archive start |
-| 36+N   | 1    | `method`          | u8     | **v3 only** — compression method (0–4)  |
-| 37+N   | 2    | `header_size`     | u16 LE | **v3 only** — entry header size         |
-| 39+N   | 4    | `checksum`        | u32 LE | **v3 only** — entry payload checksum    |
+| 36+N   | 1    | `method`          | u8     | Compression method (0–4)                |
+| 37+N   | 2    | `header_size`     | u16 LE | Entry header size                       |
+| 39+N   | 4    | `checksum`        | u32 LE | Entry payload checksum                  |
 
-The record tail is **34 bytes** in v2 and **41 bytes** in v3. The three v3
-fields duplicate values from the entry header so that listing, info, delete,
-and copy operations need not seek to each entry — they eliminate the
-random-seek storm a v2 reader performs to recover the `method` byte. A v3
-reader MUST parse 41-byte tails; a v2 reader parses 34.
+The record tail is 41 bytes. Its final three fields duplicate values from
+the entry header so listing, info, delete, and copy operations need not seek
+to each entry to recover them.
 
 **Validation:**
 
 - `table_magic != 0x544C4254` → `ERR_CORRUPT`
 - `entry_count != archive_header.file_count` → `ERR_CORRUPT`
-- For v3, the whole file-table region is additionally covered by the
-  header's `table_crc` (§2.2).
+- The whole file-table region is covered by the header's `table_crc` (§2.2).
 
 ### 5.2 Archive Footer (20 bytes)
 
@@ -1178,7 +1145,7 @@ The swap cost is negligible; byte-order detection is automatic via compile-time 
 
 ### 7.3 Character Encoding
 
-**File names and paths:** UTF-8 (Unicode)  
+**File names and paths:** UTF-8 (Unicode)
 **Encoding flow:**
 
 1. **Writer:** Convert native encoding (MacRoman, Shift-JIS, EBCDIC, etc.) to UTF-8.
@@ -1236,7 +1203,7 @@ Every BoltPack reader **MUST:**
 Full v1.0 implementations SHOULD support all compressed methods:
 
 1. **Method 1** — LZSS
-2. **Method 2** — fastlz
+2. **Method 2** — BoltLZ
 3. **Method 3** — Fluff
 4. **Method 4** — zstd (modern 32/64-bit targets only; return `ERR_METHOD` on vintage/16-bit builds)
 5. **Method 4** — zstd (modern builds)
@@ -1250,7 +1217,7 @@ Every BoltPack writer **SHOULD:**
 3. Set creator fields accurately (OS, CPU, BoltPack version).
 4. Choose compression method based on file characteristics:
    - Method 3 (fluff) for text, source code, and other ratio-sensitive data.
-   - Method 2 (fastlz) for binary data and fast general-purpose compression.
+   - Method 2 (BoltLZ) for binary data and fast general-purpose compression.
    - Method 1 (LZSS) for constrained-memory or 16-bit targets.
    - Method 0 (stored) if compression saves < 1% (see Section 9.3).
 5. Compute correct CRC-32 checksum.
@@ -1290,24 +1257,13 @@ To support future enhancements without breaking existing readers:
 4. **Checksum types**: `checksum_type` allows future algorithms (1 = CRC-32, 2 = SHA-256, etc.).
 5. **Entry flags**: The `flags` field in entry headers is reserved; new bits may be assigned without breaking old readers.
 
-### 10.2 Version Management
+### 10.2 Archive version policy
 
-- **Format version** (in archive header) increments only for incompatible changes (rare).
-- **Software version** (`creator_ver`) is informational; readers ignore it.
-- **Version 3** widened file-table records and added header/table CRC-32
-  (§2.2, §5.1). It is the current write version; conforming readers accept
-  both 2 and 3. Because entry headers and compressed data are unchanged, an
-  in-place `append` or `delete` on a v2 archive transparently rewrites its
-  file table and header as v3.
-
-**Example:**
-
-- BoltPack 1.3 creates archives with format version `3`.
-- A v3 reader also reads version `2` archives without change.
-- Writers do not emit version `1`; readers of this generation accept
-  versions 2 and 3.
-
----
+Writers MUST emit archive version 4. Readers MUST reject every other version
+with `BP_ERR_VERSION` before interpreting compressed blocks or file-table
+records. New archives use the 16-byte table header, 41-byte record tails,
+and 12-byte CRC-protected block headers described above. No conversion or
+compatibility decoding is performed.
 
 ## 11. Reference Implementations
 
@@ -1336,7 +1292,7 @@ if (result != 0) {
 }
 ```
 
-The library is self-contained (includes LZSS, fastlz, and fluff codecs) and compiles with strict ANSI C89.
+The library is self-contained (includes LZSS, BoltLZ, and fluff codecs) and compiles with strict ANSI C89.
 
 ### 11.2 Repository Test Coverage
 
@@ -1360,7 +1316,7 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 - **Fluff:** BoltPack's native LZ77+Huffman codec (method 3).
 - **Little-endian:** Least-significant byte first; canonical byte order for this format.
 - **Metadata:** File creation time, platform origin, entry type.
-- **Method:** Compression algorithm (0=stored, 1=LZSS, 2=fastlz, 3=fluff).
+- **Method:** Compression algorithm (0=stored, 1=LZSS, 2=BoltLZ, 3=fluff).
 - **Payload:** Uncompressed content of an entry.
 - **UTF-8:** Unicode text encoding for file names and paths.
 
@@ -1368,13 +1324,12 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 
 ## B. References
 
-- **fastlz:** <https://github.com/ariya/FastLZ> (fastlz bitstream specification)
 - **RFC 1950:** ZLIB Compressed Data Format Specification (Huffman coding, Adler-32)
 - **ANSI C89/C90:** ISO C language standard (for portable type definitions)
 - **ZIP format:** PKWARE AppNote (for design inspiration and compatibility lessons)
 
 ---
 
-**Document version:** 1.1  
-**Last updated:** June 2026  
+**Document version:** 1.1
+**Last updated:** June 2026
 **Status:** Final (Stable release)

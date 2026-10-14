@@ -142,8 +142,8 @@ def test_linux_help_and_long_form_cli() -> None:
     r = run_bp("help")
     help_text = (r.stdout + r.stderr).decode(errors="replace")
     check(r.returncode == 0, "help: exit 0")
-    check("-2" in help_text and "fastlz" in help_text,
-          "help: exposes fastlz as the default compression method")
+    check("-2" in help_text and "boltlz" in help_text,
+          "help: exposes boltlz as the default compression method")
     check("debug-fluff" not in help_text,
         "help: hides debug-fluff from default page")
     check("-j N" not in help_text,
@@ -198,7 +198,7 @@ def test_roundtrip_per_method() -> None:
     methods = [
         ("-0", "Stored"),
         ("-1", "LZSS"),
-        ("-2", "fastlz"),
+        ("-2", "boltlz"),
         ("-F", "Fluff"),
         ("-Z", "zstd"),
     ]
@@ -398,7 +398,7 @@ def test_large_file_64bit() -> None:
     """
     Verify that a sparse file just over 4 GB can be archived and listed
     with the correct 64-bit size, without actually allocating 4 GB of disk.
-    Uses fastlz so the sparse all-zero payload compresses to a small archive
+    Uses boltlz so the sparse all-zero payload compresses to a small archive
     instead of requiring >4 GB of free output space.
     """
     section("Large file: >4 GB sparse (64-bit offset test)")
@@ -685,7 +685,7 @@ def main() -> int:
     args = parser.parse_args()
 
     VERBOSE = args.verbose
-    BP = args.boltpack
+    BP = os.path.abspath(args.boltpack)
 
     tests = [
         test_binary_exists,

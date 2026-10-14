@@ -12,12 +12,12 @@
  *
  * Cross-compilation from Linux:
  *   m68k-atari-mint-gcc -ansi -Wall -Wextra -O2               \
- *       -I src/core -I lib/fastlz                        \
+ *       -I src/core                         \
  *       src/core/compress.c src/core/archiver.c                \
  *       src/core/bp_codepage.c                                 \
  *       src/core/fluff.c src/core/lzss.c                       \
  *       src/frontend/atari_gui/main.c                          \
- *       lib/fastlz/fastlz.c                             \
+ *       src/core/boltlz.c                             \
  *       -lgem -o build/atari/boltpack.app
  *
  * Copyright (C) 2026 Tony Mattsson
@@ -88,7 +88,7 @@
 #define MENU_COMP_SEP      (MENU_COMP_BOX + 2)
 #define MN_METHOD_STORED   (MENU_COMP_BOX + 3)
 #define MN_METHOD_LZSS     (MENU_COMP_BOX + 4)
-#define MN_METHOD_FASTLZ    (MENU_COMP_BOX + 5)
+#define MN_METHOD_BOLTLZ    (MENU_COMP_BOX + 5)
 #define MN_METHOD_FLUFF    (MENU_COMP_BOX + 6)
 
 #define MENU_HELP_BOX (MENU_COMP_BOX + 7)
@@ -131,7 +131,7 @@ static int scroll_pos;
 static FILE *archive_fp;
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
-static bp_uint8 current_method = BP_METHOD_FASTLZ;
+static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 
 typedef struct {
     const char   *verb;
@@ -386,7 +386,7 @@ static const char *method_name(int m)
     switch (m) {
         case 0: return "Stored";
         case 1: return "LZSS";
-        case 2: return "fastlz";
+        case 2: return "boltlz";
         case 3: return "fluff";
     }
     return "?";
@@ -395,7 +395,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -467,7 +467,7 @@ static void show_about_dialog(void)
     format_size((double)atari_largest_free_block(),
                 free_buf, sizeof(free_buf));
     sprintf(msg,
-            "BoltPack 1.1|Portable archive format|Stored, LZSS, fastlz, fluff|Largest free block: %s",
+            "BoltPack 1.1|Portable archive format|Stored, LZSS, boltlz, fluff|Largest free block: %s",
             free_buf);
     show_alert(msg);
 }
@@ -528,7 +528,7 @@ static void sync_compression_menu_checks(void)
 {
     menu_objs[MN_METHOD_STORED].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_LZSS].ob_state &= (short)~OS_CHECKED;
-    menu_objs[MN_METHOD_FASTLZ].ob_state &= (short)~OS_CHECKED;
+    menu_objs[MN_METHOD_BOLTLZ].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_FLUFF].ob_state &= (short)~OS_CHECKED;
 
     switch (current_method) {
@@ -542,8 +542,8 @@ static void sync_compression_menu_checks(void)
             menu_objs[MN_METHOD_FLUFF].ob_state |= OS_CHECKED;
             break;
         default:
-            current_method = BP_METHOD_FASTLZ;
-            menu_objs[MN_METHOD_FASTLZ].ob_state |= OS_CHECKED;
+            current_method = BP_METHOD_BOLTLZ;
+            menu_objs[MN_METHOD_BOLTLZ].ob_state |= OS_CHECKED;
             break;
     }
 }
@@ -940,7 +940,7 @@ static void build_menu(void)
             " ------------------",
             "  Stored           ",
             "  LZSS             ",
-            "  fastlz          ",
+            "  boltlz          ",
             "  fluff            "
         };
         int idx;
@@ -1810,8 +1810,8 @@ static void handle_menu(short title, short item)
             case MN_METHOD_LZSS:
                 select_compression_method(BP_METHOD_LZSS);
                 break;
-            case MN_METHOD_FASTLZ:
-                select_compression_method(BP_METHOD_FASTLZ);
+            case MN_METHOD_BOLTLZ:
+                select_compression_method(BP_METHOD_BOLTLZ);
                 break;
             case MN_METHOD_FLUFF:
                 select_compression_method(BP_METHOD_FLUFF);

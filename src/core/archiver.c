@@ -81,7 +81,7 @@ static int bp_method_is_supported(bp_uint8 method)
 {
     if (method == BP_METHOD_STORED) return 1;
     if (method == BP_METHOD_LZSS)   return 1;
-    if (method == BP_METHOD_FASTLZ) return 1;
+    if (method == BP_METHOD_BOLTLZ) return 1;
     if (method == BP_METHOD_FLUFF)  return 1;
 #ifdef BOLTPACK_ZSTD
     if (method == BP_METHOD_ZSTD)   return 1;
@@ -94,8 +94,8 @@ static bp_uint32 bp_method_compress_bound(bp_uint8 method, bp_uint32 src_len)
     if (method == BP_METHOD_LZSS) {
         return src_len + src_len / 8 + 16;
     }
-    if (method == BP_METHOD_FASTLZ) {
-        return BP_FASTLZ_BOUND(src_len);
+    if (method == BP_METHOD_BOLTLZ) {
+        return boltlz_compress_bound(src_len);
     }
     if (method == BP_METHOD_FLUFF) {
         return fluff_compress_bound(src_len);
@@ -331,6 +331,8 @@ int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
     if (!bp_method_is_supported(method)) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
+    if (method == BP_METHOD_BOLTLZ && block_size > BOLTLZ_MAX_BLOCK)
+        return BP_ERR_INVALID_ARG;
 
     memset(ar, 0, sizeof(*ar));
     ar->io = io;
@@ -808,6 +810,11 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
             in_buf  = ar->seq_in_buf;
             out_buf = ar->seq_out_buf;
 
+            if (actual_method == BP_METHOD_BOLTLZ && ar->seq_boltlz_work == NULL) {
+                ar->seq_boltlz_work = malloc((size_t)bp_compress_work_size());
+                if (ar->seq_boltlz_work == NULL) { rc = BP_ERR_NOMEM; goto seq_done; }
+            }
+
             if (actual_method == BP_METHOD_FLUFF) {
                 if (ar->seq_fluff_ctx == NULL) {
                     ar->seq_fluff_ctx = (void *)fluff_ctx_alloc();
@@ -851,10 +858,11 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                         rc = BP_ERR_COMPRESS;
                         goto seq_done;
                     }
-                } else if (actual_method == BP_METHOD_FASTLZ) {
-                    rc = bp_compress_block_level(in_buf, chunk, out_buf,
-                                                 &comp_len,
-                                                 ar->method_level);
+                } else if (actual_method == BP_METHOD_BOLTLZ) {
+                    comp_len = out_buf_size;
+                    rc = bp_compress_block_work(in_buf, chunk, out_buf,
+                                                &comp_len, ar->seq_boltlz_work,
+                                                ar->method_level);
                     if (rc != BP_OK) goto seq_done;
                 } else if (actual_method == BP_METHOD_FLUFF) {
                     rc = fluff_compress_block_ctx(in_buf, chunk, out_buf,
@@ -1237,6 +1245,7 @@ void bp_archive_close(bp_archive_t *ar)
     free(ar->seq_in_buf);  ar->seq_in_buf  = NULL;
     free(ar->seq_out_buf); ar->seq_out_buf = NULL;
     ar->seq_buf_block_size = 0;
+    free(ar->seq_boltlz_work); ar->seq_boltlz_work = NULL;
 }
 
 /* ---- reading: shared helpers ------------------------------------------- */
@@ -1265,10 +1274,10 @@ static int read_footer(bp_io_t *io, bp_uint64 *table_offset, bp_uint64 *table_si
     return BP_OK;
 }
 
-/* Read archive header and validate.  Accepts format versions 2 and 3.
+/* Read archive header and validate.  Accepts only archive format 4.
  * out_version (may be NULL) receives the on-disk version so callers can
  * parse version-specific structures (e.g. the file-table record layout).
- * For v3, the 32-byte header's own CRC-32 is verified here. */
+ * The 32-byte header's own CRC-32 is verified here. */
 static int read_header(bp_io_t *io, bp_uint32 *file_count,
                        bp_uint16 *out_version)
 {
@@ -1288,7 +1297,7 @@ static int read_header(bp_io_t *io, bp_uint32 *file_count,
     }
 
     version = bp_read_le16(hdr + 4);
-    if (version != BP_FORMAT_VERSION_V2 && version != BP_FORMAT_VERSION) {
+    if (version != BP_FORMAT_VERSION) {
         return BP_ERR_VERSION;
     }
 
@@ -1552,6 +1561,9 @@ int bp_archive_open_append(bp_archive_t *ar, bp_io_t *io,
     if (ar == NULL || io == NULL) return BP_ERR_INVALID_ARG;
     if (!bp_method_is_supported(method)) return BP_ERR_UNSUPPORTED_METHOD;
 
+    if (method == BP_METHOD_BOLTLZ && block_size > BOLTLZ_MAX_BLOCK)
+        return BP_ERR_INVALID_ARG;
+
     memset(ar, 0, sizeof(*ar));
     ar->io = io;
     ar->block_size = block_size ? block_size : BP_BLOCK_DEFAULT;
@@ -1577,8 +1589,7 @@ int bp_archive_open_append(bp_archive_t *ar, bp_io_t *io,
         hdr[2] != BP_MAGIC_2 || hdr[3] != BP_MAGIC_3)
         return BP_ERR_MAGIC;
     src_version = bp_read_le16(hdr + 4);
-    if (src_version != BP_FORMAT_VERSION_V2 &&
-        src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+    if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
     if (src_version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -1791,7 +1802,8 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
         /* Reject block sizes no conforming writer produces before they
          * reach malloc: both bsize and the compress bound below are
          * attacker-controlled via the entry header. */
-        if (bsize > BP_BLOCK_READ_CAP) {
+        if (bsize > BP_BLOCK_READ_CAP ||
+            (entry->method == BP_METHOD_BOLTLZ && bsize > BOLTLZ_MAX_BLOCK)) {
             return BP_ERR_CORRUPT;
         }
 
@@ -1863,15 +1875,10 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
                 /* Distance-based LZSS decode needs no scratch buffer. */
                 rc = lzss_decompress(in_buf, comp_sz, dec_buf, orig_sz, NULL);
                 if (rc != BP_OK) { free(in_buf); free(dec_buf); return rc; }
-            } else if (entry->method == BP_METHOD_FASTLZ) {
-                /* compressed block */
+            } else if (entry->method == BP_METHOD_BOLTLZ) {
                 dec_len = orig_sz;
                 rc = bp_decompress_block(in_buf, comp_sz, dec_buf, &dec_len);
                 if (rc != BP_OK) { free(in_buf); free(dec_buf); return rc; }
-                if (dec_len != orig_sz) {
-                    free(in_buf); free(dec_buf);
-                    return BP_ERR_CORRUPT;
-                }
             } else if (entry->method == BP_METHOD_FLUFF) {
                 dec_len = orig_sz;
                 rc = fluff_decompress_block_ctx(in_buf, comp_sz, dec_buf,
@@ -2130,7 +2137,7 @@ int bp_archive_info(bp_io_t *io, bp_archive_info_t *info)
     }
 
     version = bp_read_le16(hdr + 4);
-    if (version != BP_FORMAT_VERSION_V2 && version != BP_FORMAT_VERSION) {
+    if (version != BP_FORMAT_VERSION) {
         return BP_ERR_VERSION;
     }
 
@@ -2287,7 +2294,7 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
 {
     bp_uint32 src_count;
     bp_uint32 i;
-    bp_uint16 src_version = BP_FORMAT_VERSION_V2;
+    bp_uint16 src_version = BP_FORMAT_VERSION;
     int rc;
     bp_uint8 *copybuf = NULL;
     bp_uint32 copybuf_sz = 32768;
@@ -2308,8 +2315,7 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
             hdr[2] != BP_MAGIC_2 || hdr[3] != BP_MAGIC_3)
             return BP_ERR_MAGIC;
         src_version = bp_read_le16(hdr + 4);
-        if (src_version != BP_FORMAT_VERSION_V2 &&
-            src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+        if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
         if (src_version == BP_FORMAT_VERSION) {
             bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
             bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -2424,7 +2430,7 @@ int bp_archive_delete(bp_io_t *src_io, bp_io_t *dst_io,
     bp_uint32 src_count;
     bp_uint32 i, kept;
     bp_uint32 deleted = 0;
-    bp_uint16 src_version = BP_FORMAT_VERSION_V2;
+    bp_uint16 src_version = BP_FORMAT_VERSION;
     int rc;
     bp_uint8 src_hdr[BP_HEADER_SIZE];
     bp_entry_t *table = NULL;      /* file table from source */
@@ -2445,8 +2451,7 @@ int bp_archive_delete(bp_io_t *src_io, bp_io_t *dst_io,
         src_hdr[2] != BP_MAGIC_2 || src_hdr[3] != BP_MAGIC_3)
         return BP_ERR_MAGIC;
     src_version = bp_read_le16(src_hdr + 4);
-    if (src_version != BP_FORMAT_VERSION_V2 &&
-        src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+    if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
     if (src_version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(src_hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, src_hdr, BP_HEADER_CRC_OFF);

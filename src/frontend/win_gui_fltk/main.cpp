@@ -180,7 +180,7 @@ static const char *method_name(int m)
     switch (m) {
     case BP_METHOD_STORED: return "Stored";
     case BP_METHOD_LZSS:   return "LZSS";
-    case BP_METHOD_FASTLZ:  return "fastlz";
+    case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
     case BP_METHOD_ZSTD:   return "zstd";
     default:               return "?";
@@ -190,7 +190,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -332,7 +332,7 @@ static bool g_archive_open = false;
 enum ShellActionType {
     SHELL_ACTION_NONE = 0,
     SHELL_ACTION_OPEN_ARCHIVE,
-    SHELL_ACTION_CREATE_FASTLZ,
+    SHELL_ACTION_CREATE_BOLTLZ,
     SHELL_ACTION_CREATE_FLUFF,
     SHELL_ACTION_EXTRACT_ARCHIVE
 };
@@ -1128,7 +1128,7 @@ static int mkdirs_for_file(const char *path)
 
 /* ---- compression settings --------------------------------------------- */
 
-static int g_compression_method = BP_METHOD_FASTLZ;
+static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1; /* 0=fast, 1=normal (default), 2=best */
 static int g_fluff_multithread  = 0;
 
@@ -1143,7 +1143,7 @@ enum { CREATE_CANCEL = 0, CREATE_SAVE = 1 };
 
 /* Block sizes vary per method:
  *   LZSS   (16-bit): 8K / 16K / 32K  -- ring buffer is only 2 KB
- *   fastlz(32-bit): 16K / 32K / 64K -- fast codec, default is 32K
+ *   boltlz(32-bit): 16K / 32K / 64K -- fast codec, default is 32K
  *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size
  *   zstd   (64-bit): always 256K -- level controls zstd compression level */
 static bp_uint32 level_to_block_size(int method, int level)
@@ -1158,7 +1158,7 @@ static bp_uint32 level_to_block_size(int method, int level)
         (void)level;
         return BP_BLOCK_256K; /* level controls compression quality, not block size */
     } else {
-        /* fastlz and fallback */
+        /* boltlz and fallback */
         switch (level) {
         case 0: return BP_BLOCK_16K;
         case 2: return BP_BLOCK_64K;
@@ -1480,7 +1480,7 @@ struct CompDlgState {
 static const char * const s_level_labels[5][3] = {
     /* Stored  */ { "",                                    "",                                    ""                                       },
     /* LZSS    */ { "Fast \xe2\x80\x94 8 KB blocks",      "Normal \xe2\x80\x94 16 KB blocks",    "Best \xe2\x80\x94 32 KB blocks"         },
-    /* fastlz */ { "Fast \xe2\x80\x94 16 KB blocks",     "Normal \xe2\x80\x94 32 KB blocks",    "Best \xe2\x80\x94 64 KB blocks"         },
+    /* boltlz */ { "Fast \xe2\x80\x94 16 KB blocks",     "Normal \xe2\x80\x94 32 KB blocks",    "Best \xe2\x80\x94 64 KB blocks"         },
     /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       },
     /* zstd    */ { "Fast \xe2\x80\x94 level 1",          "Normal \xe2\x80\x94 level 3 (default)","Best \xe2\x80\x94 level 9 (ultra)"      }
 };
@@ -1489,7 +1489,7 @@ static const char * const s_level_labels[5][3] = {
 static const char * const s_level_title[5] = {
     /* Stored  */ "",
     /* LZSS    */ "Block Size",
-    /* fastlz */ "Block Size",
+    /* boltlz */ "Block Size",
     /* Fluff   */ "Compression Level (block size fixed at 256 KB)",
     /* zstd    */ "Compression Level (block size fixed at 256 KB)"
 };
@@ -1533,7 +1533,7 @@ static void cdlg_method_cb(Fl_Widget *w, void *data)
     const char *lbl = ((Fl_Round_Button *)w)->label();
     if      (strncmp(lbl, "Stored",  6) == 0) s->method = BP_METHOD_STORED;
     else if (strncmp(lbl, "LZSS",    4) == 0) s->method = BP_METHOD_LZSS;
-    else if (strncmp(lbl, "fastlz", 6) == 0) s->method = BP_METHOD_FASTLZ;
+    else if (strncmp(lbl, "boltlz", 6) == 0) s->method = BP_METHOD_BOLTLZ;
     else if (strncmp(lbl, "Fluff",   5) == 0) s->method = BP_METHOD_FLUFF;
     else if (strncmp(lbl, "zstd",    4) == 0) s->method = BP_METHOD_ZSTD;
     /* reset to per-method default level */
@@ -1618,14 +1618,14 @@ static int show_compression_dialog()
     static const char *method_lbl[] = {
         "Stored \xe2\x80\x94 No compression \xe2\x80\x94 For all systems",
         "LZSS \xe2\x80\x94 Lighter compression \xe2\x80\x94 16-bit systems and up",
-        "fastlz \xe2\x80\x94 Fast, light compression \xe2\x80\x94 32-bit / 64-bit",
+        "boltlz \xe2\x80\x94 Fast, light compression \xe2\x80\x94 32-bit / 64-bit",
         "Fluff \xe2\x80\x94 Medium compression \xe2\x80\x94 32-bit / 64-bit"
 #ifdef BOLTPACK_ZSTD
        ,"zstd \xe2\x80\x94 Best compression \xe2\x80\x94 64-bit"
 #endif
     };
     static const int method_ids[] = {
-        BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_FASTLZ, BP_METHOD_FLUFF
+        BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_BOLTLZ, BP_METHOD_FLUFF
 #ifdef BOLTPACK_ZSTD
        ,BP_METHOD_ZSTD
 #endif
@@ -2694,7 +2694,9 @@ static void create_worker(CreateWork *w)
                                (bp_uint8)w->method);
 
     /* Set progress callback and level AFTER bp_archive_create — it memsets the struct */
-    if (w->method == BP_METHOD_FLUFF)
+    if (w->method == BP_METHOD_BOLTLZ)
+        ar.method_level = (bp_uint8)(w->level == 0 ? 1 : 2);
+    else if (w->method == BP_METHOD_FLUFF)
         ar.method_level = (bp_uint8)fluff_gui_level(w->level);
 #ifdef BOLTPACK_ZSTD
     else if (w->method == BP_METHOD_ZSTD)
@@ -3563,8 +3565,8 @@ static void parse_shell_action(int argc, char **argv)
         return;
     }
 
-    if (strcmp(argv[1], "--shell-create-fastlz") == 0) {
-        g_shell_action.type = SHELL_ACTION_CREATE_FASTLZ;
+    if (strcmp(argv[1], "--shell-create-boltlz") == 0) {
+        g_shell_action.type = SHELL_ACTION_CREATE_BOLTLZ;
         for (i = 2; i < argc; i++) {
             if (argv[i] && argv[i][0])
                 g_shell_action.paths.push_back(argv[i]);
@@ -3596,8 +3598,8 @@ static void run_shell_action(void *)
         if (!action.paths.empty())
             do_open_archive(action.paths[0].c_str());
         break;
-    case SHELL_ACTION_CREATE_FASTLZ:
-        do_create_with_inputs(action.paths, BP_METHOD_FASTLZ, 1);
+    case SHELL_ACTION_CREATE_BOLTLZ:
+        do_create_with_inputs(action.paths, BP_METHOD_BOLTLZ, 1);
         break;
     case SHELL_ACTION_CREATE_FLUFF:
         do_create_with_inputs(action.paths, BP_METHOD_FLUFF, 2);
@@ -3681,7 +3683,7 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
                            "Cancel", "Reset", NULL);
     if (choice != 1) return;
 
-    g_compression_method = BP_METHOD_FASTLZ;
+    g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
 

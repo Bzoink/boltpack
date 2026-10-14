@@ -25,11 +25,11 @@
  *
  * Cross-compilation from Linux:
  *   x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
- *       -I src/core -I lib/fastlz                        \
+ *       -I src/core                         \
  *       src/core/compress.c src/core/archiver.c                \
  *       src/core/bp_codepage.c                                 \
  *       src/frontend/haiku/main.c                              \
- *       lib/fastlz/fastlz.c                             \
+ *       src/core/boltlz.c                             \
  *       -o boltpack
  *
  * ANSI C (C89/C90) throughout (with POSIX extensions via _POSIX_C_SOURCE).
@@ -1049,7 +1049,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1511,9 +1511,9 @@ static void usage_basic(void)
         "  -b SIZE    Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0         Store only (no compression)\n"
         "  -1         LZSS compression\n"
-        "  -2         fastlz compression (default)\n"
+        "  -2         boltlz compression (default)\n"
         "  -F         Use Fluff compression\n"
-        "  -l N       Compression level (fastlz: 1-2; Fluff/zstd: 1-9)\n"
+        "  -l N       Compression level (boltlz: 1-2; Fluff/zstd: 1-9)\n"
         "  -o PATH    Output directory for extraction\n"
         "  -f         Force overwrite existing files\n"
         "  -n         Dry run\n"
@@ -1550,9 +1550,9 @@ static void usage_advanced(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n"
         "  -0, --store      Store only (no compression)\n"
         "  -1, --lzss       Use LZSS compression\n"
-        "  -2, --fastlz    Use fastlz compression (default)\n"
+        "  -2, --boltlz    Use boltlz compression (default)\n"
         "  -F, --fluff      Use Fluff compression\n"
-        "  -l N, --level N  fastlz level 1-2; Fluff/zstd level 1-9\n"
+        "  -l N, --level N  boltlz level 1-2; Fluff/zstd level 1-9\n"
         "  --block-size N   Long-form alias for -b\n"
         "  --output PATH    Long-form alias for -o\n");
     fprintf(stderr,
@@ -1573,7 +1573,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
-    bp_uint8  method     = BP_METHOD_FASTLZ;
+    bp_uint8  method     = BP_METHOD_BOLTLZ;
     int opt_level = 0;
     const char *out_dir  = NULL;
     int force   = 0;
@@ -1642,8 +1642,8 @@ int main(int argc, char **argv)
                    strcmp(argv[i], "--lzss") == 0) {
             method = BP_METHOD_LZSS; i++;
         } else if (strcmp(argv[i], "-2") == 0 ||
-                   strcmp(argv[i], "--fastlz") == 0) {
-            method = BP_METHOD_FASTLZ; i++;
+                   strcmp(argv[i], "--boltlz") == 0) {
+            method = BP_METHOD_BOLTLZ; i++;
         } else if (strcmp(argv[i], "-F") == 0 ||
                    strcmp(argv[i], "--fluff") == 0) {
             method = BP_METHOD_FLUFF; i++;

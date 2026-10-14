@@ -75,7 +75,7 @@ QL NOTES
 COMPRESSION
 -----------
 
-Default method: fastlz
+Default method: boltlz
 
 -0        No compression
 -F        Fluff compression

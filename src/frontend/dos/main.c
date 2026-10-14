@@ -643,7 +643,7 @@ static void usage(void)
         "\nOptions:\n"
         "  -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k (default: 32k)\n"
         "  -0        Store only (no compression)\n"
-        "  -F        Use fluff LZ77+Huffman compression (better ratio than fastlz)\n"
+        "  -F        Use fluff LZ77+Huffman compression (better ratio than boltlz)\n"
         "  -q        Quiet (summary only)\n"
         "  -qq       Silent (errors only)\n"
         "  -o PATH   Output directory for extraction\n"
@@ -980,7 +980,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1197,7 +1197,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
-    bp_uint8 method = BP_METHOD_FASTLZ;
+    bp_uint8 method = BP_METHOD_BOLTLZ;
     const char *out_dir = NULL;
     int force = 0;
     int dry_run = 0;

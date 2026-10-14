@@ -9,15 +9,6 @@ and all platform frontends.
 
 The following people's prior work is incorporated into BoltPack:
 
-### Ariya Hidayat
-
-**fastlz 0.5.0** — byte-aligned LZ77 compression library.
-Vendored in `lib/fastlz/` (C89-ported for BoltPack's strict core rules).
-Licensed under the MIT license.
-
-- Home page: <https://github.com/ariya/FastLZ>
-- Contact: <ariya.hidayat@gmail.com>
-
 ### Haruhiko Okumura
 
 **LZSS algorithm** — the sliding-window LZ77 variant with binary search tree

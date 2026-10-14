@@ -181,7 +181,7 @@ This creates:
 
 - `dist/boltpack-<version>-source-macos9-ppc.tar.gz`
 
-The package includes `src/core`, `lib/fastlz`, the PowerPC frontend
+The package includes `src/core`, the PowerPC frontend
 under `src/frontend/macos9/`, the matching Classic Mac resource source
 `src/frontend/macos9/boltpack.r`, and a root-level `build-notes.md` with the
 CodeWarrior project settings and library list.
@@ -626,19 +626,19 @@ tar czf boltpack-PLATFORM.tar.gz dist/
 
 | Platform    | Auto? | Build Command                    | Binary                       |
 | ----------- | ----- | -------------------------------- | ---------------------------- |
-| OpenBSD     | ✅    | `make`                           | `build/openbsd/boltpack`     |
-| Solaris     | ✅    | `make`                           | `build/solaris/boltpack`     |
-| IRIX        | ✅    | `make`                           | `build/irix/boltpack`        |
-| HP-UX       | ✅    | `make`                           | `build/hpux/boltpack`        |
-| AIX         | ✅    | `make`                           | `build/aix/boltpack`         |
-| Tru64       | ✅    | `make`                           | `build/tru64/boltpack`       |
-| SCO         | ✅    | `make`                           | `build/sco/boltpack`         |
-| NeXTSTEP    | ✅    | `make`                           | `build/nextstep/boltpack`    |
-| QNX         | ✅    | `make`                           | `build/qnx/boltpack`         |
-| GNU Hurd    | ✅    | `make`                           | `build/hurd/boltpack`        |
-| **Plan 9**  | ❌    | `mk -f build/Makefile.plan9`     | `build/plan9/boltpack`       |
-| **z/OS**    | ❌    | `make -f build/Makefile.zos`     | `build/zos/boltpack`         |
-| **OpenVMS** | ❌    | `make -f build/Makefile.openvms` | `build/openvms/boltpack.exe` |
+| OpenBSD     | ✅     | `make`                           | `build/openbsd/boltpack`     |
+| Solaris     | ✅     | `make`                           | `build/solaris/boltpack`     |
+| IRIX        | ✅     | `make`                           | `build/irix/boltpack`        |
+| HP-UX       | ✅     | `make`                           | `build/hpux/boltpack`        |
+| AIX         | ✅     | `make`                           | `build/aix/boltpack`         |
+| Tru64       | ✅     | `make`                           | `build/tru64/boltpack`       |
+| SCO         | ✅     | `make`                           | `build/sco/boltpack`         |
+| NeXTSTEP    | ✅     | `make`                           | `build/nextstep/boltpack`    |
+| QNX         | ✅     | `make`                           | `build/qnx/boltpack`         |
+| GNU Hurd    | ✅     | `make`                           | `build/hurd/boltpack`        |
+| **Plan 9**  | ❌     | `mk -f build/Makefile.plan9`     | `build/plan9/boltpack`       |
+| **z/OS**    | ❌     | `make -f build/Makefile.zos`     | `build/zos/boltpack`         |
+| **OpenVMS** | ❌     | `make -f build/Makefile.openvms` | `build/openvms/boltpack.exe` |
 
 ---
 

@@ -845,7 +845,7 @@ static int cmd_info(const char *arc_path)
 
 #ifdef __WATCOMC__
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         write(1, "Archive:     ", 13); bp_wstr(1, arc_path); write(1, "\n", 1);
@@ -877,7 +877,7 @@ static int cmd_info(const char *arc_path)
     printf("Version:     %u\n", (unsigned)info.version);
     printf("Creator OS:  %s\n", os_name(info.creator_os));
     {
-        static const char * const mn[4] = {"stored","LZSS","fastlz","fluff"};
+        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:     ");
@@ -924,7 +924,7 @@ static void usage(void)
         "  -q                             quiet mode\n"
         "Compression:\n"
         "  create:   store (0), LZSS (1)\n"
-        "  extract:  store (0), LZSS (1), fastlz (2)\n");
+        "  extract:  store (0), LZSS (1), boltlz (2)\n");
 #else
     fputs(PROG_NAME " " BP_VER "  BoltPack mini for DOS (16-bit)\n"
           "Usage:\n"
@@ -940,7 +940,7 @@ static void usage(void)
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), fastlz (2)\n",
+          "  extract:  store (0), LZSS (1), boltlz (2)\n",
           stderr);
 #endif
 }

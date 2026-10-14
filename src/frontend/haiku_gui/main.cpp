@@ -6,12 +6,12 @@
  *
  * Cross-compilation from Linux:
  *   x86_64-unknown-haiku-g++ -O2 -lbe -lcolumnlistview -ltracker \
- *       -I src/core -I lib/fastlz                          \
+ *       -I src/core                           \
  *       src/core/compress.c src/core/archiver.c                  \
  *       src/core/bp_codepage.c                                   \
  *       src/core/fluff.c src/core/lzss.c                         \
  *       src/frontend/haiku_gui/main.cpp                          \
- *       lib/fastlz/fastlz.c                               \
+ *       src/core/boltlz.c                               \
  *       -o build/haiku/BoltPack
  *
  * Copyright (C) 2026 Tony Mattsson
@@ -78,7 +78,7 @@ enum {
     MSG_CREA_REFS  = 'CREF',
     MSG_COMP_STORE = 'CSTO',
     MSG_COMP_LZSS  = 'CLZS',
-    MSG_COMP_FASTLZ = 'CFLZ',
+    MSG_COMP_BOLTLZ = 'CFLZ',
     MSG_COMP_FLUFF = 'CFLF',
     MSG_LEVEL_FAST = 'LVLF',
     MSG_LEVEL_NORM = 'LVLN',
@@ -132,7 +132,7 @@ static const char *method_name(int m)
     switch (m) {
         case BP_METHOD_STORED: return "Stored";
         case BP_METHOD_LZSS:   return "LZSS";
-        case BP_METHOD_FASTLZ:  return "fastlz";
+        case BP_METHOD_BOLTLZ:  return "boltlz";
         case BP_METHOD_FLUFF:  return "fluff";
         case BP_METHOD_ZSTD:   return "zstd";
     }
@@ -142,7 +142,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "fastlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -159,7 +159,7 @@ static const char *format_methods(const bp_uint32 *counts)
     return buf;
 }
 
-static int g_compression_method = BP_METHOD_FASTLZ;
+static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1;
 static int g_fluff_multithread  = 0;
 
@@ -548,8 +548,8 @@ BPWindow::BPWindow()
         new BMessage(MSG_COMP_STORE));
     fMethodItems[1] = new BMenuItem("LZSS",
         new BMessage(MSG_COMP_LZSS));
-    fMethodItems[2] = new BMenuItem("fastlz",
-        new BMessage(MSG_COMP_FASTLZ));
+    fMethodItems[2] = new BMenuItem("boltlz",
+        new BMessage(MSG_COMP_BOLTLZ));
     fMethodItems[3] = new BMenuItem("fluff",
         new BMessage(MSG_COMP_FLUFF));
     for (i = 0; i < 4; i++)
@@ -788,8 +788,8 @@ void BPWindow::MessageReceived(BMessage *msg)
             UpdateCompressionMenu();
             break;
 
-        case MSG_COMP_FASTLZ:
-            g_compression_method = BP_METHOD_FASTLZ;
+        case MSG_COMP_BOLTLZ:
+            g_compression_method = BP_METHOD_BOLTLZ;
             g_compression_level = s_method_default_level[g_compression_method];
             UpdateCompressionMenu();
             break;
@@ -1565,9 +1565,9 @@ void BPWindow::DoCreate(const std::vector<std::string> &paths,
         a->Go();
         return;
     }
-    /* FastLZ uses the selected block size to auto-select its level. */
-    if (g_compression_method == BP_METHOD_FASTLZ)
-        ar.method_level = 0;
+    /* Fast preset selects Fast; Normal and Best select Balanced. */
+    if (g_compression_method == BP_METHOD_BOLTLZ)
+        ar.method_level = (bp_uint8)(g_compression_level == 0 ? 1 : 2);
     else
         ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
 

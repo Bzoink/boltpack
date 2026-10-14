@@ -1,0 +1,14 @@
+{
+  "description": "BoltLZ after bounded encoder copies and three-byte fast decoding, before narrow tables/pipelining/capacity/extended-loop experiments",
+  "format": 2,
+  "original_sha256": {
+    "src/core/boltlz.c": "667834359c46841e9a1c4cab103f4adcd1d229436fc92dfd318bedf1226a4b85",
+    "src/core/boltlz.h": "c1aa3ddadef5abea45f667ddf659fe6025b9ee74236963c04e0f0f74a20a8fb8",
+    "src/core/boltlz_config.h": "bbcdf090c8ea47a2a3d953b3906ce58f322ad6273790ffb02add5f85276cbdb6"
+  },
+  "sha256": {
+    "boltlz_loop_base.c": "86f3ec3f379677da21b0b095223f2e7ae7073610b741e2751e8b8af35b369576",
+    "boltlz_loop_base.h": "c5ebd3fa3fe94ccca0ac651964e26317bfe01b2e21a5bbaa1ccd3f64bd31db4b",
+    "boltlz_loop_base_config.h": "f710f501e4dca093e2c00699b913eda2d442c6caf84ce10292309d9673ad3bff"
+  }
+}

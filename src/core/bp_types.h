@@ -37,7 +37,7 @@ typedef unsigned short  bp_uint16;  /* C89: short >= 16 bits */
 /* bp_uint32: on 16-bit Watcom/Aztec (sizeof(int)==2), SIZEOF_INT is passed as
  * -DSIZEOF_INT=2 by the build system; we then use unsigned long (always 4 bytes
  * on these compilers) so that all 32-bit archive fields are encoded correctly. */
-#if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
+#if defined(SIZEOF_INT) && (SIZEOF_INT < 4) && ULONG_MAX <= 0xFFFFFFFFUL
   typedef unsigned long  bp_uint32;  /* 16-bit override: int=2, long=4 */
 #else
   typedef unsigned int   bp_uint32;  /* C89: int >= 16 bits; 32-bit on modern platforms */
@@ -77,7 +77,7 @@ typedef struct {
 # ifdef BP_MINI
 #  define BP_VERSION_MINOR 3
 # else
-#  define BP_VERSION_MINOR 5
+#  define BP_VERSION_MINOR 6
 # endif
 #endif
 
@@ -86,27 +86,9 @@ typedef struct {
 
 /* --- Format constants --------------------------------------------------- */
 
-/*
- * BP_FORMAT_VERSION is the version this build writes.
- * BP_FORMAT_VERSION_V2 is the previous version, still accepted on read.
- *
- * v3 differences from v2:
- *   - file-table records carry method(1) + header_size(2) + checksum(4),
- *     eliminating the per-entry seek storms in list/info/delete/copy-from;
- *   - the archive header's former 8 reserved bytes hold a CRC-32 of the
- *     file table (offset 24) and a CRC-32 of the header itself (offset 28);
- *   - entries use checksum_type = BP_CKSUM_CRC32; CRC-32 is the only
- *     supported algorithm;
- *   - block headers are 12 bytes: comp_size(4) + orig_size(4) + block_crc(4);
- *     block_crc is CRC-32 of the compressed block bytes (before decompression);
- *   - the file-table section header is 16 bytes: magic(4) + entry_count(4) +
- *     total_orig(8); total_orig is the sum of original_size across all entries;
- *   - entry flags field (offset 40+N) uses BP_ENTRY_FLAG_MODE_VALID/MODE_MASK;
- *   - archive_size in the 32-byte header is normative: a v3 reader MUST verify
- *     it equals the actual file size.
- */
-#define BP_FORMAT_VERSION      3
-#define BP_FORMAT_VERSION_V2   2
+/* This build writes and reads archive format 4 only. Every other version
+ * is rejected before table or block data is interpreted. */
+#define BP_FORMAT_VERSION      4
 
 #define BP_MAGIC_0  0x42  /* 'B' */
 #define BP_MAGIC_1  0x4F  /* 'O' */
@@ -149,7 +131,7 @@ typedef struct {
 /* Compression methods */
 #define BP_METHOD_STORED   0
 #define BP_METHOD_LZSS     1
-#define BP_METHOD_FASTLZ   2  /* fastlz; was LZO1X in pre-1.5.0 builds (not compatible) */
+#define BP_METHOD_BOLTLZ   2  /* BoltLZ format 2 */
 #define BP_METHOD_FLUFF    3
 #define BP_METHOD_ZSTD     4  /* Zstandard; modern targets only (BOLTPACK_ZSTD) */
 

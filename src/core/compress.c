@@ -1,5 +1,5 @@
 /*
- * compress.c -- compression layer for BoltPack (fastlz wrapper)
+ * compress.c -- compression layer for BoltPack (BoltLZ wrapper)
  *
  * ANSI C (C89/C90) only.
  *
@@ -9,58 +9,43 @@
 
 #include "compress.h"
 
-#include "../../lib/fastlz/fastlz.h"
 #include <stdlib.h>
 #include <string.h>
 
-/* fastlz takes signed int lengths.  Full builds have at least 32-bit int;
- * keep the explicit limit here so the public bp_uint32 API cannot silently
- * turn a large length into a negative value. */
-#if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
-#define BP_FASTLZ_MAX_INT 32767UL
-#else
-#define BP_FASTLZ_MAX_INT 2147483647UL
-#endif
-
 int bp_compress_init(void)
 {
-    return BP_OK; /* fastlz needs no init */
+    return BP_OK; /* no initialisation required */
+}
+
+int bp_compress_block_work(const bp_uint8 *src, bp_uint32 src_len,
+                           bp_uint8 *dst, bp_uint32 *dst_len,
+                           void *work, bp_uint8 method_level)
+{
+    int level = (method_level == 1) ? BOLTLZ_FAST : BOLTLZ_BALANCED;
+    if (src_len == 0) {
+        if (dst_len != NULL) *dst_len = 0;
+        return BP_ERR_INVALID_ARG;
+    }
+    return boltlz_compress(src, src_len, dst, dst_len, work, level);
 }
 
 int bp_compress_block_level(const bp_uint8 *src, bp_uint32 src_len,
                             bp_uint8 *dst, bp_uint32 *dst_len,
                             bp_uint8 method_level)
 {
-    int r;
-    int flz_level;
-
-    if (src == NULL || dst == NULL || dst_len == NULL || src_len == 0u ||
-        src_len > BP_FASTLZ_MAX_INT) {
+    void *work;
+    int rc;
+    int level = (method_level == 1) ? BOLTLZ_FAST : BOLTLZ_BALANCED;
+    if (src == NULL || dst == NULL || dst_len == NULL || src_len == 0 ||
+        src_len > BOLTLZ_MAX_BLOCK) {
+        if (dst_len != NULL) *dst_len = 0;
         return BP_ERR_INVALID_ARG;
     }
-
-    /* Map the BoltPack method_level (0, 1-9) to a fastlz level (1 or 2).
-     * 0 = auto-select (fastlz_compress), 1 = L1, 2 = L2, 3-9 clamp to L2. */
-    switch (method_level) {
-        case 1:
-            flz_level = 1;
-            r = fastlz_compress_level(flz_level, src, (int)src_len, dst);
-            break;
-        case 2:
-        default:
-            flz_level = 2;
-            r = fastlz_compress_level(flz_level, src, (int)src_len, dst);
-            break;
-        case 0:
-            r = fastlz_compress(src, (int)src_len, dst);
-            break;
-    }
-
-    if (r <= 0) {
-        return BP_ERR_COMPRESS;
-    }
-    *dst_len = (bp_uint32)r;
-    return BP_OK;
+    work = malloc((size_t)boltlz_work_size(level));
+    if (work == NULL) { *dst_len = 0; return BP_ERR_NOMEM; }
+    rc = bp_compress_block_work(src, src_len, dst, dst_len, work, method_level);
+    free(work);
+    return rc;
 }
 
 int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
@@ -72,19 +57,16 @@ int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
 int bp_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
                         bp_uint8 *dst, bp_uint32 *dst_len)
 {
-    int r;
-
-    if (src == NULL || dst == NULL || dst_len == NULL || src_len == 0u ||
-        src_len > BP_FASTLZ_MAX_INT || *dst_len == 0u ||
-        *dst_len > BP_FASTLZ_MAX_INT) {
-        return BP_ERR_INVALID_ARG;
-    }
-
-    r = fastlz_decompress(src, (int)src_len, dst, (int)*dst_len);
-    if (r <= 0) {
-        return BP_ERR_DECOMPRESS;
-    }
-    *dst_len = (bp_uint32)r;
+    bp_uint32 expected;
+    int rc;
+    if (dst_len == NULL) return BP_ERR_INVALID_ARG;
+    expected = *dst_len;
+    *dst_len = 0;
+    if (src == NULL || dst == NULL || expected == 0 ||
+        expected > BOLTLZ_MAX_BLOCK) return BP_ERR_INVALID_ARG;
+    rc = boltlz_decompress(src, src_len, dst, expected);
+    if (rc != BP_OK) return BP_ERR_DECOMPRESS;
+    *dst_len = expected;
     return BP_OK;
 }
 
@@ -174,5 +156,5 @@ bp_uint32 bp_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
 
 bp_uint32 bp_compress_work_size(void)
 {
-    return 0; /* fastlz needs no work buffer */
+    return boltlz_work_size(BOLTLZ_BALANCED);
 }

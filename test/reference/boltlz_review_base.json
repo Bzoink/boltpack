@@ -1,0 +1,14 @@
+{
+  "description": "BoltLZ selected speed configuration before the code-review optimization round",
+  "format": 2,
+  "original_sha256": {
+    "src/core/boltlz.c": "f7bb386375ccf6aaaf1ab201db7007adc7fa211372dee8293517509b327a0b01",
+    "src/core/boltlz.h": "c1aa3ddadef5abea45f667ddf659fe6025b9ee74236963c04e0f0f74a20a8fb8",
+    "src/core/boltlz_config.h": "4f305ed01d95bae839174ff298f4e75375d97937d74b4515e1f709db1af1daa5"
+  },
+  "sha256": {
+    "boltlz_review_base.c": "2015b5fa65f10f162ffc936a5e998ed68ad3feb2ea3c747068bc0ae72ac4dd2a",
+    "boltlz_review_base.h": "e43d416586c651e652d46c218e65625ad249225cad7650a043577a3644c0547c",
+    "boltlz_review_base_config.h": "f0fd89b3513dcf15666c152fcbeb3ff6ac09577be58f4b7dd29e7e74510c150d"
+  }
+}

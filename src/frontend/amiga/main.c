@@ -18,11 +18,11 @@
  *
  * Cross-compilation from Linux (bebbo's m68k-amigaos-gcc):
  *   m68k-amigaos-gcc -noixemul -ansi -Wall -O2        \
- *       -I src/core -I lib/fastlz                \
+ *       -I src/core                 \
  *       src/core/compress.c src/core/archiver.c        \
  *       src/core/bp_codepage.c                         \
  *       src/frontend/amiga/main.c                      \
- *       lib/fastlz/fastlz.c                     \
+ *       src/core/boltlz.c                     \
  *       -o boltpack
  *
  * NOTE: -pedantic is omitted because AmigaOS NDK headers use K&R-style
@@ -537,7 +537,7 @@ static void amiga_apply_meta(const char *fs_path, unsigned long prot,
 static bp_uint32 amiga_auto_block_size(void)
 {
     ULONG avail = AvailMem(MEMF_ANY | MEMF_LARGEST);
-    /* Reserve ~64 KB overhead; fastlz decompress needs no extra RAM beyond
+    /* Reserve ~64 KB overhead; boltlz decompress needs no extra RAM beyond
      * the block itself, but we leave room for the C stack and buffers. */
     if      (avail >= 640UL * 1024UL) return BP_BLOCK_256K;
     else if (avail >= 256UL * 1024UL) return BP_BLOCK_64K;
@@ -963,7 +963,7 @@ static void usage(void)
         "\nOptions:\n"
         "  -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k (auto-detected)\n"
         "  -0        Store only (no compression)\n"
-        "  -F        Use fluff LZ77+Huffman compression (better ratio than fastlz)\n"
+        "  -F        Use fluff LZ77+Huffman compression (better ratio than boltlz)\n"
         "  -q        Quiet (summary only)\n"
         "  -qq       Silent (errors only)\n"
         "  -o PATH   Output directory for extraction\n"
@@ -1309,7 +1309,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "fastlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1509,7 +1509,7 @@ int main(int argc, char **argv)
 {
     char       command;
     bp_uint32  block_size = 0; /* 0 = auto-detect via AvailMem */
-    bp_uint8   method    = BP_METHOD_FASTLZ;
+    bp_uint8   method    = BP_METHOD_BOLTLZ;
     const char *out_dir  = NULL;
     int        force     = 0;
     int        dry_run   = 0;

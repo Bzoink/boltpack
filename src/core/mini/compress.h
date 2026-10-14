@@ -1,7 +1,7 @@
 /*
  * compress.h -- mini compression layer for BoltPack
  *
- * Methods: 0 (stored), 1 (LZSS), 2 (fastlz, 32/64-bit only).
+ * Methods: 0 (stored), 1 (LZSS), 2 (boltlz, 32/64-bit only).
  * Methods 3 (fluff) and any method > 3 return BP_ERR_UNSUPPORTED_METHOD.
  *
  * ANSI C (C89/C90) only.
@@ -16,7 +16,7 @@
 #include "../bp_types.h"
 
 /*
- * Initialize the mini compression subsystem. fastlz needs no init.
+ * Initialize the mini compression subsystem. boltlz needs no init.
  * Must be called once before any compress or decompress operation.
  * Returns BP_OK on success.
  */
@@ -24,18 +24,18 @@ int bp_mini_compress_init(void);
 
 /*
  * Compress one block.
- *   method  BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_FASTLZ (2).
+ *   method  BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_BOLTLZ (2).
  *   src_len must be <= BP_MINI_MAX_BLOCK_SIZE.
  *
  * For stored: dst must be >= src_len bytes.
  * For LZSS:   dst must be >= src_len + src_len/8 + 16 bytes.
- * For fastlz: dst must be >= src_len + src_len/20 + 66 bytes.
+ * For boltlz: dst must be >= src_len + src_len/63 + 16 bytes.
  *
  * LZSS is available on all platforms (16-bit and 32/64-bit).
- * fastlz is only available on 32/64-bit (returns
+ * boltlz is only available on 32/64-bit (returns
  * BP_ERR_UNSUPPORTED_METHOD on 16-bit).
  *
- * Returns BP_ERR_UNSUPPORTED_METHOD for methods 3+ (or fastlz on 16-bit).
+ * Returns BP_ERR_UNSUPPORTED_METHOD for methods 3+ (or boltlz on 16-bit).
  * Returns BP_ERR_INVALID_ARG      if src_len > BP_MINI_MAX_BLOCK_SIZE.
  */
 int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
@@ -44,7 +44,7 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
 
 /*
  * Decompress one block.
- *   method   BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_FASTLZ (2).
+ *   method   BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_BOLTLZ (2).
  *   *dst_len must be set to the original (uncompressed) size on entry.
  *
  * Returns BP_ERR_UNSUPPORTED_METHOD for methods other than 0, 1, or 2.
@@ -77,7 +77,7 @@ bp_uint32 bp_mini_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
 /* Initial value for a fresh checksum: 1 for Adler-32, 0 for CRC-32. */
 bp_uint32 bp_mini_checksum_seed(bp_uint8 ck_type);
 
-/* Return the size of the fastlz compression work memory buffer in bytes. */
+/* Return the size of the boltlz compression work memory buffer in bytes. */
 bp_uint32 bp_mini_compress_work_size(void);
 
 #endif /* BP_MINI_COMPRESS_H */

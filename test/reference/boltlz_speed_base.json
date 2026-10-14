@@ -1,0 +1,14 @@
+{
+  "description": "BoltLZ after backward/native-word extension; frozen encoder and decoder for speed experiments",
+  "format": 2,
+  "original_sha256": {
+    "src/core/boltlz.c": "274cdc687fd9930705198a856a7892f4e81d5e6c63d15c76ac6f44bc6c19c64b",
+    "src/core/boltlz.h": "c1aa3ddadef5abea45f667ddf659fe6025b9ee74236963c04e0f0f74a20a8fb8",
+    "src/core/boltlz_config.h": "691b6cae7669ae5fcf6b6c8bdc316e04306b9bc2eac960770e10cd87c1bea298"
+  },
+  "sha256": {
+    "boltlz_speed_base.c": "b858b5c4ad6994475b9ff9cb272b4c283f7fe21d9f8aeaa42af70c0feda3c429",
+    "boltlz_speed_base.h": "c815cdd5f805145136227b726cf4c9b098015c9dcef5af89aff5e0ebc1c2471e",
+    "boltlz_speed_base_config.h": "a82e0301dc0f183b157c5a122b73c8aff8ce43196f1d7ada31b0b91bac5e8f6c"
+  }
+}

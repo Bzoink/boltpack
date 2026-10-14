@@ -29,7 +29,7 @@ COMPRESSION
 -----------
 
 -F          Use Fluff (best for big screens)
-            fastlz is the default method
+            boltlz is the default method
 -0          No compression
 
 AMIGA NOTES

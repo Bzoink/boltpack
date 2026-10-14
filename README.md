@@ -84,15 +84,15 @@ expert tuning switches.
 
 ## Compression Methods
 
-| Flag | Method  | ID  | Description                                               |
-| ---- | ------- | --- | --------------------------------------------------------- |
-| `-2` | fastlz  | 2   | Default — fast general-purpose compression                |
-| `-0` | Stored  | 0   | No compression; raw byte copy                             |
-| `-1` | LZSS    | 1   | Small-memory LZ77; suited for 16-bit targets              |
-| `-F` | Fluff   | 3   | High compression ratio; LZ77 + FSE/tANS                   |
-| `-Z` | zstd    | 4   | Best compression ratio; modern 32/64-bit only; zstd 1.5.7 |
+| Flag | Method | ID  | Description                                               |
+| ---- | ------ | --- | --------------------------------------------------------- |
+| `-2` | BoltLZ | 2   | Default — fast general-purpose compression                |
+| `-0` | Stored | 0   | No compression; raw byte copy                             |
+| `-1` | LZSS   | 1   | Small-memory LZ77; suited for 16-bit targets              |
+| `-F` | Fluff  | 3   | High compression ratio; LZ77 + FSE/tANS                   |
+| `-Z` | zstd   | 4   | Best compression ratio; modern 32/64-bit only; zstd 1.5.7 |
 
-fastlz accepts levels 1–2 via `-l N`; omitting `-l` auto-selects its level.
+BoltLZ defaults to Balanced; `-l 1` selects Fast and `-l 2` selects Balanced.
 Fluff and zstd support levels 1–9. When `-F` or `-Z` is used without `-b`, block
 size is set to 256 KB automatically.
 
@@ -149,7 +149,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
 | [docs/specification-1.0.md](docs/specification-1.0.md) | Normative archive and codec rules                         |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
-| [docs/algorithms.md](docs/algorithms.md)               | LZSS, fastlz, and Fluff implementation details           |
+| [docs/algorithms.md](docs/algorithms.md)               | LZSS, BoltLZ, and Fluff implementation details            |
 | [docs/portability.md](docs/portability.md)             | Supported platforms, C89 constraints, and toolchain notes |
 | [docs/frontends.md](docs/frontends.md)                 | Frontend responsibilities and platform integration guide  |
 | [docs/BUILD.md](docs/BUILD.md)                         | Native build procedures and platform-specific caveats     |
@@ -164,7 +164,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 src/core/        Archive core + compression layer (strict C89)
 src/core/mini/   16-bit mini variant core
 src/frontend/    One frontend per platform
-lib/             Vendored fastlz 0.5.0 and zstd 1.5.7
+lib/             Vendored zstd 1.5.7
 docs/            Full documentation set
 test/            Unit tests, integration tests, and fixtures
 scripts/         Build, packaging, and release scripts
@@ -193,6 +193,5 @@ for the third-party algorithms and libraries incorporated into BoltPack.
 BoltPack is licensed under the **BSD 2-Clause "Simplified" License** — see
 [LICENSE.md](LICENSE.md).
 
-This distribution includes **fastlz 0.5.0** by Ariya Hidayat, licensed under
-the MIT license (`lib/fastlz/LICENSE`), and **zstd 1.5.7** by Meta Platforms /
+This distribution includes **zstd 1.5.7** by Meta Platforms /
 Yann Collet under the BSD 2-Clause license (`lib/zstd/`).

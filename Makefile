@@ -43,10 +43,11 @@ ZSTD_CPPFLAGS     = -DBOLTPACK_ZSTD
 ZSTD_OBJS         = $(BUILDDIR)/zstd/zstd.o $(BUILDDIR)/core/zstd_wrap.o
 endif
 
-FASTLZDIR      = lib/fastlz
-FASTLZ_OBJS    = $(BUILDDIR)/fastlz/fastlz.o
-FASTLZ_CC_FLAGS = -O2 -ffunction-sections -fdata-sections
-FASTLZ_CFLAGS  = -O2 -w -ffunction-sections -fdata-sections
+BOLTLZDIR      = src/core
+BOLTLZ_OBJS    = $(BUILDDIR)/boltlz/boltlz.o
+BOLTLZ_BUILD_DIR = build/boltlz
+BOLTLZ_CORE_FLAGS = -O2 -ffunction-sections -fdata-sections
+BOLTLZ_CORE_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -ffunction-sections -fdata-sections
 
 # Full build version is read from VERSION at the repo root.
 # Mini build version is read from VERSION_MINI at the repo root.
@@ -62,7 +63,7 @@ BP_VERSION_MINI_MINOR := $(word 2,$(subst ., ,$(BP_VERSION_MINI)))
 MINI_BP_VER_DEFS := -DBP_VERSION_MAJOR=$(BP_VERSION_MINI_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINI_MINOR)
 
 COREDIR      = src/core
-FASTLZDIR    = lib/fastlz
+BOLTLZDIR    = src/core
 FRONTEND ?= linux
 FRONTDIR    = src/frontend/$(FRONTEND)
 BUILDDIR    = build/$(FRONTEND)
@@ -95,7 +96,7 @@ CORE_OBJS  = $(BUILDDIR)/core/archiver.o \
 
 FRONT_OBJS = $(BUILDDIR)/frontend/main.o $(NET_OBJS)
 
-OBJS       = $(CORE_OBJS) $(FRONT_OBJS) $(FASTLZ_OBJS) $(ZSTD_OBJS)
+OBJS       = $(CORE_OBJS) $(FRONT_OBJS) $(BOLTLZ_OBJS) $(ZSTD_OBJS)
 TARGET     = $(BUILDDIR)/boltpack
 
 # Run all recipe lines for a target in a single shell invocation.
@@ -118,7 +119,7 @@ $(BUILDDIR)/.config: FORCE_CONFIG | $(BUILDDIR)
 	    'FAST_FLUFF_LDFLAGS=$(FAST_FLUFF_LDFLAGS)' \
 	    'FLUFF_NATIVE_FLAGS=$(FLUFF_NATIVE_FLAGS)' \
 	    'FLUFF_FAST_FLAGS=$(FLUFF_FAST_FLAGS)' \
-	    'FASTLZ_CFLAGS=$(FASTLZ_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
+	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
 	    'ZSTD_CPPFLAGS=$(ZSTD_CPPFLAGS)' 'NET_CPPFLAGS=$(NET_CPPFLAGS)' \
 	    | cmp -s - $@ || printf '%s\n' \
 	    'CC=$(CC)' 'CFLAGS=$(CFLAGS)' 'LDFLAGS=$(LDFLAGS)' \
@@ -128,7 +129,7 @@ $(BUILDDIR)/.config: FORCE_CONFIG | $(BUILDDIR)
 	    'FAST_FLUFF_LDFLAGS=$(FAST_FLUFF_LDFLAGS)' \
 	    'FLUFF_NATIVE_FLAGS=$(FLUFF_NATIVE_FLAGS)' \
 	    'FLUFF_FAST_FLAGS=$(FLUFF_FAST_FLAGS)' \
-	    'FASTLZ_CFLAGS=$(FASTLZ_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
+	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
 	    'ZSTD_CPPFLAGS=$(ZSTD_CPPFLAGS)' 'NET_CPPFLAGS=$(NET_CPPFLAGS)' > $@
 
 # Guard macro: skip a cross target gracefully if the toolchain cannot compile
@@ -184,11 +185,11 @@ $(BUILDDIR)/core/fluff_fast.o: $(COREDIR)/fluff_fast.c $(BUILDDIR)/.config | $(B
 $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/frontend
 	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
-# fastlz vendored codec: compiled with warnings suppressed (lib code, strict
-# C89 port kept in lib/fastlz; the C89 port already suppresses the fallthrough
+# boltlz vendored codec: compiled with warnings suppressed (lib code, strict
+# C89 port kept in src/core; the C89 port already suppresses the fallthrough
 # case labels via the -w flag below so no -Wimplicit-fallthrough noise).
-$(BUILDDIR)/fastlz/fastlz.o: $(FASTLZDIR)/fastlz.c $(BUILDDIR)/.config | $(BUILDDIR)/fastlz
-	$(CC) $(FASTLZ_CFLAGS) -I$(FASTLZDIR) -c -o $@ $<
+$(BUILDDIR)/boltlz/boltlz.o: $(BOLTLZDIR)/boltlz.c $(BUILDDIR)/.config | $(BUILDDIR)/boltlz
+	$(CC) $(BOLTLZ_CORE_CFLAGS) -I$(BOLTLZDIR) -c -o $@ $<
 
 # zstd amalgamation: compiled as C99 (lib/zstd is exempt from the C89 rule).
 $(BUILDDIR)/zstd/zstd.o: $(ZSTDDIR)/zstd.c $(BUILDDIR)/.config | $(BUILDDIR)/zstd
@@ -198,7 +199,7 @@ $(BUILDDIR)/zstd/zstd.o: $(ZSTDDIR)/zstd.c $(BUILDDIR)/.config | $(BUILDDIR)/zst
 $(BUILDDIR)/core/zstd_wrap.o: $(COREDIR)/zstd_wrap.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
 	$(CC) $(ZSTD_CC_FLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -I$(ZSTDDIR) -c -o $@ $<
 
-$(BUILDDIR)/core $(BUILDDIR)/frontend $(BUILDDIR)/fastlz $(BUILDDIR)/zstd:
+$(BUILDDIR)/core $(BUILDDIR)/frontend $(BUILDDIR)/boltlz $(BUILDDIR)/zstd:
 	mkdir -p $@
 
 clean:
@@ -234,7 +235,7 @@ install-debug-tools:
 # Tier 3: 32-bit native (x86, x86 32-bit mode, ARM 32-bit, etc.)
 # 32-bit builds on 64-bit systems use -m32, which forces 32-bit Tier 3.
 tier3:
-	mkdir -p build/linux-tier3/core build/linux-tier3/frontend build/linux-tier3/fastlz build/linux
+	mkdir -p build/linux-tier3/core build/linux-tier3/frontend build/linux-tier3/boltlz build/linux
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/archiver.o $(COREDIR)/archiver.c
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/fluff.o $(COREDIR)/fluff.c
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/compress.o $(COREDIR)/compress.c
@@ -242,17 +243,17 @@ tier3:
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/bp_codepage.o $(COREDIR)/bp_codepage.c
 	$(CC) $(CFLAGS) -m32 -DBOLTPACK_NET -I$(COREDIR) -c -o build/linux-tier3/frontend/main.o src/frontend/linux/main.c
 	$(CC) $(CFLAGS) -m32 -DBOLTPACK_NET -I$(COREDIR) -c -o build/linux-tier3/frontend/bp_net.o src/frontend/linux/bp_net.c
-	$(CC) $(CFLAGS) -m32 -Wall -c -o build/linux-tier3/fastlz/fastlz.o $(FASTLZDIR)/fastlz.c
+	$(CC) $(CFLAGS) -m32 -Wall -O2 -c -o build/linux-tier3/boltlz/boltlz.o $(BOLTLZDIR)/boltlz.c
 	$(CC) -m32 -o build/linux/boltpack-tier3 \
 		build/linux-tier3/core/archiver.o build/linux-tier3/core/fluff.o \
 		build/linux-tier3/core/compress.o build/linux-tier3/core/lzss.o build/linux-tier3/core/bp_codepage.o \
-		build/linux-tier3/frontend/main.o build/linux-tier3/frontend/bp_net.o build/linux-tier3/fastlz/fastlz.o
+		build/linux-tier3/frontend/main.o build/linux-tier3/frontend/bp_net.o build/linux-tier3/boltlz/boltlz.o
 	@echo "  OK    build/linux/boltpack-tier3 [Tier 3: 32-bit fluff]"
 
 # Tier 4: 64-bit native (x86-64, ARM64, RISC-V 64, PPC64, etc.)
 # 64-bit builds use the system's native word size and ULONG_MAX > 0xFFFFFFFFUL.
 tier4:
-	mkdir -p build/linux-tier4/core build/linux-tier4/frontend build/linux-tier4/fastlz build/linux
+	mkdir -p build/linux-tier4/core build/linux-tier4/frontend build/linux-tier4/boltlz build/linux
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/archiver.o $(COREDIR)/archiver.c
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/fluff.o $(COREDIR)/fluff.c
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/compress.o $(COREDIR)/compress.c
@@ -260,11 +261,11 @@ tier4:
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/bp_codepage.o $(COREDIR)/bp_codepage.c
 	$(CC) $(CFLAGS) -DBOLTPACK_NET -I$(COREDIR) -c -o build/linux-tier4/frontend/main.o src/frontend/linux/main.c
 	$(CC) $(CFLAGS) -DBOLTPACK_NET -I$(COREDIR) -c -o build/linux-tier4/frontend/bp_net.o src/frontend/linux/bp_net.c
-	$(CC) $(CFLAGS) -Wall -c -o build/linux-tier4/fastlz/fastlz.o $(FASTLZDIR)/fastlz.c
+	$(CC) $(CFLAGS) -Wall -O2 -c -o build/linux-tier4/boltlz/boltlz.o $(BOLTLZDIR)/boltlz.c
 	$(CC) $(LDFLAGS) -o build/linux/boltpack-tier4 \
 		build/linux-tier4/core/archiver.o build/linux-tier4/core/fluff.o \
 		build/linux-tier4/core/compress.o build/linux-tier4/core/lzss.o build/linux-tier4/core/bp_codepage.o \
-		build/linux-tier4/frontend/main.o build/linux-tier4/frontend/bp_net.o build/linux-tier4/fastlz/fastlz.o
+		build/linux-tier4/frontend/main.o build/linux-tier4/frontend/bp_net.o build/linux-tier4/boltlz/boltlz.o
 	@echo "  OK    build/linux/boltpack-tier4 [Tier 4: 64-bit fluff]"
 
 # Tier 2: Big-endian or unaligned-unfriendly systems (MIPS, PPC BE, etc.)
@@ -283,19 +284,19 @@ all-tiers: tier3 tier4
 	@echo "  python3 test/bench_corpus.py       (benchmarks all tiers)"
 
 WCX_SRCDIR = src/frontend/win_wcx
-WCX_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(FASTLZDIR)
+WCX_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(BOLTLZDIR)
 WCX_SRCS   = $(WCX_SRCDIR)/boltpack_wcx.c \
              $(COREDIR)/archiver.c \
              $(COREDIR)/compress.c \
              $(COREDIR)/lzss.c \
              $(COREDIR)/fluff.c \
              $(COREDIR)/bp_codepage.c \
-			 $(FASTLZDIR)/fastlz.c
+			 $(BOLTLZDIR)/boltlz.c
 WCX_RC     = $(WCX_SRCDIR)/boltpack_wcx.rc
 WCX_ZSTD_CPPFLAGS = -DBOLTPACK_ZSTD -I$(ZSTDDIR)
 
 WIN_SRCDIR = src/frontend/win
-WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(FASTLZDIR)
+WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(BOLTLZDIR)
 WIN_SRCS   = $(WIN_SRCDIR)/main.c \
              $(WIN_SRCDIR)/bp_net_win.c \
              $(COREDIR)/archiver.c \
@@ -303,7 +304,7 @@ WIN_SRCS   = $(WIN_SRCDIR)/main.c \
              $(COREDIR)/lzss.c \
              $(COREDIR)/fluff.c \
              $(COREDIR)/bp_codepage.c \
-             $(FASTLZDIR)/fastlz.c
+             $(BOLTLZDIR)/boltlz.c
 WIN_RC     = $(WIN_SRCDIR)/boltpack.rc
 # LAN send/receive (WinSock2).  bp_net_win.c is #ifdef BOLTPACK_NET-guarded,
 # so it is a near-empty translation unit when the flag is absent.
@@ -458,14 +459,14 @@ WASM_BUILDDIR = build/wasm
 wasm:
 	mkdir -p $(WASM_BUILDDIR)
 	$(WASM_CC) $(WASM_CFLAGS) \
-		-I$(COREDIR) -I$(FASTLZDIR) \
+		-I$(COREDIR) -I$(BOLTLZDIR) \
 		$(COREDIR)/archiver.c \
 		$(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 		$(COREDIR)/fluff.c \
 		$(COREDIR)/bp_codepage.c \
 		src/frontend/linux/main.c \
-		$(FASTLZDIR)/fastlz.c \
+		$(BOLTLZDIR)/boltlz.c \
 		-o $(WASM_BUILDDIR)/boltpack.js
 
 # AmigaOS 2.x/3.x 68k — cross-compile from Linux using bebbo's amiga-gcc.
@@ -486,14 +487,14 @@ amiga68k:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	rm -f $(AMIGA68K_BUILDDIR)/BoltPack $(AMIGA68K_BUILDDIR)/boltpack-gui
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/amiga/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(AMIGA68K_BUILDDIR)/boltpack
 	@echo "  OK    $(AMIGA68K_BUILDDIR)/boltpack"
 
@@ -510,14 +511,14 @@ atari-cli:
 	mkdir -p $(ATARI_BUILDDIR)
 	rm -f $(ATARI_BUILDDIR)/boltpack $(ATARI_BUILDDIR)/boltpack.ttp
 	$(ATARI_CC) $(ATARI_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/atari/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(ATARI_BUILDDIR)/boltpack.tos
 	@echo "  OK    $(ATARI_BUILDDIR)/boltpack.tos"
 
@@ -541,14 +542,14 @@ MACOS68K_MULTIVERSAL_RINCLUDES = $(RETRO68_ROOT)/multiversal/RIncludes
 macos9-68k:
 	mkdir -p $(MACOS68K_BUILDDIR)
 	$(MACOS68K_CC) $(MACOS68K_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    $(MACOS68K_FRONTEND)/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MACOS68K_BUILDDIR)/BoltPack
 	$(MACOS68K_REZ) -I $(MACOS68K_RINCLUDES) -I $(MACOS68K_MULTIVERSAL_RINCLUDES) \
 	    $(MACOS68K_FRONTEND)/boltpack.r \
@@ -568,7 +569,7 @@ MACOSX_BUILDDIR = build/macosx
 macosx:
 	mkdir -p $(MACOSX_BUILDDIR)
 	$(MACOSX_CC) $(MACOSX_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -576,7 +577,7 @@ macosx:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/macosx/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MACOSX_BUILDDIR)/boltpack
 
 # Haiku / BeOS (x86_64)
@@ -588,7 +589,7 @@ HAIKU_BUILDDIR = build/haiku
 haiku:
 	mkdir -p $(HAIKU_BUILDDIR)
 	$(HAIKU_CC) $(HAIKU_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -596,7 +597,7 @@ haiku:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/haiku/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(HAIKU_BUILDDIR)/boltpack
 
 # RISC OS (ARM via GCCSDK)
@@ -609,14 +610,14 @@ riscos:
 	$(call check_cc,$(RISCOS_CC) $(RISCOS_CFLAGS),riscos)
 	mkdir -p $(RISCOS_BUILDDIR)
 	$(RISCOS_CC) $(RISCOS_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/riscos/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(RISCOS_BUILDDIR)/boltpack,ff8
 
 # ARM Linux (32-bit)
@@ -629,7 +630,7 @@ arm:
 	$(call check_cc,$(ARM_CC) $(ARM_CFLAGS),arm)
 	mkdir -p $(ARM_BUILDDIR)
 	$(ARM_CC) $(ARM_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -637,7 +638,7 @@ arm:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/linux/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(ARM_BUILDDIR)/boltpack
 
 # ARM64 Linux
@@ -657,7 +658,7 @@ ARM64_CORE_OBJS = \
 	$(ARM64_BUILDDIR)/bp_codepage.o \
 	$(ARM64_BUILDDIR)/main.o \
 	$(ARM64_BUILDDIR)/bp_net.o \
-	$(ARM64_BUILDDIR)/fastlz.o \
+	$(ARM64_BUILDDIR)/boltlz.o \
 	$(ARM64_BUILDDIR)/zstd.o \
 	$(ARM64_BUILDDIR)/zstd_wrap.o
 
@@ -665,31 +666,31 @@ ARM64_CORE_OBJS = \
 arm64:
 	mkdir -p $(ARM64_BUILDDIR)
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(COREDIR)/archiver.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/archiver.c \
 	    -o $(ARM64_BUILDDIR)/archiver.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(COREDIR)/compress.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/compress.c \
 	    -o $(ARM64_BUILDDIR)/compress.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(COREDIR)/lzss.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/lzss.c \
 	    -o $(ARM64_BUILDDIR)/lzss.o
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(COREDIR)/fluff.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/fluff.c \
 	    -o $(ARM64_BUILDDIR)/fluff.o
 	$(ARM64_CC) $(ARM64_FAST_FLUFF_CFLAGS) \
 	    -c $(COREDIR)/fluff_fast.c -o $(ARM64_BUILDDIR)/fluff_fast.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(COREDIR)/bp_codepage.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/bp_codepage.c \
 	    -o $(ARM64_BUILDDIR)/bp_codepage.o
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) \
-	    -DBOLTPACK_ZSTD -DBOLTPACK_NET -I$(COREDIR) -I$(FASTLZDIR) -c src/frontend/linux/main.c \
+	    -DBOLTPACK_ZSTD -DBOLTPACK_NET -I$(COREDIR) -I$(BOLTLZDIR) -c src/frontend/linux/main.c \
 	    -o $(ARM64_BUILDDIR)/main.o
 	$(ARM64_CC) $(ARM64_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c src/frontend/linux/bp_net.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c src/frontend/linux/bp_net.c \
 	    -o $(ARM64_BUILDDIR)/bp_net.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) -c $(FASTLZDIR)/fastlz.c \
-	    -o $(ARM64_BUILDDIR)/fastlz.o
+	    -I$(COREDIR) -I$(BOLTLZDIR) -O2 -c $(BOLTLZDIR)/boltlz.c \
+	    -o $(ARM64_BUILDDIR)/boltlz.o
 	$(ARM64_CC) $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
 	    -c $(ZSTDDIR)/zstd.c -o $(ARM64_BUILDDIR)/zstd.o
 	$(ARM64_CC) $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
@@ -709,14 +710,14 @@ aros:
 	$(call check_cc,$(AROS_CC) $(AROS_CFLAGS),aros)
 	mkdir -p $(AROS_BUILDDIR)
 	$(AROS_CC) $(AROS_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/aros/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(AROS_BUILDDIR)/boltpack
 
 # AmigaOS 4.x PPC via adtools
@@ -729,14 +730,14 @@ amigaos4:
 	$(call check_cc,$(AMIGAOS4_CC) $(AMIGAOS4_CFLAGS),amigaos4)
 	mkdir -p $(AMIGAOS4_BUILDDIR)
 	$(AMIGAOS4_CC) $(AMIGAOS4_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/amigaos4/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(AMIGAOS4_BUILDDIR)/boltpack
 
 # MorphOS (PPC) via MorphOS SDK
@@ -749,14 +750,14 @@ morphos:
 	$(call check_cc,$(MORPHOS_CC) $(MORPHOS_CFLAGS),morphos)
 	mkdir -p $(MORPHOS_BUILDDIR)
 	$(MORPHOS_CC) $(MORPHOS_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/morphos/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MORPHOS_BUILDDIR)/boltpack
 
 # FreeBSD
@@ -769,7 +770,7 @@ freebsd:
 	$(call check_cc,$(FREEBSD_CC) $(FREEBSD_CFLAGS),freebsd)
 	mkdir -p $(FREEBSD_BUILDDIR)
 	$(FREEBSD_CC) $(FREEBSD_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -777,7 +778,7 @@ freebsd:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/freebsd/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(FREEBSD_BUILDDIR)/boltpack
 
 # NetBSD
@@ -790,7 +791,7 @@ netbsd:
 	$(call check_cc,$(NETBSD_CC) $(NETBSD_CFLAGS),netbsd)
 	mkdir -p $(NETBSD_BUILDDIR)
 	$(NETBSD_CC) $(NETBSD_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -798,7 +799,7 @@ netbsd:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/netbsd/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(NETBSD_BUILDDIR)/boltpack
 
 
@@ -812,7 +813,7 @@ RISCV_BUILDDIR = build/riscv
 riscv:
 	mkdir -p $(RISCV_BUILDDIR)
 	$(RISCV_CC) $(RISCV_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -820,7 +821,7 @@ riscv:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/linux/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(RISCV_BUILDDIR)/boltpack
 
 # musl Linux
@@ -832,7 +833,7 @@ MUSL_BUILDDIR=build/musl
 musl:
 	mkdir -p $(MUSL_BUILDDIR)
 	$(MUSL_CC) $(MUSL_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -840,7 +841,7 @@ musl:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/linux/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MUSL_BUILDDIR)/boltpack
 
 # illumos
@@ -853,7 +854,7 @@ illumos:
 	$(call check_cc,$(ILLUMOS_CC) $(ILLUMOS_CFLAGS),illumos)
 	mkdir -p $(ILLUMOS_BUILDDIR)
 	$(ILLUMOS_CC) $(ILLUMOS_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -861,7 +862,7 @@ illumos:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/illumos/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(ILLUMOS_BUILDDIR)/boltpack
 
 # E2K (Elbrus)
@@ -874,14 +875,14 @@ e2k:
 	$(call check_cc,$(E2K_CC) $(E2K_CFLAGS),e2k)
 	mkdir -p $(E2K_BUILDDIR)
 	$(E2K_CC) $(E2K_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/linux/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(E2K_BUILDDIR)/boltpack
 
 # OS/2
@@ -894,13 +895,13 @@ os2:
 	$(call check_cc,$(OS2_CC) $(OS2_CFLAGS),os2)
 	mkdir -p $(OS2_BUILDDIR)
 	$(OS2_CC) $(OS2_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/os2/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(OS2_BUILDDIR)/boltpack.exe
 
 # Sinclair QL (QDOS / SMSQ/E)
@@ -913,13 +914,13 @@ ql:
 	$(call check_cc,$(QL_CC),ql)
 	mkdir -p $(QL_BUILDDIR)
 	cd src/frontend/ql && $(QL_CC) $(QL_CFLAGS) \
-	    -I../../core -I../../../$(FASTLZDIR) \
+	    -I../../core -I../../../$(BOLTLZDIR) \
 	    ../../core/archiver.c \
 	    ../../core/compress.c \
 	    ../../core/fluff.c \
 	    ../../core/bp_codepage.c \
 	    main.c \
-	    ../../../$(FASTLZDIR)/fastlz.c \
+	    ../../../$(BOLTLZDIR)/boltlz.c \
 	    -o ../../../$(QL_BUILDDIR)/boltpack
 
 # Sharp X68000 (Human68k)
@@ -933,13 +934,13 @@ x68k:
 	$(call check_cc,$(X68K_CC) $(X68K_CFLAGS) -c,x68k)
 	mkdir -p $(X68K_BUILDDIR)
 	$(X68K_CC) $(X68K_CFLAGS) \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/x68k/main.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(X68K_BUILDDIR)/boltpack.x \
 	    $(COREDIR)/fluff.c
 
@@ -954,7 +955,7 @@ HURD_BUILDDIR = build/hurd
 hurd:
 	mkdir -p $(HURD_BUILDDIR)
 	$(HURD_CC) $(HURD_CFLAGS) -DBOLTPACK_NET \
-	    -I$(COREDIR) -I$(FASTLZDIR) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/lzss.c \
@@ -962,7 +963,7 @@ hurd:
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/hurd/main.c \
 	    src/frontend/linux/bp_net.c \
-	    $(FASTLZDIR)/fastlz.c \
+	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(HURD_BUILDDIR)/boltpack
 
 # ---- Test and fuzz targets --------------------------------------------------
@@ -975,8 +976,8 @@ ASAN_CORE_OBJS  = build/linux/core/archiver_asan.o \
                   build/linux/core/lzss_asan.o \
                   build/linux/core/bp_codepage_asan.o
 ASAN_FRONT_OBJS = build/linux/frontend/main_asan.o
-ASAN_FASTLZ_OBJS = build/linux/fastlz/fastlz_asan.o
-ASAN_OBJS       = $(ASAN_CORE_OBJS) $(ASAN_FRONT_OBJS) $(ASAN_FASTLZ_OBJS)
+ASAN_BOLTLZ_OBJS = build/linux/boltlz/boltlz_asan.o
+ASAN_OBJS       = $(ASAN_CORE_OBJS) $(ASAN_FRONT_OBJS) $(ASAN_BOLTLZ_OBJS)
 
 build/linux/core/%_asan.o: $(COREDIR)/%.c | build/linux/core
 	$(CC) $(DEBUG_CFLAGS) -I$(COREDIR) -c -o $@ $<
@@ -984,7 +985,7 @@ build/linux/core/%_asan.o: $(COREDIR)/%.c | build/linux/core
 build/linux/frontend/%_asan.o: $(FRONTDIR)/%.c | build/linux/frontend
 	$(CC) $(DEBUG_CFLAGS) -I$(COREDIR) -c -o $@ $<
 
-build/linux/fastlz/%_asan.o: $(FASTLZDIR)/%.c | build/linux/fastlz
+build/linux/boltlz/%_asan.o: $(BOLTLZDIR)/%.c | build/linux/boltlz
 	$(CC) $(DEBUG_CFLAGS) -Wall -c -o $@ $<
 
 $(ASAN_TARGET): $(ASAN_OBJS)
@@ -1128,9 +1129,9 @@ mini-test:
 	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/archiver.o    $(MINI_COREDIR)/archiver.c
 	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/compress.o    $(MINI_COREDIR)/compress.c
 	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/lzss.o        $(COREDIR)/lzss.c
-	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/fastlz_decomp.o  $(MINI_COREDIR)/fastlz_decomp.c
+	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -O2 -c -o $(MINI_TEST_DIR)/boltlz_decomp.o  $(MINI_COREDIR)/boltlz_decomp.c
 	$(CC) $(MINI_TEST_FRONT) -I$(COREDIR) -c -o $(MINI_TEST_DIR)/mini_common.o $(MINI_SHARED)/mini_common.c
-	$(CC) $(MINI_TEST_CORE)  -Wall        -c -o $(MINI_TEST_DIR)/fastlz.o     $(FASTLZDIR)/fastlz.c
+	$(CC) $(MINI_TEST_CORE)  -Wall        -O2 -c -o $(MINI_TEST_DIR)/boltlz.o     $(BOLTLZDIR)/boltlz.c
 	$(CC) $(MINI_TEST_FRONT) -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
 	    -c -o $(MINI_TEST_DIR)/main_dos16.o  src/frontend/dos16/main.c
 	$(CC) $(MINI_TEST_FRONT) -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
@@ -1142,7 +1143,7 @@ mini-test:
 	$(CC) $(MINI_TEST_FRONT) -o $(MINI_TEST_DIR)/bpmini-test \
 	    $(MINI_TEST_DIR)/archiver.o $(MINI_TEST_DIR)/compress.o \
 	    $(MINI_TEST_DIR)/lzss.o $(MINI_TEST_DIR)/mini_common.o \
-	    $(MINI_TEST_DIR)/fastlz.o $(MINI_TEST_DIR)/main_dos16.o
+	    $(MINI_TEST_DIR)/boltlz.o $(MINI_TEST_DIR)/main_dos16.o
 	@echo "  OK    $(MINI_TEST_DIR)/bpmini-test [C89 core check + linux test binary]"
 
 # ---- linuxmini: 32-bit Linux bpmini (mini archiver, POSIX filesystem) ----
@@ -1167,7 +1168,7 @@ linuxmini:
 	$(CC) $(LINUXMINI_CFLAGS) -I$(COREDIR)                          -c -o $(LINUXMINI_BDIR)/archiver.o    $(MINI_COREDIR)/archiver.c
 	$(CC) $(LINUXMINI_CFLAGS) -I$(COREDIR)                          -c -o $(LINUXMINI_BDIR)/compress.o    $(MINI_COREDIR)/compress.c
 	$(CC) $(LINUXMINI_CFLAGS) -I$(COREDIR)                          -c -o $(LINUXMINI_BDIR)/lzss.o        $(COREDIR)/lzss.c
-	$(CC) $(LINUXMINI_CFLAGS)  -Wall              -c -o $(LINUXMINI_BDIR)/fastlz.o     $(FASTLZDIR)/fastlz.c
+	$(CC) $(LINUXMINI_CFLAGS)  -Wall              -O2 -c -o $(LINUXMINI_BDIR)/boltlz.o     $(BOLTLZDIR)/boltlz.c
 	$(CC) $(LINUXMINI_FFLAGS) -I$(COREDIR) -I$(MINI_COREDIR)        -c -o $(LINUXMINI_BDIR)/mini_common.o $(MINI_SHARED)/mini_common.c
 	$(CC) $(LINUXMINI_FFLAGS) -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
 	    -c -o $(LINUXMINI_BDIR)/main.o src/frontend/linuxmini/main.c
@@ -1175,7 +1176,7 @@ linuxmini:
 	    -Wl,--strip-all -Wl,--build-id=none -Wl,-z,noseparate-code \
 	    -o $(LINUXMINI_EXE) \
 	    $(LINUXMINI_BDIR)/archiver.o $(LINUXMINI_BDIR)/compress.o \
-	    $(LINUXMINI_BDIR)/lzss.o $(LINUXMINI_BDIR)/fastlz.o \
+	    $(LINUXMINI_BDIR)/lzss.o $(LINUXMINI_BDIR)/boltlz.o \
 	    $(LINUXMINI_BDIR)/mini_common.o $(LINUXMINI_BDIR)/main.o
 	@echo "  OK    $(LINUXMINI_EXE)"
 
@@ -1191,14 +1192,14 @@ dos16:
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/lzss.obj       $(COREDIR)/lzss.c
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/fastlz_decomp.obj $(MINI_COREDIR)/fastlz_decomp.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/main.obj       src/frontend/dos16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
 	    file {$(DOS16_BDIR)/archiver.obj} \
 	    file {$(DOS16_BDIR)/compress.obj} \
 	    file {$(DOS16_BDIR)/lzss.obj} \
-	    file {$(DOS16_BDIR)/fastlz_decomp.obj} \
+	    file {$(DOS16_BDIR)/boltlz_decomp.obj} \
 	    file {$(DOS16_BDIR)/mini_common.obj} \
 	    file {$(DOS16_BDIR)/main.obj} \
 	    name $(DOS16_EXE)
@@ -1216,14 +1217,14 @@ win16:
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/lzss.obj       $(COREDIR)/lzss.c
-	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/fastlz_decomp.obj $(MINI_COREDIR)/fastlz_decomp.c
+	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/main.obj       src/frontend/win16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system windows option eliminate \
 	    file {$(WIN16_BDIR)/archiver.obj} \
 	    file {$(WIN16_BDIR)/compress.obj} \
 	    file {$(WIN16_BDIR)/lzss.obj} \
-	    file {$(WIN16_BDIR)/fastlz_decomp.obj} \
+	    file {$(WIN16_BDIR)/boltlz_decomp.obj} \
 	    file {$(WIN16_BDIR)/mini_common.obj} \
 	    file {$(WIN16_BDIR)/main.obj} \
 	    name $(WIN16_EXE)
@@ -1243,14 +1244,14 @@ os2-16:
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/lzss.obj       $(COREDIR)/lzss.c
-	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/fastlz_decomp.obj $(MINI_COREDIR)/fastlz_decomp.c
+	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/main.obj       src/frontend/os2_16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system os2 option eliminate \
 	    file {$(OS2_16_BDIR)/archiver.obj} \
 	    file {$(OS2_16_BDIR)/compress.obj} \
 	    file {$(OS2_16_BDIR)/lzss.obj} \
-	    file {$(OS2_16_BDIR)/fastlz_decomp.obj} \
+	    file {$(OS2_16_BDIR)/boltlz_decomp.obj} \
 	    file {$(OS2_16_BDIR)/mini_common.obj} \
 	    file {$(OS2_16_BDIR)/main.obj} \
 	    name $(OS2_16_EXE)
@@ -1267,7 +1268,7 @@ os2-16:
 #      src/core/mini/archiver.c src/core/mini/compress.c \
 #      src/core/lzss.c \
 #      src/frontend/mini_shared/mini_common.c \
-#      src/core/mini/fastlz_decomp.c \
+#      src/core/mini/boltlz_decomp.c \
 #      src/frontend/cpm86/main.c \
 #      -o BPMINI.CMD
 .PHONY: cpm86
@@ -1289,9 +1290,9 @@ GUI_CORE_SRCS  = $(COREDIR)/archiver.c \
                  $(COREDIR)/lzss.c \
                  $(COREDIR)/fluff.c \
                  $(COREDIR)/bp_codepage.c \
-                 $(FASTLZDIR)/fastlz.c
+                 $(BOLTLZDIR)/boltlz.c
 
-GUI_CORE_FLAGS = $(BP_VER_DEFS) -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(FASTLZDIR) -I$(GUI_COMMON)
+GUI_CORE_FLAGS = $(BP_VER_DEFS) -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON)
 GUI_RC_FLAGS   = $(BP_VER_DEFS)
 GUI_FAST_FLUFF_CPPFLAGS = -DBOLTPACK_FAST_FLUFF
 GUI_FAST_FLUFF_LDFLAGS  = -fopenmp
@@ -1307,7 +1308,7 @@ LINUX_GUI_CORE_OBJS = \
     $(LINUX_GUI_BUILDDIR)/fluff.o       \
 	$(LINUX_GUI_BUILDDIR)/fluff_fast.o  \
     $(LINUX_GUI_BUILDDIR)/bp_codepage.o \
-    $(LINUX_GUI_BUILDDIR)/fastlz.o     \
+    $(LINUX_GUI_BUILDDIR)/boltlz.o     \
     $(LINUX_GUI_BUILDDIR)/zstd.o        \
     $(LINUX_GUI_BUILDDIR)/zstd_wrap.o
 
@@ -1321,7 +1322,7 @@ linux-gui:
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/fluff.c       -o $(LINUX_GUI_BUILDDIR)/fluff.o
 	gcc $(GUI_FAST_FLUFF_CFLAGS) -c $(COREDIR)/fluff_fast.c  -o $(LINUX_GUI_BUILDDIR)/fluff_fast.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/bp_codepage.c -o $(LINUX_GUI_BUILDDIR)/bp_codepage.o
-	gcc $(GUI_CORE_FLAGS) -c $(FASTLZDIR)/fastlz.c      -o $(LINUX_GUI_BUILDDIR)/fastlz.o
+	gcc $(GUI_CORE_FLAGS) -O2 -c $(BOLTLZDIR)/boltlz.c      -o $(LINUX_GUI_BUILDDIR)/boltlz.o
 	gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
 	    -c $(ZSTDDIR)/zstd.c          -o $(LINUX_GUI_BUILDDIR)/zstd.o
 	gcc $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
@@ -1470,7 +1471,7 @@ WIN64_FLTK_GUI_CORE_OBJS = \
     $(WIN64_FLTK_GUI_BUILDDIR)/fluff.o       \
 	$(WIN64_FLTK_GUI_BUILDDIR)/fluff_fast.o  \
     $(WIN64_FLTK_GUI_BUILDDIR)/bp_codepage.o \
-    $(WIN64_FLTK_GUI_BUILDDIR)/fastlz.o     \
+    $(WIN64_FLTK_GUI_BUILDDIR)/boltlz.o     \
     $(WIN64_FLTK_GUI_BUILDDIR)/zstd.o        \
     $(WIN64_FLTK_GUI_BUILDDIR)/zstd_wrap.o   \
     $(WIN64_FLTK_GUI_BUILDDIR)/bp_net.o
@@ -1502,7 +1503,7 @@ win64-fltk-gui:
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/bp_codepage.c -o $(WIN64_FLTK_GUI_BUILDDIR)/bp_codepage.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
-	    -c $(FASTLZDIR)/fastlz.c      -o $(WIN64_FLTK_GUI_BUILDDIR)/fastlz.o
+	    -O2 -c $(BOLTLZDIR)/boltlz.c      -o $(WIN64_FLTK_GUI_BUILDDIR)/boltlz.o
 	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
 	    -c $(ZSTDDIR)/zstd.c        -o $(WIN64_FLTK_GUI_BUILDDIR)/zstd.o
 	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
@@ -1604,7 +1605,7 @@ WIN32_FLTK_GUI_CORE_OBJS = \
     $(WIN32_FLTK_GUI_BUILDDIR)/fluff.o       \
 	$(WIN32_FLTK_GUI_BUILDDIR)/fluff_fast.o  \
     $(WIN32_FLTK_GUI_BUILDDIR)/bp_codepage.o \
-    $(WIN32_FLTK_GUI_BUILDDIR)/fastlz.o     \
+    $(WIN32_FLTK_GUI_BUILDDIR)/boltlz.o     \
     $(WIN32_FLTK_GUI_BUILDDIR)/bp_net.o
 
 .PHONY: win32-fltk-gui
@@ -1634,7 +1635,7 @@ win32-fltk-gui:
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 \
 	    -c $(COREDIR)/bp_codepage.c -o $(WIN32_FLTK_GUI_BUILDDIR)/bp_codepage.o
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 \
-	    -c $(FASTLZDIR)/fastlz.c      -o $(WIN32_FLTK_GUI_BUILDDIR)/fastlz.o
+	    -O2 -c $(BOLTLZDIR)/boltlz.c      -o $(WIN32_FLTK_GUI_BUILDDIR)/boltlz.o
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 -DBOLTPACK_NET -I$(COREDIR) \
 	    -c src/frontend/win/bp_net_win.c -o $(WIN32_FLTK_GUI_BUILDDIR)/bp_net.o
 	i686-w64-mingw32-windres $(GUI_RC_FLAGS) src/frontend/win_gui_fltk/resource.rc \
@@ -1754,7 +1755,7 @@ atari-gui:
 	rm -f $(ATARI_GUI_BUILDDIR)/boltpack.app
 	/usr/m68k-atari-mint/bin/m68k-atari-mint-gcc \
 	    -Wall -Wextra -Wno-unused-function -O2 \
-	    -I$(COREDIR) -I$(FASTLZDIR) -I$(GUI_COMMON) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
 	    $(GUI_CORE_SRCS) \
 	    src/frontend/atari_gui/main.c \
 	    -lgem \
@@ -1770,7 +1771,7 @@ amiga-gui:
 	rm -f $(AMIGA_GUI_BUILDDIR)/BoltPack
 	/opt/amiga/bin/m68k-amigaos-gcc -noixemul \
 	    -Wall -Wextra -Wno-unused-function -O2 \
-	    -I$(COREDIR) -I$(FASTLZDIR) -I$(GUI_COMMON) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
 	    $(GUI_CORE_SRCS) \
 	    src/frontend/amiga_gui/main.c \
 	    -lm \
@@ -1785,7 +1786,7 @@ HAIKU_GUI_CORE_OBJS = \
 	$(HAIKU_GUI_BUILDDIR)/lzss.o        \
 	$(HAIKU_GUI_BUILDDIR)/fluff.o       \
 	$(HAIKU_GUI_BUILDDIR)/bp_codepage.o \
-	$(HAIKU_GUI_BUILDDIR)/fastlz.o
+	$(HAIKU_GUI_BUILDDIR)/boltlz.o
 HAIKU_GUI_FAST_FLUFF_OBJ = $(HAIKU_GUI_BUILDDIR)/fluff_fast.o
 HAIKU_GUI_PRIVATE_INCLUDE ?= /opt/sil/x86_64-unknown-haiku/include/private/interface
 
@@ -1804,7 +1805,7 @@ haiku-gui:
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/bp_codepage.c -o $(HAIKU_GUI_BUILDDIR)/bp_codepage.o
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) \
-	    -c $(FASTLZDIR)/fastlz.c -o $(HAIKU_GUI_BUILDDIR)/fastlz.o
+	    -O2 -c $(BOLTLZDIR)/boltlz.c -o $(HAIKU_GUI_BUILDDIR)/boltlz.o
 	x86_64-unknown-haiku-gcc $(GUI_FAST_FLUFF_CFLAGS) \
 	    -c $(COREDIR)/fluff_fast.c \
 	    -o $(HAIKU_GUI_FAST_FLUFF_OBJ)
@@ -1838,14 +1839,14 @@ UNIT_BUILD_DIR  = build/unit-test
 # so the unit-test builds define BP_ENABLE_ADLER32 to compile bp_checksum /
 # bp_mini_checksum.  The frontends never define it.
 UNIT_CFLAGS     = $(CFLAGS) $(BP_VER_DEFS) -DBP_ENABLE_ADLER32  -I$(COREDIR) -I$(UNIT_TEST_DIR)
-UNIT_ASAN_FLAGS = $(DEBUG_CFLAGS) $(BP_VER_DEFS) -DBP_ENABLE_ADLER32 -I$(COREDIR) -I$(UNIT_TEST_DIR)
+UNIT_ASAN_FLAGS = $(filter-out -O0 -O1 -O2 -O3,$(DEBUG_CFLAGS)) -O2 $(BP_VER_DEFS) -DBP_ENABLE_ADLER32 -I$(COREDIR) -I$(UNIT_TEST_DIR)
 
 # Source lists shared between normal and ASAN variants
-UNIT_COMMON_SRCS  = $(FASTLZDIR)/fastlz.c $(COREDIR)/lzss.c
+UNIT_COMMON_SRCS  = $(BOLTLZDIR)/boltlz.c $(COREDIR)/lzss.c
 UNIT_CORE_SRCS    = $(COREDIR)/compress.c $(COREDIR)/bp_codepage.c \
                     $(COREDIR)/archiver.c  $(COREDIR)/fluff.c
 UNIT_MINI_SRCS    = $(COREDIR)/mini/compress.c $(COREDIR)/mini/archiver.c \
-                    $(COREDIR)/mini/fastlz_decomp.c $(COREDIR)/lzss.c
+                    $(COREDIR)/mini/boltlz_decomp.c $(COREDIR)/lzss.c
 
 .PHONY: unit-test unit-test-asan
 
@@ -1853,7 +1854,8 @@ unit-test: $(UNIT_BUILD_DIR)/test_checksum \
            $(UNIT_BUILD_DIR)/test_compress \
            $(UNIT_BUILD_DIR)/test_codepage \
            $(UNIT_BUILD_DIR)/test_archive_format \
-           $(UNIT_BUILD_DIR)/mini_test_compress
+           $(UNIT_BUILD_DIR)/mini_test_compress \
+           $(BOLTLZ_BUILD_DIR)/test_boltlz
 	@ok=1; \
 	for t in $^; do \
 	    printf '\nRunning %s...\n' "$$t"; \
@@ -1865,7 +1867,8 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
                 $(UNIT_BUILD_DIR)/test_compress_asan \
                 $(UNIT_BUILD_DIR)/test_codepage_asan \
                 $(UNIT_BUILD_DIR)/test_archive_format_asan \
-                $(UNIT_BUILD_DIR)/mini_test_compress_asan
+                $(UNIT_BUILD_DIR)/mini_test_compress_asan \
+                $(BOLTLZ_BUILD_DIR)/test_boltlz_asan
 	@ok=1; \
 	for t in $^; do \
 	    printf '\nRunning %s...\n' "$$t"; \
@@ -1877,43 +1880,43 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
 $(UNIT_BUILD_DIR)/test_checksum: \
     $(UNIT_TEST_DIR)/test_checksum.c \
     $(COREDIR)/compress.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     $(COREDIR)/lzss.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_checksum.c \
-	    $(COREDIR)/compress.c $(FASTLZDIR)/fastlz.c $(COREDIR)/lzss.c
+	    $(COREDIR)/compress.c $(BOLTLZDIR)/boltlz.c $(COREDIR)/lzss.c
 
 $(UNIT_BUILD_DIR)/test_checksum_asan: \
     $(UNIT_TEST_DIR)/test_checksum.c \
     $(COREDIR)/compress.c \
     $(COREDIR)/lzss.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_checksum.c \
-	    $(COREDIR)/compress.c $(COREDIR)/lzss.c $(FASTLZDIR)/fastlz.c
+	    $(COREDIR)/compress.c $(COREDIR)/lzss.c $(BOLTLZDIR)/boltlz.c
 
 # --- test_compress ---
 $(UNIT_BUILD_DIR)/test_compress: \
     $(UNIT_TEST_DIR)/test_compress.c \
     $(COREDIR)/compress.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     $(COREDIR)/lzss.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_compress.c \
-	    $(COREDIR)/compress.c $(FASTLZDIR)/fastlz.c $(COREDIR)/lzss.c
+	    $(COREDIR)/compress.c $(BOLTLZDIR)/boltlz.c $(COREDIR)/lzss.c
 
 $(UNIT_BUILD_DIR)/test_compress_asan: \
     $(UNIT_TEST_DIR)/test_compress.c \
     $(COREDIR)/compress.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     $(COREDIR)/lzss.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_compress.c \
-	    $(COREDIR)/compress.c $(FASTLZDIR)/fastlz.c $(COREDIR)/lzss.c
+	    $(COREDIR)/compress.c $(BOLTLZDIR)/boltlz.c $(COREDIR)/lzss.c
 
 # --- test_codepage ---
 $(UNIT_BUILD_DIR)/test_codepage: \
@@ -1940,12 +1943,12 @@ $(UNIT_BUILD_DIR)/test_archive_format: \
     $(COREDIR)/lzss.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
-	$(CC) $(UNIT_CFLAGS) -O3 $(FLUFF_NATIVE_FLAGS) -o $@ \
+	$(CC) $(UNIT_CFLAGS) -O2 $(FLUFF_NATIVE_FLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/lzss.c \
-	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(FASTLZDIR)/fastlz.c
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 
 $(UNIT_BUILD_DIR)/test_archive_format_asan: \
     $(UNIT_TEST_DIR)/test_archive_format.c \
@@ -1954,37 +1957,37 @@ $(UNIT_BUILD_DIR)/test_archive_format_asan: \
     $(COREDIR)/lzss.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/lzss.c \
-	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(FASTLZDIR)/fastlz.c
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 
 # --- mini_test_compress (full-core API on Linux; Open Watcom variant below) ---
 $(UNIT_BUILD_DIR)/mini_test_compress: \
     $(UNIT_TEST_DIR)/mini_test_compress.c \
     $(COREDIR)/mini/compress.c \
-    $(COREDIR)/mini/fastlz_decomp.c \
+    $(COREDIR)/mini/boltlz_decomp.c \
     $(COREDIR)/lzss.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -DBP_MINI -o $@ \
 	    $(UNIT_TEST_DIR)/mini_test_compress.c \
-	    $(COREDIR)/mini/compress.c $(COREDIR)/mini/fastlz_decomp.c \
-	    $(COREDIR)/lzss.c $(FASTLZDIR)/fastlz.c
+	    $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+	    $(COREDIR)/lzss.c $(BOLTLZDIR)/boltlz.c
 
 $(UNIT_BUILD_DIR)/mini_test_compress_asan: \
     $(UNIT_TEST_DIR)/mini_test_compress.c \
     $(COREDIR)/mini/compress.c \
-    $(COREDIR)/mini/fastlz_decomp.c \
+    $(COREDIR)/mini/boltlz_decomp.c \
     $(COREDIR)/lzss.c \
-    $(FASTLZDIR)/fastlz.c \
+    $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -DBP_MINI -o $@ \
 	    $(UNIT_TEST_DIR)/mini_test_compress.c \
-	    $(COREDIR)/mini/compress.c $(COREDIR)/mini/fastlz_decomp.c \
-	    $(COREDIR)/lzss.c $(FASTLZDIR)/fastlz.c
+	    $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+	    $(COREDIR)/lzss.c $(BOLTLZDIR)/boltlz.c
 
 $(UNIT_BUILD_DIR):
 	mkdir -p $@
@@ -2016,8 +2019,8 @@ unit-build-dos16:
 	    $(COREDIR)/mini/compress.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) \
 	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) \
-	    -fo=$(UNIT_DOS16_BDIR)/fastlz_decomp.obj \
-	    $(COREDIR)/mini/fastlz_decomp.c
+	    -fo=$(UNIT_DOS16_BDIR)/boltlz_decomp.obj \
+	    $(COREDIR)/mini/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) \
 	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) \
 	    -fo=$(UNIT_DOS16_BDIR)/lzss.obj \
@@ -2026,7 +2029,7 @@ unit-build-dos16:
 	    system dos \
 	    file $(UNIT_DOS16_BDIR)/minitst.obj \
 	    file $(UNIT_DOS16_BDIR)/compress.obj \
-	    file $(UNIT_DOS16_BDIR)/fastlz_decomp.obj \
+	    file $(UNIT_DOS16_BDIR)/boltlz_decomp.obj \
 	    file $(UNIT_DOS16_BDIR)/lzss.obj \
 	    libpath $(WATCOM_ROOT)/lib286 \
 	    libpath $(WATCOM_ROOT)/lib286/dos \
@@ -2037,3 +2040,96 @@ unit-build-dos16:
 unit-test-dos16: unit-build-dos16
 	python3 test/run_vintage_test.py --platform dos16 \
 	    --exe $(UNIT_DOS16_EXE)
+
+# Experimental BoltLZ: isolated builds, unchanged BoltLZ baseline.
+BOLTLZ_CFLAGS ?= -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+# Upstream LZ4 uses C99 extensions and C99 enables its forced-inline paths.
+# Keep the same optimization flags; our own codec is still checked as C89.
+BOLTLZ_LZ4_CFLAGS = $(filter-out -ansi -std=c89 -std=c90,$(BOLTLZ_CFLAGS)) -std=c99
+BOLTLZ_FUZZ_CC ?= clang
+
+.PHONY: boltlz-test boltlz-test-asan boltlz-bench boltlz-fuzz
+
+$(BOLTLZ_BUILD_DIR):
+	mkdir -p $@
+
+$(BOLTLZ_BUILD_DIR)/.config: FORCE_CONFIG | $(BOLTLZ_BUILD_DIR)
+	@printf '%s\n' 'CC=$(CC)' 'BOLTLZ_CFLAGS=$(BOLTLZ_CFLAGS)' \
+	    'BOLTLZ_LZ4_CFLAGS=$(BOLTLZ_LZ4_CFLAGS)' \
+	    | cmp -s - $@ || printf '%s\n' \
+	    'CC=$(CC)' 'BOLTLZ_CFLAGS=$(BOLTLZ_CFLAGS)' \
+	    'BOLTLZ_LZ4_CFLAGS=$(BOLTLZ_LZ4_CFLAGS)' > $@
+
+$(BOLTLZ_BUILD_DIR)/%.o: src/core/%.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/boltlz.o: src/core/boltlz.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/bench_boltlz.o: test/bench_boltlz.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/test_boltlz.o: test/unit/test_boltlz.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/boltlz_reference.o: test/reference/boltlz_v2.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/boltlz_speed_reference.o: test/reference/boltlz_speed_base.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/boltlz_review_reference.o: test/reference/boltlz_review_base.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/boltlz_loop_reference.o: test/reference/boltlz_loop_base.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_CFLAGS) -Isrc/core -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/lz4.o: test/reference/lz4/lz4.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_LZ4_CFLAGS) -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/lz4hc.o: test/reference/lz4/lz4hc.c $(BOLTLZ_BUILD_DIR)/.config
+	$(CC) $(BOLTLZ_LZ4_CFLAGS) -MMD -MP -c $< -o $@
+
+$(BOLTLZ_BUILD_DIR)/bench_boltlz: $(BOLTLZ_BUILD_DIR)/bench_boltlz.o \
+    $(BOLTLZ_BUILD_DIR)/boltlz.o \
+    $(BOLTLZ_BUILD_DIR)/boltlz_reference.o $(BOLTLZ_BUILD_DIR)/lz4.o \
+    $(BOLTLZ_BUILD_DIR)/lz4hc.o $(BOLTLZ_BUILD_DIR)/boltlz_speed_reference.o \
+    $(BOLTLZ_BUILD_DIR)/boltlz_review_reference.o $(BOLTLZ_BUILD_DIR)/boltlz_loop_reference.o Makefile
+	$(CC) $(BOLTLZ_CFLAGS) $(filter %.o,$^) -o $@
+	cp $(BOLTLZ_BUILD_DIR)/.config $@.config
+
+$(BOLTLZ_BUILD_DIR)/test_boltlz: $(BOLTLZ_BUILD_DIR)/test_boltlz.o \
+    $(BOLTLZ_BUILD_DIR)/boltlz.o $(BOLTLZ_BUILD_DIR)/boltlz_loop_reference.o
+	$(CC) $(BOLTLZ_CFLAGS) $^ -o $@
+
+$(BOLTLZ_BUILD_DIR)/test_boltlz_asan: test/unit/test_boltlz.c \
+    src/core/boltlz.c src/core/boltlz.h src/core/boltlz_config.h src/core/bp_types.h \
+    test/reference/boltlz_scalar_decoder.h \
+    test/reference/boltlz_loop_base.c test/reference/boltlz_loop_base.h \
+    test/reference/boltlz_loop_base_config.h \
+    test/unit/test_runner.h $(BOLTLZ_BUILD_DIR)/.config Makefile
+	$(CC) $(BOLTLZ_CFLAGS) $(filter-out -O0 -O1 -O2 -O3,$(DEBUG_CFLAGS)) \
+	    -Isrc/core test/unit/test_boltlz.c \
+	    src/core/boltlz.c test/reference/boltlz_loop_base.c $(DEBUG_LDFLAGS) -o $@
+
+$(BOLTLZ_BUILD_DIR)/fuzz_boltlz: test/fuzz_boltlz.c \
+    src/core/boltlz.c src/core/boltlz.h src/core/boltlz_config.h src/core/bp_types.h \
+    test/reference/boltlz_scalar_decoder.h \
+    test/reference/boltlz_loop_base.c test/reference/boltlz_loop_base.h \
+    test/reference/boltlz_loop_base_config.h \
+    $(BOLTLZ_BUILD_DIR)/.config Makefile
+	$(BOLTLZ_FUZZ_CC) $(BOLTLZ_CFLAGS) -Werror -g \
+	    -Isrc/core -fsanitize=fuzzer,address,undefined \
+	    test/fuzz_boltlz.c src/core/boltlz.c test/reference/boltlz_loop_base.c -o $@
+
+boltlz-test: $(BOLTLZ_BUILD_DIR)/test_boltlz
+	$<
+
+boltlz-test-asan: $(BOLTLZ_BUILD_DIR)/test_boltlz_asan
+	$<
+
+boltlz-bench: $(BOLTLZ_BUILD_DIR)/bench_boltlz
+
+boltlz-fuzz: $(BOLTLZ_BUILD_DIR)/fuzz_boltlz
+
+-include $(wildcard $(BOLTLZ_BUILD_DIR)/*.d)

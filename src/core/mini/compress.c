@@ -1,17 +1,11 @@
 /*
- * compress.c -- mini compression layer for BoltPack (stored + LZSS + fastlz)
+ * compress.c -- mini compression layer for BoltPack (stored + LZSS + boltlz)
  *
  * ANSI C (C89/C90) only.  No fluff dependency.
  *
- * 16-bit systems (DOS, Win16, OS/2 1.x, CP/M-86):
- *   Compression:   stored (0) and LZSS (1) only.
- *     fastlz compression needs an 8192-entry hash table on the stack
- *     (32 KB on 32-bit, 64 KB on 64-bit) and is too large for 8086/286
- *     stacks.  Method 2 returns BP_ERR_UNSUPPORTED_METHOD for compression.
- *   Decompression: stored (0), LZSS (1), and fastlz (2).
- *     fastlz decompression needs no work buffer and works correctly with
- *     block sizes <= 32 KB (well within a 64 KB segment).
- *   Adler-32 is computed inline.
+ * 16-bit systems create Stored or LZSS data and decode BoltLZ with the
+ * shared decoder-only implementation. Blocks are limited to 32 KiB.
+ * Other mini builds also compress with BoltLZ Balanced, using heap workspace.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
@@ -23,7 +17,7 @@
 #include <string.h>
 
 #if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
-/* ---- 16-bit path: stored + LZSS compress; stored + LZSS + fastlz decompress - */
+/* ---- 16-bit path: stored + LZSS compress; stored + LZSS + boltlz decompress - */
 
 /*
  * LZSS work buffer, heap-allocated on the first compress call and cached
@@ -33,7 +27,7 @@
  */
 static bp_uint8 *lzss_work_16 = NULL;
 
-#include "fastlz_decomp.h"
+#include "boltlz_decomp.h"
 
 int bp_mini_compress_init(void)
 {
@@ -83,10 +77,10 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         rc = lzss_decompress(src, src_len, dst, *dst_len, NULL);
         return rc;
     }
-    if (method == BP_METHOD_FASTLZ) {
+    if (method == BP_METHOD_BOLTLZ) {
         int r;
-        r = bp_fastlz_decompress(src, src_len, dst, dst_len);
-        if (r != FASTLZ_D_OK) return BP_ERR_DECOMPRESS;
+        r = bp_boltlz_decompress(src, src_len, dst, dst_len);
+        if (r != BOLTLZ_D_OK) return BP_ERR_DECOMPRESS;
         return BP_OK;
     }
     return BP_ERR_UNSUPPORTED_METHOD;
@@ -119,13 +113,13 @@ bp_uint32 bp_mini_compress_work_size(void)
 }
 
 #else
-/* ---- 32/64-bit path: stored + LZSS + fastlz ------------------------------ */
+/* ---- 32/64-bit path: stored + LZSS + boltlz ------------------------------ */
 
-#include "../../../lib/fastlz/fastlz.h"
+#include "../boltlz.h"
 
 int bp_mini_compress_init(void)
 {
-    return BP_OK; /* fastlz needs no init */
+    return BP_OK; /* no initialisation required */
 }
 
 int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
@@ -133,11 +127,12 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                            bp_uint8 method)
 {
     int r;
+    void *work;
 
     if (src == NULL || dst == NULL || dst_len == NULL) {
         return BP_ERR_INVALID_ARG;
     }
-    if (method != BP_METHOD_STORED && method != BP_METHOD_FASTLZ &&
+    if (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLZ &&
         method != BP_METHOD_LZSS) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
@@ -157,13 +152,12 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
         return (*dst_len > 0) ? BP_OK : BP_ERR_COMPRESS;
     }
 
-    /* method == BP_METHOD_FASTLZ */
-    r = fastlz_compress(src, (int)src_len, dst);
-    if (r <= 0) {
-        return BP_ERR_COMPRESS;
-    }
-    *dst_len = (bp_uint32)r;
-    return BP_OK;
+    /* method == BP_METHOD_BOLTLZ */
+    work = malloc((size_t)boltlz_work_size(BOLTLZ_BALANCED));
+    if (work == NULL) return BP_ERR_NOMEM;
+    r = boltlz_compress(src, src_len, dst, dst_len, work, BOLTLZ_BALANCED);
+    free(work);
+    return r;
 }
 
 int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
@@ -175,7 +169,7 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
     if (src == NULL || dst == NULL || dst_len == NULL) {
         return BP_ERR_INVALID_ARG;
     }
-    if (method != BP_METHOD_STORED && method != BP_METHOD_FASTLZ &&
+    if (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLZ &&
         method != BP_METHOD_LZSS) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
@@ -193,12 +187,9 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         return rc;
     }
 
-    /* method == BP_METHOD_FASTLZ */
-    r = fastlz_decompress(src, (int)src_len, dst, (int)*dst_len);
-    if (r <= 0) {
-        return BP_ERR_DECOMPRESS;
-    }
-    *dst_len = (bp_uint32)r;
+    /* method == BP_METHOD_BOLTLZ */
+    r = boltlz_decompress(src, src_len, dst, *dst_len);
+    if (r != BP_OK) { *dst_len = 0; return BP_ERR_DECOMPRESS; }
     return BP_OK;
 }
 
@@ -229,7 +220,7 @@ bp_uint32 bp_mini_checksum(bp_uint32 adler,
 
 bp_uint32 bp_mini_compress_work_size(void)
 {
-    return 0; /* fastlz needs no work buffer */
+    return boltlz_work_size(BOLTLZ_BALANCED);
 }
 
 #endif /* SIZEOF_INT < 4 */
