@@ -46,8 +46,10 @@ EOF
 
 check_token() {
     if [[ -z "$GITHUB_TOKEN" ]] && command -v gh >/dev/null 2>&1; then
-        GITHUB_TOKEN=$(gh auth token -h github.com 2>/dev/null || true)
-        export GITHUB_TOKEN
+        if gh auth status -h github.com >/dev/null 2>&1; then
+            GITHUB_TOKEN=$(gh auth token -h github.com 2>/dev/null || true)
+            export GITHUB_TOKEN
+        fi
     fi
     if [[ -z "$GITHUB_TOKEN" ]]; then
         echo "Error: no GitHub token found in GITHUB_TOKEN or gh authentication"
@@ -85,12 +87,13 @@ create_release() {
     echo "Creating draft release v${VERSION}..."
 
     NOTES=$(cat RELEASE-NOTES.md 2>/dev/null || echo "BoltPack v${VERSION} Release")
+    NOTES_JSON=$(printf '%s' "$NOTES" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
     RELEASE_JSON=$(cat <<EOF
 {
   "tag_name": "v${VERSION}",
   "name": "BoltPack v${VERSION}",
-  "body": $(echo -n "$NOTES" | jq -Rs .),
+  "body": ${NOTES_JSON},
   "draft": true,
   "prerelease": false
 }
