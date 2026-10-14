@@ -13,10 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-VERSION=$(sed -n \
-    -e 's/^\*\*Version:\*\*[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-    -e 's/.*Version:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-    "$PROJROOT/RELEASE-NOTES.md" | head -1)
+VERSION=$(tr -d '[:space:]' < "$PROJROOT/VERSION")
 [ -n "$VERSION" ] || VERSION="1.0"
 
 usage() {

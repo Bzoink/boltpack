@@ -45,10 +45,13 @@ EOF
 }
 
 check_token() {
+    if [[ -z "$GITHUB_TOKEN" ]] && command -v gh >/dev/null 2>&1; then
+        GITHUB_TOKEN=$(gh auth token -h github.com 2>/dev/null || true)
+        export GITHUB_TOKEN
+    fi
     if [[ -z "$GITHUB_TOKEN" ]]; then
-        echo "Error: GITHUB_TOKEN environment variable not set"
-        echo "Set your GitHub Personal Access Token:"
-        echo "  export GITHUB_TOKEN='ghp_xxxxxxxxxxxxxxxxxxxx'"
+        echo "Error: no GitHub token found in GITHUB_TOKEN or gh authentication"
+        echo "Log in with: gh auth login"
         echo ""
         echo "Create a token at: https://github.com/settings/tokens/new"
         echo "Needs scopes: repo (full control of private/public repos)"
@@ -121,7 +124,7 @@ generate_checksums() {
     local outfile="dist/SHA256SUMS.txt"
     local -a files=()
 
-    for f in dist/boltpack-"$VERSION"-*.tar.gz dist/boltpack-"$VERSION"-*.zip dist/boltpack-"$VERSION"-*.lha \
+    for f in dist/boltpack-"$VERSION"-*.tar.gz dist/boltpack-"$VERSION"-*.zip dist/boltpack-"$VERSION"-*.exe dist/boltpack-"$VERSION"-*.lha \
               dist/boltpack-"$VERSION"-*.hqx dist/boltpack-"$VERSION"-*.img dist/boltpack-"$VERSION"-*.tar; do
         [[ -f "$f" ]] && files+=("$f")
     done
@@ -166,7 +169,7 @@ upload_packages() {
         -H "Authorization: token $GITHUB_TOKEN" \
         "${PROJECT_URL}/releases/${RELEASE_ID}/assets?per_page=100")
 
-    for file in "$PROJROOT"/dist/boltpack-"$VERSION"-*.tar.gz "$PROJROOT"/dist/boltpack-"$VERSION"-*.zip "$PROJROOT"/dist/boltpack-"$VERSION"-*.lha \
+    for file in "$PROJROOT"/dist/boltpack-"$VERSION"-*.tar.gz "$PROJROOT"/dist/boltpack-"$VERSION"-*.zip "$PROJROOT"/dist/boltpack-"$VERSION"-*.exe "$PROJROOT"/dist/boltpack-"$VERSION"-*.lha \
                 "$PROJROOT"/dist/boltpack-"$VERSION"-*.hqx "$PROJROOT"/dist/boltpack-"$VERSION"-*.img "$PROJROOT"/dist/boltpack-"$VERSION"-*.tar "$PROJROOT"/dist/SHA256SUMS.txt; do
         [[ -f "$file" ]] || continue
 

@@ -103,6 +103,7 @@ TARGET     = $(BUILDDIR)/boltpack
 # This makes 'exit 0' in the check_cc guard stop the entire recipe,
 # rather than only the current recipe line.
 .ONESHELL:
+.SHELLFLAGS := -e -c
 
 # Configuration stamp: compiler flags and feature toggles are not ordinary
 # make prerequisites, so record them explicitly.  This prevents `make modern`
@@ -500,7 +501,7 @@ amiga68k:
 
 # Atari TOS/MiNT 68k -- cross-compile from Linux using Rivière's toolchain.
 # The Atari package ships both the CLI (.TOS) and GEM GUI (.PRG) builds.
-ATARI_CC       = /usr/m68k-atari-mint/bin/m68k-atari-mint-gcc
+ATARI_CC       = m68k-atari-mint-gcc
 ATARI_CFLAGS   = -ansi -Wall -Wextra -Wno-unused-function -O2
 ATARI_BUILDDIR = build/atari
 
@@ -621,7 +622,7 @@ riscos:
 	    -o $(RISCOS_BUILDDIR)/boltpack,ff8
 
 # ARM Linux (32-bit)
-ARM_CC      = /opt/arm32/bin/arm-none-linux-gnueabihf-gcc
+ARM_CC      = arm-linux-gnueabihf-gcc
 ARM_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
 ARM_BUILDDIR = build/linux-arm32
 
@@ -1753,7 +1754,7 @@ ATARI_GUI_BUILDDIR = $(ATARI_BUILDDIR)
 atari-gui:
 	mkdir -p $(ATARI_GUI_BUILDDIR)
 	rm -f $(ATARI_GUI_BUILDDIR)/boltpack.app
-	/usr/m68k-atari-mint/bin/m68k-atari-mint-gcc \
+	$(ATARI_CC) \
 	    -Wall -Wextra -Wno-unused-function -O2 \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
 	    $(GUI_CORE_SRCS) \
