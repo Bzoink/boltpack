@@ -1,10 +1,10 @@
-# BoltPack Compression Algorithms v1.1
+# BoltPack Compression Algorithms v1.2
 
 **Status:** Stable
-**Scope:** Current codec implementations shipped in BoltPack v1.1
+**Scope:** Current codec implementations shipped in BoltPack v1.7
 
 This document describes the algorithms that are actually implemented in the
-current codebase. It intentionally covers only the kept v1.1 codecs and their
+current codebase. It intentionally covers only the kept codecs and their
 current behavior. Retired prototypes, intermediate Fluff stream layouts, and
 implementation-plan history are excluded.
 
@@ -15,7 +15,7 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 | Method | Name   | Implementation                 | Primary role                                    |
 | ------ | ------ | ------------------------------ | ----------------------------------------------- |
 | 0      | Stored | `src/core/archiver.c`          | Fallback for incompressible data                |
-| 1      | LZSS   | `src/core/lzss.c`              | Small-memory LZ77, especially for mini builds   |
+| 1      | BoltLite   | `src/core/boltlite.c`              | Small-memory LZ77, especially for mini builds   |
 | 2      | boltlz | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
 | 3      | Fluff  | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
 | 4      | zstd   | `src/core/zstd_wrap.c` wrapper | Best-ratio codec; modern 32/64-bit targets only |
@@ -44,72 +44,65 @@ BoltPack's archive layer uses a 99% threshold when evaluating compressed
 blocks. If a codec saves less than 1%, the block is stored uncompressed
 instead.
 
-## 3. Method 1: LZSS
+## 3. Method 1: BoltLite
 
 ### 3.1 Overview
 
-BoltPack method 1 is an Okumura-style LZSS codec implemented in
-`src/core/lzss.c` and declared in `src/core/lzss.h`.
+BoltPack method 1 is an Okumura-style BoltLite codec implemented in
+`src/core/boltlite.c` and declared in `src/core/boltlite.h`.
 
 Its defining traits are:
 
-1. A small 2048-byte ring buffer.
-1. Two-byte match tokens with an 11-bit position and 5-bit length field.
+1. A 4096-byte history window and a three-byte hash-chain matcher.
+1. A one-byte token for short-distance matches and repeated distances, with
+   two-byte explicit-distance tokens for other matches.
+1. Match lengths from 3 through 66 bytes; long runs can be encoded using the
+   preceding match distance.
 1. One flag byte per 8 symbols, with bit 0 describing the first symbol.
-1. A fixed 14,900-byte scratch buffer that works even on 16-bit targets.
+1. An 18,432-byte fixed encoder workspace. The decoder needs no workspace.
+1. Native 16-bit positions and lengths on 16-bit mini targets, whose block
+   size is capped at 32 KiB.
 
 ### 3.2 Format-Fixed Parameters
 
-| Parameter            | Value  | Meaning                                     |
-| -------------------- | ------ | ------------------------------------------- |
-| Ring buffer size     | 2048   | 11-bit history window                       |
-| Maximum match length | 34     | Encoded as `(len - 3)` in 5 bits            |
-| Minimum match length | 3      | Shorter runs become literals                |
-| Fill byte            | `0x20` | Initial ring-buffer contents                |
-| Flag packing         | 8 bits | Bit 0 is the first symbol in each flag byte |
-| Work buffer          | 14900  | `LZSS_WORK_SIZE`                            |
+| Parameter            | Value    | Meaning                                      |
+| -------------------- | -------- | -------------------------------------------- |
+| History window       | 4096     | Maximum back-distance                        |
+| Maximum match length | 66       | Explicit matches cap at 10; repeats can reach 66 |
+| Minimum match length | 3        | Shorter runs become literals                 |
+| Flag packing         | 8 bits   | Bit 0 is the first symbol in each flag byte  |
+| Work buffer          | 18432    | 1024 bucket heads plus two 4096-slot links   |
 
 The token layout is:
 
 ```text
-flag bit = 1  -> literal byte follows
-flag bit = 0  -> two-byte match token follows
+flag bit = 1 -> literal byte follows
+flag bit = 0 -> match token follows
 
-match byte 0 = position bits 10..3
-match byte 1 = position bits 2..0 in the upper 3 bits,
-               match length minus 3 in the lower 5 bits
+00xxxxxx      -> distance 1..8 and length 3..10, in one byte
+01xxxxxx      -> previous match distance and length 3..66, in one byte
+1xxxxxxx yyyyyyyy -> explicit distance 1..4096 and length 3..10
 ```
 
 ### 3.3 Current Compressor Behavior
 
-The current compressor matches the code in `src/core/lzss.c`:
+The encoder hashes each three-byte prefix into 1024 buckets, with a bounded
+chain search (64 candidates) and a small lazy check. A circular 4096-slot
+index is maintained in insertion order; expiring the oldest position unlinks
+it from its bucket in constant time. This replaces the old binary-search-tree
+workspace and reduces scratch from 29,200 to 18,432 bytes.
 
-1. The caller supplies `LZSS_WORK_SIZE` bytes of scratch.
-1. The work buffer is carved into the ring buffer plus three binary-search-tree
-   arrays: `lson`, `rson`, and `dad`.
-1. The ring buffer is prefilled with `0x20`, and the initial write position is
-   `N - F`.
-1. Match finding uses Okumura's binary-search-tree insertion routine.
-1. The encoder performs a one-step lazy check: when the current match is not a
-   perfect `F`-byte match, it peeks at `r + 1` and emits a literal now if the
-   next position yields a longer match.
-1. Tree search stops early once a match of `GOOD_ENOUGH = F - 2` is found,
-   which avoids extra traversal chasing the rare longest matches.
-
-This is the current kept implementation and the behavior the documentation
-covers for v1.0.
+The 16-bit mini build caps input blocks at 32 KiB. Under the 16-bit compiler
+configuration, matcher positions, lengths, and distances use native
+`unsigned int`, avoiding 32-bit arithmetic in the hot search loop. Hash heads
+and links remain 16-bit values because a slot index is at most 4095.
 
 ### 3.4 Current Decompressor Behavior
 
-The decompressor is deliberately small and simple:
-
-1. It uses the ring-buffer portion of the caller-provided work area.
-1. It refills the ring with `0x20` before decoding.
-1. It reads one flag byte at a time, consuming 8 symbols per flag byte.
-1. Literal bits copy one byte from input to output and into the ring buffer.
-1. Match bits decode `(pos, len)` and replay bytes from the ring buffer,
-   naturally supporting overlap.
-1. The outer loop stops when exactly `dst_len` bytes have been produced.
+The decoder reads each flag byte and token directly from the stream. Match
+tokens use back-distances into already produced output, so overlapping runs
+are copied forward in place. It stops after producing exactly `dst_len` bytes,
+requires the input stream to end at that boundary, and allocates no scratch.
 
 ### 3.5 Bounds and Memory
 
@@ -119,9 +112,10 @@ The current documented bound matches the implementation:
 worst_case = src_len + src_len / 8 + 16
 ```
 
-The public API asks for `LZSS_WORK_SIZE` bytes for both compression and
-Decompression. In practice the decoder uses only the ring-buffer portion, but
-the fixed-size API keeps call sites simple across all targets.
+The public API requires `BOLTLITE_WORK_SIZE` bytes for compression; the decoder's
+work argument is ignored and may be null. The method-1 bitstream changed with
+archive format 5, so current readers reject format-4 archives. Previous
+BoltPack binaries remain available to extract those archives.
 
 ## 4. Method 2: BoltLZ
 
@@ -152,7 +146,7 @@ GCC/Clang codec builds use `-O2`.
 
 16-bit mini builds include the same decoder through the decoder-only build
 path and accept blocks within their existing 32 KiB memory limit. They
-continue to create Stored or LZSS archives. Other mini builds support
+continue to create Stored or BoltLite archives. Other mini builds support
 BoltLZ Balanced compression.
 
 ## 5. Method 3: Fluff
@@ -385,7 +379,7 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | Method | Compression-side working memory                              | Decompression-side working memory                         |
 | ------ | ------------------------------------------------------------ | --------------------------------------------------------- |
 | 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
-| 1      | Fixed 14,900-byte work buffer                                | Same API-sized work buffer; decoder uses the ring portion |
+| 1      | Fixed 29,200-byte BST workspace                              | 18,432-byte hash-chain workspace; no decoder scratch            |
 | 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
 | 3      | `fluff_ctx_t` is about 2 MB plus per-block token buffers     | Current decoder also reuses `fluff_ctx_t` for block state |
 | 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
@@ -409,7 +403,7 @@ planning material and discarded codec variants are intentionally left out.
 
 ## 9. References
 
-1. Haruhiko Okumura, original LZSS design and binary-search-tree matcher.
+1. Haruhiko Okumura, original BoltLite design and binary-search-tree matcher.
 1. J. Duda, “Asymmetric numeral systems,” arXiv:0902.0271, 2009 — theoretical
    basis for the FSE/tANS entropy coder in Fluff.
 1. zstd 1.5.7, vendored in `lib/zstd/`; by Meta Platforms / Yann Collet;

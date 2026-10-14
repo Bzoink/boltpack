@@ -15,7 +15,7 @@
  *       -I src/core                         \
  *       src/core/compress.c src/core/archiver.c                \
  *       src/core/bp_codepage.c                                 \
- *       src/core/fluff.c src/core/lzss.c                       \
+ *       src/core/fluff.c src/core/boltlite.c                       \
  *       src/frontend/atari_gui/main.c                          \
  *       src/core/boltlz.c                             \
  *       -lgem -o build/atari/boltpack.app
@@ -27,7 +27,7 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
-#include "../../core/lzss.h"
+#include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
 
 #include <gem.h>            /* AES + VDI (gemlib) */
@@ -87,7 +87,7 @@
 #define MN_CREATE          (MENU_COMP_BOX + 1)
 #define MENU_COMP_SEP      (MENU_COMP_BOX + 2)
 #define MN_METHOD_STORED   (MENU_COMP_BOX + 3)
-#define MN_METHOD_LZSS     (MENU_COMP_BOX + 4)
+#define MN_METHOD_BOLTLITE     (MENU_COMP_BOX + 4)
 #define MN_METHOD_BOLTLZ    (MENU_COMP_BOX + 5)
 #define MN_METHOD_FLUFF    (MENU_COMP_BOX + 6)
 
@@ -385,7 +385,7 @@ static const char *method_name(int m)
 {
     switch (m) {
         case 0: return "Stored";
-        case 1: return "LZSS";
+        case 1: return "BoltLite";
         case 2: return "boltlz";
         case 3: return "fluff";
     }
@@ -395,7 +395,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -467,7 +467,7 @@ static void show_about_dialog(void)
     format_size((double)atari_largest_free_block(),
                 free_buf, sizeof(free_buf));
     sprintf(msg,
-            "BoltPack 1.1|Portable archive format|Stored, LZSS, boltlz, fluff|Largest free block: %s",
+            "BoltPack 1.1|Portable archive format|Stored, BoltLite, boltlz, fluff|Largest free block: %s",
             free_buf);
     show_alert(msg);
 }
@@ -527,7 +527,7 @@ static void compact_progress_name(const char *src, char *dst, int dst_size)
 static void sync_compression_menu_checks(void)
 {
     menu_objs[MN_METHOD_STORED].ob_state &= (short)~OS_CHECKED;
-    menu_objs[MN_METHOD_LZSS].ob_state &= (short)~OS_CHECKED;
+    menu_objs[MN_METHOD_BOLTLITE].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_BOLTLZ].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_FLUFF].ob_state &= (short)~OS_CHECKED;
 
@@ -535,8 +535,8 @@ static void sync_compression_menu_checks(void)
         case BP_METHOD_STORED:
             menu_objs[MN_METHOD_STORED].ob_state |= OS_CHECKED;
             break;
-        case BP_METHOD_LZSS:
-            menu_objs[MN_METHOD_LZSS].ob_state |= OS_CHECKED;
+        case BP_METHOD_BOLTLITE:
+            menu_objs[MN_METHOD_BOLTLITE].ob_state |= OS_CHECKED;
             break;
         case BP_METHOD_FLUFF:
             menu_objs[MN_METHOD_FLUFF].ob_state |= OS_CHECKED;
@@ -939,7 +939,7 @@ static void build_menu(void)
             " Create New...  ^N",
             " ------------------",
             "  Stored           ",
-            "  LZSS             ",
+            "  BoltLite             ",
             "  boltlz          ",
             "  fluff            "
         };
@@ -1807,8 +1807,8 @@ static void handle_menu(short title, short item)
             case MN_METHOD_STORED:
                 select_compression_method(BP_METHOD_STORED);
                 break;
-            case MN_METHOD_LZSS:
-                select_compression_method(BP_METHOD_LZSS);
+            case MN_METHOD_BOLTLITE:
+                select_compression_method(BP_METHOD_BOLTLITE);
                 break;
             case MN_METHOD_BOLTLZ:
                 select_compression_method(BP_METHOD_BOLTLZ);

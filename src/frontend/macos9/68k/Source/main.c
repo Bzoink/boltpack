@@ -72,7 +72,7 @@
 
 /* Method selection dialog items (rDlgMixed = 129 repurposed) */
 #define kMethodStored       1
-#define kMethodLZSS         2
+#define kMethodBoltLite         2
 #define kMethodBoltLZ          3
 #define kMethodFluff        4
 #define kMethodCancel       5
@@ -1191,7 +1191,7 @@ static int AskCompressionMethod(void)
     for (;;) {
         ModalDialog(nil, &item);
         if (item == kMethodStored) { result = BP_METHOD_STORED; break; }
-        if (item == kMethodLZSS)   { result = BP_METHOD_LZSS;   break; }
+        if (item == kMethodBoltLite)   { result = BP_METHOD_BOLTLITE;   break; }
         if (item == kMethodBoltLZ)    { result = BP_METHOD_BOLTLZ;  break; }
         if (item == kMethodFluff)  {
             if (!EnsureFluffMemoryAvailable("AskCompressionMethod: fluff blocked largest=")) {

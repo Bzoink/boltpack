@@ -62,7 +62,7 @@ static const char bp_help_text[] =
     "--------------------\n"
     "BoltPack supports four compression methods:\n"
     "  Stored  - No compression\n"
-    "  LZSS    - Small-memory LZ77 for 16-bit systems\n"
+    "  BoltLite    - Small-memory LZ77 for 16-bit systems\n"
     "  boltlz - Fast general-purpose (default)\n"
     "  fluff   - Best compression ratio\n"
     "\n"

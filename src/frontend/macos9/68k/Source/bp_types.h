@@ -77,7 +77,7 @@ typedef struct {
 # ifdef BP_MINI
 #  define BP_VERSION_MINOR 3
 # else
-#  define BP_VERSION_MINOR 6
+#  define BP_VERSION_MINOR 7
 # endif
 #endif
 
@@ -86,9 +86,9 @@ typedef struct {
 
 /* --- Format constants --------------------------------------------------- */
 
-/* This build writes and reads archive format 4 only. Every other version
+/* This build writes and reads archive format 5 only. Every other version
  * is rejected before table or block data is interpreted. */
-#define BP_FORMAT_VERSION      4
+#define BP_FORMAT_VERSION      5
 
 #define BP_MAGIC_0  0x42  /* 'B' */
 #define BP_MAGIC_1  0x4F  /* 'O' */
@@ -130,7 +130,7 @@ typedef struct {
 
 /* Compression methods */
 #define BP_METHOD_STORED   0
-#define BP_METHOD_LZSS     1
+#define BP_METHOD_BOLTLITE     1
 #define BP_METHOD_BOLTLZ   2  /* BoltLZ format 2 */
 #define BP_METHOD_FLUFF    3
 #define BP_METHOD_ZSTD     4  /* Zstandard; modern targets only (BOLTPACK_ZSTD) */

@@ -80,7 +80,7 @@ build_amigaos4() {
 
     build_with_sources "$compiler" "$cflags" "${AMIGAOS4_OUTDIR:-build/amigaos4}" \
         "boltpack" "AmigaOS 4.x CLI" \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/frontend/amigaos4/main.c src/core/boltlz.c
 }
@@ -94,7 +94,7 @@ build_morphos() {
 
     build_with_sources "$compiler" "$cflags" "${MORPHOS_OUTDIR:-build/morphos}" \
         "boltpack" "MorphOS CLI" \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/frontend/morphos/main.c src/core/boltlz.c
 }
@@ -108,7 +108,7 @@ build_aros() {
 
     build_with_sources "$compiler" "$cflags" "${AROS_OUTDIR:-build/aros}" \
         "boltpack" "AROS CLI" \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/frontend/aros/main.c src/core/boltlz.c
 }
@@ -122,7 +122,7 @@ build_riscos() {
 
     build_with_sources "$compiler" "$cflags" "${RISCOS_OUTDIR:-build/riscos}" \
         "boltpack,ff8" "RISC OS CLI" \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/frontend/riscos/main.c src/core/boltlz.c
 }
@@ -166,7 +166,7 @@ build_x68k() {
 
     build_with_sources "$compiler" "$cflags" "${X68K_OUTDIR:-build/x68k}" \
         "boltpack.x" "Sharp X68000 CLI" \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/bp_codepage.c \
         src/frontend/x68k/main.c src/core/boltlz.c
 }

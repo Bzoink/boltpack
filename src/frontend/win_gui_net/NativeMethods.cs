@@ -173,7 +173,7 @@ namespace BoltPack
         public const byte BP_TYPE_DIR = 4;
         public const byte BP_OS_WINDOWS = 0x09;
         public const byte BP_METHOD_STORED = 0;
-        public const byte BP_METHOD_LZSS = 1;
+        public const byte BP_METHOD_BOLTLITE = 1;
         public const byte BP_METHOD_BOLTLZ = 2;
         public const byte BP_METHOD_FLUFF = 3;
 
@@ -182,7 +182,7 @@ namespace BoltPack
             switch (m)
             {
                 case BP_METHOD_STORED: return "Stored";
-                case BP_METHOD_LZSS: return "LZSS";
+                case BP_METHOD_BOLTLITE: return "BoltLite";
                 case BP_METHOD_BOLTLZ: return "boltlz";
                 case BP_METHOD_FLUFF: return "fluff";
                 default: return "?";

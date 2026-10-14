@@ -27,7 +27,7 @@ typedef struct {
     bp_uint64   original_size;
     bp_uint64   compressed_size;
     bp_uint32   checksum;      /* CRC-32 of uncompressed data */
-    bp_uint8    method;        /* BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_BOLTLZ */
+    bp_uint8    method;        /* BP_METHOD_STORED, BP_METHOD_BOLTLITE, or BP_METHOD_BOLTLZ */
     bp_uint8    checksum_type; /* BP_CKSUM_CRC32 */
     bp_uint32   block_size;    /* 0 for dirs/empty; nonzero for data */
     bp_uint8    entry_type;    /* BP_TYPE_* */
@@ -68,7 +68,7 @@ typedef struct {
     bp_uint32  dir_count;
     bp_uint64  total_original;
     bp_uint64  total_compressed;
-    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=LZSS [2]=boltlz [3]=fluff [4]=zstd */
+    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=BoltLite [2]=boltlz [3]=fluff [4]=zstd */
 } bp_mini_archive_info_t;
 
 /* ---- Utility ----------------------------------------------------------- */
@@ -85,7 +85,7 @@ void bp_mini_u64_print(bp_uint64 v);
 /*
  * Initialise mini archive context and write the archive header placeholder.
  *   block_size: one of BP_BLOCK_8K..BP_BLOCK_32K (capped to BP_MINI_MAX_BLOCK_SIZE).
- *   method:     BP_METHOD_STORED, BP_METHOD_LZSS, or BP_METHOD_BOLTLZ;
+ *   method:     BP_METHOD_STORED, BP_METHOD_BOLTLITE, or BP_METHOD_BOLTLZ;
  *               returns BP_ERR_UNSUPPORTED_METHOD for method > BP_METHOD_BOLTLZ.
  */
 int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,

@@ -1,12 +1,13 @@
 # BoltPack Specification v1.0
 
-**Format Version:** 4 (only)
-**Software Version:** 1.6
+**Format Version:** 5 (only)
+**Software Version:** 1.7
 **Status:** Development
 **Release Date:** 2026-07-04
 
-> **Archive format 4.** Method 2 uses BoltLZ format 2. Readers accept only
-> version 4 and reject every other archive version with `BP_ERR_VERSION`.
+> **Archive format 5.** Method 2 uses BoltLZ format 2. Method 1 uses the
+> compact BoltLite stream defined below. Readers accept only version 5 and reject
+> every other archive version with `BP_ERR_VERSION`.
 > The header, file-table, entry, and block CRC-32 fields are mandatory.
 
 ## 1. Introduction
@@ -80,7 +81,7 @@ A BoltPack archive consists of three sequential sections:
 | Offset | Size | Field            | Type   | Description                                                            |
 | ------ | ---- | ---------------- | ------ | ---------------------------------------------------------------------- |
 | 0      | 4    | `magic`          | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT")                           |
-| 4      | 2    | `format_version` | u16 LE | `0x0004`; readers reject every other archive version                 |
+| 4      | 2    | `format_version` | u16 LE | `0x0005`; readers reject every other archive version                 |
 | 6      | 2    | `flags`          | u16 LE | Reserved; must be `0x0000`. Fail with `ERR_CORRUPT` if nonzero.        |
 | 8      | 4    | `file_count`     | u32 LE | Number of entries (0 to 4,294,967,295)                                 |
 | 12     | 1    | `creator_os`     | u8     | Platform that created the archive (see Section 2.6)                    |
@@ -93,7 +94,7 @@ A BoltPack archive consists of three sequential sections:
 **Validation:**
 
 - `magic != 0x544C4F42` → `ERR_NOT_ARCHIVE`
-- `format_version != 4` → `BP_ERR_VERSION`
+- `format_version != 5` → `BP_ERR_VERSION`
 - `flags != 0x0000` → `ERR_CORRUPT`
 - `header_crc != CRC-32(header[0..28))` → `ERR_CORRUPT`; after reading the
   file table, `table_crc != CRC-32(table region)` → `ERR_CORRUPT`.
@@ -116,7 +117,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
 | 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
 | 20+N   | 4    | `checksum`        | u32 LE | Checksum of uncompressed payload, per `checksum_type`                     |
-| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=LZSS, 2=BoltLZ, 3=fluff, 4=zstd)          |
+| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff, 4=zstd)          |
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
@@ -124,7 +125,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 32+N   | 8    | `mtime`           | u64 LE | Modification time (Unix epoch seconds, UTC)                               |
 | 40+N   | 2    | `flags`           | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently.          |
 
-**Entry flags (format 4):**
+**Entry flags (format 5):**
 
 | Bit(s) | Constant                   | Description                                                      |
 | ------ | -------------------------- | ---------------------------------------------------------------- |
@@ -138,7 +139,7 @@ When bit 15 is set, bits 0–11 encode the 12-bit Unix permission+type-low field
 
 **Key constraints:**
 
-- `header_size` **MUST** equal `4 + name_len + 38` for format version 4.
+- `header_size` **MUST** equal `4 + name_len + 38` for format version 5.
 - `name_len` MUST NOT be zero (empty names forbidden).
 - `name` MUST be valid UTF-8; decoder MAY reject on invalid sequences.
 - `name` MUST NOT contain `..` components or absolute paths (security check).
@@ -215,92 +216,41 @@ For data that does not compress well, method 0 stores payload verbatim:
 
 **Use case:** Already-compressed data (JPEG, PNG, ZIP, executable binaries); rarely saves space after compression attempt.
 
-### 3.2 Method 1: LZSS (LZ77 Sliding Window)
+### 3.2 Method 1: BoltLite (LZ77 Sliding Window)
 
 **ID:** `1`
-**Codec:** LZSS (Okumura / Haruhiko Okumura variant, 1989)
-**Decompressor complexity:** ~60 lines of C89; 2 048 bytes RAM
-**Status:** Implemented in `src/core/lzss.c`
 
-#### 3.2.1 Algorithm Parameters (Format-Fixed)
+**Codec:** BoltPack compact BoltLite, archive-format-5 bitstream
 
-| Parameter            | Value  | Notes                                            |
-| -------------------- | ------ | ------------------------------------------------ |
-| Ring buffer size (N) | 2 048  | 11-bit position field                            |
-| Max match length (F) | 34     | 5-bit field stores length−3; range 3–34          |
-| Min match length     | 3      | Shorter sequences encoded as literals            |
-| Initial fill byte    | `0x20` | Space character                                  |
-| Position bits        | 11     |                                                  |
-| Length bits          | 5      |                                                  |
-| Flag bits per byte   | 8      | Bit 0 = first symbol; `1` = literal, `0` = match |
+**History window:** 4,096 bytes
 
-#### 3.2.2 Token Encoding
+**Match lengths:** 3 through 66 bytes
 
-The compressed stream is a sequence of **flag bytes** followed by symbol data.
-Each flag byte covers exactly 8 symbols; bit 0 applies to the first symbol:
+**Status:** Implemented in `src/core/boltlite.c`
 
-- **bit = `1`:** the next byte is a **literal** (copy verbatim).
-- **bit = `0`:** the next 2 bytes are a **match token**:
+The stream is grouped by flag bytes. Each flag byte describes the next eight
+symbols, least-significant bit first. A set bit means one literal byte follows;
+a clear bit means a match token follows. Match tokens have three forms:
 
-```text
-Byte 0 = position bits 10..3  (high 8 bits of 11-bit ring-buffer position)
-Byte 1 = [position bits 2..0, high 3 bits] | [(match_len - 3), low 5 bits]
-```
+| Prefix | Remaining fields | Meaning |
+| ------ | ---------------- | ------- |
+| `00`   | 3-bit distance-minus-one, 3-bit length-minus-three | Distance 1–8, length 3–10; one byte |
+| `01`   | 6-bit length-minus-three | Repeat previous match distance, length 3–66; one byte |
+| `1`    | 15-bit payload: 12-bit distance-minus-one, 3-bit length-minus-three | Distance 1–4096, length 3–10; two bytes total |
 
-Decoder sample:
+The previous distance starts unset and is updated by every local or explicit
+match. It persists across literals. A repeat-distance token before the first
+match is invalid. Distances refer only to bytes already produced; overlapping
+copies are decoded forward from the output buffer. Decoders produce exactly
+the declared output length and reject truncated tokens, invalid distances,
+overlong output, and trailing encoded bytes.
 
-```c
-pos  = (byte0 << 3) | (byte1 >> 5);  /* 11-bit ring buffer index */
-len  = (byte1 & 0x1F) + 3;           /* decoded match length     */
-for (j = 0; j < len; j++) {
-    c = ring_buf[(pos + j) & (N - 1)];
-    ring_buf[r] = c;
-    output(c);
-    r = (r + 1) & (N - 1);
-}
-```
-
-#### 3.2.3 Decoder Reference Algorithm
-
-```c
-memset(ring_buf, 0x20, N);       /* fill with space         */
-r = N - F;                       /* write position          */
-
-while (output_bytes_remaining > 0) {
-    /* read flag byte */
-    flags = read_byte();
-    for (mask = 1; mask < 256; mask <<= 1) {
-        if (flags & mask) {
-            /* literal */
-            c = read_byte();
-            ring_buf[r] = c; output(c);
-            r = (r + 1) & (N - 1);
-        } else {
-            /* match token */
-            b0 = read_byte(); b1 = read_byte();
-            pos = (b0 << 3) | (b1 >> 5);
-            len = (b1 & 0x1F) + 3;
-            for (j = 0; j < len; j++) {
-                c = ring_buf[(pos + j) & (N - 1)];
-                ring_buf[r] = c; output(c);
-                r = (r + 1) & (N - 1);
-            }
-        }
-    }
-}
-```
-
-#### 3.2.4 Encoder Constraints
-
-- Output buffer MUST be at least `original_size + original_size / 8 + 16` bytes.
-- Compressor requires `LZSS_WORK_SIZE` (14 900) bytes of working memory.
-- On 16-bit platforms (DOS, Win16, OS/2 1.x, CP/M-86) the working memory
-  MUST be allocated as `static` to avoid stack overflow.
-
-#### 3.2.5 Compatibility
-
-Method 1 archives produced by any conforming BoltPack implementation MUST be
-decompressable by any other conforming implementation regardless of platform.
+The encoder requires `BOLTLITE_WORK_SIZE` (18,432) bytes and the usual worst-case
+output capacity `original_size + original_size / 8 + 16`. Decoding needs no
+scratch memory. On 16-bit mini targets, blocks are limited to 32 KiB and the
+matcher uses native 16-bit positions, lengths and distances. Archive format 5
+is required for this bitstream; older BoltPack binaries remain the extraction
+path for format-4 archives.
 
 ### 3.3 Method 2: BoltLZ
 
@@ -1202,7 +1152,7 @@ Every BoltPack reader **MUST:**
 
 Full v1.0 implementations SHOULD support all compressed methods:
 
-1. **Method 1** — LZSS
+1. **Method 1** — BoltLite
 2. **Method 2** — BoltLZ
 3. **Method 3** — Fluff
 4. **Method 4** — zstd (modern 32/64-bit targets only; return `ERR_METHOD` on vintage/16-bit builds)
@@ -1218,7 +1168,7 @@ Every BoltPack writer **SHOULD:**
 4. Choose compression method based on file characteristics:
    - Method 3 (fluff) for text, source code, and other ratio-sensitive data.
    - Method 2 (BoltLZ) for binary data and fast general-purpose compression.
-   - Method 1 (LZSS) for constrained-memory or 16-bit targets.
+   - Method 1 (BoltLite) for constrained-memory or 16-bit targets.
    - Method 0 (stored) if compression saves < 1% (see Section 9.3).
 5. Compute correct CRC-32 checksum.
 6. Choose appropriate block size based on available memory (see Section 2.3.2).
@@ -1259,7 +1209,7 @@ To support future enhancements without breaking existing readers:
 
 ### 10.2 Archive version policy
 
-Writers MUST emit archive version 4. Readers MUST reject every other version
+Writers MUST emit archive version 5. Readers MUST reject every other version
 with `BP_ERR_VERSION` before interpreting compressed blocks or file-table
 records. New archives use the 16-byte table header, 41-byte record tails,
 and 12-byte CRC-protected block headers described above. No conversion or
@@ -1292,7 +1242,7 @@ if (result != 0) {
 }
 ```
 
-The library is self-contained (includes LZSS, BoltLZ, and fluff codecs) and compiles with strict ANSI C89.
+The library is self-contained (includes BoltLite, BoltLZ, and fluff codecs) and compiles with strict ANSI C89.
 
 ### 11.2 Repository Test Coverage
 
@@ -1316,7 +1266,7 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 - **Fluff:** BoltPack's native LZ77+Huffman codec (method 3).
 - **Little-endian:** Least-significant byte first; canonical byte order for this format.
 - **Metadata:** File creation time, platform origin, entry type.
-- **Method:** Compression algorithm (0=stored, 1=LZSS, 2=BoltLZ, 3=fluff).
+- **Method:** Compression algorithm (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff).
 - **Payload:** Uncompressed content of an entry.
 - **UTF-8:** Unicode text encoding for file names and paths.
 

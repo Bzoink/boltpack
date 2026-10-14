@@ -845,7 +845,7 @@ static int cmd_info(const char *arc_path)
 
 #ifdef __WATCOMC__
     {
-        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
+        static const char * const mn[4] = {"stored","BoltLite","boltlz","fluff"};
         int j;
         int mfirst;
         write(1, "Archive:     ", 13); bp_wstr(1, arc_path); write(1, "\n", 1);
@@ -877,7 +877,7 @@ static int cmd_info(const char *arc_path)
     printf("Version:     %u\n", (unsigned)info.version);
     printf("Creator OS:  %s\n", os_name(info.creator_os));
     {
-        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
+        static const char * const mn[4] = {"stored","BoltLite","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:     ");
@@ -920,11 +920,11 @@ static void usage(void)
         "Options:\n"
         "  -b8k / -b16k / -b32k           block size (create only)\n"
         "  -m0                            store, no compression\n"
-        "  -m1                            LZSS compression (default)\n"
+        "  -m1                            BoltLite compression (default)\n"
         "  -q                             quiet mode\n"
         "Compression:\n"
-        "  create:   store (0), LZSS (1)\n"
-        "  extract:  store (0), LZSS (1), boltlz (2)\n");
+        "  create:   store (0), BoltLite (1)\n"
+        "  extract:  store (0), BoltLite (1), boltlz (2)\n");
 #else
     fputs(PROG_NAME " " BP_VER "  BoltPack mini for DOS (16-bit)\n"
           "Usage:\n"
@@ -936,11 +936,11 @@ static void usage(void)
           "Options:\n"
           "  -b8k / -b16k / -b32k           block size (create only)\n"
           "  -m0                            store, no compression\n"
-          "  -m1                            LZSS compression (default)\n"
+          "  -m1                            BoltLite compression (default)\n"
           "  -q                             quiet mode\n"
           "Compression:\n"
-          "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), boltlz (2)\n",
+          "  create:   store (0), BoltLite (1)\n"
+          "  extract:  store (0), BoltLite (1), boltlz (2)\n",
           stderr);
 #endif
 }
@@ -954,7 +954,7 @@ int main(int argc, char **argv)
     char cmd;
     const char *arc_path;
     bp_uint32 block_size = BP_BLOCK_32K;
-    bp_uint8  method     = BP_METHOD_LZSS;
+    bp_uint8  method     = BP_METHOD_BOLTLITE;
 
     if (argc < 3) {
         usage();
@@ -968,7 +968,7 @@ int main(int argc, char **argv)
             else if (strcmp(argv[i], "-b16k")== 0) { block_size = 16384U; }
             else if (strcmp(argv[i], "-b32k")== 0) { block_size = 32768U; }
             else if (strcmp(argv[i], "-m0")  == 0) { method = BP_METHOD_STORED; }
-            else if (strcmp(argv[i], "-m1")  == 0) { method = BP_METHOD_LZSS; }
+            else if (strcmp(argv[i], "-m1")  == 0) { method = BP_METHOD_BOLTLITE; }
         }
     }
 

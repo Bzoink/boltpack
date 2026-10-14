@@ -88,7 +88,7 @@ expert tuning switches.
 | ---- | ------ | --- | --------------------------------------------------------- |
 | `-2` | BoltLZ | 2   | Default — fast general-purpose compression                |
 | `-0` | Stored | 0   | No compression; raw byte copy                             |
-| `-1` | LZSS   | 1   | Small-memory LZ77; suited for 16-bit targets              |
+| `-1` | BoltLite   | 1   | Small-memory LZ77; suited for 16-bit targets              |
 | `-F` | Fluff  | 3   | High compression ratio; LZ77 + FSE/tANS                   |
 | `-Z` | zstd   | 4   | Best compression ratio; modern 32/64-bit only; zstd 1.5.7 |
 
@@ -149,7 +149,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
 | [docs/specification-1.0.md](docs/specification-1.0.md) | Normative archive and codec rules                         |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
-| [docs/algorithms.md](docs/algorithms.md)               | LZSS, BoltLZ, and Fluff implementation details            |
+| [docs/algorithms.md](docs/algorithms.md)               | BoltLite, BoltLZ, and Fluff implementation details            |
 | [docs/portability.md](docs/portability.md)             | Supported platforms, C89 constraints, and toolchain notes |
 | [docs/frontends.md](docs/frontends.md)                 | Frontend responsibilities and platform integration guide  |
 | [docs/BUILD.md](docs/BUILD.md)                         | Native build procedures and platform-specific caveats     |

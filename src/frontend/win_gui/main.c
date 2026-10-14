@@ -26,7 +26,7 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
-#include "../../core/lzss.h"
+#include "../../core/boltlite.h"
 #include "../gui_common/help_text.h"
 
 /* ---- constants --------------------------------------------------------- */
@@ -96,7 +96,7 @@ static const char *method_name(int m)
 {
     switch (m) {
     case BP_METHOD_STORED: return "Stored";
-    case BP_METHOD_LZSS:   return "LZSS";
+    case BP_METHOD_BOLTLITE:   return "BoltLite";
     case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
     default:               return "?";
@@ -106,7 +106,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;

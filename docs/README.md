@@ -22,7 +22,7 @@ make
 | `architecture.md`      | Layer boundaries, core interfaces, progress model, and error flow |
 | `specification-1.0.md` | Normative archive and codec rules                                 |
 | `format.md`            | Concise overview of the `.bolt` / `.blt` file format              |
-| `algorithms.md`        | LZSS, boltlz, and Fluff implementation behavior                   |
+| `algorithms.md`        | BoltLite, boltlz, and Fluff implementation behavior                   |
 | `portability.md`       | Supported environments, C89 constraints, and toolchain reference  |
 | `frontends.md`         | Frontend responsibilities and platform-specific integration notes |
 

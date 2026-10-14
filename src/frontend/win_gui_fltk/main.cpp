@@ -90,7 +90,7 @@ extern "C" {
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
-#include "../../core/lzss.h"
+#include "../../core/boltlite.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -179,7 +179,7 @@ static const char *method_name(int m)
 {
     switch (m) {
     case BP_METHOD_STORED: return "Stored";
-    case BP_METHOD_LZSS:   return "LZSS";
+    case BP_METHOD_BOLTLITE:   return "BoltLite";
     case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
     case BP_METHOD_ZSTD:   return "zstd";
@@ -190,7 +190,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1142,13 +1142,13 @@ enum { CREATE_CANCEL = 0, CREATE_SAVE = 1 };
 #endif
 
 /* Block sizes vary per method:
- *   LZSS   (16-bit): 8K / 16K / 32K  -- ring buffer is only 2 KB
+ *   BoltLite   (16-bit): 8K / 16K / 32K  -- ring buffer is only 2 KB
  *   boltlz(32-bit): 16K / 32K / 64K -- fast codec, default is 32K
  *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size
  *   zstd   (64-bit): always 256K -- level controls zstd compression level */
 static bp_uint32 level_to_block_size(int method, int level)
 {
-    if (method == BP_METHOD_LZSS) {
+    if (method == BP_METHOD_BOLTLITE) {
         switch (level) {
         case 0: return BP_BLOCK_8K;
         case 2: return BP_BLOCK_32K;
@@ -1479,7 +1479,7 @@ struct CompDlgState {
 /* Radio labels per method (indices 0=fast 1=normal 2=best) */
 static const char * const s_level_labels[5][3] = {
     /* Stored  */ { "",                                    "",                                    ""                                       },
-    /* LZSS    */ { "Fast \xe2\x80\x94 8 KB blocks",      "Normal \xe2\x80\x94 16 KB blocks",    "Best \xe2\x80\x94 32 KB blocks"         },
+    /* BoltLite    */ { "Fast \xe2\x80\x94 8 KB blocks",      "Normal \xe2\x80\x94 16 KB blocks",    "Best \xe2\x80\x94 32 KB blocks"         },
     /* boltlz */ { "Fast \xe2\x80\x94 16 KB blocks",     "Normal \xe2\x80\x94 32 KB blocks",    "Best \xe2\x80\x94 64 KB blocks"         },
     /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       },
     /* zstd    */ { "Fast \xe2\x80\x94 level 1",          "Normal \xe2\x80\x94 level 3 (default)","Best \xe2\x80\x94 level 9 (ultra)"      }
@@ -1488,7 +1488,7 @@ static const char * const s_level_labels[5][3] = {
 /* Section heading per method */
 static const char * const s_level_title[5] = {
     /* Stored  */ "",
-    /* LZSS    */ "Block Size",
+    /* BoltLite    */ "Block Size",
     /* boltlz */ "Block Size",
     /* Fluff   */ "Compression Level (block size fixed at 256 KB)",
     /* zstd    */ "Compression Level (block size fixed at 256 KB)"
@@ -1532,7 +1532,7 @@ static void cdlg_method_cb(Fl_Widget *w, void *data)
     CompDlgState *s = (CompDlgState *)data;
     const char *lbl = ((Fl_Round_Button *)w)->label();
     if      (strncmp(lbl, "Stored",  6) == 0) s->method = BP_METHOD_STORED;
-    else if (strncmp(lbl, "LZSS",    4) == 0) s->method = BP_METHOD_LZSS;
+    else if (strncmp(lbl, "BoltLite",    4) == 0) s->method = BP_METHOD_BOLTLITE;
     else if (strncmp(lbl, "boltlz", 6) == 0) s->method = BP_METHOD_BOLTLZ;
     else if (strncmp(lbl, "Fluff",   5) == 0) s->method = BP_METHOD_FLUFF;
     else if (strncmp(lbl, "zstd",    4) == 0) s->method = BP_METHOD_ZSTD;
@@ -1617,7 +1617,7 @@ static int show_compression_dialog()
 
     static const char *method_lbl[] = {
         "Stored \xe2\x80\x94 No compression \xe2\x80\x94 For all systems",
-        "LZSS \xe2\x80\x94 Lighter compression \xe2\x80\x94 16-bit systems and up",
+        "BoltLite \xe2\x80\x94 Lighter compression \xe2\x80\x94 16-bit systems and up",
         "boltlz \xe2\x80\x94 Fast, light compression \xe2\x80\x94 32-bit / 64-bit",
         "Fluff \xe2\x80\x94 Medium compression \xe2\x80\x94 32-bit / 64-bit"
 #ifdef BOLTPACK_ZSTD
@@ -1625,7 +1625,7 @@ static int show_compression_dialog()
 #endif
     };
     static const int method_ids[] = {
-        BP_METHOD_STORED, BP_METHOD_LZSS, BP_METHOD_BOLTLZ, BP_METHOD_FLUFF
+        BP_METHOD_STORED, BP_METHOD_BOLTLITE, BP_METHOD_BOLTLZ, BP_METHOD_FLUFF
 #ifdef BOLTPACK_ZSTD
        ,BP_METHOD_ZSTD
 #endif

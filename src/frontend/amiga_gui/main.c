@@ -12,7 +12,7 @@
  *       -I src/core                         \
  *       src/core/compress.c src/core/archiver.c                \
  *       src/core/bp_codepage.c                                 \
- *       src/core/fluff.c src/core/lzss.c                       \
+ *       src/core/fluff.c src/core/boltlite.c                       \
  *       src/frontend/amiga_gui/main.c                          \
  *       src/core/boltlz.c                             \
  *       -lasl -lgadtools -lworkbench                           \
@@ -29,7 +29,7 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
-#include "../../core/lzss.h"
+#include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
 
 #ifndef BP_CREATOR_OS
@@ -95,7 +95,7 @@
 #define MN_VALIDATE    8
 #define MN_INFO        9
 #define MN_METHOD_STORED  10
-#define MN_METHOD_LZSS    11
+#define MN_METHOD_BOLTLITE    11
 #define MN_METHOD_BOLTLZ   12
 #define MN_METHOD_FLUFF   13
 
@@ -426,7 +426,7 @@ static const char *method_name(int m)
 {
     switch (m) {
         case 0: return "Stored";
-        case 1: return "LZSS";
+        case 1: return "BoltLite";
         case 2: return "boltlz";
         case 3: return "fluff";
     }
@@ -436,7 +436,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1051,17 +1051,17 @@ static struct MenuItem *find_menu_item_by_id(int id)
 static void sync_compression_menu_checks(void)
 {
     struct MenuItem *stored;
-    struct MenuItem *lzss;
+    struct MenuItem *BoltLite;
     struct MenuItem *boltlz;
     struct MenuItem *fluff;
 
     stored = find_menu_item_by_id(MN_METHOD_STORED);
-    lzss   = find_menu_item_by_id(MN_METHOD_LZSS);
+    BoltLite   = find_menu_item_by_id(MN_METHOD_BOLTLITE);
     boltlz  = find_menu_item_by_id(MN_METHOD_BOLTLZ);
     fluff  = find_menu_item_by_id(MN_METHOD_FLUFF);
 
     if (stored) stored->Flags &= (UWORD)~CHECKED;
-    if (lzss)   lzss->Flags   &= (UWORD)~CHECKED;
+    if (BoltLite)   BoltLite->Flags   &= (UWORD)~CHECKED;
     if (boltlz)  boltlz->Flags  &= (UWORD)~CHECKED;
     if (fluff)  fluff->Flags  &= (UWORD)~CHECKED;
 
@@ -1069,8 +1069,8 @@ static void sync_compression_menu_checks(void)
         case BP_METHOD_STORED:
             if (stored) stored->Flags |= CHECKED;
             break;
-        case BP_METHOD_LZSS:
-            if (lzss) lzss->Flags |= CHECKED;
+        case BP_METHOD_BOLTLITE:
+            if (BoltLite) BoltLite->Flags |= CHECKED;
             break;
         case BP_METHOD_FLUFF:
             if (fluff) fluff->Flags |= CHECKED;
@@ -1133,7 +1133,7 @@ static void show_about_dialog(void)
 
     format_size((double)amiga_largest_free_block(), free_buf);
     sprintf(msg,
-            "BoltPack 1.1\nPortable archive format\nStored, LZSS, boltlz, fluff\nLargest free block: %s",
+            "BoltPack 1.1\nPortable archive format\nStored, BoltLite, boltlz, fluff\nLargest free block: %s",
             free_buf);
     show_requester("About BoltPack", msg);
 }
@@ -1212,7 +1212,7 @@ static struct NewMenu new_menus[] = {
     { NM_ITEM,  USTR("Create New..."),   USTR("N"),  0, 0, (APTR)MN_CREATE },
     { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("Stored"),        NULL, CHECKIT, 0, (APTR)MN_METHOD_STORED },
-    { NM_ITEM,  USTR("LZSS"),          NULL, CHECKIT, 0, (APTR)MN_METHOD_LZSS },
+    { NM_ITEM,  USTR("BoltLite"),          NULL, CHECKIT, 0, (APTR)MN_METHOD_BOLTLITE },
     { NM_ITEM,  USTR("boltlz"),       NULL, CHECKIT | CHECKED, 0, (APTR)MN_METHOD_BOLTLZ },
     { NM_ITEM,  USTR("Fluff"),         NULL, CHECKIT, 0, (APTR)MN_METHOD_FLUFF },
 
@@ -2088,8 +2088,8 @@ static void event_loop(void)
                                     case MN_METHOD_STORED:
                                         select_compression_method(BP_METHOD_STORED);
                                         break;
-                                    case MN_METHOD_LZSS:
-                                        select_compression_method(BP_METHOD_LZSS);
+                                    case MN_METHOD_BOLTLITE:
+                                        select_compression_method(BP_METHOD_BOLTLITE);
                                         break;
                                     case MN_METHOD_BOLTLZ:
                                         select_compression_method(BP_METHOD_BOLTLZ);
@@ -2102,7 +2102,7 @@ static void event_loop(void)
                                     case MN_DOC:
                                         show_requester("Documentation",
                                             "See README for full documentation.\n\n"
-                                            "Use Compression to choose Stored, LZSS,\n"
+                                            "Use Compression to choose Stored, BoltLite,\n"
                                             "boltlz or Fluff for new archives.\n"
                                             "Drop .bolt/.blt files to open them.\n"
                                             "Drop other files or drawers to archive them.");

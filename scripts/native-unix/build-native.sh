@@ -56,7 +56,7 @@ build_target() {
 
     "$COMPILER" $CLI_CFLAGS \
         -Isrc/core  \
-        src/core/archiver.c src/core/compress.c src/core/lzss.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         "src/frontend/$target/main.c" \

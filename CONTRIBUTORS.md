@@ -11,8 +11,8 @@ The following people's prior work is incorporated into BoltPack:
 
 ### Haruhiko Okumura
 
-**LZSS algorithm** — the sliding-window LZ77 variant with binary search tree
-described in Okumura (1989). BoltPack's `src/core/lzss.c` (method 1) is an
+**BoltLite algorithm** — the sliding-window LZ77 variant with binary search tree
+described in Okumura (1989). BoltPack's `src/core/boltlite.c` (method 1) is an
 adaptation of that algorithm for the BoltPack archive format and token
 encoding.
 

@@ -197,7 +197,7 @@ def test_roundtrip_per_method() -> None:
 
     methods = [
         ("-0", "Stored"),
-        ("-1", "LZSS"),
+        ("-1", "BoltLite"),
         ("-2", "boltlz"),
         ("-F", "Fluff"),
         ("-Z", "zstd"),

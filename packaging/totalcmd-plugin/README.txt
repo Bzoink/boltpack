@@ -31,7 +31,7 @@ COMPRESSION METHODS
 -------------------
 
   Stored     No compression (fastest)
-  LZSS       Compact LZ77; best for very low-memory targets
+  BoltLite       Compact LZ77; best for very low-memory targets
   boltlz    Fast general-purpose compression (default)
   Fluff      Best compression ratio (LZ77 + Huffman)
 

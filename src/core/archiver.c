@@ -10,7 +10,7 @@
 #include "archiver.h"
 #include "fluff.h"
 #include "compress.h"
-#include "lzss.h"
+#include "boltlite.h"
 #ifdef BOLTPACK_ZSTD
 #include "zstd_wrap.h"
 #endif
@@ -80,7 +80,7 @@ static int write_buf(bp_io_t *io, const bp_uint8 *buf, bp_uint32 len)
 static int bp_method_is_supported(bp_uint8 method)
 {
     if (method == BP_METHOD_STORED) return 1;
-    if (method == BP_METHOD_LZSS)   return 1;
+    if (method == BP_METHOD_BOLTLITE)   return 1;
     if (method == BP_METHOD_BOLTLZ) return 1;
     if (method == BP_METHOD_FLUFF)  return 1;
 #ifdef BOLTPACK_ZSTD
@@ -91,7 +91,7 @@ static int bp_method_is_supported(bp_uint8 method)
 
 static bp_uint32 bp_method_compress_bound(bp_uint8 method, bp_uint32 src_len)
 {
-    if (method == BP_METHOD_LZSS) {
+    if (method == BP_METHOD_BOLTLITE) {
         return src_len + src_len / 8 + 16;
     }
     if (method == BP_METHOD_BOLTLZ) {
@@ -851,9 +851,9 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                 /* update checksum */
                 adler = bp_checksum_typed(ck_type, adler, in_buf, chunk);
 
-                if (actual_method == BP_METHOD_LZSS) {
-                    bp_uint8 lzss_work[LZSS_WORK_SIZE];
-                    comp_len = lzss_compress(in_buf, chunk, out_buf, lzss_work);
+                if (actual_method == BP_METHOD_BOLTLITE) {
+                    bp_uint8 boltlite_work[BOLTLITE_WORK_SIZE];
+                    comp_len = boltlite_compress(in_buf, chunk, out_buf, boltlite_work);
                     if (comp_len == 0) {
                         rc = BP_ERR_COMPRESS;
                         goto seq_done;
@@ -1274,7 +1274,7 @@ static int read_footer(bp_io_t *io, bp_uint64 *table_offset, bp_uint64 *table_si
     return BP_OK;
 }
 
-/* Read archive header and validate.  Accepts only archive format 4.
+/* Read archive header and validate.  Accepts only archive format 5.
  * out_version (may be NULL) receives the on-disk version so callers can
  * parse version-specific structures (e.g. the file-table record layout).
  * The 32-byte header's own CRC-32 is verified here. */
@@ -1871,9 +1871,9 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
                 if (entry->method == BP_METHOD_FLUFF && dfctx != NULL) {
                     fluff_ctx_feed_raw(dfctx, dec_buf, orig_sz);
                 }
-            } else if (entry->method == BP_METHOD_LZSS) {
-                /* Distance-based LZSS decode needs no scratch buffer. */
-                rc = lzss_decompress(in_buf, comp_sz, dec_buf, orig_sz, NULL);
+            } else if (entry->method == BP_METHOD_BOLTLITE) {
+                /* Distance-based BoltLite decode needs no scratch buffer. */
+                rc = boltlite_decompress(in_buf, comp_sz, dec_buf, orig_sz, NULL);
                 if (rc != BP_OK) { free(in_buf); free(dec_buf); return rc; }
             } else if (entry->method == BP_METHOD_BOLTLZ) {
                 dec_len = orig_sz;

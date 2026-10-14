@@ -1,7 +1,7 @@
 /*
  * compress.h -- mini compression layer for BoltPack
  *
- * Methods: 0 (stored), 1 (LZSS), 2 (boltlz, 32/64-bit only).
+ * Methods: 0 (stored), 1 (BoltLite), 2 (boltlz, 32/64-bit only).
  * Methods 3 (fluff) and any method > 3 return BP_ERR_UNSUPPORTED_METHOD.
  *
  * ANSI C (C89/C90) only.
@@ -24,14 +24,14 @@ int bp_mini_compress_init(void);
 
 /*
  * Compress one block.
- *   method  BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_BOLTLZ (2).
+ *   method  BP_METHOD_STORED (0), BP_METHOD_BOLTLITE (1), or BP_METHOD_BOLTLZ (2).
  *   src_len must be <= BP_MINI_MAX_BLOCK_SIZE.
  *
  * For stored: dst must be >= src_len bytes.
- * For LZSS:   dst must be >= src_len + src_len/8 + 16 bytes.
+ * For BoltLite:   dst must be >= src_len + src_len/8 + 16 bytes.
  * For boltlz: dst must be >= src_len + src_len/63 + 16 bytes.
  *
- * LZSS is available on all platforms (16-bit and 32/64-bit).
+ * BoltLite is available on all platforms (16-bit and 32/64-bit).
  * boltlz is only available on 32/64-bit (returns
  * BP_ERR_UNSUPPORTED_METHOD on 16-bit).
  *
@@ -44,7 +44,7 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
 
 /*
  * Decompress one block.
- *   method   BP_METHOD_STORED (0), BP_METHOD_LZSS (1), or BP_METHOD_BOLTLZ (2).
+ *   method   BP_METHOD_STORED (0), BP_METHOD_BOLTLITE (1), or BP_METHOD_BOLTLZ (2).
  *   *dst_len must be set to the original (uncompressed) size on entry.
  *
  * Returns BP_ERR_UNSUPPORTED_METHOD for methods other than 0, 1, or 2.

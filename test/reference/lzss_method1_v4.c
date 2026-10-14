@@ -14,33 +14,33 @@
  *
  * Decoding:
  *   dist = (((byte0 << 4) | (byte1 >> 4)) & 0xFFF) + 1   (1..4096)
- *   mlen = (byte1 & 0x0F) + LZSS_MIN_MATCH               (3..18)
+ *   mlen = (byte1 & 0x0F) + LZSS_V4_MIN_MATCH               (3..18)
  *   The matched run is copied from dst[dst_pos - dist] forward.
  *
  * Flag byte covers 8 symbols; bit 0 = first symbol.
  *   bit = 1  =>  next byte is a literal
  *   bit = 0  =>  next 2 bytes are a match token
  *
- * Compressor work buffer layout (see LZSS_WORK_SIZE in lzss.h):
+ * Compressor work buffer layout (see LZSS_V4_WORK_SIZE in lzss.h):
  *   [0 .. N-1]                           ring_buf  (unsigned char)
  *   [N .. N + (N+1)*2 - 1]               lson      (unsigned short)
  *   [N+(N+1)*2 .. N+(N+1)*2+(N+257)*2-1] rson      (unsigned short)
- *   [remaining up to LZSS_WORK_SIZE-1]   dad       (unsigned short)
- * lzss_decompress() uses no work buffer at all.
+ *   [remaining up to LZSS_V4_WORK_SIZE-1]   dad       (unsigned short)
+ * lzss_v4_decompress() uses no work buffer at all.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  */
 
-#include "lzss.h"
+#include "lzss_method1_v4.h"
 #include "archiver.h"  /* BP_OK, BP_ERR_CORRUPT */
 #include <string.h>
 
 /* ---- algorithm parameters ---------------------------------------------- */
 
-#define N  LZSS_RING_SIZE   /* 2048 */
-#define F  LZSS_MAX_MATCH   /* 34   */
-#define THRESHOLD LZSS_MIN_MATCH  /* 3 */
+#define N  LZSS_V4_RING_SIZE   /* 2048 */
+#define F  LZSS_V4_MAX_MATCH   /* 34   */
+#define THRESHOLD LZSS_V4_MIN_MATCH  /* 3 */
 
 /* Sentinel: "no parent / no child".  Fits in unsigned short (2048 < 65535). */
 #define NIL  ((unsigned short)N)
@@ -173,7 +173,7 @@ static void delete_node(unsigned int    p,
 
 /* ---- public API: decompress -------------------------------------------- */
 
-int lzss_decompress(const bp_uint8 *src, bp_uint32 src_len,
+int lzss_v4_decompress(const bp_uint8 *src, bp_uint32 src_len,
                     bp_uint8 *dst, bp_uint32 dst_len,
                     bp_uint8 *work)
 {
@@ -236,7 +236,7 @@ int lzss_decompress(const bp_uint8 *src, bp_uint32 src_len,
 
 /* ---- public API: compress ---------------------------------------------- */
 
-bp_uint32 lzss_compress(const bp_uint8 *src, bp_uint32 src_len,
+bp_uint32 lzss_v4_compress(const bp_uint8 *src, bp_uint32 src_len,
                         bp_uint8 *dst, bp_uint8 *work)
 {
     bp_uint8       *ring_buf;
@@ -281,7 +281,7 @@ bp_uint32 lzss_compress(const bp_uint8 *src, bp_uint32 src_len,
     dad      = (unsigned short *)(void *)(work + N + (N + 1) * 2 + (N + 257) * 2);
 
     /* Initialise ring buffer with fill character */
-    memset(ring_buf, LZSS_FILL_BYTE, N);
+    memset(ring_buf, LZSS_V4_FILL_BYTE, N);
 
     /* Initialise tree: all entries NIL */
     for (i = 0; i <= (unsigned int)N; i++) {
@@ -411,7 +411,7 @@ bp_uint32 lzss_compress(const bp_uint8 *src, bp_uint32 src_len,
                 c = (unsigned int)src[src_pos++];
             } else {
                 if (len > 0) len--;
-                c = (unsigned int)LZSS_FILL_BYTE;
+                c = (unsigned int)LZSS_V4_FILL_BYTE;
             }
 
             ring_buf[s] = (bp_uint8)c;

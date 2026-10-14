@@ -31,7 +31,7 @@ priority issues are in the read path:
 ### In scope
 
 - Memory-safety bugs in the archive parser or any decompressor (`archiver.c`,
-  `compress.c`, `fluff.c`, `lzss.c`, `zstd_wrap.c`, and the `mini/` variants):
+  `compress.c`, `fluff.c`, `boltlite.c`, `zstd_wrap.c`, and the `mini/` variants):
   buffer overflows, out-of-bounds reads, integer overflow leading to bad
   allocation or bad bounds, use-after-free
 - Path traversal on extraction — an archive entry that writes outside the

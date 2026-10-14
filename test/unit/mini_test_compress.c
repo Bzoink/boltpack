@@ -5,7 +5,7 @@
  * from src/core/mini/compress.h.  Targets both 16-bit (Open Watcom) and
  * 32/64-bit (GCC) builds.
  *
- * On 16-bit (SIZEOF_INT < 4): only Stored (0) and LZSS (1) are available;
+ * On 16-bit (SIZEOF_INT < 4): only Stored (0) and BoltLite (1) are available;
  * boltlz (2) returns BP_ERR_UNSUPPORTED_METHOD.
  *
  * ANSI C (C89/C90) only.  No long long, no VLA, no <stdint.h>.
@@ -23,7 +23,7 @@
 
 /* Worst-case buffer sizes */
 #define MINI_BOLTLZ_DST(n)  ((n) + (n)/63 + 16)
-#define MINI_LZSS_DST(n) ((n) + (n)/8  + 16)
+#define MINI_BOLTLITE_DST(n) ((n) + (n)/8  + 16)
 
 /* ======================================================================== */
 /* helpers                                                                   */
@@ -53,7 +53,7 @@ static void mini_roundtrip(const char *label,
     }
 
     /*
-     * LZSS and BoltLZ require the EXACT original size as dst_len.
+     * BoltLite and BoltLZ require the EXACT original size as dst_len.
      * Passing src_len is correct for all three: roundtrip guarantees
      * decompressed size == original size, and the buffer is always >=.
      */
@@ -122,31 +122,31 @@ static void test_stored(void)
 }
 
 /* ======================================================================== */
-/* LZSS (method 1)                                                           */
+/* BoltLite (method 1)                                                           */
 /* ======================================================================== */
 
-static void test_lzss(void)
+static void test_boltlite(void)
 {
     static unsigned char src[4096];
-    static unsigned char comp[MINI_LZSS_DST(4096)];
+    static unsigned char comp[MINI_BOLTLITE_DST(4096)];
     static unsigned char decomp[4096];
     int i;
 
-    UNIT_SECTION("Mini: LZSS (method 1)");
+    UNIT_SECTION("Mini: BoltLite (method 1)");
 
     src[0] = 'Z';
-    mini_roundtrip("single byte Z", BP_METHOD_LZSS,
+    mini_roundtrip("single byte Z", BP_METHOD_BOLTLITE,
                     src, 1, comp, (bp_uint32)sizeof(comp),
                     decomp, (bp_uint32)sizeof(decomp));
 
-    memset(src, 0x20, sizeof(src)); /* space fill = LZSS ring-init byte */
-    mini_roundtrip("4 KB all-spaces", BP_METHOD_LZSS,
+    memset(src, 0x20, sizeof(src)); /* space fill = BoltLite ring-init byte */
+    mini_roundtrip("4 KB all-spaces", BP_METHOD_BOLTLITE,
                     src, (bp_uint32)sizeof(src),
                     comp, (bp_uint32)sizeof(comp),
                     decomp, (bp_uint32)sizeof(decomp));
 
     for (i = 0; i < 4096; i++) src[i] = (unsigned char)(i % 13);
-    mini_roundtrip("4 KB mod-13 pattern", BP_METHOD_LZSS,
+    mini_roundtrip("4 KB mod-13 pattern", BP_METHOD_BOLTLITE,
                     src, (bp_uint32)sizeof(src),
                     comp, (bp_uint32)sizeof(comp),
                     decomp, (bp_uint32)sizeof(decomp));
@@ -294,7 +294,7 @@ static void test_mini_checksum(void)
 static void test_checksum_consistency(void)
 {
     static unsigned char src[1024];
-    static unsigned char comp[MINI_LZSS_DST(1024)];
+    static unsigned char comp[MINI_BOLTLITE_DST(1024)];
     static unsigned char decomp[1024];
     bp_uint32 comp_len;
     bp_uint32 decomp_len;
@@ -303,19 +303,19 @@ static void test_checksum_consistency(void)
     int i;
     int rc;
 
-    UNIT_SECTION("Mini: Adler-32 consistency after LZSS roundtrip");
+    UNIT_SECTION("Mini: Adler-32 consistency after BoltLite roundtrip");
 
     for (i = 0; i < 1024; i++) src[i] = (unsigned char)(i & 0xFF);
     ck_before = bp_mini_checksum(1, src, 1024);
 
     comp_len = (bp_uint32)sizeof(comp);
-    rc = bp_mini_compress_block(src, 1024, comp, &comp_len, BP_METHOD_LZSS);
-    UNIT_CHECK(rc == BP_OK, "LZSS compress 1 KB ok");
+    rc = bp_mini_compress_block(src, 1024, comp, &comp_len, BP_METHOD_BOLTLITE);
+    UNIT_CHECK(rc == BP_OK, "BoltLite compress 1 KB ok");
 
     decomp_len = 1024;
     rc = bp_mini_decompress_block(comp, comp_len, decomp, &decomp_len,
-                                   BP_METHOD_LZSS);
-    UNIT_CHECK(rc == BP_OK, "LZSS decompress ok");
+                                   BP_METHOD_BOLTLITE);
+    UNIT_CHECK(rc == BP_OK, "BoltLite decompress ok");
 
     ck_after = bp_mini_checksum(1, decomp, decomp_len);
     UNIT_CHECK(ck_before == ck_after, "Adler-32 matches after roundtrip");
@@ -338,7 +338,7 @@ int main(void)
     }
 
     test_stored();
-    test_lzss();
+    test_boltlite();
     test_boltlz();
     test_boltlz_decoder_invalid();
     test_fluff_unsupported();

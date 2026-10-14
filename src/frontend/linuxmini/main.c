@@ -520,7 +520,7 @@ static int cmd_info(const char *arc_path)
     printf("Version:     %u\n", (unsigned)info.version);
     printf("Creator OS:  %s\n", os_name(info.creator_os));
     {
-        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
+        static const char * const mn[4] = {"stored","BoltLite","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods:     ");
@@ -560,12 +560,12 @@ static void usage(void)
           "Options:\n"
           "  -b8k / -b16k / -b32k           block size (create only)\n"
           "  -m0                            store, no compression\n"
-          "  -m1                            LZSS compression\n"
+          "  -m1                            BoltLite compression\n"
           "  -m2                            boltlz compression (default)\n"
           "  -q                             quiet mode\n"
           "Compression:\n"
-          "  create:   stored (0), LZSS (1), boltlz (2)\n"
-          "  extract:  stored (0), LZSS (1), boltlz (2)\n",
+          "  create:   stored (0), BoltLite (1), boltlz (2)\n"
+          "  extract:  stored (0), BoltLite (1), boltlz (2)\n",
           stderr);
 }
 
@@ -598,7 +598,7 @@ int main(int argc, char **argv)
             } else if (strcmp(argv[i], "-m0") == 0) {
                 method = BP_METHOD_STORED;
             } else if (strcmp(argv[i], "-m1") == 0) {
-                method = BP_METHOD_LZSS;
+                method = BP_METHOD_BOLTLITE;
             } else if (strcmp(argv[i], "-m2") == 0) {
                 method = BP_METHOD_BOLTLZ;
             }
