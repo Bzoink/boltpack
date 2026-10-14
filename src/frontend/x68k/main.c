@@ -396,9 +396,13 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     char  qdos_path[BP_MAX_PATH];  /* with backslashes */
     FILE *fp; bp_io_t *io;
 
+    if (!bp_name_is_safe(entry->name)) return NULL;
+
     /* Convert UTF-8 archive name to SJIS */
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), X68K_CP) != 0)
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), X68K_CP) != 0) {
         strncpy(local_name, entry->name, sizeof(local_name) - 1);
+        local_name[sizeof(local_name) - 1] = '\0';
+    }
 
     /* Build output path with backslashes */
     if (ctx->out_dir) {

@@ -166,6 +166,10 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
                 flat, e->name);
         return NULL;
     }
+    if (g_extracted_count >= MAX_EXTRACTED) {
+        fprintf(stderr, PROG_NAME ": extraction name limit reached; skipping %s\n", flat);
+        return NULL;
+    }
 
     printf("  x  %s\n", flat);
 

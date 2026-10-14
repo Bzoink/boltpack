@@ -33,8 +33,8 @@
  *      8     |    15      |
  *      9     |    19      | best ratio
  *
- * bp_zstd_set_level() accepts BoltPack levels 1-9 and maps them to the
- * appropriate zstd level.  The default is BP level 3 (zstd level 3).
+ * bp_zstd_set_level() is retained as a no-op for compatibility. Set the
+ * per-call level on bp_zstd_compress_block(); the default is level 3.
  */
 
 /* No-op; kept for backward compatibility.  Contexts are now per-call. */

@@ -198,4 +198,4 @@ defaults, with ratio regressions reported per file as well as in aggregate.
 
 Real target runtime tests, ARM64 hardware measurements, additional modern
 application datasets, longer fuzz campaigns, and archive-layer integration
-remain separate work. BoltLZ is integrated as archive method 2 in format 4; this report records the preceding standalone validation.
+remain separate work. BoltLZ is integrated as archive method 2 in format 5; this report records the preceding standalone validation.

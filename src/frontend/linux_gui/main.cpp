@@ -2033,6 +2033,8 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     std::string ename(entry->name ? entry->name : "");
     std::string path;
 
+    if (!entry->name || !bp_name_is_safe(entry->name)) return NULL;
+
     if (entry->entry_type == BP_TYPE_DIR) {
         if (!ctx->filter.empty())
             return NULL;

@@ -38,7 +38,7 @@ source ~/.bashrc
 #### Step 2: Build available packages
 
 ```bash
-make linux linux-arm64 musl riscv haiku wasm
+make modern arm64 musl riscv haiku wasm
 ./scripts/create-packages.sh
 python3 scripts/generate-download-page.py
 ```

@@ -60,8 +60,8 @@ current release only; there are no backport branches.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.4     | ✅        |
-| ≤ 1.3   | ❌        |
+| 1.7     | ✅        |
+| ≤ 1.6   | ❌        |
 
 If you are running an older build, please update before reporting.
 

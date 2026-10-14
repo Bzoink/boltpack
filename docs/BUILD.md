@@ -4,18 +4,17 @@ BoltPack can be compiled natively on 13 different operating systems. This source
 
 ## Quick Start
 
-### For Full Source Trees (Auto-detected)
+### Linux build
 
-On OpenBSD, Solaris, IRIX, HP-UX, AIX, Tru64, SCO, NeXTSTEP, QNX, or GNU Hurd:
+From the full repository checkout, the default `make` target builds the Linux
+CLI. Select a named target (for example `make arm64` or `make haiku`) for a
+cross-build when its toolchain is installed.
 
 ```bash
 tar xzf boltpack-source.tar.gz
 cd boltpack
 make
 ```
-
-The Makefile automatically detects your OS and uses the appropriate compiler
-when you are building from the full repository checkout.
 
 ### Linux-Hosted Fast-Fluff Targets
 
@@ -52,20 +51,11 @@ feature as a `Use Multi-threaded Fluff` toggle when Fluff is selected. The
 macOS GUI target still requires an osxcross or native macOS toolchain with
 OpenMP support, and `make haiku-gui` still requires the Haiku cross SDK.
 
-### For Exotic Systems (Explicit Build Required)
+### Other platforms
 
-For Plan 9, z/OS, and OpenVMS, explicitly specify the Makefile:
-
-```bash
-# Plan 9 (uses mk, not make)
-mk -f build/Makefile.plan9
-
-# z/OS (uses IBM Open XL C)
-make -f build/Makefile.zos
-
-# OpenVMS (uses DEC C / VSI C)
-make -f build/Makefile.openvms
-```
+Platform-specific targets and native build instructions are listed in
+[`frontends.md`](frontends.md) and [`portability.md`](portability.md). No
+`build/Makefile.*` files are shipped for Plan 9, z/OS, or OpenVMS.
 
 ### For Compile Packages
 
@@ -285,9 +275,9 @@ front-end build. In particular:
 
 ## Detailed Platform Guide
 
-### Auto-Detectable Systems
+### POSIX Frontends
 
-These platforms have official Makefiles and will compile with a simple `make` command.
+The root Makefile does not detect the host OS. Select the frontend explicitly with `FRONTEND` and set its output directory:
 
 #### OpenBSD (x86_64)
 
@@ -299,14 +289,14 @@ These platforms have official Makefiles and will compile with a simple `make` co
 
 ```bash
 cd boltpack
-make
+make FRONTEND=openbsd BUILDDIR=build/openbsd TARGET=build/openbsd/boltpack
 ./build/openbsd/boltpack --help
 ```
 
-**Install:**
+**Install manually:**
 
 ```bash
-make install
+sudo install -m 755 build/openbsd/boltpack /usr/local/bin/boltpack
 ```
 
 ---
@@ -325,13 +315,11 @@ pkgutil -i gcc        # or: pkg install developer/gcc
 
 ```bash
 cd boltpack
-make
+make FRONTEND=solaris BUILDDIR=build/solaris TARGET=build/solaris/boltpack
 ./build/solaris/boltpack --help
 ```
 
-**For SPARC Solaris:**
-
-- Should auto-detect and use GCC for SPARC architecture
+**For SPARC Solaris:** set `CC` to the SPARC cross-compiler explicitly; the build does not detect the host architecture.
 
 ---
 
@@ -350,7 +338,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=irix BUILDDIR=build/irix TARGET=build/irix/boltpack
 ./build/irix/boltpack --help
 ```
 
@@ -370,7 +358,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=hpux BUILDDIR=build/hpux TARGET=build/hpux/boltpack
 ./build/hpux/boltpack --help
 ```
 
@@ -390,7 +378,7 @@ rpm -i gcc-*.rpm
 
 ```bash
 cd boltpack
-make
+make FRONTEND=aix BUILDDIR=build/aix TARGET=build/aix/boltpack
 ./build/aix/boltpack --help
 ```
 
@@ -406,7 +394,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=tru64 BUILDDIR=build/tru64 TARGET=build/tru64/boltpack
 ./build/tru64/boltpack --help
 ```
 
@@ -422,7 +410,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=sco BUILDDIR=build/sco TARGET=build/sco/boltpack
 ./build/sco/boltpack --help
 ```
 
@@ -438,7 +426,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=nextstep BUILDDIR=build/nextstep TARGET=build/nextstep/boltpack
 ./build/nextstep/boltpack --help
 ```
 
@@ -454,7 +442,7 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=qnx BUILDDIR=build/qnx TARGET=build/qnx/boltpack
 ./build/qnx/boltpack --help
 ```
 
@@ -470,59 +458,18 @@ make
 
 ```bash
 cd boltpack
-make
+make FRONTEND=hurd BUILDDIR=build/hurd TARGET=build/hurd/boltpack
 ./build/hurd/boltpack --help
 ```
 
 ---
 
-### Exotic Systems (Manual/Explicit Build)
+### Platforms without a build target
 
-These systems use non-standard build tools and require explicit Makefile specification.
-
-#### Plan 9 (x86 / ARM / MIPS / PowerPC)
-
-**Compiler:** 9c (Plan 9 C compiler) or pcc  
-**Build Tool:** mk (Plan 9's make replacement)
-
-**Build on Plan 9:**
-
-```sh
-cd /boltpack                    # or appropriate path
-mk -f build/Makefile.plan9
-```
-
-**Notes:**
-
-- Plan 9 uses `mk`, not `make`
-- Makefile syntax differs from POSIX make
-- `build/Makefile.plan9` is approximate; may need adjustment
-- No standard autodetection (different shell environment)
-
----
-
-#### z/OS Mainframe (z/Architecture)
-
-**Compiler:** IBM Open XL C/C++  
-**Character Encoding:** EBCDIC (native) / ASCII conversion required
-
-**Build on z/OS:**
-
-```plaintext
-# Using MMS (Make replacement on z/OS)
-mms /DESCRIP=build/Makefile.zos
-
-# Or manual compilation:
-xlc -qlanglvl=extended -qansi -O2 -c src/core/archiver.c
-xlc -qlanglvl=extended -qansi -O2 -c src/core/fluff.c
-# ... (repeat for all source files)
-# Then link: ...
-```
-
-**Notes:**
-
-- z/OS is EBCDIC-based; ASCII files must be converted
-- Requires mainframe-specific `src/frontend/zos/main.c`
+Plan 9, z/OS, and OpenVMS frontends are present, but this repository does not
+ship platform Makefiles or a complete documented manual link command for them.
+The build commands in this guide apply only to targets defined by the root
+`Makefile`.
 - Build on real z/OS host or Hercules emulator
 - Binary will not be portable to non-mainframe systems
 
@@ -574,7 +521,7 @@ $ LINK archiver.obj, fluff.obj, ... /EXE=boltpack.exe
 
 - Most likely: wrong flags for your compiler
 - Try: `CC=gcc make` or `CC=clang make`
-- Check the appropriate `build/Makefile.PLATFORM` for correct flags
+- Check the target-specific compiler flags in the root `Makefile`
 
 #### "No such file or directory: src/frontend/PLATFORM/main.c"
 
@@ -624,21 +571,10 @@ tar czf boltpack-PLATFORM.tar.gz dist/
 
 ## Quick Platform Reference
 
-| Platform    | Auto? | Build Command                    | Binary                       |
-| ----------- | ----- | -------------------------------- | ---------------------------- |
-| OpenBSD     | ✅     | `make`                           | `build/openbsd/boltpack`     |
-| Solaris     | ✅     | `make`                           | `build/solaris/boltpack`     |
-| IRIX        | ✅     | `make`                           | `build/irix/boltpack`        |
-| HP-UX       | ✅     | `make`                           | `build/hpux/boltpack`        |
-| AIX         | ✅     | `make`                           | `build/aix/boltpack`         |
-| Tru64       | ✅     | `make`                           | `build/tru64/boltpack`       |
-| SCO         | ✅     | `make`                           | `build/sco/boltpack`         |
-| NeXTSTEP    | ✅     | `make`                           | `build/nextstep/boltpack`    |
-| QNX         | ✅     | `make`                           | `build/qnx/boltpack`         |
-| GNU Hurd    | ✅     | `make`                           | `build/hurd/boltpack`        |
-| **Plan 9**  | ❌     | `mk -f build/Makefile.plan9`     | `build/plan9/boltpack`       |
-| **z/OS**    | ❌     | `make -f build/Makefile.zos`     | `build/zos/boltpack`         |
-| **OpenVMS** | ❌     | `make -f build/Makefile.openvms` | `build/openvms/boltpack.exe` |
+| Build request | Command | Result |
+| ------------- | ------- | ------ |
+| Default host build | `make` | Builds the default Linux CLI target |
+| Cross-build | `make <target>` | Builds a named target listed by `make help`; requires its toolchain |
 
 ---
 
@@ -653,8 +589,8 @@ CC=gcc-9 make
 # Add extra flags
 CFLAGS="-ansi -pedantic -Wall -Wextra -O3" make
 
-# For explicit builds
-CC=clang make -f build/Makefile.openbsd
+# Build with a selected compiler
+CC=clang make
 ```
 
 ---
@@ -663,10 +599,9 @@ CC=clang make -f build/Makefile.openbsd
 
 To add support for a new platform:
 
-1. Create `build/Makefile.PLATFORM` (copy from `build/Makefile.generic` or existing platform)
-2. Adjust `CC`, `CFLAGS`, `LDFLAGS` for your platform
+1. Add a target to the root `Makefile` and adjust `CC`, `CFLAGS`, and `LDFLAGS`
 3. Create `src/frontend/PLATFORM/main.c` (copy from similar OS, adapt I/O)
-4. Update `Makefile.native` to add auto-detection (if `uname -s` gives a recognisable string)
+4. Add the target to `make help`
 5. Document the platform in this file (`docs/BUILD.md`)
 
 ---

@@ -750,6 +750,8 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     bp_io_t *out;
     char *p;
 
+    if (!entry->name || !bp_name_is_safe(entry->name)) return NULL;
+
     if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
         return NULL;
 

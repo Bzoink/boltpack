@@ -7,7 +7,7 @@
  * history and keep the normal stream version.  If a leader truly has to reset
  * history, its stream header is patched to the reset version.
  *
- * The stream-header version byte is patched from 0x07 to 0x87 only on the
+ * The stream-header version byte is patched from 0x08 to 0x88 only on the
  * first compressed block in each group.  The decoder resets its ring buffer
  * for those blocks and preserves it across the following in-group blocks.
  *

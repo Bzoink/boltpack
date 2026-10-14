@@ -13,9 +13,9 @@
  *
  * Wire format: same archive method ID (BP_METHOD_FLUFF = 3). The first
  * compressed block in each fast-fluff group uses
- * FLUFF_STREAM_VERSION_FSE_RESET (0x87), signalling to the decoder that it
+ * FLUFF_STREAM_VERSION_FSE2_RESET (0x88), signalling to the decoder that it
  * must reset its ring buffer before decoding that block. Later compressed
- * blocks in the same group keep the normal 0x07 stream version.
+ * blocks in the same group keep the normal 0x08 stream version.
  *
  * This header is intentionally C89-compatible so it can be included from
  * archiver.c (which must remain strict C89).  The IMPLEMENTATION (fluff_fast.c)
@@ -94,7 +94,7 @@ bp_uint32 fluff_fast_match_len_ready(const bp_uint8 *a, const bp_uint8 *b,
  * size are stored verbatim (raw copy) and dst_lens[i] is set to src_lens[i].
  *
  * The stream-header version byte of the first compressed block in each group
- * is set to FLUFF_STREAM_VERSION_FSE_RESET (0x87) so the decoder resets its
+ * is set to FLUFF_STREAM_VERSION_FSE2_RESET (0x88) so the decoder resets its
  * context before decoding that group.
  *
  * Returns BP_OK if all blocks succeeded.  On error, the global return code

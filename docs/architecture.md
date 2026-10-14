@@ -44,9 +44,9 @@ int bp_compress_block(const bp_uint8 *src, bp_uint32 src_len,
 int bp_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
                         bp_uint8 *dst, bp_uint32 *dst_len);
 
-/* Compute Adler-32 checksum over a data block.
- * Pass adler=1 for the first call; chain the return value for streaming. */
-bp_uint32 bp_checksum(bp_uint32 adler, const bp_uint8 *data, bp_uint32 len);
+/* Compute CRC-32 over a data block.
+ * Pass crc=0 for the first call; chain the return value for streaming. */
+bp_uint32 bp_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len);
 ```
 
 The current implementation supports five archive methods: stored raw blocks
@@ -65,8 +65,8 @@ enum {
     BP_ERR_IO                = -1,  /* Read/write/seek failed */
     BP_ERR_NOMEM             = -2,  /* malloc() returned NULL */
     BP_ERR_MAGIC             = -3,  /* Bad magic bytes (not a .bolt file) */
-    BP_ERR_VERSION           = -4,  /* Archive version higher than supported */
-    BP_ERR_CHECKSUM          = -5,  /* Adler-32 mismatch on decompressed data */
+    BP_ERR_VERSION           = -4,  /* Archive format version is not supported */
+    BP_ERR_CHECKSUM          = -5,  /* CRC-32 mismatch on decompressed data */
     BP_ERR_CORRUPT           = -6,  /* Structural corruption (bad block size, impossible offset, etc.) */
     BP_ERR_TRUNCATED         = -7,  /* Unexpected end of file */
     BP_ERR_OVERFLOW          = -8,  /* File or archive exceeds platform limits (e.g., >2 GB on 32-bit I/O) */
@@ -271,7 +271,7 @@ boltpack c backup.bolt MyApp                Pack entire MyApp folder recursively
 boltpack c docs.bolt readme.txt manual/     Mix files and directories
 boltpack c -b 8k small.bolt data/           Force 8 KB blocks (low-memory system)
 boltpack c -0 images.bolt photos/           Store without compression (already-compressed data)
-boltpack c -F sources.bolt src/             Use fluff LZ77+Huffman compression
+boltpack c -F sources.bolt src/             Use Fluff LZ77 + FSE/tANS compression
 boltpack a backup.bolt extra_file.txt       Append a file to an existing archive
 boltpack x backup.bolt                      Extract everything, recreating directories
 boltpack x backup.bolt MyApp/config.txt     Extract a single file
@@ -312,10 +312,11 @@ The frontend maps available memory to block size using the recommended table (se
 
 ### Compression Decisions
 
-The archiver core makes per-block decisions about whether to compress or store:
+The archiver core makes per-block decisions about whether to compress or store.
+It keeps compressed data only when it saves at least 1% of the input block:
 
 1. Compress the block via `bp_compress_block()`
-2. If `compressed_size >= original_size`, discard the compressed output and store the block as-is (method 0)
+2. If `compressed_size` is at least `original_size - floor(original_size / 100)`, discard the compressed output and store the block as-is (method 0)
 3. Otherwise, write the compressed block (method 1)
 
 This is automatic and per-block — a single file can have a mix of compressed and stored blocks (e.g., a mostly-text file with an embedded JPEG section).
@@ -326,8 +327,8 @@ If the user passes `-0` (store-only), the archiver skips `bp_compress_block()` e
 
 `boltpack t archive.bolt` performs a full integrity check without writing any files to disk. It verifies:
 
-1. **Archive header** — magic bytes (`BOLT`), version ≤ supported
-2. **Each file entry** — decompress all blocks, compute Adler-32 of the decompressed data, compare to stored `checksum`
+1. **Archive header** — magic bytes (`BOLT`), format version exactly 5
+2. **Each file entry** — decompress all blocks, compute CRC-32 of the decompressed data, compare to stored `checksum`
 3. **File table** — magic bytes (`TBLT`), `entry_count` matches header `file_count`
 4. **Archive footer** — magic bytes (`TLOB`), `table_offset` points to valid file table
 
@@ -568,7 +569,7 @@ boltpack/
 │   │   ├── compress.h
 │   │   ├── archiver.c      Archiver core (format read/write)
 │   │   ├── archiver.h
-│   │   ├── fluff.c         Native LZ77+Huffman codec (primary)
+│   │   ├── fluff.c         Native LZ77 + FSE/tANS codec (primary)
 │   │   ├── fluff.h
 │   │   ├── fluff_json.c    Fluff JSON debugging
 │   │   ├── fluff_json.h

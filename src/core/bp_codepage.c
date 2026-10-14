@@ -273,10 +273,15 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
             }
             /* Decode UTF-8 to codepoint u2 */
             if ((c2 & 0xE0) == 0xC0) {
+                if (src[si2 + 1] == '\0' ||
+                    ((unsigned char)src[si2 + 1] & 0xC0) != 0x80) return -1;
                 u2 = (unsigned short)(((c2 & 0x1F) << 6) |
                      ((unsigned char)src[si2 + 1] & 0x3F));
                 si2 += 2;
             } else if ((c2 & 0xF0) == 0xE0) {
+                if (src[si2 + 1] == '\0' || src[si2 + 2] == '\0' ||
+                    ((unsigned char)src[si2 + 1] & 0xC0) != 0x80 ||
+                    ((unsigned char)src[si2 + 2] & 0xC0) != 0x80) return -1;
                 u2 = (unsigned short)(((c2 & 0x0F) << 12) |
                      (((unsigned char)src[si2 + 1] & 0x3F) << 6) |
                      ((unsigned char)src[si2 + 2] & 0x3F));
@@ -318,10 +323,15 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
 
         /* Decode UTF-8 to Unicode codepoint */
         if ((c & 0xE0) == 0xC0) {
+            if (src[si + 1] == '\0' ||
+                ((unsigned char)src[si + 1] & 0xC0) != 0x80) return -1;
             u = ((unsigned short)(c & 0x1F) << 6)
               | ((unsigned short)((unsigned char)src[si + 1]) & 0x3F);
             si += 2;
         } else if ((c & 0xF0) == 0xE0) {
+            if (src[si + 1] == '\0' || src[si + 2] == '\0' ||
+                ((unsigned char)src[si + 1] & 0xC0) != 0x80 ||
+                ((unsigned char)src[si + 2] & 0xC0) != 0x80) return -1;
             u = ((unsigned short)(c & 0x0F) << 12)
               | (((unsigned short)((unsigned char)src[si + 1]) & 0x3F) << 6)
               | ((unsigned short)((unsigned char)src[si + 2]) & 0x3F);

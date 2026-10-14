@@ -11,6 +11,19 @@
 #include <string.h>
 #include <stdio.h>
 
+int bp_mini_name_is_safe(const char *name)
+{
+    const char *p;
+    if (name == NULL || name[0] == '\0' || name[0] == '/' ||
+        name[1] == ':' || strchr(name, '\\') != NULL) return 0;
+    for (p = name; *p; p++) {
+        if (p[0] == '.' && p[1] == '.' &&
+            (p == name || p[-1] == '/') &&
+            (p[2] == '/' || p[2] == '\0')) return 0;
+    }
+    return 1;
+}
+
 /* ---- bp_mini_ultoa ----------------------------------------------------- */
 
 /*

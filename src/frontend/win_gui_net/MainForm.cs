@@ -417,8 +417,10 @@ namespace BoltPack
 
             /* Prevent path traversal */
             string canonical = Path.GetFullPath(fullPath);
-            if (!canonical.StartsWith(Path.GetFullPath(ctx.destDir),
-                    StringComparison.OrdinalIgnoreCase))
+            string root = Path.GetFullPath(ctx.destDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!canonical.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 return IntPtr.Zero;
 
             if (entry.entry_type == NativeMethods.BP_TYPE_DIR)

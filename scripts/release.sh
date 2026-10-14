@@ -6,6 +6,7 @@ set -e
 # Usage: ./scripts/release.sh create|upload|checksums|publish|status
 
 PROJROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
+cd "$PROJROOT"
 VERSION=$(cat "$PROJROOT/VERSION" 2>/dev/null | tr -d '[:space:]')
 [ -n "$VERSION" ] || { printf 'Error: VERSION file not found\n' >&2; exit 1; }
 PROJECT_URL="https://api.github.com/repos/Bzoink/boltpack"
@@ -13,7 +14,7 @@ PROJECT_URL="https://api.github.com/repos/Bzoink/boltpack"
 # Persists the numeric release ID between commands so draft releases can be
 # found before a git tag exists (GitHub's /releases/tags/ endpoint returns 404
 # for drafts that have no corresponding git tag yet).
-RELEASE_ID_FILE=".release-id"
+RELEASE_ID_FILE="$PROJROOT/.release-id"
 
 print_help() {
     cat << 'EOF'
@@ -120,8 +121,8 @@ generate_checksums() {
     local outfile="dist/SHA256SUMS.txt"
     local -a files=()
 
-    for f in dist/boltpack-*.tar.gz dist/boltpack-*.zip dist/boltpack-*.lha \
-              dist/boltpack-*.hqx dist/boltpack-*.img dist/boltpack-*.tar; do
+    for f in dist/boltpack-"$VERSION"-*.tar.gz dist/boltpack-"$VERSION"-*.zip dist/boltpack-"$VERSION"-*.lha \
+              dist/boltpack-"$VERSION"-*.hqx dist/boltpack-"$VERSION"-*.img dist/boltpack-"$VERSION"-*.tar; do
         [[ -f "$f" ]] && files+=("$f")
     done
 
@@ -165,8 +166,8 @@ upload_packages() {
         -H "Authorization: token $GITHUB_TOKEN" \
         "${PROJECT_URL}/releases/${RELEASE_ID}/assets?per_page=100")
 
-    for file in dist/boltpack-*.tar.gz dist/boltpack-*.zip dist/boltpack-*.lha \
-                dist/boltpack-*.hqx dist/boltpack-*.img dist/boltpack-*.tar dist/SHA256SUMS.txt; do
+    for file in "$PROJROOT"/dist/boltpack-"$VERSION"-*.tar.gz "$PROJROOT"/dist/boltpack-"$VERSION"-*.zip "$PROJROOT"/dist/boltpack-"$VERSION"-*.lha \
+                "$PROJROOT"/dist/boltpack-"$VERSION"-*.hqx "$PROJROOT"/dist/boltpack-"$VERSION"-*.img "$PROJROOT"/dist/boltpack-"$VERSION"-*.tar "$PROJROOT"/dist/SHA256SUMS.txt; do
         [[ -f "$file" ]] || continue
 
         FILENAME=$(basename "$file")
@@ -227,7 +228,7 @@ publish_release() {
     if echo "$RESPONSE" | grep -q '"draft": false'; then
         rm -f "$RELEASE_ID_FILE"
         echo "✓ Release v${VERSION} is now public!"
-        echo "  https://github.com/tonybrix/boltpack/releases/tag/v${VERSION}"
+        echo "  https://github.com/Bzoink/boltpack/releases/tag/v${VERSION}"
     else
         echo "Error publishing release:"
         echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"

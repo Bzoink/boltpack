@@ -58,7 +58,7 @@ toolchain landscape. Native per-platform build procedures live in `BUILD.md`.
 
 ## Practical Optimization Tiers
 
-The core codec (`src/core/fluff.c`, `compress.c`) is written in portable C89 that runs correctly on every target above.
+The core codec (`src/core/fluff.c`, `compress.c`) is written in portable C89. Frontends use the language supported by their platform implementation, including C++, Objective-C, and C# where applicable.
 Performance-sensitive paths can be improved without abandoning portability by selecting wider word operations at compile time.
 The tiers below map CPU families to what is safely available in a C89 translation unit.
 Tier 1 (8-bit: Z80, 6502) is omitted — those platforms are too memory-constrained for the full window codec.
@@ -186,7 +186,7 @@ These work correctly on both big-endian (PowerPC, 68k) and little-endian (x86) h
 ### Memory allocation
 
 - Use `malloc` / `free` from `<stdlib.h>` (available on all targets).
-- Keep allocations small and predictable. BoltLZ uses a 32/64 KiB heap workspace for Fast/Balanced; 16-bit builds link only its decoder.
+- Keep allocations small and predictable. Full builds use a 32/64 KiB BoltLZ compression workspace; mini builds compress with BoltLite and 16-bit mini builds link BoltLZ decoding only.
 - Avoid deep recursion — stack sizes on vintage systems may be small (as low as 4–8 KB on some platforms).
 
 ### String handling
@@ -295,7 +295,7 @@ cd amiga-gcc && make all
 ```sh
 m68k-amigaos-gcc -noixemul -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/amiga/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -321,7 +321,7 @@ The MorphOS SDK is distributed by the MorphOS team. Includes a ppc-morphos GCC c
 # Unpack and set PATH to SDK/bin
 ppc-morphos-gcc -noixemul -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/morphos/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -352,7 +352,7 @@ cd build-djgpp && ./build-djgpp.sh 12.2.0
 ```sh
 i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/dos/main.c src/core/boltlz.c \
     -o boltpack.exe
 ```
@@ -373,7 +373,7 @@ sudo dnf install mingw64-gcc
 ```sh
 x86_64-w64-mingw32-gcc -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/win/main.c src/core/boltlz.c \
     -o boltpack.exe
 ```
@@ -393,7 +393,7 @@ Vincent Rivière's cross-toolchain is the standard for Atari development from Li
 ```sh
 m68k-atari-mint-gcc -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/atari/main.c src/core/boltlz.c \
     -o boltpack.tos
 ```
@@ -414,7 +414,7 @@ cd gccsdk/gcc4 && ./build-world
 ```sh
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -O2 \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/riscos/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -459,7 +459,7 @@ export PATH=$WATCOM/binl64:$PATH
 ```sh
 wcl386 -bt=os2v2 -ansi -ox \
     -Isrc/core  \
-    src/core/compress.c src/core/archiver.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/os2/main.c src/core/boltlz.c \
     -fe=boltpack.exe
 ```
@@ -519,7 +519,7 @@ An 8088 at 4.77 MHz running boltlz decompression will be slow but functional. bo
 
 8-bit systems (6502-based: C64, Apple II, Atari 800; Z80-based: ZX Spectrum, CP/M; 6809-based: CoCo) are **not** BoltPack targets. The constraints are fundamental:
 
-- **64 KB total address space** — boltlz's 64 KB compression work buffer alone fills memory. No room for the program, I/O buffers, or stack.
+- **64 KB total address space** — even the mini build's program, BoltLite workspace, I/O buffers, and stack exceed practical 8-bit memory budgets.
 - **No conformant C89 compilers** — cc65 (6502) is close but has `int` = 16 bits, `long` = 32 bits via software emulation at dozens of cycles per operation. SDCC (Z80) has similar limitations.
 - **Arithmetic speed** — 32-bit `unsigned long` operations on a 1 MHz 8-bit CPU take hundreds of cycles per addition. Processing archive headers would be painfully slow.
 - **No realistic file I/O** — most 8-bit systems lack a hierarchical filesystem. Disk I/O is often sector-level.

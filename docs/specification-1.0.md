@@ -3,7 +3,7 @@
 **Format Version:** 5 (only)
 **Software Version:** 1.7
 **Status:** Development
-**Release Date:** 2026-07-04
+**Last updated:** 2026-10-14
 
 > **Archive format 5.** Method 2 uses BoltLZ format 2. Method 1 uses the
 > compact BoltLite stream defined below. Readers accept only version 5 and reject
@@ -323,7 +323,7 @@ Version `0x08` differs from `0x07` only in the header encoding (compact count
 tables and narrower scalar fields, §3.4.4); the FSE bitstream and raw extra-bit
 stream that carry the LZ77 tokens are byte-for-byte identical between the two.
 
-#### 3.4.2 Block Layout — Versions `0x07` and `0x87` (FSE/tANS, current)
+#### 3.4.2 Block Layout — Versions `0x07` and `0x87` (legacy FSE/tANS layout)
 
 A v0x07 or v0x87 Fluff block is a fixed-size byte-aligned header followed by two
 backwards binary streams:
@@ -576,7 +576,7 @@ reference codec.
 BoltPack v1.0 Fluff streams keep the DEFLATE layout for short distances, then use
 denser four-way buckets for 513–32768 to cut inline distance extra bits.
 
-`distance = base + read_bits(extra_bits)` (same for v0x06, v0x07, and v0x87):
+`distance = base + read_bits(extra_bits)` (same for v0x06, v0x07, v0x08, v0x87, and v0x88):
 
 | Symbol | Base | Extra bits | Symbol | Base   | Extra bits |
 | ------ | ---- | ---------- | ------ | ------ | ---------- |
@@ -648,10 +648,12 @@ EOB             ::= sym(256)
 if (src[0] != 0x46 || src[1] != 0x4C)
     return ERR_CORRUPT;
 version = src[2];
-if (version != 0x07 && version != 0x87 && version != 0x06)
+if (version != 0x08 && version != 0x88 &&
+    version != 0x07 && version != 0x87 && version != 0x06)
     return ERR_CORRUPT;
 
-if (version == 0x07 || version == 0x87)
+if (version == 0x08 || version == 0x88 ||
+    version == 0x07 || version == 0x87)
     return fl_decompress_fse(src, src_len, dst, dst_len, ctx);
 else
     return fl_decompress_rc(src, src_len, dst, dst_len, ctx);
@@ -659,7 +661,7 @@ else
 
 **Versions `0x07` and `0x87` (FSE/tANS) — `fl_decompress_fse()`:**
 
-If the stream header carries version `0x87`, the decoder MUST reset the Fluff
+If the stream header carries version `0x87` or `0x88`, the decoder MUST reset the Fluff
 history window and repeat-distance ring before reading the rest of the block.
 
 ```c
@@ -787,7 +789,7 @@ validate:
 
 - MUST reject blocks where `magic[0] != 0x46` or `magic[1] != 0x4C` →
   `ERR_CORRUPT`.
-- MUST reject blocks where `version` is not `0x06`, `0x07`, or `0x87` →
+- MUST reject blocks where `version` is not `0x06`, `0x07`, `0x87`, `0x08`, or `0x88` →
   `ERR_CORRUPT`.
 - For v0x07/v0x87: MUST reject any count table whose entries do not sum to the
   required `L` value → `ERR_CORRUPT`.
@@ -1119,7 +1121,7 @@ The reference implementation defines error codes as negative integers in
 | -1   | `BP_ERR_IO`                 | I/O error (read/write/seek failed)      |
 | -2   | `BP_ERR_NOMEM`              | `malloc()` returned NULL                |
 | -3   | `BP_ERR_MAGIC`              | Bad magic bytes (not a `.bolt` file)    |
-| -4   | `BP_ERR_VERSION`            | Archive format version > reader version |
+| -4   | `BP_ERR_VERSION`            | Archive format version is not supported |
 | -5   | `BP_ERR_CHECKSUM`           | CRC-32 mismatch on decompressed data    |
 | -6   | `BP_ERR_CORRUPT`            | Structural corruption                   |
 | -7   | `BP_ERR_TRUNCATED`          | Unexpected end of file                  |
@@ -1142,9 +1144,9 @@ Every BoltPack reader **MUST:**
 
 1. Validate archive header magic and version.
 2. Support **method 0** (stored).
-3. Return `ERR_METHOD` for any compressed method it does not implement.
+3. Return `BP_ERR_UNSUPPORTED_METHOD` for any compressed method it does not implement.
 4. Compute and validate CRC-32 checksums.
-5. Reject archives with format version > reader version.
+5. Reject archives whose format version is not exactly 5.
 6. Handle zero-length entries, empty directories, and symlinks.
 7. Support both **blocked** and **single-blob** compressed data.
 8. Restore modification times (mtime) during extraction.
@@ -1155,8 +1157,7 @@ Full v1.0 implementations SHOULD support all compressed methods:
 1. **Method 1** — BoltLite
 2. **Method 2** — BoltLZ
 3. **Method 3** — Fluff
-4. **Method 4** — zstd (modern 32/64-bit targets only; return `ERR_METHOD` on vintage/16-bit builds)
-5. **Method 4** — zstd (modern builds)
+4. **Method 4** — zstd (modern 32/64-bit targets only; return `BP_ERR_UNSUPPORTED_METHOD` on vintage/16-bit builds)
 
 ### 9.2 Encoder Conformance
 
@@ -1203,7 +1204,7 @@ To support future enhancements without breaking existing readers:
 
 1. **Entry header**: The `header_size` field enables new fields after existing data. Readers MAY skip unknown fields by advancing to `header_size`.
 2. **Archive header**: The `flags` field is reserved for future options (currently must be zero).
-3. **Compression methods**: New methods (3, 4, 5, ...) MAY be assigned; old readers will error with `ERR_METHOD`.
+3. **Compression methods**: New methods (3, 4, 5, ...) MAY be assigned; readers without support MUST return `BP_ERR_UNSUPPORTED_METHOD`.
 4. **Checksum types**: `checksum_type` allows future algorithms (1 = CRC-32, 2 = SHA-256, etc.).
 5. **Entry flags**: The `flags` field in entry headers is reserved; new bits may be assigned without breaking old readers.
 
@@ -1250,10 +1251,7 @@ The v1.0 repository ships test programs and regression suites in `test/` rather 
 a separate `test/vectors/` directory. Relevant coverage includes:
 
 1. `test/check_boltpack.py` — end-to-end archive creation and extraction checks.
-2. `test/test_fluff.py` — Fluff block round-trip, stored fallback, and corruption tests.
-3. `test/test_roundtrip.py` — multi-method archive round-trips.
-4. `test/test_format.py` — format and header validation.
-5. `test/test_filenames.py` — UTF-8 and path handling.
+2. `make unit-test` — C unit suites in `test/unit/`.
 
 ---
 
@@ -1263,7 +1261,7 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 - **Block:** A variable-length chunk of compressed data (8 KB to 256 KB).
 - **Creator code:** OS or CPU identifier in archive header (informational).
 - **Entry:** A file, directory, symlink, or metadata record.
-- **Fluff:** BoltPack's native LZ77+Huffman codec (method 3).
+- **Fluff:** BoltPack's native LZ77 + FSE/tANS codec (method 3).
 - **Little-endian:** Least-significant byte first; canonical byte order for this format.
 - **Metadata:** File creation time, platform origin, entry type.
 - **Method:** Compression algorithm (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff).
@@ -1281,5 +1279,5 @@ a separate `test/vectors/` directory. Relevant coverage includes:
 ---
 
 **Document version:** 1.1
-**Last updated:** June 2026
-**Status:** Final (Stable release)
+**Last updated:** 2026-10-14
+**Status:** Development

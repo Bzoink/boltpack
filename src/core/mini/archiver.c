@@ -144,7 +144,7 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
     if (ar == NULL || io == NULL) {
         return BP_ERR_INVALID_ARG;
     }
-    if (method > BP_METHOD_FLUFF) {
+    if (method > BP_METHOD_BOLTLZ) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
 

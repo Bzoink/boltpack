@@ -437,6 +437,8 @@ static bp_io_t *extract_open(const bp_entry_t *e, void *user_data)
     FILE *fp;
     bp_io_t *io;
 
+    if (!bp_name_is_safe(e->name)) return NULL;
+
     /* Convert UTF-8 archive name to ACP, then normalize to forward slashes
      * so it can be compared with the ACP target_fwd from list_populate. */
     if (utf8_to_acp(e->name, fwd_acp, sizeof(fwd_acp)) != 0) {

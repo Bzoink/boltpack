@@ -35,6 +35,9 @@
  * Archives > 2 GB cannot be processed on platforms where long is 32 bits. */
 void bp_io_from_file(bp_io_t *io, FILE *fp);
 
+/* Return 1 for a relative archive path safe to use during extraction. */
+int bp_mini_name_is_safe(const char *name);
+
 /* Convert unsigned long n to decimal in buf[11]; returns pointer to first digit.
  * buf must be at least 11 bytes. */
 char *bp_mini_ultoa(unsigned long n, char *buf);

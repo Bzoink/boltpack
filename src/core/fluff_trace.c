@@ -23,7 +23,7 @@ static int g_trace_enabled = 0;
 typedef struct fluff_trace_s {
     fluff_json_t *json;
     int started_events;     /* 1 if events array has begun */
-    int started_summary;    /* 1 if summary section has begun */
+    bp_uint32 event_count;
     /* Statistics collected during trace */
     bp_uint32 input_size;
     bp_uint32 output_size;
@@ -101,11 +101,8 @@ int fluff_trace_close_output(fluff_trace_t *ctx)
     
     fluff_json_begin_summary(ctx->json);
     
-    if (ctx->started_summary) {
-        /* Summary was already begun by caller, just need to write final stats */
-        fluff_json_write_summary_uint32(ctx->json, "total_events",
-                                         ctx->match_count + ctx->literal_count);
-    }
+    fluff_json_write_summary_uint32(ctx->json, "total_events",
+                                     ctx->event_count);
     
     fluff_json_end_summary(ctx->json);
     
@@ -142,6 +139,7 @@ void fluff_trace_hash_lookup(fluff_trace_t *ctx, bp_uint32 position,
             (unsigned long)chain_depth);
     
     fluff_json_write_event(ctx->json, event_json);
+    ctx->event_count++;
 }
 
 void fluff_trace_match_found(fluff_trace_t *ctx, bp_uint32 position,
@@ -169,6 +167,7 @@ void fluff_trace_match_found(fluff_trace_t *ctx, bp_uint32 position,
             (unsigned long)chain_explored);
     
     fluff_json_write_event(ctx->json, event_json);
+    ctx->event_count++;
 }
 
 void fluff_trace_parse_decision(fluff_trace_t *ctx, bp_uint32 position,
@@ -203,6 +202,7 @@ void fluff_trace_parse_decision(fluff_trace_t *ctx, bp_uint32 position,
     }
     
     fluff_json_write_event(ctx->json, event_json);
+    ctx->event_count++;
 }
 
 /* ---- Decompression phase events ---- */
@@ -214,18 +214,26 @@ void fluff_trace_decompress_symbol(fluff_trace_t *ctx,
                                     bp_uint32 value)
 {
     char event_json[512];
+    const char *safe_type;
     
     if (ctx == NULL || ctx->json == NULL || sym_type == NULL) return;
+
+    if (strcmp(sym_type, "literal") == 0 || strcmp(sym_type, "length") == 0 ||
+        strcmp(sym_type, "distance") == 0 || strcmp(sym_type, "eob") == 0)
+        safe_type = sym_type;
+    else
+        safe_type = "unknown";
     
     sprintf(event_json,
             "{\"type\":\"decompress_symbol\",\"bit_position\":%lu,"
             "\"symbol\":%lu,\"sym_type\":\"%s\",\"value\":%lu}",
             (unsigned long)bit_position,
             (unsigned long)symbol,
-            sym_type,
+            safe_type,
             (unsigned long)value);
     
     fluff_json_write_event(ctx->json, event_json);
+    ctx->event_count++;
 }
 
 void fluff_trace_decompress_output(fluff_trace_t *ctx,
@@ -244,6 +252,7 @@ void fluff_trace_decompress_output(fluff_trace_t *ctx,
             byte);
     
     fluff_json_write_event(ctx->json, event_json);
+    ctx->event_count++;
 }
 
 /* ---- Compression statistics ---- */

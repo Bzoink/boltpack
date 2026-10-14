@@ -4,7 +4,7 @@
 # Builds RISC OS binary and creates distribution package in one command.
 # 
 # Prerequisites: GCCSDK must be installed on host (see RISC-OS-BUILD-SETUP.md)
-# Usage: bash dev/build-riscos.sh
+# Usage: bash scripts/build-riscos.sh
 
 set -e
 
@@ -31,7 +31,7 @@ if [ ! -d "$GCCSDK_PATH" ]; then
     echo "   /opt/gccsdk/cross/bin/arm-unknown-riscos-gcc --version"
     echo ""
     echo "4. Then run this script again (or with custom path):"
-    echo "   GCCSDK_PATH=/path/to/gccsdk bash dev/build-riscos.sh"
+    echo "   GCCSDK_PATH=/path/to/gccsdk bash scripts/build-riscos.sh"
     echo ""
     exit 1
 fi
@@ -88,7 +88,8 @@ echo "=========================================="
 
 bash scripts/create-packages.sh riscos
 
-if [ ! -f "dist/boltpack-"*"-riscos-"*.zip ]; then
+set -- dist/boltpack-*-riscos-*.zip
+if [ ! -f "$1" ]; then
     echo ""
     echo "❌ Packaging failed: No package found in dist/"
     echo ""

@@ -1360,11 +1360,14 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
     bp_io_t *out;
 
     if (!entry->name) return NULL;
+    if (!bp_name_is_safe(entry->name)) return NULL;
     if (entry->entry_type == BP_TYPE_RSRC ||
         entry->entry_type == BP_TYPE_META)
         return NULL;
 
-    sprintf(full, "%s\\%s", ctx->dest_dir, entry->name);
+    if (strlen(ctx->dest_dir) + strlen(entry->name) + 2 >= sizeof(full))
+        return NULL;
+    snprintf(full, sizeof(full), "%s\\%s", ctx->dest_dir, entry->name);
     /* Convert forward slashes to backslash for TOS */
     {
         char *c;
