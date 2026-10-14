@@ -936,7 +936,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[4] = {"Stored", "LZSS", "boltlz", "Fluff"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;

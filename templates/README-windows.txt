@@ -36,7 +36,7 @@ Default: Fast (boltlz, 47% ratio)
 Options:
   -F, --fluff         Best compression (29% ratio)
   -2, --boltlz        Fast decompression (47% ratio)
-  -1, --lzss          Small-memory compression
+  -1, --boltlite          Small-memory compression
   -Z, --zstd          Best general-purpose ratio
   -0, --stored        No compression
 

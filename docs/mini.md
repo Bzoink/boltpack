@@ -4,7 +4,7 @@ BoltPack mini is a stripped-down variant of BoltPack that targets 16-bit
 systems — DOS (8086+), CP/M-86, Windows 3.x (Win16), and OS/2 1.x — where
 `sizeof(int) == 2`. It reads and writes the standard `.bolt` format so archives
 are fully interchangeable with the full build. Fluff is removed from the
-dependency graph entirely. Method 1 (LZSS) is available on all mini targets and
+dependency graph entirely. Method 1 (BoltLite) is available on all mini targets and
 is the default compression method on the 16-bit frontends; method 2 (boltlz)
 remains available only on the 32/64-bit mini builds (16-bit mini builds
 decompress boltlz via the shared `boltlz_decomp.c` decoder).
@@ -30,7 +30,7 @@ fit within the 8.3 filename limit.
 
 | Capability             | Mini limit                       | Notes                                                                                                       |
 | ---------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Compression methods    | 0 (stored), 1 (LZSS), 2 (boltlz) | Methods 3 (fluff) and any method > 3: error + exit; boltlz compression is unavailable on 16-bit mini builds |
+| Compression methods    | 0 (stored), 1 (BoltLite), 2 (boltlz) | Methods 3 (fluff) and any method > 3: error + exit; boltlz compression is unavailable on 16-bit mini builds |
 | Block size             | 8 KB – 32 KB                     | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`)                                                   |
 | Files per archive      | ≤ 65 535                         | Create rejects entry 65 536 and above                                                                       |
 | Uncompressed file size | ≤ 4 GB                           | `original_size.hi != 0` triggers error; display still shows the size                                        |
@@ -58,7 +58,7 @@ src/core/
     fluff.c/.h          ← full build only
     mini/
         archiver.c/.h   ← mini archiver (no fluff, capability checks)
-        compress.c/.h   ← mini compress (stored + LZSS + boltlz; boltlz compress on 32/64-bit only)
+        compress.c/.h   ← mini compress (stored + BoltLite + boltlz; boltlz compress on 32/64-bit only)
         boltlz_decomp.c/.h ← shared boltlz decoder for 16-bit (decompress only)
 
 src/frontend/
@@ -122,7 +122,7 @@ format-2 decoder. On 16-bit targets it includes the decoder-only build of
 Other mini builds link the full codec. The decoder checks declared buffers
 and requires no workspace or padding. Compression on 32/64-bit mini builds
 uses Balanced mode and a 64 KiB heap workspace; 16-bit creation uses Stored
-or LZSS and returns unsupported-method for BoltLZ compression.
+or BoltLite and returns unsupported-method for BoltLZ compression.
 
 ### `src/core/mini/compress.h` / `compress.c`
 
@@ -146,7 +146,7 @@ Key behaviour:
 
 - `method > BP_METHOD_BOLTLZ` returns `BP_ERR_UNSUPPORTED` immediately.
 - `src_len > BP_MINI_MAX_BLOCK_SIZE` returns `BP_ERR_INVALID_ARG`.
-- On 16-bit targets, a 29,200-byte LZSS scratch buffer (`LZSS_WORK_SIZE`) is
+- On 16-bit targets, an 18,432-byte BoltLite scratch buffer (`BOLTLITE_WORK_SIZE`) is
   heap-allocated on the first compress call and cached for the process
   lifetime. Extract, list, test, and info never allocate it; decompression
   needs no scratch. Heap placement keeps it off the 4–8 KB stack. Allocation
@@ -395,17 +395,17 @@ system differ.
 
 ### Memory Model Rationale
 
-The `-mc` (compact) model is required. During create with LZSS the following
+The `-mc` (compact) model is required. During create with BoltLite the following
 allocations must coexist:
 
 | Buffer                          | Size   |
 | ------------------------------- | ------ |
-| LZSS work buffer (lazy, create) | ~29 KB |
+| BoltLite work buffer (lazy, create) | ~18 KB |
 | Input block buffer              | 32 KB  |
 | Output block buffer             | ~37 KB |
-| **Create peak**                 | ~98 KB |
+| **Create peak**                 | ~87 KB |
 
-Extraction is lighter: the LZSS work buffer is never allocated, leaving one
+Extraction is lighter: the BoltLite work buffer is never allocated, leaving one
 ~34 KB compressed-input buffer plus one 32 KB output buffer (allocated once
 per run and reused across entries) — a peak of about 66 KB.
 
@@ -429,7 +429,7 @@ keeping the code portable.
 
 | File                                     | Purpose                                       |
 | ---------------------------------------- | --------------------------------------------- |
-| `src/core/mini/compress.h`               | Mini compress API (stored + LZSS + boltlz)    |
+| `src/core/mini/compress.h`               | Mini compress API (stored + BoltLite + boltlz)    |
 | `src/core/mini/compress.c`               | Mini compression wrapper — no fluff           |
 | `src/core/mini/boltlz_decomp.h`          | Shared BoltLZ decoder API (16-bit)            |
 | `src/core/mini/boltlz_decomp.c`          | Shared BoltLZ decoder (16-bit)                |

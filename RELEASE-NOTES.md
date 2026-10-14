@@ -1,5 +1,13 @@
 # Release Notes
 
+## 1.7 — Compact BoltLite for constrained targets
+
+- BoltLite uses a compact variable-form bitstream in archive format 5.
+- The encoder workspace drops from 29,200 to 18,432 bytes; the decoder needs
+  no codec scratch.
+- 16-bit mini builds use native 16-bit match positions for blocks up to 32 KiB.
+- Previous BoltPack binaries remain the way to extract format-4 archives.
+
 ## 1.6 — BoltLZ integration
 
 - BoltLZ is the default method 2 codec, using Balanced mode.
@@ -79,7 +87,7 @@ path is unchanged. No archive-format impact.
 
 #### Mini build (bpmini 1.2)
 
-- Lazy allocation of the LZSS work buffer (16-bit path, 29 200 bytes) and
+- Lazy allocation of the BoltLite work buffer (16-bit path, 29 200 bytes) and
   LZO work buffer (32-bit path, 64 KB): memory is malloc'd on the first
   create call and cached for process lifetime. Extract, list, test, and info
   operations no longer pay for compression scratch at startup.
@@ -116,7 +124,7 @@ path is unchanged. No archive-format impact.
 | Method | Name   | Intended use                                   |
 | ------ | ------ | ---------------------------------------------- |
 | 0      | Stored | Incompressible data or raw fallback            |
-| 1      | LZSS   | Small-memory and 16-bit compatible compression |
+| 1      | BoltLite   | Small-memory and 16-bit compatible compression |
 
 ## v1.3 — July 2026
 
@@ -171,7 +179,7 @@ Format version remains **2** (no archive-format changes in this release). The
 | Method | Name    | Intended use                                          |
 | ------ | ------- | ----------------------------------------------------- |
 | 0      | Stored  | Incompressible data or raw fallback                   |
-| 1      | LZSS    | Small-memory and 16-bit compatible compression        |
+| 1      | BoltLite    | Small-memory and 16-bit compatible compression        |
 | 2      | miniLZO | Fast general-purpose compression; current default     |
 | 3      | Fluff   | High compression ratio; all full-build targets        |
 | 4      | zstd    | Best compression ratio; modern 32/64-bit targets only |
@@ -189,7 +197,7 @@ Format version remains **2** (no archive-format changes in this release). The
   version checks are now strict equality: archives from v1.0 and v1.1 are
   rejected with `BP_ERR_VERSION`, and v1.2 archives are rejected by older
   readers. No backward-compatibility layer.
-- **Improved LZSS codec** (method 1):
+- **Improved BoltLite codec** (method 1):
   - Sliding window expanded from 2 048 to 4 096 bytes, improving compression
     ratio on most real-world files.
   - Back-distance encoding replaces the old absolute ring-buffer position.
@@ -199,7 +207,7 @@ Format version remains **2** (no archive-format changes in this release). The
     absolute-position/length). Back-distance range 1–4 096, match length 3–18.
   - Lazy matching and BST-based encoder retained; encoder scratch grows from
     14 900 to 29 200 bytes (fits comfortably in the 16-bit far data segment).
-- **Mini build** (`bpmini`) version bumped to 1.1. Shares the improved LZSS
+- **Mini build** (`bpmini`) version bumped to 1.1. Shares the improved BoltLite
   codec; decoder scratch eliminated on 16-bit targets as well.
 - Archive format version is now **2**; `creator_ver` in new archives: `0x01, 0x02`.
 
@@ -208,7 +216,7 @@ Format version remains **2** (no archive-format changes in this release). The
 | Method | Name    | Intended use                                          |
 | ------ | ------- | ----------------------------------------------------- |
 | 0      | Stored  | Incompressible data or raw fallback                   |
-| 1      | LZSS    | Small-memory and 16-bit compatible compression        |
+| 1      | BoltLite    | Small-memory and 16-bit compatible compression        |
 | 2      | miniLZO | Fast general-purpose compression; current default     |
 | 3      | Fluff   | High compression ratio; all full-build targets        |
 | 4      | zstd    | Best compression ratio; modern 32/64-bit targets only |
@@ -248,7 +256,7 @@ The `creator_ver` bytes in new archives written by BoltPack 1.1 are
 | Method | Name    | Intended use                                          |
 | ------ | ------- | ----------------------------------------------------- |
 | 0      | Stored  | Incompressible data or raw fallback                   |
-| 1      | LZSS    | Small-memory and 16-bit compatible compression        |
+| 1      | BoltLite    | Small-memory and 16-bit compatible compression        |
 | 2      | miniLZO | Fast general-purpose compression; current default     |
 | 3      | Fluff   | High compression ratio; all full-build targets        |
 | 4      | zstd    | Best compression ratio; modern 32/64-bit targets only |
@@ -269,7 +277,7 @@ implementation.
   paths, Adler-32 checksums, and block-based storage.
 - Four archive methods:
   - Method 0: Stored
-  - Method 1: LZSS
+  - Method 1: BoltLite
   - Method 2: miniLZO
   - Method 3: Fluff
 - Full frontend and core support for modern and vintage targets, including the
@@ -287,7 +295,7 @@ BoltPack 1.0 ships the following compression choices:
 | Method | Name    | Intended use                                      |
 | ------ | ------- | ------------------------------------------------- |
 | 0      | Stored  | Incompressible data or raw fallback               |
-| 1      | LZSS    | Small-memory and 16-bit compatible compression    |
+| 1      | BoltLite    | Small-memory and 16-bit compatible compression    |
 | 2      | miniLZO | Fast general-purpose compression; current default |
 | 3      | Fluff   | Best compression ratio in the full build          |
 
@@ -301,7 +309,7 @@ platform documents a smaller subset:
 
 - no compression flag: miniLZO default
 - `-0`: stored
-- `-1`: LZSS
+- `-1`: BoltLite
 - `-F`: Fluff
 
 Typical usage:
@@ -404,8 +412,8 @@ crc` failures seen with the previous flushed-CRC variant.
 ### 1.2
 
 - Archive format version bumped to 2 (strict; v1.0/v1.1 archives rejected).
-- LZSS codec improved: 4 096-byte sliding window, back-distance encoding, decoder scratch eliminated.
-- Mini build bumped to 1.1; shares improved LZSS codec.
+- BoltLite codec improved: 4 096-byte sliding window, back-distance encoding, decoder scratch eliminated.
+- Mini build bumped to 1.1; shares improved BoltLite codec.
 - `creator_ver` in new archives: `0x01, 0x02`.
 
 ### 1.1
@@ -417,7 +425,7 @@ crc` failures seen with the previous flushed-CRC variant.
 ### 1.0
 
 - First stable BoltPack archive format release.
-- Stable four-method numbering finalized as stored, LZSS, miniLZO, Fluff.
+- Stable four-method numbering finalized as stored, BoltLite, miniLZO, Fluff.
 - Fluff v0x05 documented as the current native high-ratio codec.
 - FLTK GUI frontend ships for Linux x86-64, Windows 32-bit, and Windows 64-bit.
 - Pre-built binaries available for 18 platforms including Amiga 68k, Atari TOS,

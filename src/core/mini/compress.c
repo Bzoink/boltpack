@@ -1,9 +1,9 @@
 /*
- * compress.c -- mini compression layer for BoltPack (stored + LZSS + boltlz)
+ * compress.c -- mini compression layer for BoltPack (stored + BoltLite + boltlz)
  *
  * ANSI C (C89/C90) only.  No fluff dependency.
  *
- * 16-bit systems create Stored or LZSS data and decode BoltLZ with the
+ * 16-bit systems create Stored or BoltLite data and decode BoltLZ with the
  * shared decoder-only implementation. Blocks are limited to 32 KiB.
  * Other mini builds also compress with BoltLZ Balanced, using heap workspace.
  *
@@ -12,20 +12,20 @@
  */
 
 #include "compress.h"
-#include "../lzss.h"
+#include "../boltlite.h"
 #include <stdlib.h>
 #include <string.h>
 
 #if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
-/* ---- 16-bit path: stored + LZSS compress; stored + LZSS + boltlz decompress - */
+/* ---- 16-bit path: stored + BoltLite compress; stored + BoltLite + boltlz decompress - */
 
 /*
- * LZSS work buffer, heap-allocated on the first compress call and cached
+ * BoltLite work buffer, heap-allocated on the first compress call and cached
  * for the process lifetime (never freed; calls never overlap).  Lazy
  * allocation keeps extract/list/test/info from paying the 29 KB cost;
  * heap placement keeps it off the 4-8 KB 16-bit DOS/Win16 stack.
  */
-static bp_uint8 *lzss_work_16 = NULL;
+static bp_uint8 *boltlite_work_16 = NULL;
 
 #include "boltlz_decomp.h"
 
@@ -47,14 +47,14 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
         *dst_len = src_len;
         return BP_OK;
     }
-    if (method == BP_METHOD_LZSS) {
-        if (lzss_work_16 == NULL) {
-            lzss_work_16 = (bp_uint8 *)malloc((size_t)LZSS_WORK_SIZE);
-            if (lzss_work_16 == NULL) {
+    if (method == BP_METHOD_BOLTLITE) {
+        if (boltlite_work_16 == NULL) {
+            boltlite_work_16 = (bp_uint8 *)malloc((size_t)BOLTLITE_WORK_SIZE);
+            if (boltlite_work_16 == NULL) {
                 return BP_ERR_NOMEM;
             }
         }
-        *dst_len = lzss_compress(src, src_len, dst, lzss_work_16);
+        *dst_len = boltlite_compress(src, src_len, dst, boltlite_work_16);
         return (*dst_len > 0) ? BP_OK : BP_ERR_COMPRESS;
     }
     return BP_ERR_UNSUPPORTED_METHOD;
@@ -71,10 +71,10 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         *dst_len = src_len;
         return BP_OK;
     }
-    if (method == BP_METHOD_LZSS) {
+    if (method == BP_METHOD_BOLTLITE) {
         int rc;
-        /* Distance-based LZSS decode needs no scratch buffer. */
-        rc = lzss_decompress(src, src_len, dst, *dst_len, NULL);
+        /* Distance-based BoltLite decode needs no scratch buffer. */
+        rc = boltlite_decompress(src, src_len, dst, *dst_len, NULL);
         return rc;
     }
     if (method == BP_METHOD_BOLTLZ) {
@@ -113,7 +113,7 @@ bp_uint32 bp_mini_compress_work_size(void)
 }
 
 #else
-/* ---- 32/64-bit path: stored + LZSS + boltlz ------------------------------ */
+/* ---- 32/64-bit path: stored + BoltLite + boltlz ------------------------------ */
 
 #include "../boltlz.h"
 
@@ -133,7 +133,7 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
         return BP_ERR_INVALID_ARG;
     }
     if (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLZ &&
-        method != BP_METHOD_LZSS) {
+        method != BP_METHOD_BOLTLITE) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
     if (src_len > BP_MINI_MAX_BLOCK_SIZE) {
@@ -146,9 +146,9 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
         return BP_OK;
     }
 
-    if (method == BP_METHOD_LZSS) {
-        bp_uint8 lzss_work[LZSS_WORK_SIZE]; /* 32/64-bit: stack is fine */
-        *dst_len = lzss_compress(src, src_len, dst, lzss_work);
+    if (method == BP_METHOD_BOLTLITE) {
+        bp_uint8 boltlite_work[BOLTLITE_WORK_SIZE]; /* 32/64-bit: stack is fine */
+        *dst_len = boltlite_compress(src, src_len, dst, boltlite_work);
         return (*dst_len > 0) ? BP_OK : BP_ERR_COMPRESS;
     }
 
@@ -170,7 +170,7 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         return BP_ERR_INVALID_ARG;
     }
     if (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLZ &&
-        method != BP_METHOD_LZSS) {
+        method != BP_METHOD_BOLTLITE) {
         return BP_ERR_UNSUPPORTED_METHOD;
     }
 
@@ -180,10 +180,10 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
         return BP_OK;
     }
 
-    if (method == BP_METHOD_LZSS) {
+    if (method == BP_METHOD_BOLTLITE) {
         int rc;
-        /* Distance-based LZSS decode needs no scratch buffer. */
-        rc = lzss_decompress(src, src_len, dst, *dst_len, NULL);
+        /* Distance-based BoltLite decode needs no scratch buffer. */
+        rc = boltlite_decompress(src, src_len, dst, *dst_len, NULL);
         return rc;
     }
 

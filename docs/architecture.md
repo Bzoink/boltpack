@@ -14,7 +14,7 @@
 ├─────────────────────────────────┤
 │        Archiver Core            │  ← packing/unpacking, archive format logic
 ├─────────────────────────────────┤
-│      Compression Layer          │  ← LZSS, boltlz, fluff codec engines
+│      Compression Layer          │  ← BoltLite, boltlz, fluff codec engines
 └─────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ bp_uint32 bp_checksum(bp_uint32 adler, const bp_uint8 *data, bp_uint32 len);
 ```
 
 The current implementation supports five archive methods: stored raw blocks
-(method `0`), LZSS (method `1`), boltlz (method `2`), Fluff (method `3`), and
+(method `0`), BoltLite (method `1`), boltlz (method `2`), Fluff (method `3`), and
 zstd (method `4`) on modern builds.
 The archiver core decides which codec to invoke for a block and may still store
 an individual block raw when a compressed method misses the 99% threshold.
@@ -255,7 +255,7 @@ The CLI frontend implements the `bp_io_t` callbacks using standard C file functi
 - **`-b SIZE`** (`c`, `a`): Set block size: `8k`–`256k`. Overrides auto-detection.
 - **`-0`** (`c`, `a`): Store only — skip compression.
 - **`-F`** (`c`, `a`): Use Fluff compression. When no `-b` is given, block size is automatically set to 256 KB to match Fluff's window size.
-- **`-1`** (`c`, `a`): Use LZSS compression.
+- **`-1`** (`c`, `a`): Use BoltLite compression.
 - **`-2`** (`c`, `a`): Use boltlz compression. `-l 1` selects level 1; `-l 2` selects level 2; omitting `-l` selects Balanced.
 - **`-l N`** (`c`, `a`): Set boltlz level 1–2, or Fluff/zstd level 1–9. For Fluff, level 1 is fastest (chain depth 8), level 8 is the default (chain depth 256), and level 9 is slowest/best (chain depth 512).
 - **`-q`** (all): Quiet — show only progress.

@@ -11,7 +11,7 @@
  *
  * Valid values:
  *   0 = Stored (no compression)
- *   1 = LZSS (small-memory LZ77)
+ *   1 = BoltLite (small-memory LZ77)
  *   2 = boltlz (default if not set)
  *   3 = Fluff (LZ77+FSE/tANS, best ratio on all targets)
  *   4 = zstd (Zstandard, best ratio on modern 64-bit; BOLTPACK_ZSTD builds only)
@@ -373,7 +373,7 @@ typedef struct wcx_entry {
     bp_uint32 comp_size;
     bp_uint32 mtime;
     int       is_dir;
-    int       method;               /* 0=stored, 1=LZSS, 2=boltlz, 3=fluff, 4=zstd */
+    int       method;               /* 0=stored, 1=BoltLite, 2=boltlz, 3=fluff, 4=zstd */
 } wcx_entry_t;
 
 /* bp_archive_list callback: append one entry to arc->entries[]. */
@@ -571,7 +571,7 @@ static tProcessDataProc g_proc_cb;
 
 /*
  * Get the configured compression method from the registry.
- * Returns: 0 (stored), 1 (LZSS), 2 (boltlz -- default), 3 (fluff),
+ * Returns: 0 (stored), 1 (BoltLite), 2 (boltlz -- default), 3 (fluff),
  *          or 4 (zstd, modern builds only)
  */
 static int get_compression_method(void)

@@ -551,7 +551,7 @@ do_x68k() {
 # Requires Open Watcom 2.0 at /opt/watcom (or wcc on PATH).
 # The mini archiver (src/core/mini/) is used instead of the full archiver.
 # BoltLZ encoder workspace is too large for
-# 16-bit; the mini build uses stored/LZSS compression and can decode BoltLZ.
+# 16-bit; the mini build uses stored/BoltLite compression and can decode BoltLZ.
 
 _check_watcom() {
     if command -v wcc >/dev/null 2>&1; then

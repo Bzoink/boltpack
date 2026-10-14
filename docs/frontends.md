@@ -23,7 +23,7 @@ platform explicitly documents a smaller subset:
 
 - no compression flag: boltlz default
 - `-0`: stored
-- `-1`: LZSS
+- `-1`: BoltLite
 - `-F`: Fluff
 
 Mini frontends keep the same numbering but only expose the methods they ship.
@@ -176,7 +176,7 @@ fast-fluff controls below.
 
 | Flag   | Description                                                                               |
 | ------ | ----------------------------------------------------------------------------------------- |
-| `-1`   | Use LZSS compression                                                                      |
+| `-1`   | Use BoltLite compression                                                                      |
 | `-2`   | Use boltlz compression explicitly (the default method)                                    |
 | `-l N` | boltlz level 1-2; Fluff/zstd level 1-9                                                    |
 | `-j N` | Use fast-fluff with `N` worker threads (fast-fluff CLI builds only)                       |
@@ -248,7 +248,7 @@ Valid values:
 | Value | Method           | Description                          |
 | ----- | ---------------- | ------------------------------------ |
 | `0`   | Stored           | No compression                       |
-| `1`   | LZSS             | Small-memory LZ77                    |
+| `1`   | BoltLite             | Small-memory LZ77                    |
 | `2`   | boltlz (default) | Fast general-purpose compression     |
 | `3`   | fluff            | LZ77+Huffman, best compression ratio |
 
@@ -388,7 +388,7 @@ Filenames are stored as-is (ASCII / codepage). Non-ASCII names may not round-tri
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77+Huffman compression            |
-| `-1`      | Use LZSS compression                          |
+| `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
 | `-o PATH` | Extract to directory                          |
@@ -547,7 +547,7 @@ Within archive entry names, forward slashes are always used as directory separat
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `AvailMem`) |
 | `-0`      | Store only (no compression)                                                           |
 | `-F`      | Use fluff LZ77+Huffman compression                                                    |
-| `-1`      | Use LZSS compression                                                                  |
+| `-1`      | Use BoltLite compression                                                                  |
 | `-q`      | Quiet (summary only)                                                                  |
 | `-qq`     | Silent (errors only)                                                                  |
 | `-o PATH` | Output directory for extraction                                                       |
@@ -682,7 +682,7 @@ MYFILE.TXT       →   MYFILE.TXT
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `Malloc(-1)`) |
 | `-0`      | Store only (no compression)                                                             |
 | `-F`      | Use fluff LZ77+Huffman compression                                                      |
-| `-1`      | Use LZSS compression                                                                    |
+| `-1`      | Use BoltLite compression                                                                    |
 | `-q`      | Quiet (summary only)                                                                    |
 | `-qq`     | Silent (errors only)                                                                    |
 | `-o PATH` | Output directory for extraction                                                         |
@@ -695,7 +695,7 @@ Measured on Atari systems using the shared compression core used by both the
 CLI and GEM GUI frontends. These are practical reference values, not hard
 guarantees:
 
-| Machine        | RAM  | LZSS     | boltlz  | Fluff    |
+| Machine        | RAM  | BoltLite     | boltlz  | Fluff    |
 | -------------- | ---- | -------- | ------- | -------- |
 | 68000 @ 8 MHz  | 4 MB | 1.1 kB/s | 27 kB/s | 1.2 kB/s |
 | 68030 @ 16 MHz | 4 MB | 4.9 kB/s | 81 kB/s | 4.1 kB/s |
@@ -753,7 +753,7 @@ GUI tried to add directory entries during archive creation.
 | -------------------------------- | ----------------------------------------------- |
 | `src/core/archiver.c`            | Archive format read/write                       |
 | `src/core/compress.c`            | boltlz compression wrapper                      |
-| `src/core/lzss.c`                | LZSS codec                                      |
+| `src/core/boltlite.c`                | BoltLite codec                                      |
 | `src/core/fluff.c`               | fluff codec                                     |
 | `src/core/bp_codepage.c`         | code page helpers                               |
 | `src/core/boltlz.c`              | boltlz library                                  |
@@ -1013,7 +1013,7 @@ static bp_uint8 ChooseCompressionMethod(void)
 
 This architecture allows future extension to show a dialog menu enabling users to select:
 
-- **LZSS** (method 1): Small-memory LZ77 for compatibility-focused archives
+- **BoltLite** (method 1): Small-memory LZ77 for compatibility-focused archives
 - **Fluff** (method 3): LZ77+Huffman compression (best ratio)
 - **boltlz** (method 2): Fast, small blocks only (current default)
 - **Stored** (method 0): No compression (for pre-compressed data)
@@ -1226,7 +1226,7 @@ macOS CLI surface.
 
 | Option              | Description                            |
 | ------------------- | -------------------------------------- |
-| `-1`, `--lzss`      | Use LZSS compression                   |
+| `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
 | `-l N`, `--level N` | boltlz level 1-2; Fluff/zstd level 1-9 |
 | `--store`           | Long-form alias for `-0`               |
@@ -1322,7 +1322,7 @@ Haiku CLI surface.
 
 | Option              | Description                            |
 | ------------------- | -------------------------------------- |
-| `-1`, `--lzss`      | Use LZSS compression                   |
+| `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
 | `-l N`, `--level N` | boltlz level 1-2; Fluff/zstd level 1-9 |
 | `--store`           | Long-form alias for `-0`               |
@@ -1361,7 +1361,7 @@ Or directly:
 ```sh
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
     -I src/core  \
-    src/core/archiver.c src/core/compress.c src/core/lzss.c \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/riscos/main.c src/core/boltlz.c \
     -o boltpack,ff8
@@ -1457,7 +1457,7 @@ RISC OS uses Latin-1 (ISO 8859-1). File names are converted to UTF-8 on archive 
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77+Huffman compression            |
-| `-1`      | Use LZSS compression                          |
+| `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
 | `-o PATH` | Extract to directory                          |
@@ -1550,7 +1550,7 @@ Drive prefixes (`C:\`, `C:`) are stripped. Backslashes are normalised to forward
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77+Huffman compression            |
-| `-1`      | Use LZSS compression                          |
+| `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
 | `-o PATH` | Extract to directory                          |
@@ -1631,7 +1631,7 @@ Plan 9 was the first production operating system to adopt UTF-8, designed by Rob
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77+Huffman compression            |
-| `-1`      | Use LZSS compression                          |
+| `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
 | `-o PATH` | Extract to directory                          |
@@ -1737,7 +1737,7 @@ Sinclair QL uses ISO-8859-1 (Latin-1) for filenames. File names are converted to
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77+Huffman compression            |
-| `-1`      | Use LZSS compression                          |
+| `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
 | `-qq`     | Silent (errors only)                          |
 | `-o PATH` | Extract to directory                          |
@@ -1768,7 +1768,7 @@ Or directly:
 ```sh
 m68k-x680x-human-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
     -I src/core  \
-    src/core/archiver.c src/core/compress.c src/core/lzss.c \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/bp_codepage.c \
     src/frontend/x68k/main.c src/core/boltlz.c \
     -o build/x68k/boltpack.x
@@ -2268,7 +2268,7 @@ because GEM headers are not strict C89 compliant.
 
 The file list displays entries in a formatted single-line layout with compact
 sizes and packed-size percentage semantics. Archive creation now uses a
-dedicated **Compression** menu with checkmarked Stored, LZSS, boltlz, and
+dedicated **Compression** menu with checkmarked Stored, BoltLite, boltlz, and
 Fluff choices; Fluff selection is gated against the current largest free memory
 block reported by `AvailMem(MEMF_ANY | MEMF_LARGEST)`.
 

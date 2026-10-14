@@ -3,7 +3,7 @@
 BoltLZ is an original general-purpose, byte-oriented LZ77 codec implemented
 in portable C89. Its two encoder modes share one bounds-checked decoder.
 The default Balanced mode favours compressed size; Fast reduces search work.
-The archive integration uses method 2 in archive format 4.
+The archive integration uses method 2 in archive format 5.
 
 ## Representation
 

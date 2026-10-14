@@ -9,7 +9,7 @@
  *       -I src/core                           \
  *       src/core/compress.c src/core/archiver.c                  \
  *       src/core/bp_codepage.c                                   \
- *       src/core/fluff.c src/core/lzss.c                         \
+ *       src/core/fluff.c src/core/boltlite.c                         \
  *       src/frontend/haiku_gui/main.cpp                          \
  *       src/core/boltlz.c                               \
  *       -o build/haiku/BoltPack
@@ -53,7 +53,7 @@ extern "C" {
 #include "archiver.h"
 #include "compress.h"
 #include "fluff.h"
-#include "lzss.h"
+#include "boltlite.h"
 }
 #include "help_text.h"
 
@@ -77,7 +77,7 @@ enum {
     MSG_EXSL_REF   = 'ESRF',
     MSG_CREA_REFS  = 'CREF',
     MSG_COMP_STORE = 'CSTO',
-    MSG_COMP_LZSS  = 'CLZS',
+    MSG_COMP_BOLTLITE  = 'CLZS',
     MSG_COMP_BOLTLZ = 'CFLZ',
     MSG_COMP_FLUFF = 'CFLF',
     MSG_LEVEL_FAST = 'LVLF',
@@ -131,7 +131,7 @@ static const char *method_name(int m)
 {
     switch (m) {
         case BP_METHOD_STORED: return "Stored";
-        case BP_METHOD_LZSS:   return "LZSS";
+        case BP_METHOD_BOLTLITE:   return "BoltLite";
         case BP_METHOD_BOLTLZ:  return "boltlz";
         case BP_METHOD_FLUFF:  return "fluff";
         case BP_METHOD_ZSTD:   return "zstd";
@@ -142,7 +142,7 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -167,7 +167,7 @@ static const int s_method_default_level[] = { 1, 1, 1, 2 };
 
 static bp_uint32 level_to_block_size(int method, int level)
 {
-    if (method == BP_METHOD_LZSS) {
+    if (method == BP_METHOD_BOLTLITE) {
         switch (level) {
             case 0: return BP_BLOCK_8K;
             case 2: return BP_BLOCK_32K;
@@ -546,8 +546,8 @@ BPWindow::BPWindow()
 
     fMethodItems[0] = new BMenuItem("Stored",
         new BMessage(MSG_COMP_STORE));
-    fMethodItems[1] = new BMenuItem("LZSS",
-        new BMessage(MSG_COMP_LZSS));
+    fMethodItems[1] = new BMenuItem("BoltLite",
+        new BMessage(MSG_COMP_BOLTLITE));
     fMethodItems[2] = new BMenuItem("boltlz",
         new BMessage(MSG_COMP_BOLTLZ));
     fMethodItems[3] = new BMenuItem("fluff",
@@ -782,8 +782,8 @@ void BPWindow::MessageReceived(BMessage *msg)
             UpdateCompressionMenu();
             break;
 
-        case MSG_COMP_LZSS:
-            g_compression_method = BP_METHOD_LZSS;
+        case MSG_COMP_BOLTLITE:
+            g_compression_method = BP_METHOD_BOLTLITE;
             g_compression_level = s_method_default_level[g_compression_method];
             UpdateCompressionMenu();
             break;

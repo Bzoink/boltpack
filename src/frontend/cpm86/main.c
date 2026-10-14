@@ -405,7 +405,7 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_original, buf);
     printf("Total:   %s\n", buf);
     {
-        static const char * const mn[4] = {"stored","LZSS","boltlz","fluff"};
+        static const char * const mn[4] = {"stored","BoltLite","boltlz","fluff"};
         int j;
         int mfirst;
         printf("Methods: ");
@@ -437,10 +437,10 @@ static void usage(void)
           "Options:\n"
           "  -b8k / -b16k / -b32k           block size (create only)\n"
           "  -m0                            store, no compression\n"
-          "  -m1                            LZSS compression (default)\n"
+          "  -m1                            BoltLite compression (default)\n"
           "Compression:\n"
-          "  create:   store (0), LZSS (1)\n"
-          "  extract:  store (0), LZSS (1), boltlz (2)\n",
+          "  create:   store (0), BoltLite (1)\n"
+          "  extract:  store (0), BoltLite (1), boltlz (2)\n",
           stderr);
 }
 
@@ -453,7 +453,7 @@ int main(int argc, char **argv)
     char cmd;
     const char *arc_path;
     bp_uint32 block_size = BP_BLOCK_32K;
-    bp_uint8  method     = BP_METHOD_LZSS;
+    bp_uint8  method     = BP_METHOD_BOLTLITE;
 
     if (argc < 3) { usage(); return 1; }
 
@@ -463,7 +463,7 @@ int main(int argc, char **argv)
             else if (strcmp(argv[i], "-b16k") == 0) { block_size = 16384U; }
             else if (strcmp(argv[i], "-b32k") == 0) { block_size = 32768U; }
             else if (strcmp(argv[i], "-m0") == 0)   { method = BP_METHOD_STORED; }
-            else if (strcmp(argv[i], "-m1") == 0)   { method = BP_METHOD_LZSS;   }
+            else if (strcmp(argv[i], "-m1") == 0)   { method = BP_METHOD_BOLTLITE;   }
             else if (strcmp(argv[i], "-m2") == 0)   {
                 fputs("bpmini: boltlz not supported on 16-bit\n", stderr);
                 return 1;

@@ -85,7 +85,7 @@ namespace BoltPack
             "--------------------\r\n" +
             "BoltPack supports four compression methods:\r\n" +
             "  Stored  - No compression\r\n" +
-            "  LZSS    - Small-memory LZ77 for 16-bit systems\r\n" +
+            "  BoltLite    - Small-memory LZ77 for 16-bit systems\r\n" +
             "  boltlz - Fast general-purpose (default)\r\n" +
             "  fluff   - Best compression ratio\r\n" +
             "\r\n" +

@@ -2,7 +2,7 @@
  * test_archive_format.c -- unit tests for archive create / list / test / info
  *
  * Uses a memory-backed bp_io_t to exercise the full archiver API without
- * touching the filesystem.  Tests Stored, LZSS, boltlz, and Fluff methods.
+ * touching the filesystem.  Tests Stored, BoltLite, boltlz, and Fluff methods.
  *
  * ANSI C (C89/C90) only.
  *
@@ -276,7 +276,7 @@ static void test_header_bytes(void)
 
         /* format version (little-endian uint16) */
         UNIT_CHECK(mem.buf[4] == BP_FORMAT_VERSION && mem.buf[5] == 0x00,
-                   "format version == 4 (little-endian)");
+                   "format version == 5 (little-endian)");
 
         /* file_count (little-endian uint32 at offset 8) must be 2 */
         UNIT_CHECK(mem.buf[8] == 2 && mem.buf[9] == 0 &&
@@ -673,7 +673,7 @@ static void test_previous_versions_rejected(void)
     mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
     if (!mem.buf) exit(2);
     mem.cap = MEM_IO_CAP;
-    UNIT_SECTION("Archive format: version 4 only");
+    UNIT_SECTION("Archive format: version 5 only");
     for (version = 1; version < BP_FORMAT_VERSION; version++) {
         rc = create_test_archive(&mem, BP_METHOD_BOLTLZ);
         if (rc != BP_OK) { UNIT_CHECK(0, "prepare version-rejection fixture"); break; }
@@ -710,9 +710,9 @@ int main(void)
     test_list_method("list (Stored)", BP_METHOD_STORED);
     test_integrity_method("test (Stored)", BP_METHOD_STORED);
 
-    UNIT_SECTION("Archive format: LZSS method");
-    test_list_method("list (LZSS)", BP_METHOD_LZSS);
-    test_integrity_method("test (LZSS)", BP_METHOD_LZSS);
+    UNIT_SECTION("Archive format: BoltLite method");
+    test_list_method("list (BoltLite)", BP_METHOD_BOLTLITE);
+    test_integrity_method("test (BoltLite)", BP_METHOD_BOLTLITE);
 
    UNIT_SECTION("Archive format: boltlz method");
    test_list_method("list (boltlz)", BP_METHOD_BOLTLZ);

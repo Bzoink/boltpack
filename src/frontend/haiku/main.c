@@ -1049,7 +1049,7 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "LZSS", "boltlz", "Fluff", "zstd"};
+    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
     int pos = 0;
     int first = 1;
     int i;
@@ -1510,7 +1510,7 @@ static void usage_basic(void)
         "\nCommon options:\n"
         "  -b SIZE    Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0         Store only (no compression)\n"
-        "  -1         LZSS compression\n"
+        "  -1         BoltLite compression\n"
         "  -2         boltlz compression (default)\n"
         "  -F         Use Fluff compression\n"
         "  -l N       Compression level (boltlz: 1-2; Fluff/zstd: 1-9)\n"
@@ -1549,7 +1549,7 @@ static void usage_advanced(void)
         "\nOptions:\n"
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n"
         "  -0, --store      Store only (no compression)\n"
-        "  -1, --lzss       Use LZSS compression\n"
+        "  -1, --boltlite       Use BoltLite compression\n"
         "  -2, --boltlz    Use boltlz compression (default)\n"
         "  -F, --fluff      Use Fluff compression\n"
         "  -l N, --level N  boltlz level 1-2; Fluff/zstd level 1-9\n"
@@ -1639,8 +1639,8 @@ int main(int argc, char **argv)
                    strcmp(argv[i], "--store") == 0) {
             method = BP_METHOD_STORED; i++;
         } else if (strcmp(argv[i], "-1") == 0 ||
-                   strcmp(argv[i], "--lzss") == 0) {
-            method = BP_METHOD_LZSS; i++;
+                   strcmp(argv[i], "--boltlite") == 0) {
+            method = BP_METHOD_BOLTLITE; i++;
         } else if (strcmp(argv[i], "-2") == 0 ||
                    strcmp(argv[i], "--boltlz") == 0) {
             method = BP_METHOD_BOLTLZ; i++;

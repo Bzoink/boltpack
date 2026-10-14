@@ -85,7 +85,7 @@ static const char *method_name(int method)
 {
     switch (method) {
     case 0: return "Stored (no compression)";
-    case 1: return "LZSS (small-memory LZ77)";
+    case 1: return "BoltLite (small-memory LZ77)";
     case 2: return "boltlz (fast, good ratio)";
     case 3: return "Fluff (LZ77+FSE/tANS, best ratio)";
     case 4: return "zstd (Zstandard, best ratio; modern 64-bit builds)";
@@ -98,7 +98,7 @@ static const char *method_name(int method)
  * ========================================================================== */
 
 #define IDC_STORED   100
-#define IDC_LZSS     101
+#define IDC_BOLTLITE     101
 #define IDC_BOLTLZ  102
 #define IDC_FLUFF    103
 #define IDC_ZSTD     104
@@ -118,7 +118,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             SendDlgItemMessageA(hwnd, IDC_STORED, BM_SETCHECK, BST_CHECKED, 0);
             break;
         case 1:
-            SendDlgItemMessageA(hwnd, IDC_LZSS, BM_SETCHECK, BST_CHECKED, 0);
+            SendDlgItemMessageA(hwnd, IDC_BOLTLITE, BM_SETCHECK, BST_CHECKED, 0);
             break;
         case 3:
             SendDlgItemMessageA(hwnd, IDC_FLUFF, BM_SETCHECK, BST_CHECKED, 0);
@@ -137,7 +137,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         if (wParam == IDC_OK) {
             if (SendDlgItemMessageA(hwnd, IDC_STORED, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                 method = 0;
-            } else if (SendDlgItemMessageA(hwnd, IDC_LZSS, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            } else if (SendDlgItemMessageA(hwnd, IDC_BOLTLITE, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                 method = 1;
             } else if (SendDlgItemMessageA(hwnd, IDC_FLUFF, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                 method = 3;
@@ -202,7 +202,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "  boltpack-config.exe --set 0|1|2|3|4 (set method)\n");
             fprintf(stderr, "\nCompression methods:\n");
             fprintf(stderr, "  0 = Stored (no compression)\n");
-            fprintf(stderr, "  1 = LZSS (small-memory LZ77)\n");
+            fprintf(stderr, "  1 = BoltLite (small-memory LZ77)\n");
             fprintf(stderr, "  2 = boltlz (default, fast)\n");
             fprintf(stderr, "  3 = Fluff (best compression ratio)\n");
             fprintf(stderr, "  4 = zstd (best ratio; modern 64-bit builds only)\n");

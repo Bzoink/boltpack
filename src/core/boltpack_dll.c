@@ -12,7 +12,7 @@
 
 #include "boltpack_dll.h"
 #include "fluff.h"
-#include "lzss.h"
+#include "boltlite.h"
 #include <stdio.h>
 
 /* Re-export core functions with DLL linkage.
