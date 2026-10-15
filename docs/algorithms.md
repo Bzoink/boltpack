@@ -1,7 +1,7 @@
 # BoltPack Compression Algorithms v1.2
 
 **Status:** Stable
-**Scope:** Current codec implementations shipped in BoltPack v1.7
+**Scope:** Current codec implementations shipped in BoltPack v1.8
 
 This document describes the algorithms that are actually implemented in the
 current codebase. It intentionally covers only the kept codecs and their

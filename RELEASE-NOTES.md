@@ -1,5 +1,14 @@
 # Release Notes
 
+## 1.8 — Fluff compression improvements
+
+- Fluff's encoder improves compression ratio and reduces encoder memory use.
+- New archives use Fluff stream versions `0x09`/`0x89`. BoltPack 1.8 reads
+  older Fluff streams, while earlier BoltPack versions cannot decode streams
+  written by 1.8.
+- The decoder continues to support Fluff streams `0x06`, `0x07`/`0x87`, and
+  `0x08`/`0x88`.
+
 ## 1.7 — Compact BoltLite for constrained targets
 
 - BoltLite uses a compact variable-form bitstream in archive format 5.
