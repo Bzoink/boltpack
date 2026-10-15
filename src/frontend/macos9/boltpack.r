@@ -39,7 +39,7 @@ resource 'SIZE' (-1) {
  * ============================================================ */
 
 resource 'vers' (1) {
-    0x01, 0x00, release, 0x00,
+    0x01, 0x08, release, 0x00,
     verUS,
     "1.0",
     "BoltPack 1.8 \0xA9 2026 Tony Mattsson"
