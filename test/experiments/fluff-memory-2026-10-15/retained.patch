@@ -1,0 +1,432 @@
+--- a/src/core/fluff.c
++++ b/src/core/fluff.c
+@@ -63,8 +63,19 @@
+     }
+ }
+ 
++static void *fl_calloc(size_t count, size_t size)
++{
++    void *ptr;
++    if (s_fluff_alloc == NULL) return calloc(count, size);
++    if (count != 0 && size > (size_t)-1 / count) return NULL;
++    ptr = fl_malloc(count * size);
++    if (ptr != NULL) memset(ptr, 0, count * size);
++    return ptr;
++}
++
+ #define malloc  fl_malloc
+ #define free    fl_free
++#define calloc  fl_calloc
+ 
+ /*
+  * FLUFF_STATS: when defined, the match finder maintains detailed parse and
+@@ -685,6 +696,7 @@
+     fl_u32  pos;      /* bytes written */
+     fl_u32  accum;    /* bit accumulator */
+     fl_u32  nbits;    /* bits in accum */
++    int reverse;     /* write bytes from the end of buf */
+ } fse_bits_t;
+ 
+ /* ── Frequency normalization ─────────────────────────────────────────── */
+@@ -883,6 +895,7 @@
+     b->pos   = 0;
+     b->accum = 0;
+     b->nbits = 0;
++    b->reverse = 0;
+ }
+ 
+ static void fse_bits_write(fse_bits_t *b, fl_u32 val, fl_u32 nbits)
+@@ -892,7 +905,8 @@
+     b->nbits += nbits;
+     while (b->nbits >= 8) {
+         if (b->pos < b->cap)
+-            b->buf[b->pos] = (fl_u8)(b->accum & 0xFFU);
++            b->buf[b->reverse ? b->cap - 1U - b->pos : b->pos] =
++                (fl_u8)(b->accum & 0xFFU);
+         b->pos++;
+         b->accum >>= 8;
+         b->nbits  -= 8;
+@@ -905,7 +919,8 @@
+     b->accum |= 1U << b->nbits;
+     b->nbits++;
+     if (b->pos < b->cap)
+-        b->buf[b->pos] = (fl_u8)(b->accum & 0xFFU);
++        b->buf[b->reverse ? b->cap - 1U - b->pos : b->pos] =
++            (fl_u8)(b->accum & 0xFFU);
+     b->pos++;
+     b->accum = 0;
+     b->nbits = 0;
+@@ -1359,11 +1374,8 @@
+      * Owned by the context; allocated on first compress, reused thereafter,
+      * freed by fluff_ctx_free.  Decode-only contexts never allocate these.
+      */
+-    fl_u8  *scratch_tokens;     /* LZ77 token byte buffer (2*src_len + 16) */
+-    fl_u8  *scratch_tok_types;  /* per-token type index   (src_len + 16)   */
+-    fl_u8  *scratch_fse;        /* FSE bitstream scratch  (compress_bound)  */
+-    fl_u8  *scratch_raw;        /* raw extra-bits scratch (compress_bound)  */
+-    fl_u32  scratch_src_cap;    /* src_len the scratch buffers are sized for */
++    fl_u8  *scratch_tokens;     /* tokens, then raw bits (2*src_len + 16) */
++    fl_u32  scratch_src_cap;    /* largest src_len this buffer can hold */
+ };
+ 
+ #define FL_SEARCH_RESULT_NONE               0
+@@ -1405,9 +1417,6 @@
+         ctx->hash_chain        = NULL;
+         ctx->hash3             = NULL;
+         ctx->scratch_tokens    = NULL;
+-        ctx->scratch_tok_types = NULL;
+-        ctx->scratch_fse       = NULL;
+-        ctx->scratch_raw       = NULL;
+         ctx->scratch_src_cap   = 0;
+     }
+     return (fluff_ctx_t *)ctx;
+@@ -1420,9 +1429,6 @@
+         free(ctx->hash_chain);
+         free(ctx->hash3);
+         free(ctx->scratch_tokens);
+-        free(ctx->scratch_tok_types);
+-        free(ctx->scratch_fse);
+-        free(ctx->scratch_raw);
+     }
+     free(ctx);
+ }
+@@ -1454,48 +1460,17 @@
+ }
+ 
+ /*
+- * Ensure the context's encoder scratch buffers are large enough for a block
+- * of src_len bytes, growing (never shrinking) them as needed.  Buffers are
+- * reused across blocks, so the per-block malloc traffic of the old design is
+- * eliminated.  Returns BP_OK or BP_ERR_NOMEM.
++ * Grow the token/raw buffer to fit src_len, retaining it across blocks.
++ * Allocate before freeing so a failed growth preserves the previous buffer.
+  */
+ static int fl_ctx_ensure_scratch(fluff_ctx_t *ctx, fl_u32 src_len)
+ {
+-    fl_u32 tok_cap;
+-    fl_u32 ttype_cap;
+-    fl_u32 buf_cap;
+-
+-    if (ctx->scratch_src_cap >= src_len && ctx->scratch_tokens != NULL) {
+-        return BP_OK;
+-    }
+-
+-    /* Sizes mirror the historical per-block allocations. */
+-    tok_cap   = src_len * 2U + 16U;
+-    ttype_cap = src_len + 16U;
+-    buf_cap   = fluff_compress_bound(src_len);
+-
++    fl_u8 *tokens;
++    if (ctx->scratch_src_cap >= src_len && ctx->scratch_tokens != NULL) return BP_OK;
++    tokens = (fl_u8 *)malloc(src_len * 2U + 16U);
++    if (tokens == NULL) return BP_ERR_NOMEM;
+     free(ctx->scratch_tokens);
+-    free(ctx->scratch_tok_types);
+-    free(ctx->scratch_fse);
+-    free(ctx->scratch_raw);
+-    ctx->scratch_tokens    = (fl_u8 *)malloc(tok_cap);
+-    ctx->scratch_tok_types = (fl_u8 *)malloc(ttype_cap);
+-    ctx->scratch_fse       = (fl_u8 *)malloc(buf_cap);
+-    ctx->scratch_raw       = (fl_u8 *)malloc(buf_cap);
+-
+-    if (ctx->scratch_tokens == NULL || ctx->scratch_tok_types == NULL ||
+-        ctx->scratch_fse == NULL || ctx->scratch_raw == NULL) {
+-        free(ctx->scratch_tokens);
+-        free(ctx->scratch_tok_types);
+-        free(ctx->scratch_fse);
+-        free(ctx->scratch_raw);
+-        ctx->scratch_tokens    = NULL;
+-        ctx->scratch_tok_types = NULL;
+-        ctx->scratch_fse       = NULL;
+-        ctx->scratch_raw       = NULL;
+-        ctx->scratch_src_cap   = 0;
+-        return BP_ERR_NOMEM;
+-    }
++    ctx->scratch_tokens = tokens;
+     ctx->scratch_src_cap = src_len;
+     return BP_OK;
+ }
+@@ -2508,8 +2483,8 @@
+         if (*num_tokens + 2 > token_cap) {
+             return BP_ERR_OVERFLOW;
+         }
+-        tokens[*num_tokens] = 0;
+-        tokens[*num_tokens + 1] = literal;
++        tokens[*num_tokens] = literal;
++        tokens[*num_tokens + 1] = 0;
+         *num_tokens += 2;
+     }
+ 
+@@ -2538,12 +2513,12 @@
+             if (*num_tokens + 6 > token_cap) {
+                 return BP_ERR_OVERFLOW;
+             }
+-            tokens[*num_tokens] = 1;
+-            tokens[*num_tokens + 1] = (fl_u8)(match_len & 0xFF);
+-            tokens[*num_tokens + 2] = (fl_u8)((match_len >> 8) & 0xFF);
+-            tokens[*num_tokens + 3] = (fl_u8)(match_dist & 0xFF);
+-            tokens[*num_tokens + 4] = (fl_u8)((match_dist >> 8) & 0xFF);
+-            tokens[*num_tokens + 5] = (fl_u8)((match_dist >> 16) & 0xFF);
++            tokens[*num_tokens] = (fl_u8)(match_len & 0xFF);
++            tokens[*num_tokens + 1] = (fl_u8)((match_len >> 8) & 0xFF);
++            tokens[*num_tokens + 2] = (fl_u8)(match_dist & 0xFF);
++            tokens[*num_tokens + 3] = (fl_u8)((match_dist >> 8) & 0xFF);
++            tokens[*num_tokens + 4] = (fl_u8)((match_dist >> 16) & 0xFF);
++            tokens[*num_tokens + 5] = 1;
+             *num_tokens += 6;
+         }
+ 
+@@ -2560,9 +2535,9 @@
+             if (*num_tokens + 3 > token_cap) {
+                 return BP_ERR_OVERFLOW;
+             }
+-            tokens[*num_tokens] = token_type;
+-            tokens[*num_tokens + 1] = (fl_u8)(match_len & 0xFF);
+-            tokens[*num_tokens + 2] = (fl_u8)((match_len >> 8) & 0xFF);
++            tokens[*num_tokens] = (fl_u8)(match_len & 0xFF);
++            tokens[*num_tokens + 1] = (fl_u8)((match_len >> 8) & 0xFF);
++            tokens[*num_tokens + 2] = token_type;
+             *num_tokens += 3;
+         }
+ 
+@@ -2846,8 +2821,6 @@
+     fl_u8    *tokens;
+     fl_u32    num_tokens;
+     fl_u32    token_cap;
+-    fl_u8    *tok_types;  /* one entry per token: 0=lit,1=match,2/3/4=rep */
+-    fl_u32    tok_count;
+     fl_u32    ll_freq[FLUFF_NUM_LITLEN];
+     fl_u32    d_freq[FLUFF_NUM_DIST];
+     fl_u16   *ll_norm;
+@@ -2857,8 +2830,8 @@
+     fse_sym_enc_t *ll_senc;
+     fse_sym_enc_t *d_senc;
+     /* Backwards ANS encoder: encode tokens last-to-first. */
+-    fl_u8    *fse_buf;    /* FSE bitstream buffer (backwards scratch) */
+-    fl_u8    *raw_buf;    /* raw extra-bits buffer */
++    fl_u8    *fse_buf;    /* LL stream written directly into dst */
++    fl_u8    *raw_buf;    /* distance/raw stream reuses consumed tokens */
+     fl_u32    fse_cap;
+     fl_u32    raw_cap;
+     fse_bits_t fse_bits;
+@@ -2866,6 +2839,7 @@
+     fl_u32    ll_state;
+     fl_u32    d_state;
+     fl_u32    hdr_pos;
++    fl_u32    tail_pos;
+     fl_u32    fse_len;
+     fl_u32    raw_len;
+     int       parse_rc;
+@@ -2889,7 +2863,6 @@
+     }
+     token_cap = src_len * 2 + 16;
+     tokens    = ctx->scratch_tokens;
+-    tok_types = ctx->scratch_tok_types;
+ 
+     /* --- Pass 1: LZ77 greedy parse → token buffer + frequencies --- */
+     memset(ll_freq, 0, sizeof(ll_freq));
+@@ -2900,19 +2873,6 @@
+                                ll_freq, d_freq);
+     if (parse_rc != BP_OK) { return parse_rc; }
+ 
+-    /* Forward scan to build tok_types[]: record type of each token in order.
+-     * This is the only reliable way to scan backwards later, because token
+-     * body bytes can coincide with type marker values (0..4). */
+-    tok_count = 0;
+-    i = 0;
+-    while (i < num_tokens) {
+-        fl_u8 t = tokens[i];
+-        tok_types[tok_count++] = t;
+-        if (t == 1) i += 6;
+-        else if (t == 0) i += 2;
+-        else i += 3;  /* rep-match: types 2,3,4 */
+-    }
+-
+     /* FSE working tables: embedded in the context (no per-block malloc). */
+     ll_norm  = ctx->fse_ll_norm;
+     d_norm   = ctx->fse_d_norm;
+@@ -2920,10 +2880,8 @@
+     d_slots  = ctx->fse_d_slots;
+     ll_senc  = ctx->fse_ll_senc;
+     d_senc   = ctx->fse_d_senc;
+-    fse_cap  = bound;
+-    raw_cap  = bound;
+-    fse_buf  = ctx->scratch_fse;
+-    raw_buf  = ctx->scratch_raw;
++    raw_cap  = token_cap;
++    raw_buf  = tokens;
+ 
+     /* --- Pass 2a: normalize frequencies → count tables --- */
+     /* Ensure EOB has at least 1 so it always gets a slot. */
+@@ -2942,9 +2900,35 @@
+         return BP_ERR_COMPRESS;
+     }
+ 
++    {
++        int nll, nd;
++
++        hdr_pos = 0;
++        dst[hdr_pos++] = 0x46; /* 'F' */
++        dst[hdr_pos++] = 0x4C; /* 'L' */
++        dst[hdr_pos++] = FLUFF_STREAM_VERSION_FSE3;
++        dst[hdr_pos++] = (fl_u8)FLUFF_WINDOW_BITS;
++
++        /* Count tables (compact). */
++        nll = fse_write_counts_compact(dst, bound, hdr_pos,
++                                       ll_norm, FLUFF_NUM_LITLEN);
++        if (nll < 0) return BP_ERR_COMPRESS;
++        hdr_pos += (fl_u32)nll;
++        nd = fse_write_counts_compact(dst, bound, hdr_pos,
++                                      d_norm, FLUFF_NUM_DIST);
++        if (nd < 0) return BP_ERR_COMPRESS;
++        hdr_pos += (fl_u32)nd;
++    }
++    if (hdr_pos + 10U > bound) return BP_ERR_COMPRESS;
++    tail_pos = hdr_pos;
++    hdr_pos += 10;
++    fse_buf = dst + hdr_pos;
++    fse_cap = bound - hdr_pos;
++
+     /* --- Pass 2c: ANS-encode tokens BACKWARDS into fse_buf --- */
+     fse_bits_init_write(&fse_bits, fse_buf, fse_cap);
+     fse_bits_init_write(&raw_bits, raw_buf, raw_cap);
++    raw_bits.reverse = 1;
+ 
+     /* Initial states for both alphabets: start at state 0 (in [0, L)). */
+     ll_state = 0;
+@@ -2961,28 +2945,32 @@
+     ll_state = fse_encode_sym_fast(ll_state, FLUFF_END_OF_BLOCK,
+                                    ll_slots, ll_senc, &fse_bits);
+ 
+-    /* Scan tokens backwards using tok_types[] built in the forward pass.
+-     * We cannot guess token boundaries from byte values alone because body
+-     * bytes (mlen, dist) can coincide with the type markers 0..4. */
++    /*
++     * Each internal token ends with its type, so it can be read backwards
++     * without a separate index. Raw bytes grow downwards from token_cap.
++     * A normal token consumes 6 bytes before emitting at most 31 raw bits
++     * (17 distance extras + 9 distance ANS bits + 5 length extras); a repeat
++     * consumes 3 before emitting at most 10 bits; a literal consumes 2 and
++     * emits none. Even with a partial byte pending, neither can write more
++     * bytes than it consumes. All fields are loaded before any raw write.
++     * The 16-byte margin also covers the final sentinel. Thus the raw writer
++     * cannot reach unread tokens, even when the token buffer is full.
++     */
+     i = num_tokens;
+-    {
+-        fl_u32 j = tok_count;
+-        while (j > 0) {
+-        fl_u8 tok;
+-        j--;
+-        tok = tok_types[j];
++    while (i > 0) {
++        fl_u8 tok = tokens[i - 1];
+         if (tok == 1) i -= 6;
+         else if (tok == 0) i -= 2;
+         else i -= 3;
+ 
+         if (tok == 0) {
+             /* Literal */
+-            fl_u32 lit = tokens[i + 1];
++            fl_u32 lit = tokens[i];
+             ll_state = fse_encode_sym_fast(ll_state, lit,
+                                            ll_slots, ll_senc, &fse_bits);
+         } else if (tok >= 2 && tok <= 4) {
+             /* Rep-match: encode 5-bit len index + extra bits (raw), then sym */
+-            fl_u32 mlen = (fl_u32)tokens[i + 1] | ((fl_u32)tokens[i + 2] << 8);
++            fl_u32 mlen = (fl_u32)tokens[i] | ((fl_u32)tokens[i + 1] << 8);
+             fl_u32 lev, leb, lsym;
+             lsym = fl_len_to_sym(mlen, &lev, &leb);
+             /* raw extra bits: backwards into raw_buf */
+@@ -2992,9 +2980,9 @@
+                                            ll_slots, ll_senc, &fse_bits);
+         } else {
+             /* Regular match */
+-            fl_u32 mlen  = (fl_u32)tokens[i + 1] | ((fl_u32)tokens[i + 2] << 8);
+-            fl_u32 mdist = (fl_u32)tokens[i + 3] | ((fl_u32)tokens[i + 4] << 8)
+-                         | ((fl_u32)tokens[i + 5] << 16);
++            fl_u32 mlen  = (fl_u32)tokens[i] | ((fl_u32)tokens[i + 1] << 8);
++            fl_u32 mdist = (fl_u32)tokens[i + 2] | ((fl_u32)tokens[i + 3] << 8)
++                         | ((fl_u32)tokens[i + 4] << 16);
+             fl_u32 lsym, lev, leb;
+             fl_u32 dsym, dev, deb;
+             lsym = fl_len_to_sym(mlen,  &lev, &leb);
+@@ -3008,7 +2996,6 @@
+             ll_state = fse_encode_sym_fast(ll_state, lsym,
+                                            ll_slots, ll_senc, &fse_bits);
+         }
+-        } /* end while j > 0 */
+     }
+ 
+     fse_bits_flush(&fse_bits);
+@@ -3016,59 +3003,17 @@
+     fse_len = fse_bits.pos;
+     raw_len = raw_bits.pos;
+ 
+-    /* --- Assemble output (v0x09) --- */
+-    /*
+-     * Header layout:
+-     *   [0..3]   stream header ('F','L',0x09,win_bits)
+-     *   [var]    ll_norm count table (compact: varint + zero-run, R1)
+-     *   [var]    d_norm  count table (compact, R1)
+-     *   [2]      ll initial state (uint16 LE, R3)
+-     *   [2]      d  initial state (uint16 LE, R3)
+-     *   [3]      fse bitstream length (uint24 LE, R3)
+-     *   [3]      raw bitstream length (uint24 LE, R3)
+-     *   [N]      fse bitstream (reversed so decoder reads forward)
+-     *   [M]      raw bitstream (reversed so decoder reads forward)
+-     */
+-    {
+-        int nll, nd;
+-
+-        hdr_pos = 0;
+-        dst[hdr_pos++] = 0x46; /* 'F' */
+-        dst[hdr_pos++] = 0x4C; /* 'L' */
+-        dst[hdr_pos++] = FLUFF_STREAM_VERSION_FSE3;
+-        dst[hdr_pos++] = (fl_u8)FLUFF_WINDOW_BITS;
+-
+-        /* Count tables (compact). */
+-        nll = fse_write_counts_compact(dst, bound, hdr_pos,
+-                                       ll_norm, FLUFF_NUM_LITLEN);
+-        if (nll < 0) return BP_ERR_COMPRESS;
+-        hdr_pos += (fl_u32)nll;
+-        nd = fse_write_counts_compact(dst, bound, hdr_pos,
+-                                      d_norm, FLUFF_NUM_DIST);
+-        if (nd < 0) return BP_ERR_COMPRESS;
+-        hdr_pos += (fl_u32)nd;
+-
+-        /* Fixed tail: 2+2+3+3 = 10 bytes of states/lengths, then streams. */
+-        if (hdr_pos + 10U + fse_len + raw_len > bound) {
+-            return BP_ERR_COMPRESS;
+-        }
+-
+-        /* Initial states (uint16). */
+-        fse_write_u16(dst, hdr_pos, ll_state); hdr_pos += 2;
+-        fse_write_u16(dst, hdr_pos, d_state);  hdr_pos += 2;
+-
+-        /* Stream lengths (uint24). */
+-        fse_write_u24(dst, hdr_pos, fse_len);  hdr_pos += 3;
+-        fse_write_u24(dst, hdr_pos, raw_len);  hdr_pos += 3;
+-
+-        /* FSE bitstream: decoder reads backward from end, so store as-is. */
+-        memcpy(dst + hdr_pos, fse_buf, fse_len);
+-        hdr_pos += fse_len;
+-
+-        /* Raw bitstream: decoder reads backward from end, so store as-is. */
+-        memcpy(dst + hdr_pos, raw_buf, raw_len);
+-        hdr_pos += raw_len;
+-    }
++    if (fse_len > bound - hdr_pos || raw_len > bound - hdr_pos - fse_len)
++        return BP_ERR_COMPRESS;
++    fse_write_u16(dst, tail_pos, ll_state);
++    fse_write_u16(dst, tail_pos + 2, d_state);
++    fse_write_u24(dst, tail_pos + 4, fse_len);
++    fse_write_u24(dst, tail_pos + 7, raw_len);
++    hdr_pos += fse_len;
++    /* Restore the stream's original byte order after the downward writes. */
++    for (i = 0; i < raw_len; i++)
++        dst[hdr_pos + i] = raw_buf[raw_cap - 1U - i];
++    hdr_pos += raw_len;
+ 
+     *dst_len = hdr_pos;
+ 

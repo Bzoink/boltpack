@@ -43,6 +43,8 @@ make
 | [boltlz-development.md](boltlz-development.md)                     | Experimental codec, block format, checks, and reproducible benchmark commands      |
 | [boltlz-code-review.md](boltlz-code-review.md)                     | Code analysis, measured operation counts, and speed-first optimization priorities  |
 | [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation, compiler coverage, and full-block robustness checks |
+| [fluff-experiments-2026-10-15.md](fluff-experiments-2026-10-15.md) | Measured Fluff ratio experiments, retained ANS layout, and reproduction commands |
+| [fluff-memory-2026-10-15.md](fluff-memory-2026-10-15.md) | Fluff allocation accounting, buffer reuse, and memory/speed measurements |
 
 ## Elsewhere in the Repository
 

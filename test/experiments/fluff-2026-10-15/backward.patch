@@ -1,0 +1,41 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2592,6 +2592,7 @@
+     fl_u32 rep1;
+     fl_u32 rep2;
+     fl_u32 next_insert_abs;
++    fl_u32 literal_start;
+     fl_u32 num_tokens;
+     int rc;
+ 
+@@ -2599,6 +2600,7 @@
+     rep0 = 0;
+     rep1 = 0;
+     rep2 = 0;
++    literal_start = 0;
+     next_insert_abs = file_pos;
+     num_tokens = 0;
+ 
+@@ -2766,6 +2768,14 @@
+                                          &match_search_stats);
+             }
+ 
++            while (i > literal_start && match_len < FLUFF_MAX_MATCH &&
++                   abs > match_dist &&
++                   src[i - 1] == fl_byte_at(ctx, src, abs - match_dist - 1, file_pos)) {
++                i--; abs--; match_len++;
++                num_tokens -= 2;
++                ll_freq[src[i]]--;
++                ctx->total_literals--;
++            }
+             rc = fl_emit_match_token(ctx, tokens, token_cap, &num_tokens,
+                                      ll_freq,
+                                      d_freq, match_len, match_dist,
+@@ -2784,6 +2794,7 @@
+             fl_insert_range_hyb(ctx, src, file_pos, src_len,
+                                 abs + 1, abs + match_len, &next_insert_abs);
+             i += match_len;
++            literal_start = i;
+         } else {
+             fl_record_search_by_result(ctx, &match_search_stats,
+                                        FL_SEARCH_OUTCOME_ACCEPTED_MATCH);

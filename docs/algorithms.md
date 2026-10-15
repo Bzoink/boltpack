@@ -162,17 +162,17 @@ BoltLZ Balanced compression.
 Fluff is BoltPack's ratio-oriented codec. The current implementation is in
 `src/core/fluff.c` and `src/core/fluff.h`.
 
-The kept v1.0 implementation combines:
+The current implementation combines:
 
 1. A 256 KB LZ77 window.
 1. A hybrid hash-chain match finder.
 1. A three-entry repeat-distance ring.
 1. A rep-aware greedy parser with lazy lookahead.
-1. FSE/tANS entropy coding (current encoder family; normal blocks use stream
-   version `0x08`, grouped reset blocks use `0x88`).
+1. FSE/tANS entropy coding (experimental normal blocks use stream version
+   `0x09`, grouped reset blocks use `0x89`).
 
-The encoder writes the compact `0x08` block format. The decoder also accepts
-the earlier `0x07`/`0x87` FSE/tANS blocks and the original adaptive range coder
+The encoder writes the compact `0x09` block format. The decoder also accepts
+the earlier `0x07`/`0x87` and `0x08`/`0x88` FSE/tANS blocks and the original adaptive range coder
 format (stream version `0x06`) for backward compatibility with archives written
 by previous releases.
 
@@ -190,11 +190,17 @@ Rep-match lengths keep the `0x07` flat 5-bit raw index. (Entropy-coding them
 through the litlen FSE table was evaluated and measured net-negative on every
 corpus file, so it was not adopted.)
 
+The experimental encoder now writes `0x09`/`0x89`, using the same headers,
+alphabets, and table sizes with a shifted ANS state interval. The parser is
+unchanged. Older decoders reject these versions; the current decoder retains
+the older layouts. See [the experiment results](fluff-experiments-2026-10-15.md)
+and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x89-experimental-shifted-state-fse).
+
 ### 5.2 Format-Fixed Parameters
 
 | Parameter               | Value           | Notes                                                                                                                                                                      |
 | ----------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stream version          | `0x08` / `0x88` | `0x08` = current compact FSE/tANS block; `0x88` = compact reset block used by grouped fast-fluff; decoder also accepts legacy `0x07`/`0x87` (FSE) and `0x06` (range coder) |
+| Stream version          | `0x09` / `0x89` | Experimental shifted-state FSE; reads legacy `0x07`/`0x87`, `0x08`/`0x88`, and `0x06` |
 | Window bits             | 18              | 256 KB window                                                                                                                                                              |
 | Window size             | 262144          | `1 << 18`                                                                                                                                                                  |
 | Minimum match           | 3               | Shared by normal and repeat matches                                                                                                                                        |
@@ -212,12 +218,12 @@ corpus file, so it was not adopted.)
 Modern OpenMP-enabled builds may also use `src/core/fluff_fast.c` as an
 alternate encoder for method `3`. It keeps Fluff's on-disk format compatible
 with the strict-C89 decoder, but compresses blocks in parallel and groups
-consecutive blocks into shared-history batches (default group size `4`) so the
+consecutive blocks into shared-history batches (default group size `2`) so the
 ratio loss from resetting history stays bounded.
 
-The first block in each batch uses stream version `0x88`, which tells the
-decoder to reset the Fluff context before decoding that block. Later blocks in
-the same batch use the ordinary `0x08` header and can still refer back to the
+When preceding history is available, groups preload it and preserve the normal
+`0x09` stream version. A cold group's first compressed block uses `0x89`,
+which resets decoder history. Later blocks use the ordinary `0x09` header and can still refer back to the
 earlier blocks in that batch.
 
 ### 5.3 Current Encoder Pipeline
@@ -248,28 +254,30 @@ The current Fluff encoder is best understood as the following concrete stages.
 1. **FSE/tANS emission.**
    After tokenization, the encoder normalizes lit/len and distance symbol
    frequencies to power-of-two table sizes (`L = 1024` for lit/len,
-   `L = 512` for distance). It then encodes tokens backwards through the ANS
-   state machine, writes count tables and initial states into the fixed block
-   header, and appends the backwards FSE bitstream and backwards raw extra-bits
-   bitstream.
+   `L = 512` for distance). It writes the compact count tables, reserves the
+   states and stream lengths, then encodes tokens backwards through the ANS
+   state machine. The literal/length stream goes directly into the output;
+   the distance/raw stream reuses consumed token storage and is appended
+   afterwards. Internal tokens end with their type, eliminating a separate
+   index for backwards traversal.
 
 ### 5.4 Current Decoder Pipeline
 
 `fluff_decompress_block_ctx()` dispatches on the stream version byte:
 
-**Version `0x88` (compact FSE/tANS reset block) — grouped fast-fluff format:**
+**Version `0x89` (shifted-state FSE/tANS reset block) — grouped fast-fluff format:**
 
-1. Validate the four-byte `F`, `L`, `0x88`, `18` stream header.
+1. Validate the four-byte `F`, `L`, `0x89`, `18` stream header.
 1. Reset the Fluff history window and repeat-distance state for the current
    context.
-1. Decode the remainder of the block exactly as version `0x08`.
+1. Decode the remainder of the block exactly as version `0x09`.
 
-**Version `0x08` (compact FSE/tANS) — current format:**
+**Version `0x09` (compact shifted-state FSE/tANS) — current format:**
 
-1. Validate the four-byte `F`, `L`, `0x08`, `18` stream header.
+1. Validate the four-byte `F`, `L`, `0x09`, `18` stream header.
 1. Parse the compact count-table header and scalar fields as described in
-   §5.2, then locate the FSE and raw extra-bit streams.
-1. Build FSE decode tables from the decoded count tables.
+   the format specification, then locate the FSE and raw extra-bit streams.
+1. Build shifted-state FSE decode tables from the decoded count tables.
 1. Initialize ANS states from the compact header.
 1. Decode tokens forwards by advancing through the ANS decode table and reading
    backwards from the pre-written bitstreams.
@@ -277,6 +285,11 @@ The current Fluff encoder is best understood as the following concrete stages.
    reuse a rep distance), then copy via overlap-safe LZ77.
 1. Bulk-copy the finished block into the ring buffer so the next block can use
    cross-block references.
+
+**Versions `0x08`/`0x88` (compact FSE/tANS) — legacy read-only:**
+
+Use the same compact header and token alphabets with the earlier ANS state
+mapping. Version `0x88` resets history before decoding.
 
 **Versions `0x07`/`0x87` (legacy FSE/tANS) — legacy read-only:**
 
@@ -394,11 +407,13 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
 | 1      | 18,432-byte hash-chain workspace                             | No decoder scratch                                               |
 | 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
-| 3      | `fluff_ctx_t` is about 2 MB plus per-block token buffers     | Current decoder also reuses `fluff_ctx_t` for block state |
+| 3      | About 2.52 MiB internally at 256 KiB blocks, per encoder | About 276 KiB context plus 5.4 KiB temporary table scratch |
 | 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
 
-Fluff’s larger context is the trade-off for its larger window, deeper search,
-and cross-block history.
+Fluff's encoder total includes its context, match tables and reusable scratch;
+it excludes caller buffers, allocator overhead and stack. The
+[allocation investigation](fluff-memory-2026-10-15.md) gives exact requested
+bytes and growth peaks. Its 256 KiB history supports cross-block matches.
 
 ## 8. Validation
 

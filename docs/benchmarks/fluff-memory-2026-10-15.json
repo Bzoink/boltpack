@@ -1,0 +1,2026 @@
+{
+  "block_size": 262144,
+  "memory_basis": "requested codec heap bytes, excludes caller buffers, stack, allocator and runtime overhead",
+  "profiles": {
+    "final-portable": {
+      "manifest": {
+        "compiler": "Debian clang version 19.1.7 (3+b1)",
+        "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41",
+        "cpu": 0,
+        "governor": "powersave",
+        "mode": "portable-sequential",
+        "builds": {
+          "baseline": {
+            "command": [
+              "clang",
+              "-ansi",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-Dfluff_compress_block=baseline_fluff_compress_block",
+              "-Dfluff_compress_block_ctx=baseline_fluff_compress_block_ctx",
+              "-Dfluff_compress_block_ctx_trace=baseline_fluff_compress_block_ctx_trace",
+              "-Dfluff_compress_bound=baseline_fluff_compress_bound",
+              "-Dfluff_compress_work_size=baseline_fluff_compress_work_size",
+              "-Dfluff_ctx_alloc=baseline_fluff_ctx_alloc",
+              "-Dfluff_ctx_feed_raw=baseline_fluff_ctx_feed_raw",
+              "-Dfluff_ctx_free=baseline_fluff_ctx_free",
+              "-Dfluff_ctx_get_chain_stats=baseline_fluff_ctx_get_chain_stats",
+              "-Dfluff_ctx_get_literal_count=baseline_fluff_ctx_get_literal_count",
+              "-Dfluff_ctx_get_match_count=baseline_fluff_ctx_get_match_count",
+              "-Dfluff_ctx_get_matchfinder_outcome_stats=baseline_fluff_ctx_get_matchfinder_outcome_stats",
+              "-Dfluff_ctx_get_matchfinder_stats=baseline_fluff_ctx_get_matchfinder_stats",
+              "-Dfluff_ctx_get_rep_stats=baseline_fluff_ctx_get_rep_stats",
+              "-Dfluff_ctx_get_total_match_bytes=baseline_fluff_ctx_get_total_match_bytes",
+              "-Dfluff_ctx_preload=baseline_fluff_ctx_preload",
+              "-Dfluff_ctx_reset=baseline_fluff_ctx_reset",
+              "-Dfluff_ctx_reset_decode=baseline_fluff_ctx_reset_decode",
+              "-Dfluff_ctx_reset_level=baseline_fluff_ctx_reset_level",
+              "-Dfluff_decompress_block=baseline_fluff_decompress_block",
+              "-Dfluff_decompress_block_ctx=baseline_fluff_decompress_block_ctx",
+              "-Dfluff_decompress_block_ctx_trace=baseline_fluff_decompress_block_ctx_trace",
+              "-Dfluff_init=baseline_fluff_init",
+              "-Dfluff_set_allocators=baseline_fluff_set_allocators",
+              "-Dfluff_set_debug_fp=baseline_fluff_set_debug_fp",
+              "-Dfluff_set_level=baseline_fluff_set_level",
+              "-Dfluff_window_size=baseline_fluff_window_size",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/baseline.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/baseline.o"
+            ],
+            "source_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e"
+          },
+          "candidate": {
+            "command": [
+              "clang",
+              "-ansi",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/candidate.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/candidate.o"
+            ],
+            "source_sha256": "df4c81dd60d3c7698ff1dcf2526b0e8035cf7e40d9410fc1e439c947200d15b9"
+          }
+        },
+        "link_command": [
+          "clang",
+          "-ansi",
+          "-pedantic",
+          "-O3",
+          "-march=native",
+          "-Isrc/core",
+          "-DFLUFF_BENCH_PAIRED",
+          "test/bench_fluff.c",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/baseline.o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/candidate.o",
+          "-o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-portable/bench"
+        ],
+        "binary_sha256": "432d3f66cd611add33ffd4d581cc7e8c177f948f953f2afac440a553b88c7d60",
+        "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+        "files": [
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/dickens",
+            "size": 10192446,
+            "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/mozilla",
+            "size": 51220480,
+            "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/mr",
+            "size": 9970564,
+            "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/nci",
+            "size": 33553445,
+            "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/ooffice",
+            "size": 6152192,
+            "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/osdb",
+            "size": 10085684,
+            "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/reymont",
+            "size": 6627202,
+            "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/samba",
+            "size": 21606400,
+            "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/sao",
+            "size": 7251944,
+            "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/webster",
+            "size": 41458703,
+            "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/x-ray",
+            "size": 8474240,
+            "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/xml",
+            "size": 5345280,
+            "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c"
+          }
+        ],
+        "levels": [
+          1,
+          8
+        ],
+        "pairs": 3,
+        "block_size": 262144,
+        "timing": "one warmup per file; allocation and reset excluded; verification outside timing"
+      },
+      "summary": [
+        {
+          "level": 1,
+          "totals": {
+            "baseline": {
+              "encoded_bytes": 64676616,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 10.313097713,
+                "min": 9.699043983,
+                "max": 10.350367753,
+                "samples": [
+                  9.699043983,
+                  10.350367753,
+                  10.313097713
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.715303306,
+                "min": 0.694438664,
+                "max": 0.755376587,
+                "samples": [
+                  0.694438664,
+                  0.715303306,
+                  0.755376587
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.000984302,
+                "min": 0.000797032,
+                "max": 0.001011613,
+                "samples": [
+                  0.000797032,
+                  0.000984302,
+                  0.001011613
+                ]
+              }
+            },
+            "candidate": {
+              "encoded_bytes": 64676616,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 9.846283638000001,
+                "min": 9.42044694,
+                "max": 10.073945808,
+                "samples": [
+                  9.42044694,
+                  10.073945808,
+                  9.846283638000001
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.709218221,
+                "min": 0.6946225,
+                "max": 0.722066243,
+                "samples": [
+                  0.709218221,
+                  0.722066243,
+                  0.6946225
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.001024088,
+                "min": 0.0009294980000000001,
+                "max": 0.00104934,
+                "samples": [
+                  0.001024088,
+                  0.0009294980000000001,
+                  0.00104934
+                ]
+              }
+            }
+          },
+          "encode_seconds_change_pct": -4.526419587895147,
+          "encode_seconds_paired_change_pct": {
+            "median": -2.8724175649508354,
+            "min": -4.526419587895147,
+            "max": -2.670648537293585
+          },
+          "decode_seconds_change_pct": -0.8506999686647698,
+          "decode_seconds_paired_change_pct": {
+            "median": 0.9454642447856987,
+            "min": -8.042887222820417,
+            "max": 2.1282739234116166
+          },
+          "encoded_change_pct": 0.0,
+          "per_file_median_paired_encode_change_pct": {
+            "dickens": 1.5117190917824708,
+            "mozilla": -1.2198133561588276,
+            "mr": -2.5220856221565113,
+            "nci": 2.0351043808153113,
+            "ooffice": -0.3006656188628942,
+            "osdb": 0.7771747959582243,
+            "reymont": 2.3608837734112376,
+            "samba": -5.393144503902292,
+            "sao": -3.4995923513397753,
+            "webster": -3.817035606762753,
+            "x-ray": -20.467158550801066,
+            "xml": -1.9246307274120467
+          }
+        },
+        {
+          "level": 8,
+          "totals": {
+            "baseline": {
+              "encoded_bytes": 62451851,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 29.570416722,
+                "min": 29.027703984,
+                "max": 30.103581503,
+                "samples": [
+                  29.027703984,
+                  30.103581503,
+                  29.570416722
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.675734619,
+                "min": 0.654622109,
+                "max": 0.744340325,
+                "samples": [
+                  0.675734619,
+                  0.654622109,
+                  0.744340325
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.000955073,
+                "min": 0.000821873,
+                "max": 0.0009665279999999999,
+                "samples": [
+                  0.000821873,
+                  0.000955073,
+                  0.0009665279999999999
+                ]
+              }
+            },
+            "candidate": {
+              "encoded_bytes": 62451851,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 28.714621962,
+                "min": 28.593238937,
+                "max": 29.812510674,
+                "samples": [
+                  28.714621962,
+                  28.593238937,
+                  29.812510674
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.675638622,
+                "min": 0.669216322,
+                "max": 0.716097392,
+                "samples": [
+                  0.669216322,
+                  0.716097392,
+                  0.675638622
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.000968661,
+                "min": 0.000906302,
+                "max": 0.000978748,
+                "samples": [
+                  0.000978748,
+                  0.000906302,
+                  0.000968661
+                ]
+              }
+            }
+          },
+          "encode_seconds_change_pct": -2.8940909695171824,
+          "encode_seconds_paired_change_pct": {
+            "median": -1.0785628176881334,
+            "min": -5.017152413740167,
+            "max": 0.818703213674632
+          },
+          "decode_seconds_change_pct": -0.014206316696041554,
+          "decode_seconds_paired_change_pct": {
+            "median": -0.9646238059619061,
+            "min": -9.229877878778103,
+            "max": 9.390957340855731
+          },
+          "encoded_change_pct": 0.0,
+          "per_file_median_paired_encode_change_pct": {
+            "dickens": 4.817976547617953,
+            "mozilla": -4.863447154523326,
+            "mr": -4.316484034214785,
+            "nci": -0.23338678821956949,
+            "ooffice": 1.754556517643957,
+            "osdb": -2.1171592894839053,
+            "reymont": -3.1718189330639635,
+            "samba": -1.974080174884285,
+            "sao": -1.485378786687741,
+            "webster": -5.629825258946585,
+            "x-ray": -2.2466734142770894,
+            "xml": 1.7219993845524417
+          }
+        }
+      ],
+      "verified_matching_encoded_fingerprints": 72
+    },
+    "final-modern": {
+      "manifest": {
+        "compiler": "gcc (Debian 14.2.0-19) 14.2.0",
+        "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41",
+        "cpu": 0,
+        "governor": "powersave",
+        "mode": "modern-sequential",
+        "builds": {
+          "baseline": {
+            "command": [
+              "gcc",
+              "-std=c11",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-DBOLTPACK_FAST_FLUFF",
+              "-fopenmp",
+              "-Dfluff_compress_block=baseline_fluff_compress_block",
+              "-Dfluff_compress_block_ctx=baseline_fluff_compress_block_ctx",
+              "-Dfluff_compress_block_ctx_trace=baseline_fluff_compress_block_ctx_trace",
+              "-Dfluff_compress_bound=baseline_fluff_compress_bound",
+              "-Dfluff_compress_work_size=baseline_fluff_compress_work_size",
+              "-Dfluff_ctx_alloc=baseline_fluff_ctx_alloc",
+              "-Dfluff_ctx_feed_raw=baseline_fluff_ctx_feed_raw",
+              "-Dfluff_ctx_free=baseline_fluff_ctx_free",
+              "-Dfluff_ctx_get_chain_stats=baseline_fluff_ctx_get_chain_stats",
+              "-Dfluff_ctx_get_literal_count=baseline_fluff_ctx_get_literal_count",
+              "-Dfluff_ctx_get_match_count=baseline_fluff_ctx_get_match_count",
+              "-Dfluff_ctx_get_matchfinder_outcome_stats=baseline_fluff_ctx_get_matchfinder_outcome_stats",
+              "-Dfluff_ctx_get_matchfinder_stats=baseline_fluff_ctx_get_matchfinder_stats",
+              "-Dfluff_ctx_get_rep_stats=baseline_fluff_ctx_get_rep_stats",
+              "-Dfluff_ctx_get_total_match_bytes=baseline_fluff_ctx_get_total_match_bytes",
+              "-Dfluff_ctx_preload=baseline_fluff_ctx_preload",
+              "-Dfluff_ctx_reset=baseline_fluff_ctx_reset",
+              "-Dfluff_ctx_reset_decode=baseline_fluff_ctx_reset_decode",
+              "-Dfluff_ctx_reset_level=baseline_fluff_ctx_reset_level",
+              "-Dfluff_decompress_block=baseline_fluff_decompress_block",
+              "-Dfluff_decompress_block_ctx=baseline_fluff_decompress_block_ctx",
+              "-Dfluff_decompress_block_ctx_trace=baseline_fluff_decompress_block_ctx_trace",
+              "-Dfluff_init=baseline_fluff_init",
+              "-Dfluff_set_allocators=baseline_fluff_set_allocators",
+              "-Dfluff_set_debug_fp=baseline_fluff_set_debug_fp",
+              "-Dfluff_set_level=baseline_fluff_set_level",
+              "-Dfluff_window_size=baseline_fluff_window_size",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/baseline.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/baseline.o"
+            ],
+            "source_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e"
+          },
+          "candidate": {
+            "command": [
+              "gcc",
+              "-std=c11",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-DBOLTPACK_FAST_FLUFF",
+              "-fopenmp",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/candidate.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/candidate.o"
+            ],
+            "source_sha256": "df4c81dd60d3c7698ff1dcf2526b0e8035cf7e40d9410fc1e439c947200d15b9"
+          }
+        },
+        "link_command": [
+          "gcc",
+          "-std=c11",
+          "-pedantic",
+          "-O3",
+          "-march=native",
+          "-Isrc/core",
+          "-DBOLTPACK_FAST_FLUFF",
+          "-fopenmp",
+          "-DFLUFF_BENCH_PAIRED",
+          "test/bench_fluff.c",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/baseline.o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/candidate.o",
+          "src/core/fluff_fast.c",
+          "-o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-modern/bench"
+        ],
+        "binary_sha256": "afe30aa5e446f110e764485150aab810b7c277be0c9f49faa8cd9f6f8f259e23",
+        "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+        "files": [
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/dickens",
+            "size": 10192446,
+            "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/mozilla",
+            "size": 51220480,
+            "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/mr",
+            "size": 9970564,
+            "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/nci",
+            "size": 33553445,
+            "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/ooffice",
+            "size": 6152192,
+            "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/osdb",
+            "size": 10085684,
+            "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/reymont",
+            "size": 6627202,
+            "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/samba",
+            "size": 21606400,
+            "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/sao",
+            "size": 7251944,
+            "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/webster",
+            "size": 41458703,
+            "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/x-ray",
+            "size": 8474240,
+            "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/silesia/xml",
+            "size": 5345280,
+            "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c"
+          }
+        ],
+        "levels": [
+          8
+        ],
+        "pairs": 3,
+        "block_size": 262144,
+        "timing": "one warmup per file; allocation and reset excluded; verification outside timing"
+      },
+      "summary": [
+        {
+          "level": 8,
+          "totals": {
+            "baseline": {
+              "encoded_bytes": 62451851,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 31.172290267,
+                "min": 29.909020331999997,
+                "max": 31.552828918,
+                "samples": [
+                  31.172290267,
+                  31.552828918,
+                  29.909020331999997
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.6838561,
+                "min": 0.667715791,
+                "max": 0.743085386,
+                "samples": [
+                  0.743085386,
+                  0.6838561,
+                  0.667715791
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.000883469,
+                "min": 0.000866118,
+                "max": 0.000884009,
+                "samples": [
+                  0.000866118,
+                  0.000884009,
+                  0.000883469
+                ]
+              }
+            },
+            "candidate": {
+              "encoded_bytes": 62451851,
+              "input_bytes": 211938580,
+              "encode_seconds": {
+                "median": 31.626435692,
+                "min": 29.543884898,
+                "max": 31.801306672,
+                "samples": [
+                  31.801306672,
+                  31.626435692,
+                  29.543884898
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.740802026,
+                "min": 0.684595401,
+                "max": 0.7974444319999999,
+                "samples": [
+                  0.7974444319999999,
+                  0.740802026,
+                  0.684595401
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.0009265429999999999,
+                "min": 0.0008844009999999999,
+                "max": 0.000936361,
+                "samples": [
+                  0.000936361,
+                  0.0009265429999999999,
+                  0.0008844009999999999
+                ]
+              }
+            }
+          },
+          "encode_seconds_change_pct": 1.4568882206283496,
+          "encode_seconds_paired_change_pct": {
+            "median": 0.23328106076097033,
+            "min": -1.2208204412811674,
+            "max": 2.017870357334295
+          },
+          "decode_seconds_change_pct": 8.327179650806649,
+          "decode_seconds_paired_change_pct": {
+            "median": 7.315316250883708,
+            "min": 2.527963278316414,
+            "max": 8.327179650806649
+          },
+          "encoded_change_pct": 0.0,
+          "per_file_median_paired_encode_change_pct": {
+            "dickens": -1.6193424145632074,
+            "mozilla": 0.9845946321477728,
+            "mr": -3.489710094568921,
+            "nci": 0.9552023910450735,
+            "ooffice": 0.7449598572560001,
+            "osdb": -1.0275967184368517,
+            "reymont": -0.1452826100214799,
+            "samba": -3.7209859491916575,
+            "sao": 1.5351926345134492,
+            "webster": 1.555070887553267,
+            "x-ray": 3.3273050863692477,
+            "xml": 1.1390654628633756
+          }
+        }
+      ],
+      "verified_matching_encoded_fingerprints": 36
+    },
+    "final-holdout": {
+      "manifest": {
+        "compiler": "Debian clang version 19.1.7 (3+b1)",
+        "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41",
+        "cpu": 0,
+        "governor": "powersave",
+        "mode": "portable-sequential",
+        "builds": {
+          "baseline": {
+            "command": [
+              "clang",
+              "-ansi",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-Dfluff_compress_block=baseline_fluff_compress_block",
+              "-Dfluff_compress_block_ctx=baseline_fluff_compress_block_ctx",
+              "-Dfluff_compress_block_ctx_trace=baseline_fluff_compress_block_ctx_trace",
+              "-Dfluff_compress_bound=baseline_fluff_compress_bound",
+              "-Dfluff_compress_work_size=baseline_fluff_compress_work_size",
+              "-Dfluff_ctx_alloc=baseline_fluff_ctx_alloc",
+              "-Dfluff_ctx_feed_raw=baseline_fluff_ctx_feed_raw",
+              "-Dfluff_ctx_free=baseline_fluff_ctx_free",
+              "-Dfluff_ctx_get_chain_stats=baseline_fluff_ctx_get_chain_stats",
+              "-Dfluff_ctx_get_literal_count=baseline_fluff_ctx_get_literal_count",
+              "-Dfluff_ctx_get_match_count=baseline_fluff_ctx_get_match_count",
+              "-Dfluff_ctx_get_matchfinder_outcome_stats=baseline_fluff_ctx_get_matchfinder_outcome_stats",
+              "-Dfluff_ctx_get_matchfinder_stats=baseline_fluff_ctx_get_matchfinder_stats",
+              "-Dfluff_ctx_get_rep_stats=baseline_fluff_ctx_get_rep_stats",
+              "-Dfluff_ctx_get_total_match_bytes=baseline_fluff_ctx_get_total_match_bytes",
+              "-Dfluff_ctx_preload=baseline_fluff_ctx_preload",
+              "-Dfluff_ctx_reset=baseline_fluff_ctx_reset",
+              "-Dfluff_ctx_reset_decode=baseline_fluff_ctx_reset_decode",
+              "-Dfluff_ctx_reset_level=baseline_fluff_ctx_reset_level",
+              "-Dfluff_decompress_block=baseline_fluff_decompress_block",
+              "-Dfluff_decompress_block_ctx=baseline_fluff_decompress_block_ctx",
+              "-Dfluff_decompress_block_ctx_trace=baseline_fluff_decompress_block_ctx_trace",
+              "-Dfluff_init=baseline_fluff_init",
+              "-Dfluff_set_allocators=baseline_fluff_set_allocators",
+              "-Dfluff_set_debug_fp=baseline_fluff_set_debug_fp",
+              "-Dfluff_set_level=baseline_fluff_set_level",
+              "-Dfluff_window_size=baseline_fluff_window_size",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/baseline.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/baseline.o"
+            ],
+            "source_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e"
+          },
+          "candidate": {
+            "command": [
+              "clang",
+              "-ansi",
+              "-pedantic",
+              "-O3",
+              "-march=native",
+              "-Isrc/core",
+              "-c",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/candidate.c",
+              "-o",
+              "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/candidate.o"
+            ],
+            "source_sha256": "df4c81dd60d3c7698ff1dcf2526b0e8035cf7e40d9410fc1e439c947200d15b9"
+          }
+        },
+        "link_command": [
+          "clang",
+          "-ansi",
+          "-pedantic",
+          "-O3",
+          "-march=native",
+          "-Isrc/core",
+          "-DFLUFF_BENCH_PAIRED",
+          "test/bench_fluff.c",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/baseline.o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/candidate.o",
+          "-o",
+          "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/final-holdout/bench"
+        ],
+        "binary_sha256": "432d3f66cd611add33ffd4d581cc7e8c177f948f953f2afac440a553b88c7d60",
+        "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+        "files": [
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/bib",
+            "size": 111261,
+            "sha256": "0f1a13936e358191533aca4a32ff42906d1b7f641f3afb0a90458b2410419fcf"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/book1",
+            "size": 768771,
+            "sha256": "9ffa47cd93bccd732f20e0c304203cfbc1b8a91bedac536e2d8f6051003d9951"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/book2",
+            "size": 610856,
+            "sha256": "c8538730cf2ce6a243acf3eb299c43d619b5c695d892f4884df796c13081fdf8"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/geo",
+            "size": 102400,
+            "sha256": "913ff6f45610599020c02f543a0d5a1f46cf772412e25a568b683d23db8c447d"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/news",
+            "size": 377109,
+            "sha256": "7f0482f9774681429eb7021050c17966f6acf19450e170de6611e1ed953d42e8"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/obj1",
+            "size": 21504,
+            "sha256": "8c06109caffd7e794516e4ed10095b0238ea8df63ed66840907cd4dd23e2cf72"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/obj2",
+            "size": 246814,
+            "sha256": "8b3e7f028bfefaebdd48a791060a1ab11d1ffd9bf27e0d63b15e58dda0deb984"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/paper1",
+            "size": 53161,
+            "sha256": "8d9c42d9fa58b5bce1a8b5fae3cc27c9eb7cc7a032bc12a633d44e816497e143"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/paper2",
+            "size": 82199,
+            "sha256": "dc4b9cf68094c632a920f4e76d0a0a8b9617b624c36928ca46a5d29798c5bbbe"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/pic",
+            "size": 513216,
+            "sha256": "0ec3a75089bb52342813496b17e51377bc9eba3cb519a444d67025354841d650"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/progc",
+            "size": 39611,
+            "sha256": "151377a9d6aa9b7e872000269707a15e2b038c826340628e6f4d8b4db9ec3c19"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/progl",
+            "size": 71646,
+            "sha256": "9388db0cfb71ffbe5687d381819a5ff69cdd992d6931e0cf81a310a1caed0ba0"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/progp",
+            "size": 49379,
+            "sha256": "d0cd70ab5f7381a8584b25fa73b3608571a17ee1042cc5c546f63b904614d1bc"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/trans",
+            "size": 93695,
+            "sha256": "117a00c6af3e1c57f20013a8f1b468158f70634f685a348bedb7e4069cdd576a"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/alice29.txt",
+            "size": 152089,
+            "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/asyoulik.txt",
+            "size": 125179,
+            "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/cp.html",
+            "size": 24603,
+            "sha256": "e0cd21cef5b6c4069461e949be100080c3ce887de6f1dd8626c480528efaaf61"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/fields.c",
+            "size": 11150,
+            "sha256": "85d73e354cc50cec76cb5a50537cf8dc035f8cbb8480f9e1cbe2f7d6c23393c7"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/grammar.lsp",
+            "size": 3721,
+            "sha256": "1b0805dfc0ae706b35aac2bb4e15f02485efd24dda5dbd29de7b2f84d1a88c15"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/kennedy.xls",
+            "size": 1029744,
+            "sha256": "9af47239ca29dfe20e633f80bbbb9a4cc9783d0803d7b2b5626f42e4c3790420"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/lcet10.txt",
+            "size": 426754,
+            "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/plrabn12.txt",
+            "size": 481861,
+            "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/ptt5",
+            "size": 513216,
+            "sha256": "0ec3a75089bb52342813496b17e51377bc9eba3cb519a444d67025354841d650"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/sum",
+            "size": 38240,
+            "sha256": "ee5733cd76ecc2f9d8ff156adc3c02a7a851051dcf43a2d56ff4ee4ff606bdb3"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/xargs.1",
+            "size": 4227,
+            "sha256": "c58aeb5d2d1e12751d47e7412b45784405fc30a5671b03d480fa05776e183619"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/E.coli",
+            "size": 4638690,
+            "sha256": "9125dfd87315961ef4286f3856098069e050cc3a2abe65735fe43e69d1996f40"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/bible.txt",
+            "size": 4047392,
+            "sha256": "4e0a7e8dff7d9c82dbded57305c0ca3cdd3c4ca014db27121782fe9710f4723f"
+          },
+          {
+            "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/world192.txt",
+            "size": 2473400,
+            "sha256": "1aebdc97d29904b25791da9aa32be90b69d7da6dc0ac9b95512ed27ed40d2112"
+          }
+        ],
+        "levels": [
+          8
+        ],
+        "pairs": 3,
+        "block_size": 262144,
+        "timing": "one warmup per file; allocation and reset excluded; verification outside timing"
+      },
+      "summary": [
+        {
+          "level": 8,
+          "totals": {
+            "baseline": {
+              "encoded_bytes": 4566318,
+              "input_bytes": 17111888,
+              "encode_seconds": {
+                "median": 5.75471638,
+                "min": 5.704144827,
+                "max": 5.836734704,
+                "samples": [
+                  5.836734704,
+                  5.75471638,
+                  5.704144827
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.055153624,
+                "min": 0.055079037,
+                "max": 0.055442762,
+                "samples": [
+                  0.055079037,
+                  0.055442762,
+                  0.055153624
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.0015865,
+                "min": 0.00157894,
+                "max": 0.001971605,
+                "samples": [
+                  0.0015865,
+                  0.001971605,
+                  0.00157894
+                ]
+              }
+            },
+            "candidate": {
+              "encoded_bytes": 4566318,
+              "input_bytes": 17111888,
+              "encode_seconds": {
+                "median": 5.837350225,
+                "min": 5.765811441,
+                "max": 5.854353641,
+                "samples": [
+                  5.837350225,
+                  5.765811441,
+                  5.854353641
+                ]
+              },
+              "decode_seconds": {
+                "median": 0.055301426,
+                "min": 0.054505395,
+                "max": 0.059351879999999996,
+                "samples": [
+                  0.054505395,
+                  0.055301426,
+                  0.059351879999999996
+                ]
+              },
+              "reset_seconds": {
+                "median": 0.001820525,
+                "min": 0.001698196,
+                "max": 0.001928138,
+                "samples": [
+                  0.001820525,
+                  0.001698196,
+                  0.001928138
+                ]
+              }
+            }
+          },
+          "encode_seconds_change_pct": 1.4359325385207011,
+          "encode_seconds_paired_change_pct": {
+            "median": 0.19279944079539924,
+            "min": 0.010545639492187675,
+            "max": 2.633327493527182
+          },
+          "decode_seconds_change_pct": 0.26798239042280514,
+          "decode_seconds_paired_change_pct": {
+            "median": -0.2549223647984933,
+            "min": -1.0414887972714504,
+            "max": 7.611931357402724
+          },
+          "encoded_change_pct": 0.0,
+          "per_file_median_paired_encode_change_pct": {
+            "bib": -0.4815568545925353,
+            "book1": -1.1208066842622322,
+            "book2": -1.5877390057647545,
+            "geo": -3.1379030534486874,
+            "news": -1.9016025554299154,
+            "obj1": -11.430460301719714,
+            "obj2": 6.803609762835783,
+            "paper1": 2.2018839192133655,
+            "paper2": -0.7801647695416136,
+            "pic": -1.5803880379654967,
+            "progc": 0.3316481555707851,
+            "progl": 3.6695725813535196,
+            "progp": -14.088646083875867,
+            "trans": 2.967392942275948,
+            "alice29.txt": -1.4112400278728732,
+            "asyoulik.txt": -0.911272919913797,
+            "cp.html": -2.9823144485540465,
+            "fields.c": 2.5429805469791233,
+            "grammar.lsp": 6.525650956324847,
+            "kennedy.xls": 0.3037440917810885,
+            "lcet10.txt": 1.2530077179302213,
+            "plrabn12.txt": 0.6705035042534613,
+            "ptt5": -5.363421632695609,
+            "sum": -6.080211797051705,
+            "xargs.1": -5.383797772540322,
+            "E.coli": -0.46744865926775514,
+            "bible.txt": 0.2910836656766502,
+            "world192.txt": 8.244241966996002
+          }
+        }
+      ],
+      "verified_matching_encoded_fingerprints": 84
+    }
+  },
+  "hash_screen": {
+    "hash16": {
+      "source_sha256": "de28879cb2388d6d524b13709e27486dea3a3c820c82e8b012cde2b29fd6ebfd",
+      "encoded_bytes": 62453173,
+      "encoded_change_pct": 0.002116830772558309,
+      "status": "unpaired screening only; timings are not acceptance evidence",
+      "compiler": "Clang 19.1.7",
+      "flags": "-ansi -pedantic -O3 -march=native",
+      "cpu": 8,
+      "warmup": false,
+      "files": [
+        {
+          "name": "dickens",
+          "input_bytes": 10192446,
+          "encoded_bytes": 3422728,
+          "verified": true
+        },
+        {
+          "name": "mozilla",
+          "input_bytes": 51220480,
+          "encoded_bytes": 17718426,
+          "verified": true
+        },
+        {
+          "name": "mr",
+          "input_bytes": 9970564,
+          "encoded_bytes": 3559533,
+          "verified": true
+        },
+        {
+          "name": "nci",
+          "input_bytes": 33553445,
+          "encoded_bytes": 2430947,
+          "verified": true
+        },
+        {
+          "name": "ooffice",
+          "input_bytes": 6152192,
+          "encoded_bytes": 2916273,
+          "verified": true
+        },
+        {
+          "name": "osdb",
+          "input_bytes": 10085684,
+          "encoded_bytes": 3431257,
+          "verified": true
+        },
+        {
+          "name": "reymont",
+          "input_bytes": 6627202,
+          "encoded_bytes": 1682741,
+          "verified": true
+        },
+        {
+          "name": "samba",
+          "input_bytes": 21606400,
+          "encoded_bytes": 4814577,
+          "verified": true
+        },
+        {
+          "name": "sao",
+          "input_bytes": 7251944,
+          "encoded_bytes": 5246361,
+          "verified": true
+        },
+        {
+          "name": "webster",
+          "input_bytes": 41458703,
+          "encoded_bytes": 10859587,
+          "verified": true
+        },
+        {
+          "name": "x-ray",
+          "input_bytes": 8474240,
+          "encoded_bytes": 5831935,
+          "verified": true
+        },
+        {
+          "name": "xml",
+          "input_bytes": 5345280,
+          "encoded_bytes": 538808,
+          "verified": true
+        }
+      ]
+    },
+    "h3-15": {
+      "source_sha256": "8994657abafa344e9e965c722c0f3348360960f8963167d45fadd98f2ba9bcb7",
+      "encoded_bytes": 62452114,
+      "encoded_change_pct": 0.0004211244275298398,
+      "status": "unpaired screening only; timings are not acceptance evidence",
+      "compiler": "Clang 19.1.7",
+      "flags": "-ansi -pedantic -O3 -march=native",
+      "cpu": 8,
+      "warmup": false,
+      "files": [
+        {
+          "name": "dickens",
+          "input_bytes": 10192446,
+          "encoded_bytes": 3422539,
+          "verified": true
+        },
+        {
+          "name": "mozilla",
+          "input_bytes": 51220480,
+          "encoded_bytes": 17718601,
+          "verified": true
+        },
+        {
+          "name": "mr",
+          "input_bytes": 9970564,
+          "encoded_bytes": 3559523,
+          "verified": true
+        },
+        {
+          "name": "nci",
+          "input_bytes": 33553445,
+          "encoded_bytes": 2430920,
+          "verified": true
+        },
+        {
+          "name": "ooffice",
+          "input_bytes": 6152192,
+          "encoded_bytes": 2916288,
+          "verified": true
+        },
+        {
+          "name": "osdb",
+          "input_bytes": 10085684,
+          "encoded_bytes": 3431197,
+          "verified": true
+        },
+        {
+          "name": "reymont",
+          "input_bytes": 6627202,
+          "encoded_bytes": 1682668,
+          "verified": true
+        },
+        {
+          "name": "samba",
+          "input_bytes": 21606400,
+          "encoded_bytes": 4814552,
+          "verified": true
+        },
+        {
+          "name": "sao",
+          "input_bytes": 7251944,
+          "encoded_bytes": 5246403,
+          "verified": true
+        },
+        {
+          "name": "webster",
+          "input_bytes": 41458703,
+          "encoded_bytes": 10858717,
+          "verified": true
+        },
+        {
+          "name": "x-ray",
+          "input_bytes": 8474240,
+          "encoded_bytes": 5831905,
+          "verified": true
+        },
+        {
+          "name": "xml",
+          "input_bytes": 5345280,
+          "encoded_bytes": 538801,
+          "verified": true
+        }
+      ]
+    },
+    "both": {
+      "source_sha256": "ae4b9bfd34890cb9e09d4235629fa7a153f40952db780990c43e9281b60fdda1",
+      "encoded_bytes": 62453439,
+      "encoded_change_pct": 0.002542758900769826,
+      "status": "unpaired screening only; timings are not acceptance evidence",
+      "compiler": "Clang 19.1.7",
+      "flags": "-ansi -pedantic -O3 -march=native",
+      "cpu": 8,
+      "warmup": false,
+      "files": [
+        {
+          "name": "dickens",
+          "input_bytes": 10192446,
+          "encoded_bytes": 3422717,
+          "verified": true
+        },
+        {
+          "name": "mozilla",
+          "input_bytes": 51220480,
+          "encoded_bytes": 17718655,
+          "verified": true
+        },
+        {
+          "name": "mr",
+          "input_bytes": 9970564,
+          "encoded_bytes": 3559537,
+          "verified": true
+        },
+        {
+          "name": "nci",
+          "input_bytes": 33553445,
+          "encoded_bytes": 2430945,
+          "verified": true
+        },
+        {
+          "name": "ooffice",
+          "input_bytes": 6152192,
+          "encoded_bytes": 2916287,
+          "verified": true
+        },
+        {
+          "name": "osdb",
+          "input_bytes": 10085684,
+          "encoded_bytes": 3431259,
+          "verified": true
+        },
+        {
+          "name": "reymont",
+          "input_bytes": 6627202,
+          "encoded_bytes": 1682743,
+          "verified": true
+        },
+        {
+          "name": "samba",
+          "input_bytes": 21606400,
+          "encoded_bytes": 4814592,
+          "verified": true
+        },
+        {
+          "name": "sao",
+          "input_bytes": 7251944,
+          "encoded_bytes": 5246412,
+          "verified": true
+        },
+        {
+          "name": "webster",
+          "input_bytes": 41458703,
+          "encoded_bytes": 10859575,
+          "verified": true
+        },
+        {
+          "name": "x-ray",
+          "input_bytes": 8474240,
+          "encoded_bytes": 5831908,
+          "verified": true
+        },
+        {
+          "name": "xml",
+          "input_bytes": 5345280,
+          "encoded_bytes": 538809,
+          "verified": true
+        }
+      ]
+    }
+  },
+  "long_decoder": {
+    "cpu": 8,
+    "repetitions_per_sample": 10,
+    "pairs": {
+      "0": {
+        "seconds": {
+          "baseline": 0.624512363,
+          "candidate": 0.606286317
+        },
+        "change_pct": -2.9184443863443543
+      },
+      "1": {
+        "seconds": {
+          "baseline": 0.634489418,
+          "candidate": 0.604003687
+        },
+        "change_pct": -4.804765869239458
+      },
+      "2": {
+        "seconds": {
+          "baseline": 0.634634383,
+          "candidate": 0.615866738
+        },
+        "change_pct": -2.9572373484214376
+      },
+      "3": {
+        "seconds": {
+          "baseline": 0.6266166240000001,
+          "candidate": 0.6041114360000001
+        },
+        "change_pct": -3.5915402078448566
+      },
+      "4": {
+        "seconds": {
+          "baseline": 0.625121401,
+          "candidate": 0.609852057
+        },
+        "change_pct": -2.4426205814700674
+      }
+    },
+    "median_paired_change_pct": -2.9572373484214376,
+    "binary_sha256": "424fef6993261480488ab5ae95c7bf9e3b96438ff94c16a3d2388a4708912aa0",
+    "harness_sha256": "20ffb857606b6d3b54fb54b330fad692b4be254a9ba4fe02e59a2c8b98aef837",
+    "link_objects": "final-modern baseline.o and candidate.o; gcc -std=c11 -pedantic -O3 -march=native -DBOLTPACK_FAST_FLUFF -fopenmp -DFLUFF_BENCH_PAIRED"
+  },
+  "paired_half": {
+    "manifest": {
+      "compiler": "Debian clang version 19.1.7 (3+b1)",
+      "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41",
+      "cpu": 8,
+      "governor": "powersave",
+      "mode": "portable-sequential",
+      "builds": {
+        "baseline": {
+          "command": [
+            "clang",
+            "-ansi",
+            "-pedantic",
+            "-O3",
+            "-march=native",
+            "-Isrc/core",
+            "-Dfluff_compress_block=baseline_fluff_compress_block",
+            "-Dfluff_compress_block_ctx=baseline_fluff_compress_block_ctx",
+            "-Dfluff_compress_block_ctx_trace=baseline_fluff_compress_block_ctx_trace",
+            "-Dfluff_compress_bound=baseline_fluff_compress_bound",
+            "-Dfluff_compress_work_size=baseline_fluff_compress_work_size",
+            "-Dfluff_ctx_alloc=baseline_fluff_ctx_alloc",
+            "-Dfluff_ctx_feed_raw=baseline_fluff_ctx_feed_raw",
+            "-Dfluff_ctx_free=baseline_fluff_ctx_free",
+            "-Dfluff_ctx_get_chain_stats=baseline_fluff_ctx_get_chain_stats",
+            "-Dfluff_ctx_get_literal_count=baseline_fluff_ctx_get_literal_count",
+            "-Dfluff_ctx_get_match_count=baseline_fluff_ctx_get_match_count",
+            "-Dfluff_ctx_get_matchfinder_outcome_stats=baseline_fluff_ctx_get_matchfinder_outcome_stats",
+            "-Dfluff_ctx_get_matchfinder_stats=baseline_fluff_ctx_get_matchfinder_stats",
+            "-Dfluff_ctx_get_rep_stats=baseline_fluff_ctx_get_rep_stats",
+            "-Dfluff_ctx_get_total_match_bytes=baseline_fluff_ctx_get_total_match_bytes",
+            "-Dfluff_ctx_preload=baseline_fluff_ctx_preload",
+            "-Dfluff_ctx_reset=baseline_fluff_ctx_reset",
+            "-Dfluff_ctx_reset_decode=baseline_fluff_ctx_reset_decode",
+            "-Dfluff_ctx_reset_level=baseline_fluff_ctx_reset_level",
+            "-Dfluff_decompress_block=baseline_fluff_decompress_block",
+            "-Dfluff_decompress_block_ctx=baseline_fluff_decompress_block_ctx",
+            "-Dfluff_decompress_block_ctx_trace=baseline_fluff_decompress_block_ctx_trace",
+            "-Dfluff_init=baseline_fluff_init",
+            "-Dfluff_set_allocators=baseline_fluff_set_allocators",
+            "-Dfluff_set_debug_fp=baseline_fluff_set_debug_fp",
+            "-Dfluff_set_level=baseline_fluff_set_level",
+            "-Dfluff_window_size=baseline_fluff_window_size",
+            "-c",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/baseline.c",
+            "-o",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/baseline.o"
+          ],
+          "source_sha256": "df4c81dd60d3c7698ff1dcf2526b0e8035cf7e40d9410fc1e439c947200d15b9"
+        },
+        "candidate": {
+          "command": [
+            "clang",
+            "-ansi",
+            "-pedantic",
+            "-O3",
+            "-march=native",
+            "-Isrc/core",
+            "-c",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/candidate.c",
+            "-o",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/candidate.o"
+          ],
+          "source_sha256": "74d57c3e25615b28f2f4caa5cbc14fe0daffd166c11fd984c68c424142355cbc"
+        }
+      },
+      "link_command": [
+        "clang",
+        "-ansi",
+        "-pedantic",
+        "-O3",
+        "-march=native",
+        "-Isrc/core",
+        "-DFLUFF_BENCH_PAIRED",
+        "test/bench_fluff.c",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/baseline.o",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/candidate.o",
+        "-o",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/paired-half/bench"
+      ],
+      "binary_sha256": "f01a14b4805b515cc54b5a1cab9c7e3c3148885fdec2355f3316eab66af58e4c",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "files": [
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/dickens",
+          "size": 10192446,
+          "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/mozilla",
+          "size": 51220480,
+          "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/mr",
+          "size": 9970564,
+          "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/nci",
+          "size": 33553445,
+          "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/ooffice",
+          "size": 6152192,
+          "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/osdb",
+          "size": 10085684,
+          "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/reymont",
+          "size": 6627202,
+          "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/samba",
+          "size": 21606400,
+          "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/sao",
+          "size": 7251944,
+          "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/webster",
+          "size": 41458703,
+          "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/x-ray",
+          "size": 8474240,
+          "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/silesia/xml",
+          "size": 5345280,
+          "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c"
+        }
+      ],
+      "levels": [
+        1,
+        8
+      ],
+      "pairs": 2,
+      "block_size": 262144,
+      "timing": "one warmup per file; allocation and reset excluded; verification outside timing"
+    },
+    "summary": [
+      {
+        "level": 1,
+        "totals": {
+          "baseline": {
+            "encoded_bytes": 64676616,
+            "input_bytes": 211938580,
+            "encode_seconds": {
+              "median": 8.719052833500001,
+              "min": 8.70034573,
+              "max": 8.737759937,
+              "samples": [
+                8.70034573,
+                8.737759937
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.6462579559999999,
+              "min": 0.64385328,
+              "max": 0.648662632,
+              "samples": [
+                0.64385328,
+                0.648662632
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.0009182065,
+              "min": 0.000853316,
+              "max": 0.000983097,
+              "samples": [
+                0.000853316,
+                0.000983097
+              ]
+            }
+          },
+          "candidate": {
+            "encoded_bytes": 64740759,
+            "input_bytes": 211938580,
+            "encode_seconds": {
+              "median": 9.2940335985,
+              "min": 9.276914078,
+              "max": 9.311153119,
+              "samples": [
+                9.276914078,
+                9.311153119
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.6484923295,
+              "min": 0.643478719,
+              "max": 0.65350594,
+              "samples": [
+                0.65350594,
+                0.643478719
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.0008074275000000001,
+              "min": 0.000791157,
+              "max": 0.000823698,
+              "samples": [
+                0.000823698,
+                0.000791157
+              ]
+            }
+          }
+        },
+        "encode_seconds_change_pct": 6.594532410571374,
+        "encode_seconds_paired_change_pct": {
+          "median": 6.594601834353475,
+          "min": 6.562244627160907,
+          "max": 6.626959041546043
+        },
+        "decode_seconds_change_pct": 0.34574019232656017,
+        "decode_seconds_paired_change_pct": {
+          "median": 0.3500162232274062,
+          "min": -0.799169359273344,
+          "max": 1.4992018057281564
+        },
+        "encoded_change_pct": 0.09917494755755651
+      },
+      {
+        "level": 8,
+        "totals": {
+          "baseline": {
+            "encoded_bytes": 62451851,
+            "input_bytes": 211938580,
+            "encode_seconds": {
+              "median": 27.350797581000002,
+              "min": 27.346809445,
+              "max": 27.354785717,
+              "samples": [
+                27.354785717,
+                27.346809445
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.68486451,
+              "min": 0.678546041,
+              "max": 0.691182979,
+              "samples": [
+                0.691182979,
+                0.678546041
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.0008669745,
+              "min": 0.000817427,
+              "max": 0.000916522,
+              "samples": [
+                0.000817427,
+                0.000916522
+              ]
+            }
+          },
+          "candidate": {
+            "encoded_bytes": 62453439,
+            "input_bytes": 211938580,
+            "encode_seconds": {
+              "median": 28.713540976,
+              "min": 28.143016803000002,
+              "max": 29.284065149,
+              "samples": [
+                29.284065149,
+                28.143016803000002
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.664419435,
+              "min": 0.65936226,
+              "max": 0.66947661,
+              "samples": [
+                0.66947661,
+                0.65936226
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.000760765,
+              "min": 0.000753497,
+              "max": 0.000768033,
+              "samples": [
+                0.000768033,
+                0.000753497
+              ]
+            }
+          }
+        },
+        "encode_seconds_change_pct": 4.982463092581502,
+        "encode_seconds_paired_change_pct": {
+          "median": 4.982161163346266,
+          "min": 2.911518287357562,
+          "max": 7.05280403933497
+        },
+        "decode_seconds_change_pct": -2.985272955668272,
+        "decode_seconds_paired_change_pct": {
+          "median": -2.983827829312119,
+          "min": -3.1404663684578393,
+          "max": -2.8271892901663986
+        },
+        "encoded_change_pct": 0.002542758900769826
+      }
+    ]
+  },
+  "text_recheck": {
+    "manifest": {
+      "compiler": "Debian clang version 19.1.7 (3+b1)",
+      "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41",
+      "cpu": 8,
+      "governor": "powersave",
+      "mode": "portable-sequential",
+      "builds": {
+        "baseline": {
+          "command": [
+            "clang",
+            "-ansi",
+            "-pedantic",
+            "-O3",
+            "-march=native",
+            "-Isrc/core",
+            "-Dfluff_compress_block=baseline_fluff_compress_block",
+            "-Dfluff_compress_block_ctx=baseline_fluff_compress_block_ctx",
+            "-Dfluff_compress_block_ctx_trace=baseline_fluff_compress_block_ctx_trace",
+            "-Dfluff_compress_bound=baseline_fluff_compress_bound",
+            "-Dfluff_compress_work_size=baseline_fluff_compress_work_size",
+            "-Dfluff_ctx_alloc=baseline_fluff_ctx_alloc",
+            "-Dfluff_ctx_feed_raw=baseline_fluff_ctx_feed_raw",
+            "-Dfluff_ctx_free=baseline_fluff_ctx_free",
+            "-Dfluff_ctx_get_chain_stats=baseline_fluff_ctx_get_chain_stats",
+            "-Dfluff_ctx_get_literal_count=baseline_fluff_ctx_get_literal_count",
+            "-Dfluff_ctx_get_match_count=baseline_fluff_ctx_get_match_count",
+            "-Dfluff_ctx_get_matchfinder_outcome_stats=baseline_fluff_ctx_get_matchfinder_outcome_stats",
+            "-Dfluff_ctx_get_matchfinder_stats=baseline_fluff_ctx_get_matchfinder_stats",
+            "-Dfluff_ctx_get_rep_stats=baseline_fluff_ctx_get_rep_stats",
+            "-Dfluff_ctx_get_total_match_bytes=baseline_fluff_ctx_get_total_match_bytes",
+            "-Dfluff_ctx_preload=baseline_fluff_ctx_preload",
+            "-Dfluff_ctx_reset=baseline_fluff_ctx_reset",
+            "-Dfluff_ctx_reset_decode=baseline_fluff_ctx_reset_decode",
+            "-Dfluff_ctx_reset_level=baseline_fluff_ctx_reset_level",
+            "-Dfluff_decompress_block=baseline_fluff_decompress_block",
+            "-Dfluff_decompress_block_ctx=baseline_fluff_decompress_block_ctx",
+            "-Dfluff_decompress_block_ctx_trace=baseline_fluff_decompress_block_ctx_trace",
+            "-Dfluff_init=baseline_fluff_init",
+            "-Dfluff_set_allocators=baseline_fluff_set_allocators",
+            "-Dfluff_set_debug_fp=baseline_fluff_set_debug_fp",
+            "-Dfluff_set_level=baseline_fluff_set_level",
+            "-Dfluff_window_size=baseline_fluff_window_size",
+            "-c",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/baseline.c",
+            "-o",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/baseline.o"
+          ],
+          "source_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e"
+        },
+        "candidate": {
+          "command": [
+            "clang",
+            "-ansi",
+            "-pedantic",
+            "-O3",
+            "-march=native",
+            "-Isrc/core",
+            "-c",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/candidate.c",
+            "-o",
+            "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/candidate.o"
+          ],
+          "source_sha256": "df4c81dd60d3c7698ff1dcf2526b0e8035cf7e40d9410fc1e439c947200d15b9"
+        }
+      },
+      "link_command": [
+        "clang",
+        "-ansi",
+        "-pedantic",
+        "-O3",
+        "-march=native",
+        "-Isrc/core",
+        "-DFLUFF_BENCH_PAIRED",
+        "test/bench_fluff.c",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/baseline.o",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/candidate.o",
+        "-o",
+        "/home/tony/repo/boltpack/build/fluff-memory-2026-10-15/text-recheck/bench"
+      ],
+      "binary_sha256": "432d3f66cd611add33ffd4d581cc7e8c177f948f953f2afac440a553b88c7d60",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "files": [
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/world192.txt",
+          "size": 2473400,
+          "sha256": "1aebdc97d29904b25791da9aa32be90b69d7da6dc0ac9b95512ed27ed40d2112"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/calgary/obj2",
+          "size": 246814,
+          "sha256": "8b3e7f028bfefaebdd48a791060a1ab11d1ffd9bf27e0d63b15e58dda0deb984"
+        },
+        {
+          "path": "/home/tony/repo/boltpack/test/corpus/boltlz-holdout-2026-10-14/canterbury/grammar.lsp",
+          "size": 3721,
+          "sha256": "1b0805dfc0ae706b35aac2bb4e15f02485efd24dda5dbd29de7b2f84d1a88c15"
+        }
+      ],
+      "levels": [
+        1,
+        8
+      ],
+      "pairs": 15,
+      "block_size": 262144,
+      "timing": "one warmup per file; allocation and reset excluded; verification outside timing"
+    },
+    "summary": [
+      {
+        "level": 1,
+        "totals": {
+          "baseline": {
+            "encoded_bytes": 712755,
+            "input_bytes": 2723935,
+            "encode_seconds": {
+              "median": 0.11989780900000001,
+              "min": 0.11624754500000001,
+              "max": 0.130327106,
+              "samples": [
+                0.11989780900000001,
+                0.120042149,
+                0.118185563,
+                0.12083360700000001,
+                0.120480298,
+                0.129562811,
+                0.130327106,
+                0.117857585,
+                0.11903081900000001,
+                0.12034461399999999,
+                0.119236154,
+                0.119004002,
+                0.117689481,
+                0.1272338,
+                0.11624754500000001
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.008940353,
+              "min": 0.008157898,
+              "max": 0.01094564,
+              "samples": [
+                0.008157898,
+                0.008940353,
+                0.00874362,
+                0.009491481,
+                0.008526277,
+                0.01048016,
+                0.01094564,
+                0.008931623,
+                0.009526738,
+                0.009153073,
+                0.009057975999999999,
+                0.009412295999999999,
+                0.008344323,
+                0.008736341,
+                0.008207766
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.000237043,
+              "min": 0.000200805,
+              "max": 0.00029692200000000003,
+              "samples": [
+                0.000218163,
+                0.00029692200000000003,
+                0.0002284,
+                0.00024055000000000002,
+                0.00024066700000000002,
+                0.000237043,
+                0.000215108,
+                0.000200805,
+                0.000212069,
+                0.000212495,
+                0.00024646300000000004,
+                0.000202296,
+                0.00025076199999999997,
+                0.000249076,
+                0.000248998
+              ]
+            }
+          },
+          "candidate": {
+            "encoded_bytes": 712755,
+            "input_bytes": 2723935,
+            "encode_seconds": {
+              "median": 0.119827067,
+              "min": 0.11492877,
+              "max": 0.137279176,
+              "samples": [
+                0.117208655,
+                0.137279176,
+                0.121514242,
+                0.12156676200000001,
+                0.12817615799999998,
+                0.11492877,
+                0.133244276,
+                0.118813674,
+                0.11641019799999999,
+                0.116958213,
+                0.132368273,
+                0.119125613,
+                0.119827067,
+                0.121846452,
+                0.11860156
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.009001913,
+              "min": 0.008396718,
+              "max": 0.009789489,
+              "samples": [
+                0.009294420999999999,
+                0.009165494,
+                0.008622482,
+                0.009493921,
+                0.008886118,
+                0.008628113,
+                0.00862611,
+                0.008432247,
+                0.008396718,
+                0.009001913,
+                0.00906824,
+                0.008923163,
+                0.009704701,
+                0.009789489,
+                0.00908244
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.000236276,
+              "min": 0.000168453,
+              "max": 0.000319989,
+              "samples": [
+                0.00027037000000000003,
+                0.000204604,
+                0.000239464,
+                0.000236276,
+                0.00022338000000000002,
+                0.000319989,
+                0.0003093,
+                0.00021078200000000002,
+                0.00028994299999999997,
+                0.000168453,
+                0.00021857999999999998,
+                0.00018706099999999998,
+                0.00027859499999999997,
+                0.000191145,
+                0.000271829
+              ]
+            }
+          }
+        },
+        "encode_seconds_change_pct": -0.059001912203426876,
+        "encode_seconds_paired_change_pct": {
+          "median": 0.8112239869839444,
+          "min": -11.294939409735406,
+          "max": 14.359145636421422
+        },
+        "decode_seconds_change_pct": 0.6885634157846043,
+        "decode_seconds_paired_change_pct": {
+          "median": 0.025707263176322215,
+          "min": -21.191360212833608,
+          "max": 16.303036207970358
+        },
+        "encoded_change_pct": 0.0
+      },
+      {
+        "level": 8,
+        "totals": {
+          "baseline": {
+            "encoded_bytes": 673982,
+            "input_bytes": 2723935,
+            "encode_seconds": {
+              "median": 0.291311961,
+              "min": 0.286567001,
+              "max": 0.30199686200000003,
+              "samples": [
+                0.294943872,
+                0.288671063,
+                0.288842235,
+                0.290090421,
+                0.288984106,
+                0.286567001,
+                0.28728355699999997,
+                0.29570237499999996,
+                0.30199686200000003,
+                0.29059367199999997,
+                0.299631486,
+                0.297110716,
+                0.291311961,
+                0.29946124199999996,
+                0.2921992
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.008461072,
+              "min": 0.007962163,
+              "max": 0.009082748,
+              "samples": [
+                0.008483782,
+                0.008194239,
+                0.008521809,
+                0.007962163,
+                0.008355453,
+                0.008558833,
+                0.008406047,
+                0.008476717,
+                0.008898383000000001,
+                0.008461072,
+                0.008687024,
+                0.008163416,
+                0.009082748,
+                0.008051955,
+                0.008369793
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.00021151200000000002,
+              "min": 0.000175036,
+              "max": 0.000320589,
+              "samples": [
+                0.000187971,
+                0.00029784799999999997,
+                0.000201534,
+                0.000320589,
+                0.000217861,
+                0.00019944,
+                0.000175036,
+                0.00017719600000000002,
+                0.00018952999999999998,
+                0.00021151200000000002,
+                0.000246878,
+                0.00025625699999999997,
+                0.00021195,
+                0.000208929,
+                0.000216294
+              ]
+            }
+          },
+          "candidate": {
+            "encoded_bytes": 673982,
+            "input_bytes": 2723935,
+            "encode_seconds": {
+              "median": 0.29257836,
+              "min": 0.28714740699999997,
+              "max": 0.308770007,
+              "samples": [
+                0.30825693800000004,
+                0.293607886,
+                0.290007127,
+                0.28714740699999997,
+                0.290579799,
+                0.297675231,
+                0.289463196,
+                0.29158660599999997,
+                0.308770007,
+                0.29245785199999996,
+                0.301716683,
+                0.29257836,
+                0.303651924,
+                0.29327818299999997,
+                0.28759894
+              ]
+            },
+            "decode_seconds": {
+              "median": 0.008306219,
+              "min": 0.00778868,
+              "max": 0.009116709,
+              "samples": [
+                0.009116709,
+                0.007878988,
+                0.008475961,
+                0.008306219,
+                0.008315029,
+                0.007889023,
+                0.008175584,
+                0.00787442,
+                0.008291824,
+                0.008906558,
+                0.008527235000000001,
+                0.008091232,
+                0.008619378,
+                0.008510538,
+                0.00778868
+              ]
+            },
+            "reset_seconds": {
+              "median": 0.000206821,
+              "min": 0.00016394,
+              "max": 0.000252186,
+              "samples": [
+                0.000252186,
+                0.000225683,
+                0.00023936700000000001,
+                0.000205374,
+                0.000206821,
+                0.00020809799999999999,
+                0.000185365,
+                0.000182544,
+                0.000188051,
+                0.000178657,
+                0.000213511,
+                0.00016394,
+                0.00024630699999999997,
+                0.000235429,
+                0.000203544
+              ]
+            }
+          }
+        },
+        "encode_seconds_change_pct": 0.434722623696171,
+        "encode_seconds_paired_change_pct": {
+          "median": 0.6415074310358593,
+          "min": -2.0647276284254445,
+          "max": 4.513762537165045
+        },
+        "decode_seconds_change_pct": -1.830181802022246,
+        "decode_seconds_paired_change_pct": {
+          "median": -1.8393986248915528,
+          "min": -7.825950103244217,
+          "max": 7.460434509043257
+        },
+        "encoded_change_pct": 0.0
+      }
+    ],
+    "per_file_median_paired_encode_change_pct": {
+      "world192.txt:level1": 1.0126929647851224,
+      "obj2:level1": -1.8759983247510381,
+      "grammar.lsp:level1": -3.431892906120726,
+      "world192.txt:level8": 0.4349274248993007,
+      "obj2:level8": -1.6045187334699174,
+      "grammar.lsp:level8": -5.5684788074017995
+    },
+    "verified_matching_encoded_fingerprints": 90
+  },
+  "allocations.c_sha256": "08f0755410225d787b837abdce1ee2065200fa6def4f9ed3c41b90018e98bf10",
+  "retained.patch_sha256": "3c17df25ff5d75ecc3bcd7aca0a2e49dbcaa3cfe531661fc16f9b9dffc62ce4d"
+}

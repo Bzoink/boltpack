@@ -1,0 +1,11 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -658,7 +658,7 @@
+ 
+ #define FSE_LL_BITS   10
+ #define FSE_LL_L      (1U << FSE_LL_BITS)   /* 1024 */
+-#define FSE_D_BITS    9
++#define FSE_D_BITS    10
+ #define FSE_D_L       (1U << FSE_D_BITS)    /* 512 */
+ 
+ /* Maximum number of bits emitted per FSE symbol decode step. */

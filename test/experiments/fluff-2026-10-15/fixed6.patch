@@ -1,0 +1,15 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2443,10 +2443,10 @@
+         cost = 11U + len_eb;
+     }
+ 
+-    if (length * 8U <= cost) {
++    if (length * 6U <= cost) {
+         return 0;
+     }
+-    return length * 8U - cost;
++    return length * 6U - cost;
+ }
+ 
+ static void fl_insert_range_hyb(fluff_ctx_t *ctx, const fl_u8 *src,
