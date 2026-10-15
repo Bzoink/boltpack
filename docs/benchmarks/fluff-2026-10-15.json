@@ -1,0 +1,844 @@
+{
+  "baseline_revision": "f627bac5e77da844a863a99a41bdfd8eb3c3d0ee",
+  "cpu_model": "Intel Core i5-10500T",
+  "notes": [
+    "Portable timing predates only the decoder bit-reader refill optimization; its encoder source is unchanged. Other profiles use the final codec.",
+    "Times exclude reset and allocation; verification and deterministic encoded FNV hashes are outside timing.",
+    "Each pair alternates baseline/candidate order within each file. Aggregate time sums each file in that pair.",
+    "No frequency lock. Per-file paired changes are more informative than separate medians when CPU speed drifts.",
+    "Encoded sizes exclude archive headers and stored fallback.",
+    "ASan/UBSan run with ASAN_OPTIONS=detect_leaks=0 because LeakSanitizer cannot run under ptrace here."
+  ],
+  "current_source_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e",
+  "encoder_context_bytes": 282072,
+  "additional_peak_decode_scratch_bytes": 2312,
+  "cases": [
+    {
+      "name": "final-portable",
+      "compiler": "Debian clang version 19.1.7 (3+b1)",
+      "mode": "portable-sequential",
+      "cpu": 0,
+      "governor": "powersave",
+      "block_size": 262144,
+      "pairs": 5,
+      "baseline_sha256": "b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532",
+      "candidate_sha256": "0c17586ff4d281ce2d5314d7a3ca3127454b339802e099e4e1c552b04f7f802e",
+      "binary_sha256": "19c9e447852764eb49d855993e2c37a27a932cfe12bde42382ec2117f220241e",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "samples_sha256": "ff9a6766ff3279af1e7b02ff21f0dd458db4a4c64df8e766a021b854f187e0be",
+      "files": [
+        {
+          "path": "test/corpus/silesia/dickens",
+          "size": 10192446,
+          "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a"
+        },
+        {
+          "path": "test/corpus/silesia/mozilla",
+          "size": 51220480,
+          "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b"
+        },
+        {
+          "path": "test/corpus/silesia/mr",
+          "size": 9970564,
+          "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6"
+        },
+        {
+          "path": "test/corpus/silesia/nci",
+          "size": 33553445,
+          "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635"
+        },
+        {
+          "path": "test/corpus/silesia/ooffice",
+          "size": 6152192,
+          "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb"
+        },
+        {
+          "path": "test/corpus/silesia/osdb",
+          "size": 10085684,
+          "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3"
+        },
+        {
+          "path": "test/corpus/silesia/reymont",
+          "size": 6627202,
+          "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578"
+        },
+        {
+          "path": "test/corpus/silesia/samba",
+          "size": 21606400,
+          "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2"
+        },
+        {
+          "path": "test/corpus/silesia/sao",
+          "size": 7251944,
+          "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc"
+        },
+        {
+          "path": "test/corpus/silesia/webster",
+          "size": 41458703,
+          "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383"
+        },
+        {
+          "path": "test/corpus/silesia/x-ray",
+          "size": 8474240,
+          "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad"
+        },
+        {
+          "path": "test/corpus/silesia/xml",
+          "size": 5345280,
+          "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c"
+        }
+      ],
+      "levels": [
+        {
+          "level": 1,
+          "input_bytes": 211938580,
+          "baseline_bytes": 66698850,
+          "candidate_bytes": 64676616,
+          "encoded_change_pct": -3.031887356378704,
+          "encode_seconds": {
+            "baseline": {
+              "median": 9.03446532,
+              "min": 9.01838257,
+              "max": 9.313793486
+            },
+            "candidate": {
+              "median": 9.138838485,
+              "min": 9.058566843,
+              "max": 9.243285378
+            },
+            "paired_change_pct": {
+              "median": 0.4095260061124817,
+              "min": -1.315116007071826,
+              "max": 1.335670937277622
+            },
+            "ratio_of_medians_pct": 1.1552777204085762
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.68021823,
+              "min": 0.678774368,
+              "max": 0.69153181
+            },
+            "candidate": {
+              "median": 0.7015433910000001,
+              "min": 0.699057575,
+              "max": 0.777348414
+            },
+            "paired_change_pct": {
+              "median": 2.7696030728256105,
+              "min": 1.5129541184808248,
+              "max": 14.42106809640653
+            },
+            "ratio_of_medians_pct": 3.1350469686765248
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.00107858,
+              "min": 0.000854247,
+              "max": 0.001119379
+            },
+            "candidate": {
+              "median": 0.001081111,
+              "min": 0.001024176,
+              "max": 0.00111614
+            },
+            "paired_change_pct": {
+              "median": -1.4910946158539606,
+              "min": -7.86726890487942,
+              "max": 26.557190133532814
+            },
+            "ratio_of_medians_pct": 0.23466038680488577
+          },
+          "file_count": 12
+        },
+        {
+          "level": 5,
+          "input_bytes": 211938580,
+          "baseline_bytes": 64640365,
+          "candidate_bytes": 62731511,
+          "encoded_change_pct": -2.9530371618415208,
+          "encode_seconds": {
+            "baseline": {
+              "median": 18.358480938,
+              "min": 18.245183846,
+              "max": 19.213077301
+            },
+            "candidate": {
+              "median": 18.296288999,
+              "min": 18.17658328,
+              "max": 19.122987445
+            },
+            "paired_change_pct": {
+              "median": -0.4688986287236241,
+              "min": -0.765572813585691,
+              "max": -0.33876407971896727
+            },
+            "ratio_of_medians_pct": -0.33876407971896727
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.671054276,
+              "min": 0.6548337280000001,
+              "max": 0.712284447
+            },
+            "candidate": {
+              "median": 0.676870385,
+              "min": 0.662982631,
+              "max": 0.6990350790000001
+            },
+            "paired_change_pct": {
+              "median": 2.5776621327145754,
+              "min": -6.921647132356945,
+              "max": 3.365229379266177
+            },
+            "ratio_of_medians_pct": 0.8667121584662985
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.000984208,
+              "min": 0.000831377,
+              "max": 0.001028688
+            },
+            "candidate": {
+              "median": 0.000977148,
+              "min": 0.000914307,
+              "max": 0.001064856
+            },
+            "paired_change_pct": {
+              "median": 1.5575339703708835,
+              "min": -7.6645637412321665,
+              "max": 20.33229208890792
+            },
+            "ratio_of_medians_pct": -0.7173280444784158
+          },
+          "file_count": 12
+        },
+        {
+          "level": 8,
+          "input_bytes": 211938580,
+          "baseline_bytes": 64342839,
+          "candidate_bytes": 62451851,
+          "encoded_change_pct": -2.9389253402387183,
+          "encode_seconds": {
+            "baseline": {
+              "median": 28.609881744,
+              "min": 27.732737215,
+              "max": 30.204907871
+            },
+            "candidate": {
+              "median": 28.977063367,
+              "min": 28.074622786,
+              "max": 30.271589381000002
+            },
+            "paired_change_pct": {
+              "median": 0.2207638251531474,
+              "min": -0.253089770264614,
+              "max": 5.28825683390084
+            },
+            "ratio_of_medians_pct": 1.2834083911479555
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.747589338,
+              "min": 0.728807042,
+              "max": 0.788115239
+            },
+            "candidate": {
+              "median": 0.761304685,
+              "min": 0.667892252,
+              "max": 0.811499532
+            },
+            "paired_change_pct": {
+              "median": 1.1994613899351414,
+              "min": -10.545056113049167,
+              "max": 7.693922913226792
+            },
+            "ratio_of_medians_pct": 1.8346097653950233
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.000957698,
+              "min": 0.00086402,
+              "max": 0.000992087
+            },
+            "candidate": {
+              "median": 0.000956005,
+              "min": 0.000914259,
+              "max": 0.001051787
+            },
+            "paired_change_pct": {
+              "median": -1.198575036653593,
+              "min": -4.5357722371770715,
+              "max": 21.731788616004266
+            },
+            "ratio_of_medians_pct": -0.17677806573679344
+          },
+          "file_count": 12
+        }
+      ],
+      "compile_flags": [
+        "-ansi",
+        "-pedantic",
+        "-O3",
+        "-march=native"
+      ]
+    },
+    {
+      "name": "final-modern",
+      "compiler": "gcc (Debian 14.2.0-19) 14.2.0",
+      "mode": "modern-sequential",
+      "cpu": 0,
+      "governor": "powersave",
+      "block_size": 262144,
+      "pairs": 5,
+      "baseline_sha256": "b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532",
+      "candidate_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e",
+      "binary_sha256": "54c412f278b2b0ce43740c5c00b80952b9d2fb21c2dff8c08f9dcdc163cb6cb4",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "samples_sha256": "0b941a993dcaf7e1dbc4819aeb4159e61dafde0b422faddc382e6e16bbe81dca",
+      "files": [
+        {
+          "path": "test/corpus/silesia/dickens",
+          "size": 10192446,
+          "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a"
+        },
+        {
+          "path": "test/corpus/silesia/mozilla",
+          "size": 51220480,
+          "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b"
+        },
+        {
+          "path": "test/corpus/silesia/mr",
+          "size": 9970564,
+          "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6"
+        },
+        {
+          "path": "test/corpus/silesia/nci",
+          "size": 33553445,
+          "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635"
+        },
+        {
+          "path": "test/corpus/silesia/ooffice",
+          "size": 6152192,
+          "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb"
+        },
+        {
+          "path": "test/corpus/silesia/osdb",
+          "size": 10085684,
+          "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3"
+        },
+        {
+          "path": "test/corpus/silesia/reymont",
+          "size": 6627202,
+          "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578"
+        },
+        {
+          "path": "test/corpus/silesia/samba",
+          "size": 21606400,
+          "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2"
+        },
+        {
+          "path": "test/corpus/silesia/sao",
+          "size": 7251944,
+          "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc"
+        },
+        {
+          "path": "test/corpus/silesia/webster",
+          "size": 41458703,
+          "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383"
+        },
+        {
+          "path": "test/corpus/silesia/x-ray",
+          "size": 8474240,
+          "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad"
+        },
+        {
+          "path": "test/corpus/silesia/xml",
+          "size": 5345280,
+          "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c"
+        }
+      ],
+      "levels": [
+        {
+          "level": 8,
+          "input_bytes": 211938580,
+          "baseline_bytes": 64342839,
+          "candidate_bytes": 62451851,
+          "encoded_change_pct": -2.9389253402387183,
+          "encode_seconds": {
+            "baseline": {
+              "median": 27.259591696,
+              "min": 26.768831507,
+              "max": 28.62087173
+            },
+            "candidate": {
+              "median": 26.959964342,
+              "min": 26.476450137,
+              "max": 27.218206229
+            },
+            "paired_change_pct": {
+              "median": -0.9298134733109809,
+              "min": -4.900848283840864,
+              "max": 0.3679865603323673
+            },
+            "ratio_of_medians_pct": -1.0991630298115118
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.656116672,
+              "min": 0.643987086,
+              "max": 0.712192341
+            },
+            "candidate": {
+              "median": 0.59549912,
+              "min": 0.5912656550000001,
+              "max": 0.598378143
+            },
+            "paired_change_pct": {
+              "median": -8.800039911194323,
+              "min": -16.385071037993637,
+              "max": -7.850040212425591
+            },
+            "ratio_of_medians_pct": -9.238837326785676
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.0008663589999999999,
+              "min": 0.000833182,
+              "max": 0.0008944339999999999
+            },
+            "candidate": {
+              "median": 0.000861167,
+              "min": 0.000848604,
+              "max": 0.000908588
+            },
+            "paired_change_pct": {
+              "median": -0.5119004433928875,
+              "min": -5.123910763678474,
+              "max": 4.874307302169201
+            },
+            "ratio_of_medians_pct": -0.5992896709100859
+          },
+          "file_count": 12
+        }
+      ],
+      "compile_flags": [
+        "-std=c11",
+        "-pedantic",
+        "-O3",
+        "-march=native",
+        "-DBOLTPACK_FAST_FLUFF",
+        "-fopenmp"
+      ]
+    },
+    {
+      "name": "final-holdout",
+      "compiler": "Debian clang version 19.1.7 (3+b1)",
+      "mode": "portable-sequential",
+      "cpu": 0,
+      "governor": "powersave",
+      "block_size": 262144,
+      "pairs": 5,
+      "baseline_sha256": "b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532",
+      "candidate_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e",
+      "binary_sha256": "dbff008f490a732ccd08c0e739f1fa15c1e961ec76584442a62927b0d3444795",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "samples_sha256": "62781120a3c50def76e8057971b1064e93ec470379f17b1fa4d2e05c10f35de2",
+      "files": [
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/bib",
+          "size": 111261,
+          "sha256": "0f1a13936e358191533aca4a32ff42906d1b7f641f3afb0a90458b2410419fcf"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/book1",
+          "size": 768771,
+          "sha256": "9ffa47cd93bccd732f20e0c304203cfbc1b8a91bedac536e2d8f6051003d9951"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/book2",
+          "size": 610856,
+          "sha256": "c8538730cf2ce6a243acf3eb299c43d619b5c695d892f4884df796c13081fdf8"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/geo",
+          "size": 102400,
+          "sha256": "913ff6f45610599020c02f543a0d5a1f46cf772412e25a568b683d23db8c447d"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/news",
+          "size": 377109,
+          "sha256": "7f0482f9774681429eb7021050c17966f6acf19450e170de6611e1ed953d42e8"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/obj1",
+          "size": 21504,
+          "sha256": "8c06109caffd7e794516e4ed10095b0238ea8df63ed66840907cd4dd23e2cf72"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/obj2",
+          "size": 246814,
+          "sha256": "8b3e7f028bfefaebdd48a791060a1ab11d1ffd9bf27e0d63b15e58dda0deb984"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/paper1",
+          "size": 53161,
+          "sha256": "8d9c42d9fa58b5bce1a8b5fae3cc27c9eb7cc7a032bc12a633d44e816497e143"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/paper2",
+          "size": 82199,
+          "sha256": "dc4b9cf68094c632a920f4e76d0a0a8b9617b624c36928ca46a5d29798c5bbbe"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/pic",
+          "size": 513216,
+          "sha256": "0ec3a75089bb52342813496b17e51377bc9eba3cb519a444d67025354841d650"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/progc",
+          "size": 39611,
+          "sha256": "151377a9d6aa9b7e872000269707a15e2b038c826340628e6f4d8b4db9ec3c19"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/progl",
+          "size": 71646,
+          "sha256": "9388db0cfb71ffbe5687d381819a5ff69cdd992d6931e0cf81a310a1caed0ba0"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/progp",
+          "size": 49379,
+          "sha256": "d0cd70ab5f7381a8584b25fa73b3608571a17ee1042cc5c546f63b904614d1bc"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/calgary/trans",
+          "size": 93695,
+          "sha256": "117a00c6af3e1c57f20013a8f1b468158f70634f685a348bedb7e4069cdd576a"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/alice29.txt",
+          "size": 152089,
+          "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/asyoulik.txt",
+          "size": 125179,
+          "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/cp.html",
+          "size": 24603,
+          "sha256": "e0cd21cef5b6c4069461e949be100080c3ce887de6f1dd8626c480528efaaf61"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/fields.c",
+          "size": 11150,
+          "sha256": "85d73e354cc50cec76cb5a50537cf8dc035f8cbb8480f9e1cbe2f7d6c23393c7"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/grammar.lsp",
+          "size": 3721,
+          "sha256": "1b0805dfc0ae706b35aac2bb4e15f02485efd24dda5dbd29de7b2f84d1a88c15"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/kennedy.xls",
+          "size": 1029744,
+          "sha256": "9af47239ca29dfe20e633f80bbbb9a4cc9783d0803d7b2b5626f42e4c3790420"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/lcet10.txt",
+          "size": 426754,
+          "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/plrabn12.txt",
+          "size": 481861,
+          "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/ptt5",
+          "size": 513216,
+          "sha256": "0ec3a75089bb52342813496b17e51377bc9eba3cb519a444d67025354841d650"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/sum",
+          "size": 38240,
+          "sha256": "ee5733cd76ecc2f9d8ff156adc3c02a7a851051dcf43a2d56ff4ee4ff606bdb3"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/canterbury/xargs.1",
+          "size": 4227,
+          "sha256": "c58aeb5d2d1e12751d47e7412b45784405fc30a5671b03d480fa05776e183619"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/E.coli",
+          "size": 4638690,
+          "sha256": "9125dfd87315961ef4286f3856098069e050cc3a2abe65735fe43e69d1996f40"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/bible.txt",
+          "size": 4047392,
+          "sha256": "4e0a7e8dff7d9c82dbded57305c0ca3cdd3c4ca014db27121782fe9710f4723f"
+        },
+        {
+          "path": "test/corpus/boltlz-holdout-2026-10-14/large-fixed-3/world192.txt",
+          "size": 2473400,
+          "sha256": "1aebdc97d29904b25791da9aa32be90b69d7da6dc0ac9b95512ed27ed40d2112"
+        }
+      ],
+      "levels": [
+        {
+          "level": 8,
+          "input_bytes": 17111888,
+          "baseline_bytes": 4754107,
+          "candidate_bytes": 4566318,
+          "encoded_change_pct": -3.950037304587384,
+          "encode_seconds": {
+            "baseline": {
+              "median": 5.313551538,
+              "min": 5.26429203,
+              "max": 5.3743630950000005
+            },
+            "candidate": {
+              "median": 5.294532871,
+              "min": 5.28683176,
+              "max": 5.4259529319999995
+            },
+            "paired_change_pct": {
+              "median": -0.09878369815743415,
+              "min": -0.9517602984880358,
+              "max": 0.9599246661989635
+            },
+            "ratio_of_medians_pct": -0.3579275906893331
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.052368135,
+              "min": 0.051940041,
+              "max": 0.053827012
+            },
+            "candidate": {
+              "median": 0.048055666999999996,
+              "min": 0.04708047,
+              "max": 0.048458029
+            },
+            "paired_change_pct": {
+              "median": -8.801539817799576,
+              "min": -9.974514282903169,
+              "max": -7.38186171243107
+            },
+            "ratio_of_medians_pct": -8.234908499223826
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.001841528,
+              "min": 0.00163162,
+              "max": 0.002113099
+            },
+            "candidate": {
+              "median": 0.00209677,
+              "min": 0.001755052,
+              "max": 0.002126446
+            },
+            "paired_change_pct": {
+              "median": 13.882710444804536,
+              "min": -16.944165890949726,
+              "max": 28.50847623833981
+            },
+            "ratio_of_medians_pct": 13.860337719545935
+          },
+          "file_count": 28
+        }
+      ],
+      "compile_flags": [
+        "-ansi",
+        "-pedantic",
+        "-O3",
+        "-march=native"
+      ]
+    },
+    {
+      "name": "final-small",
+      "compiler": "Debian clang version 19.1.7 (3+b1)",
+      "mode": "portable-sequential",
+      "cpu": 0,
+      "governor": "powersave",
+      "block_size": 262144,
+      "pairs": 50,
+      "baseline_sha256": "b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532",
+      "candidate_sha256": "f52cd6e1abe45314d2ddbf455255fdc1efa6678056c7c22132826233df76717e",
+      "binary_sha256": "dbff008f490a732ccd08c0e739f1fa15c1e961ec76584442a62927b0d3444795",
+      "harness_sha256": "ea8115008d64e69017d34ff699e827fa2f2222fbb0cb92fee1e2b911d64c2a5a",
+      "samples_sha256": "858dbd4be60d6d73ec4e185486121e78d43753a60fdc4f011a3bdbaaab368b90",
+      "files": [
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/0-random",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/0-text",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/1-random",
+          "size": 1,
+          "sha256": "7cb7c4547cf2653590d7a9ace60cc623d25148adfbc88a89aeb0ef88da7839ba"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/1-text",
+          "size": 1,
+          "sha256": "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/4-random",
+          "size": 4,
+          "sha256": "bf23efecb4a8dc002feeb4a484117af1ab1385b6b2b419a2ee141348c9f7a7e9"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/4-text",
+          "size": 4,
+          "sha256": "44438343c52ee70594e78b0fcd6e06e713ace32d79883330291f5a7027d35f69"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/64-random",
+          "size": 64,
+          "sha256": "66863a1451249ac4f7fc8d66fc8a1e005249b0d76c2111f2045f2672de9c5074"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/64-text",
+          "size": 64,
+          "sha256": "be1b3f3c258850828e70ce65e047c543b7982e232880003e08b5afcc5390c626"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/258-random",
+          "size": 258,
+          "sha256": "47cd79d2351dfaf01dedb329fa4b53c24588118f557c71eee5ce32edbf59b938"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/258-text",
+          "size": 258,
+          "sha256": "34a0e227183a8476648222f1637ec4ab1cbe75eca6f84dd5065c94b7cb93bb8d"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/1024-random",
+          "size": 1024,
+          "sha256": "f025aca5e563d11949970903a96f1f4293e3e8c5108a7be2878c6d1ee34be90a"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/1024-text",
+          "size": 1024,
+          "sha256": "58879652361c776f945e860e3fcf6449f582219e2e5f26a55fbfab7e6e735efd"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/4096-random",
+          "size": 4096,
+          "sha256": "34913d6c74a18095e57517539e53064918ebbf9aad9f89f2a9cca31187cbf9da"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/4096-text",
+          "size": 4096,
+          "sha256": "744a13b591012dbeef44d1c8881480e6d04d129fdd9173cb0bac8c9b8c7178c1"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/16384-random",
+          "size": 16384,
+          "sha256": "57563a899e450b06c4b59b484e1810a9efc8248099fbd0c3c0101ee7f3fb626d"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/16384-text",
+          "size": 16384,
+          "sha256": "7959a8969c8412c616d0aa3cf447662c270428bdabed9869198f667910905ec8"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/65536-random",
+          "size": 65536,
+          "sha256": "d45724b7b8a096d74f103e3f8ab8d1419e314d4edea019fb4de87cfb57ad2650"
+        },
+        {
+          "path": "build/fluff-experiment-2026-10-15/small-inputs/65536-text",
+          "size": 65536,
+          "sha256": "692d913d62f922bbf69562310da7e644029e2d381f4eac91582c85fc9f70cfd2"
+        }
+      ],
+      "levels": [
+        {
+          "level": 8,
+          "input_bytes": 174734,
+          "baseline_bytes": 90389,
+          "candidate_bytes": 90019,
+          "encoded_change_pct": -0.40934184469348933,
+          "encode_seconds": {
+            "baseline": {
+              "median": 0.0046689585,
+              "min": 0.004510414,
+              "max": 0.00577816
+            },
+            "candidate": {
+              "median": 0.004659809,
+              "min": 0.004484882999999999,
+              "max": 0.005870073
+            },
+            "paired_change_pct": {
+              "median": -0.24785440844163342,
+              "min": -19.96474656291969,
+              "max": 18.345477419604393
+            },
+            "ratio_of_medians_pct": -0.19596447473242407
+          },
+          "decode_seconds": {
+            "baseline": {
+              "median": 0.0005368265,
+              "min": 0.000519191,
+              "max": 0.000682826
+            },
+            "candidate": {
+              "median": 0.00046024849999999997,
+              "min": 0.000445698,
+              "max": 0.000591761
+            },
+            "paired_change_pct": {
+              "median": -14.558283718368799,
+              "min": -32.7253258611012,
+              "max": 12.798240246731417
+            },
+            "ratio_of_medians_pct": -14.264944074109609
+          },
+          "reset_seconds": {
+            "baseline": {
+              "median": 0.0008594235,
+              "min": 0.000807513,
+              "max": 0.0009249460000000001
+            },
+            "candidate": {
+              "median": 0.0008497125,
+              "min": 0.000812875,
+              "max": 0.0009802090000000001
+            },
+            "paired_change_pct": {
+              "median": -0.895822859224854,
+              "min": -7.516098696980622,
+              "max": 12.317065345427402
+            },
+            "ratio_of_medians_pct": -1.1299435028248483
+          },
+          "file_count": 18
+        }
+      ],
+      "compile_flags": [
+        "-ansi",
+        "-pedantic",
+        "-O3",
+        "-march=native"
+      ],
+      "reset_plus_encode_paired_change_pct": {
+        "median": -0.4207170500449442,
+        "min": -17.32316004561143,
+        "max": 14.40461532896089
+      }
+    }
+  ],
+  "per_file_results_csv": "fluff-2026-10-15-files.csv",
+  "per_file_results_sha256": "8a385469513503819ae2e3aaec36fdb15e37aafd249d5d998187ce6ea07bcd5f"
+}

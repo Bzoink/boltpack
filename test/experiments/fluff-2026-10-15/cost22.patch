@@ -1,0 +1,11 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2438,7 +2438,7 @@
+     len_eb = (fl_u32)s_len_lut[length - FLUFF_MIN_MATCH].extra_bits;
+ 
+     if (token_type == 1) {
+-        cost = 18U + len_eb + fl_dist_extra_bits_fast(distance);
++        cost = 22U + len_eb + fl_dist_extra_bits_fast(distance);
+     } else {
+         cost = 11U + len_eb;
+     }

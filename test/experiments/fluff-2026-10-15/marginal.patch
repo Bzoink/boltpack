@@ -1,0 +1,62 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -737,44 +737,29 @@
+         }
+     }
+ 
+-    /*
+-     * If used > L (happens when many low-freq symbols each get minimum-1
+-     * but their sum exceeds L), reduce from the largest allocations first.
+-     * This prevents slack = L - used from underflowing to ~2^32.
+-     */
+     if (used > L) {
+-        fl_u32 excess = used - L;
+-        while (excess > 0) {
+-            fl_u32 best = nsym;
+-            fl_u32 best_val = 1; /* only reduce symbols allocated > 1 */
++        while (used > L) {
++            fl_u32 best = nsym, penalty = 0xffffffffU;
+             for (i = 0; i < nsym; i++) {
+-                if (out_norm[i] > best_val) {
+-                    best_val = out_norm[i];
+-                    best = i;
++                if (out_norm[i] > 1) {
++                    fl_u32 loss = (freq[i] * 4096U) / (2U * out_norm[i] - 1U);
++                    if (loss < penalty) { penalty = loss; best = i; }
+                 }
+             }
+-            if (best == nsym) break; /* no symbol can be reduced */
+-            out_norm[best]--;
+-            rem[best] = 0;
+-            excess--;
+-        }
+-        slack = 0;
+-    } else {
+-        slack = L - used;
+-    }
+-
+-    /* Distribute remaining slack to symbols with largest fractional part. */
++            if (best == nsym) { free(rem); return -1; }
++            out_norm[best]--; used--;
++        }
++    }
++    slack = L - used;
++    for (i = 0; i < nsym; i++)
++        rem[i] = freq[i] ? (freq[i] * 4096U) / (2U * out_norm[i] + 1U) : 0;
+     while (slack > 0) {
+-        fl_u32 best = 0;
+-        fl_u32 best_rem = 0;
++        fl_u32 best = 0, gain = 0;
+         for (i = 0; i < nsym; i++) {
+-            if (freq[i] > 0 && rem[i] > best_rem) {
+-                best_rem = rem[i];
+-                best = i;
+-            }
++            if (rem[i] > gain) { gain = rem[i]; best = i; }
+         }
+         out_norm[best]++;
+-        rem[best] = 0;
++        rem[best] = (freq[best] * 4096U) / (2U * out_norm[best] + 1U);
+         slack--;
+     }
+ 

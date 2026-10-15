@@ -314,14 +314,19 @@ The codec is **not DEFLATE-compatible**. The reference implementation is
 `src/core/fluff.c`.
 
 Blocks carry a stream version byte. Current FSE/tANS blocks use the compact
-version `0x08` (grouped fast-fluff batches use `0x88` on the first block of each
-reset group and `0x08` on later blocks). The decoder also accepts the earlier
-FSE/tANS versions `0x07`/`0x87` and the original adaptive range coder `0x06`
+version `0x09` (grouped fast-fluff batches use `0x89` when a group resets
+history and `0x09` on later blocks). The decoder also accepts the earlier
+FSE/tANS versions `0x07`/`0x87`, `0x08`/`0x88`, and the original adaptive range coder `0x06`
 for backward compatibility with archives written by previous releases.
 
 Version `0x08` differs from `0x07` only in the header encoding (compact count
 tables and narrower scalar fields, §3.4.4); the FSE bitstream and raw extra-bit
 stream that carry the LZ77 tokens are byte-for-byte identical between the two.
+
+Version `0x09` is an experimental encoding with the same compact header,
+alphabets, and table sizes as `0x08`, but a different ANS state layout
+(§3.4.6b). Earlier decoders reject it. Header bytes must not be relabeled
+between `0x08` and `0x09` because the payloads have different semantics.
 
 #### 3.4.2 Block Layout — Versions `0x07` and `0x87` (legacy FSE/tANS layout)
 
@@ -348,13 +353,12 @@ from the end towards the start.
 | ---- | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | 0    | `0x46`           | `magic[0]`    | ASCII `'F'`; invalid value → `ERR_CORRUPT`                                                                           |
 | 1    | `0x4C`           | `magic[1]`    | ASCII `'L'`; invalid value → `ERR_CORRUPT`                                                                           |
-| 2    | `0x08` or `0x88` | `version`     | `0x08` = compact FSE/tANS block; `0x88` = compact reset block; `0x07`/`0x87` = legacy FSE/tANS; `0x06` = range coder |
+| 2    | `0x09` or `0x89` | `version`     | `0x09` = shifted-state compact FSE; `0x89` = reset variant; `0x07`/`0x87` and `0x08`/`0x88` = legacy FSE; `0x06` = range coder |
 | 3    | `0x12`           | `window_bits` | `18` = 256 KB window (informational; always 18)                                                                      |
 
-Encoders MUST write version `0x08` for normal blocks. Encoders using grouped
-reset batches MAY write `0x88` on the first block of a batch and MUST write
-`0x08` on later blocks within that batch. Decoders MUST accept `0x06`, `0x07`,
-`0x87`, `0x08`, and `0x88`. Any other version value MUST be rejected with
+Experimental encoders write version `0x09` for normal blocks and `0x89` when
+a grouped batch must reset history. Decoders MUST accept `0x06`, `0x07`,
+`0x87`, `0x08`, `0x88`, `0x09`, and `0x89`. Any other version value MUST be rejected with
 `ERR_CORRUPT`.
 
 #### 3.4.3a Reset Blocks and Grouped Fast-Fluff
@@ -446,7 +450,7 @@ The distance symbol is decoded from `d_dtab` by the same pattern.
 symbol `s` with normalized count `c_s` receives `c_s` states spread uniformly
 across the table of size `L`.
 
-#### 3.4.6a Block Layout — Versions `0x08` and `0x88` (compact FSE/tANS, current)
+#### 3.4.6a Block Layout — Versions `0x08` and `0x88` (legacy compact FSE/tANS)
 
 A v0x08/v0x88 block has the same structure as v0x07 — 4-byte stream header,
 count tables, scalar fields, then the two backwards bitstreams — and the FSE
@@ -479,6 +483,53 @@ final entries do not sum to exactly `L`.
 | `raw_len`  | 4     | 3     | Raw extra-bits byte length                 |
 
 All are little-endian. Total scalar tail: 10 bytes (vs. 16 in v0x07).
+
+#### 3.4.6b Versions `0x09` and `0x89` (experimental shifted-state FSE)
+
+These versions use the header, token grammar, symbol spread, and table sizes
+of §3.4.6a. `0x89` resets history before decoding; `0x09` preserves it. Only
+the ANS state transitions change, in **both** entropy alphabets.
+
+Let `L = 2^table_log`, `n` be a symbol's normalized count, and `k` its
+zero-based occurrence index when scanning the spread table in state order.
+For each used symbol define:
+
+```text
+d = floor(log2(L / n))
+m = (L >> d) - n
+```
+
+For legacy versions `0x07`/`0x87`/`0x08`/`0x88`, the decoder entry is:
+
+```text
+if k < m: bits = d + 1; base = k << bits
+else:     bits = d;     base = (m << (d + 1)) + ((k - m) << d)
+```
+
+For `0x09`/`0x89`, use the virtual state interval `[L, 2L)`, storing states
+with `L` subtracted:
+
+```text
+bits = d + (k < m)
+base = ((n + k) << bits) - L
+next_state = base + read_bits(bits)
+```
+
+The corresponding encoder transition for stored state `y` in `[0, L)` is:
+
+```text
+cutoff = (n << (d + 1)) - L
+bits = d + (y >= cutoff)
+k = ((y + L) >> bits) - n
+emit_low_bits(y, bits)
+next_state = slots[symbol_offset + k]
+```
+
+Here `slots` lists each symbol's spread positions in ascending state order.
+The encoder starts at stored state zero and processes tokens backwards as
+before. A singleton (`n == L`) emits zero bits. Version selection determines
+the layout; decoder table construction must retain the legacy mapping for
+older streams.
 
 #### 3.4.7 Block Layout — Version `0x06` (Range Coder, legacy read-only)
 
@@ -576,7 +627,7 @@ reference codec.
 BoltPack v1.0 Fluff streams keep the DEFLATE layout for short distances, then use
 denser four-way buckets for 513–32768 to cut inline distance extra bits.
 
-`distance = base + read_bits(extra_bits)` (same for v0x06, v0x07, v0x08, v0x87, and v0x88):
+`distance = base + read_bits(extra_bits)` (same for all supported stream versions):
 
 | Symbol | Base | Extra bits | Symbol | Base   | Extra bits |
 | ------ | ---- | ---------- | ------ | ------ | ---------- |
@@ -648,11 +699,13 @@ EOB             ::= sym(256)
 if (src[0] != 0x46 || src[1] != 0x4C)
     return ERR_CORRUPT;
 version = src[2];
-if (version != 0x08 && version != 0x88 &&
+if (version != 0x09 && version != 0x89 &&
+    version != 0x08 && version != 0x88 &&
     version != 0x07 && version != 0x87 && version != 0x06)
     return ERR_CORRUPT;
 
-if (version == 0x08 || version == 0x88 ||
+if (version == 0x09 || version == 0x89 ||
+    version == 0x08 || version == 0x88 ||
     version == 0x07 || version == 0x87)
     return fl_decompress_fse(src, src_len, dst, dst_len, ctx);
 else
@@ -661,7 +714,7 @@ else
 
 **Versions `0x07` and `0x87` (FSE/tANS) — `fl_decompress_fse()`:**
 
-If the stream header carries version `0x87` or `0x88`, the decoder MUST reset the Fluff
+If the stream header carries version `0x87`, `0x88`, or `0x89`, the decoder MUST reset the Fluff
 history window and repeat-distance ring before reading the rest of the block.
 
 ```c
@@ -789,7 +842,7 @@ validate:
 
 - MUST reject blocks where `magic[0] != 0x46` or `magic[1] != 0x4C` →
   `ERR_CORRUPT`.
-- MUST reject blocks where `version` is not `0x06`, `0x07`, `0x87`, `0x08`, or `0x88` →
+- MUST reject blocks where `version` is not `0x06`, `0x07`, `0x87`, `0x08`, `0x88`, `0x09`, or `0x89` →
   `ERR_CORRUPT`.
 - For v0x07/v0x87: MUST reject any count table whose entries do not sum to the
   required `L` value → `ERR_CORRUPT`.

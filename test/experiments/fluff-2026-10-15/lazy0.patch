@@ -1,0 +1,20 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2650,7 +2650,7 @@
+                                                              lazy1_token_type : 1));
+ 
+                 if (lazy1_len >= FLUFF_MIN_MATCH &&
+-                    lazy1_savings > m_savings + 8) {
++                    lazy1_savings > m_savings) {
+                     if (lazy1_len < FLUFF_GOOD_MATCH &&
+                         i + 2 < src_len &&
+                         src_len - (i + 2) >= 4) {
+@@ -2681,7 +2681,7 @@
+                                                                      lazy2_token_type : 1));
+ 
+                         if (lazy2_len >= FLUFF_MIN_MATCH &&
+-                            lazy2_savings > lazy1_savings + 8) {
++                            lazy2_savings > lazy1_savings) {
+                             fl_record_search_by_result(
+                                 ctx, &match_search_stats,
+                                 FL_SEARCH_OUTCOME_LOOKAHEAD_DROP);

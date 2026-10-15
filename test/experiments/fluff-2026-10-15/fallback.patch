@@ -1,0 +1,28 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2036,6 +2036,8 @@
+  * comparison avoids the conditional dispatch on every byte.
+  * max_dist is capped at WINDOW_SIZE - 1 to avoid ring aliasing.
+  */
++static fl_u32 fl_match_savings_est(fl_u32 length, fl_u32 distance, fl_u8 token_type);
++
+ static fl_u32 fl_find_match_hyb(fluff_ctx_t *ctx, const fl_u8 *cur_src,
+                                   fl_u32 cur_abs, fl_u32 file_pos,
+                                   fl_u32 src_rem, fl_u32 *out_dist,
+@@ -2156,7 +2158,15 @@
+     }
+ #endif
+ 
+-    if (subhash_len > main_best_len) {
++    if (best_dist == 0) best_len = 0;
++    if (best_len == 3 && best_dist > FLUFF_MIN_DIST_LEN4) best_len = 0;
++    if (best_len == 4 && best_dist > FLUFF_MIN_DIST_LEN5) best_len = 0;
++    if (subhash_len >= FLUFF_MIN_MATCH &&
++        !(subhash_len == 3 && subhash_dist > FLUFF_MIN_DIST_LEN4) &&
++        !(subhash_len == 4 && subhash_dist > FLUFF_MIN_DIST_LEN5) &&
++        (fl_match_savings_est(subhash_len, subhash_dist, 1) >
++         fl_match_savings_est(best_len, best_dist, 1) ||
++         (subhash_len == best_len && subhash_dist < best_dist))) {
+         best_len = subhash_len;
+         best_dist = subhash_dist;
+         FL_STAT(ctx->total_subhash_wins++);

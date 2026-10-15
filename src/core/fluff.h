@@ -3,9 +3,9 @@
  *
  * Fluff is BoltPack's native higher-ratio codec. It combines LZ77 match
  * finding (256 KB sliding window, 3-entry repeat-distance ring) with
- * FSE/tANS entropy coding (compact stream version 0x08). The decoder also
- * accepts the legacy FSE format (0x07/0x87) and the original adaptive range
- * coder format (stream version 0x06).
+ * FSE/tANS entropy coding (stream version 0x09). The decoder also accepts
+ * the legacy FSE formats (0x07/0x87, 0x08/0x88) and the original adaptive
+ * range coder format (stream version 0x06).
  *
  * ANSI C (C89/C90) only.
  *
@@ -25,8 +25,10 @@
  */
 #define FLUFF_STREAM_VERSION_FSE       0x07 /* FSE/tANS encoding (legacy)           */
 #define FLUFF_STREAM_VERSION_FSE_RESET 0x87 /* FSE + per-block context reset signal */
-#define FLUFF_STREAM_VERSION_FSE2      0x08 /* compact FSE encoding (default)       */
+#define FLUFF_STREAM_VERSION_FSE2      0x08 /* compact FSE encoding (legacy)        */
 #define FLUFF_STREAM_VERSION_FSE2_RESET 0x88/* compact FSE + context reset signal   */
+#define FLUFF_STREAM_VERSION_FSE3      0x09 /* compact FSE, shifted state layout    */
+#define FLUFF_STREAM_VERSION_FSE3_RESET 0x89/* shifted FSE + context reset signal   */
 
 /* Forward declare trace context (opaque to this header) */
 typedef struct fluff_trace_s fluff_trace_t;
@@ -72,8 +74,9 @@ bp_uint32 fluff_compress_work_size(void);
  * Persistent compression context.
  *
  * Holds hash tables and a 256 KB ring buffer that persist across blocks
- * belonging to the same file, enabling cross-block back-references and
- * avoiding per-block malloc overhead.
+ * belonging to the same file, enabling cross-block back-references. Match
+ * tables and token/raw scratch are reused; small ANS table-building
+ * temporaries are still allocated per block.
  *
  * Usage:
  *   ctx = fluff_ctx_alloc();

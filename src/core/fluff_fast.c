@@ -7,7 +7,7 @@
  * history and keep the normal stream version.  If a leader truly has to reset
  * history, its stream header is patched to the reset version.
  *
- * The stream-header version byte is patched from 0x08 to 0x88 only on the
+ * The stream-header version byte is patched from 0x09 to 0x89 only on the
  * first compressed block in each group.  The decoder resets its ring buffer
  * for those blocks and preserves it across the following in-group blocks.
  *
@@ -359,7 +359,7 @@ int fluff_fast_compress_blocks_with_history(
             }
 
             if (is_group_first && group_is_cold && comp_len >= 3) {
-                dsts[i][2] = (bp_uint8)FLUFF_STREAM_VERSION_FSE2_RESET;
+                dsts[i][2] = (bp_uint8)FLUFF_STREAM_VERSION_FSE3_RESET;
             }
 
             if (force_reset_block && comp_len == src_lens[i] &&
@@ -381,9 +381,9 @@ int fluff_fast_compress_blocks_with_history(
 
             /*
              * Patch the stream-header version byte (byte 2) from
-             * FLUFF_STREAM_VERSION_FSE2 (0x08) to FLUFF_STREAM_VERSION_FSE2_RESET
-             * (0x88) only on the first compressed block in the group.
-             * Later compressed blocks keep 0x08 so the decoder preserves the
+             * FLUFF_STREAM_VERSION_FSE3 (0x09) to FLUFF_STREAM_VERSION_FSE3_RESET
+             * (0x89) only on the first compressed block in the group.
+             * Later compressed blocks keep 0x09 so the decoder preserves the
              * group-local ring buffer across them.
              *
              * The stream header layout is:

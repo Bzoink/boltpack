@@ -1,0 +1,129 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -2851,6 +2851,9 @@
+     fse_bits_t raw_bits;
+     fl_u32    ll_state;
+     fl_u32    d_state;
++    fl_u32 r_state, r_freq[29];
++    fl_u16 r_norm[29], r_slots[256];
++    fse_sym_enc_t r_senc[29];
+     fl_u32    hdr_pos;
+     fl_u32    fse_len;
+     fl_u32    raw_len;
+@@ -2889,6 +2892,7 @@
+     /* Forward scan to build tok_types[]: record type of each token in order.
+      * This is the only reliable way to scan backwards later, because token
+      * body bytes can coincide with type marker values (0..4). */
++    memset(r_freq, 0, sizeof(r_freq));
+     tok_count = 0;
+     i = 0;
+     while (i < num_tokens) {
+@@ -2896,7 +2900,11 @@
+         tok_types[tok_count++] = t;
+         if (t == 1) i += 6;
+         else if (t == 0) i += 2;
+-        else i += 3;  /* rep-match: types 2,3,4 */
++        else {
++            fl_u32 len = tokens[i+1] | ((fl_u32)tokens[i+2] << 8);
++            r_freq[s_len_lut[len - FLUFF_MIN_MATCH].sym - 257]++;
++            i += 3;
++        }
+     }
+ 
+     /* FSE working tables: embedded in the context (no per-block malloc). */
+@@ -2928,6 +2936,14 @@
+         return BP_ERR_COMPRESS;
+     }
+ 
++    {
++        fl_u32 sum = 0;
++        for (i = 0; i < 29; i++) sum += r_freq[i];
++        if (!sum) r_freq[0] = 1;
++    }
++    if (fse_normalize(r_freq, 29, r_norm, 8) ||
++        fse_build_ctab(r_norm, 29, r_slots, r_senc, 8)) return BP_ERR_COMPRESS;
++    r_state = 0;
+     /* --- Pass 2c: ANS-encode tokens BACKWARDS into fse_buf --- */
+     fse_bits_init_write(&fse_bits, fse_buf, fse_cap);
+     fse_bits_init_write(&raw_bits, raw_buf, raw_cap);
+@@ -2973,7 +2989,7 @@
+             lsym = fl_len_to_sym(mlen, &lev, &leb);
+             /* raw extra bits: backwards into raw_buf */
+             if (leb > 0) fse_bits_write(&raw_bits, lev, leb);
+-            fse_bits_write(&raw_bits, lsym - 257, 5);
++            r_state = fse_encode_sym_fast(r_state, lsym - 257, r_slots, r_senc, &raw_bits);
+             ll_state = fse_encode_sym_fast(ll_state, fl_rep_token_to_sym(tok),
+                                            ll_slots, ll_senc, &fse_bits);
+         } else {
+@@ -3034,14 +3050,19 @@
+         if (nd < 0) return BP_ERR_COMPRESS;
+         hdr_pos += (fl_u32)nd;
+ 
++        nd = fse_write_counts_compact(dst, bound, hdr_pos, r_norm, 29);
++        if (nd < 0) return BP_ERR_COMPRESS;
++        hdr_pos += (fl_u32)nd;
+         /* Fixed tail: 2+2+3+3 = 10 bytes of states/lengths, then streams. */
+-        if (hdr_pos + 10U + fse_len + raw_len > bound) {
++        if (hdr_pos + 12U + fse_len + raw_len > bound) {
+             return BP_ERR_COMPRESS;
+         }
+ 
+         /* Initial states (uint16). */
+         fse_write_u16(dst, hdr_pos, ll_state); hdr_pos += 2;
+         fse_write_u16(dst, hdr_pos, d_state);  hdr_pos += 2;
++
++        fse_write_u16(dst, hdr_pos, r_state); hdr_pos += 2;
+ 
+         /* Stream lengths (uint24). */
+         fse_write_u24(dst, hdr_pos, fse_len);  hdr_pos += 3;
+@@ -3265,6 +3286,9 @@
+     fse_dtab_t *d_dtab  = ctx->fse_d_dtab;
+     fl_u32    ll_state;
+     fl_u32    d_state;
++    fl_u32 r_state;
++    fl_u16 r_norm[29];
++    fse_dtab_t r_dtab[256];
+     fse_bits_r_t fse_bits;
+     fse_bits_r_t raw_bits;
+     fl_u32    hdr_pos;
+@@ -3310,6 +3334,10 @@
+     if (norm_ok < 0) { rc = BP_ERR_CORRUPT; goto cleanup; }
+     hdr_pos += (fl_u32)norm_ok;
+ 
++    norm_ok = fse_read_counts_compact(src, src_len, hdr_pos, r_norm, 29, 8);
++    if (norm_ok < 0) { rc = BP_ERR_CORRUPT; goto cleanup; }
++    hdr_pos += (fl_u32)norm_ok;
++    if (fse_build_dtab(r_norm, 29, r_dtab, 8)) { rc = BP_ERR_CORRUPT; goto cleanup; }
+     /* Build decode tables. */
+     if (fse_build_dtab(ll_norm, FLUFF_NUM_LITLEN, ll_dtab, FSE_LL_BITS) != 0 ||
+         fse_build_dtab(d_norm,  FLUFF_NUM_DIST,   d_dtab,  FSE_D_BITS)  != 0)
+@@ -3319,9 +3347,10 @@
+      * v0x08: uint16 states + uint24 lengths (10 bytes, R3).
+      * v0x07: uint32 states + uint32 lengths (16 bytes). */
+     if (v2) {
+-        if (hdr_pos + 10 > src_len) { rc = BP_ERR_CORRUPT; goto cleanup; }
++        if (hdr_pos + 12 > src_len) { rc = BP_ERR_CORRUPT; goto cleanup; }
+         ll_state = fse_read_u16(src, hdr_pos); hdr_pos += 2;
+         d_state  = fse_read_u16(src, hdr_pos); hdr_pos += 2;
++        r_state = fse_read_u16(src, hdr_pos); hdr_pos += 2;
+         fse_len  = fse_read_u24(src, hdr_pos); hdr_pos += 3;
+         raw_len  = fse_read_u24(src, hdr_pos); hdr_pos += 3;
+     } else {
+@@ -3342,7 +3371,7 @@
+     fse_bits_init_read(&raw_bits, src + hdr_pos + fse_len, raw_len);
+ 
+     /* Validate initial states fall within table range. */
+-    if (ll_state >= FSE_LL_L || d_state >= FSE_D_L)
++    if (ll_state >= FSE_LL_L || d_state >= FSE_D_L || r_state >= 256)
+         { rc = BP_ERR_CORRUPT; goto cleanup; }
+ 
+     /* Decode loop. */
+@@ -3376,7 +3405,7 @@
+             fl_update_rep_ring(&rep0, &rep1, &rep2, distance);
+         } else if (sym == FLUFF_REP_MATCH || sym == FLUFF_REP_MATCH2 ||
+                    sym == FLUFF_REP_MATCH3) {
+-            fl_u32 len_idx = fse_bits_read(&raw_bits, 5);
++            fl_u32 len_idx = fse_decode_sym(&r_state, r_dtab, &raw_bits, 8);
+             fl_u32 length, distance;
+             if (len_idx >= (fl_u32)FLUFF_NUM_LEN_SYMS)
+                 { rc = BP_ERR_CORRUPT; goto cleanup; }

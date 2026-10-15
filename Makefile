@@ -1852,6 +1852,7 @@ UNIT_MINI_SRCS    = $(COREDIR)/mini/compress.c $(COREDIR)/mini/archiver.c \
 .PHONY: unit-test unit-test-asan
 
 unit-test: $(UNIT_BUILD_DIR)/test_checksum \
+           $(UNIT_BUILD_DIR)/test_fluff \
            $(UNIT_BUILD_DIR)/test_compress \
            $(UNIT_BUILD_DIR)/test_codepage \
            $(UNIT_BUILD_DIR)/test_archive_format \
@@ -1865,6 +1866,7 @@ unit-test: $(UNIT_BUILD_DIR)/test_checksum \
 	test "$$ok" -eq 1
 
 unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
+                $(UNIT_BUILD_DIR)/test_fluff_asan \
                 $(UNIT_BUILD_DIR)/test_compress_asan \
                 $(UNIT_BUILD_DIR)/test_codepage_asan \
                 $(UNIT_BUILD_DIR)/test_archive_format_asan \
@@ -1876,6 +1878,17 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
 	    "$$t" || ok=0; \
 	done; \
 	test "$$ok" -eq 1
+
+# --- test_fluff ---
+$(UNIT_BUILD_DIR)/test_fluff: $(UNIT_TEST_DIR)/test_fluff.c \
+    $(COREDIR)/fluff.c $(COREDIR)/fluff.h $(UNIT_TEST_DIR)/test_runner.h \
+    test/reference/fluff_legacy_fixtures.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_CFLAGS) -O3 $(FLUFF_NATIVE_FLAGS) -o $@ $(UNIT_TEST_DIR)/test_fluff.c
+
+$(UNIT_BUILD_DIR)/test_fluff_asan: $(UNIT_TEST_DIR)/test_fluff.c \
+    $(COREDIR)/fluff.c $(COREDIR)/fluff.h $(UNIT_TEST_DIR)/test_runner.h \
+    test/reference/fluff_legacy_fixtures.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_ASAN_FLAGS) -o $@ $(UNIT_TEST_DIR)/test_fluff.c
 
 # --- test_checksum ---
 $(UNIT_BUILD_DIR)/test_checksum: \

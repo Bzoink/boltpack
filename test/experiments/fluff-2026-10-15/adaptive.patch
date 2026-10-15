@@ -1,0 +1,199 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -1297,6 +1297,9 @@
+     fl_u8  window[FLUFF_WINDOW_SIZE];     /* ring buffer (compress + decode)   */
+     fl_u32 file_pos;                      /* cumulative file byte position  */
+     fl_u32 max_chain;                     /* hash chain search depth        */
++    fl_u32 *parse_prefix;
++    fl_u16 parse_ll_cost[FLUFF_NUM_LITLEN];
++    fl_u16 parse_d_cost[FLUFF_NUM_DIST];
+     /* Statistics (per-file) */
+     fl_u32 total_literals;                /* count of literal symbols       */
+     fl_u32 total_matches;                 /* count of match symbols         */
+@@ -2203,7 +2206,8 @@
+     ctx->hash3[h3]      = abs_pos;  /* always keep most-recent 3-byte hit */
+ }
+ 
+-static fl_u32 fl_match_savings_est(fl_u32 length, fl_u32 distance,
++static fl_u32 fl_match_savings_est(fluff_ctx_t *ctx, fl_u32 pos,
++                                   fl_u32 length, fl_u32 distance,
+                                    fl_u8 token_type);
+ 
+ static fl_u32 fl_match_at_distance(fluff_ctx_t *ctx, const fl_u8 *cur_src,
+@@ -2283,7 +2287,7 @@
+     best_savings = 0;
+     if (*match_len >= FLUFF_MIN_MATCH) {
+         best_type = 1;
+-        best_savings = fl_match_savings_est(*match_len, *match_dist, 1);
++        best_savings = fl_match_savings_est(ctx, cur_abs - file_pos, *match_len, *match_dist, 1);
+     }
+ 
+     token_type = 0;
+@@ -2298,7 +2302,7 @@
+         FL_STAT(ctx->rep_slot_cmp_bytes[0] += rep_cmp_bytes);
+         FL_STAT(if (rep_len >= FLUFF_MIN_MATCH) ctx->rep_slot_matches[0]++);
+     }
+-    rep_savings = fl_match_savings_est(rep_len, rep0, 2);
++    rep_savings = fl_match_savings_est(ctx, cur_abs - file_pos, rep_len, rep0, 2);
+     if (rep_len >= FLUFF_MIN_MATCH &&
+         (rep_savings > best_savings ||
+          (rep_savings == best_savings && rep_len > *match_len) ||
+@@ -2319,7 +2323,7 @@
+         FL_STAT(ctx->rep_slot_cmp_bytes[1] += rep_cmp_bytes);
+         FL_STAT(if (rep_len >= FLUFF_MIN_MATCH) ctx->rep_slot_matches[1]++);
+     }
+-    rep_savings = fl_match_savings_est(rep_len, rep1, 3);
++    rep_savings = fl_match_savings_est(ctx, cur_abs - file_pos, rep_len, rep1, 3);
+     if (rep_len >= FLUFF_MIN_MATCH &&
+         (rep_savings > best_savings ||
+          (rep_savings == best_savings && rep_len > *match_len) ||
+@@ -2340,7 +2344,7 @@
+         FL_STAT(ctx->rep_slot_cmp_bytes[2] += rep_cmp_bytes);
+         FL_STAT(if (rep_len >= FLUFF_MIN_MATCH) ctx->rep_slot_matches[2]++);
+     }
+-    rep_savings = fl_match_savings_est(rep_len, rep2, 4);
++    rep_savings = fl_match_savings_est(ctx, cur_abs - file_pos, rep_len, rep2, 4);
+     if (rep_len >= FLUFF_MIN_MATCH &&
+         (rep_savings > best_savings ||
+          (rep_savings == best_savings && rep_len > *match_len) ||
+@@ -2425,28 +2429,39 @@
+     return 0;
+ }
+ 
+-static fl_u32 fl_match_savings_est(fl_u32 length, fl_u32 distance,
++static fl_u32 fl_log_q4(fl_u32 n)
++{
++    fl_u32 h = fl_highbit32(n);
++    return h * 16U + (((n - (1U << h)) * 16U) >> h);
++}
++
++static void fl_refresh_costs(fluff_ctx_t *ctx, const fl_u32 *ll, const fl_u32 *d)
++{
++    fl_u32 i, total = FLUFF_NUM_LITLEN, dt = FLUFF_NUM_DIST;
++    for (i = 0; i < FLUFF_NUM_LITLEN; i++) total += ll[i];
++    for (i = 0; i < FLUFF_NUM_DIST; i++) dt += d[i];
++    for (i = 0; i < FLUFF_NUM_LITLEN; i++)
++        ctx->parse_ll_cost[i] = (fl_u16)(fl_log_q4(total) - fl_log_q4(ll[i] + 1));
++    for (i = 0; i < FLUFF_NUM_DIST; i++)
++        ctx->parse_d_cost[i] = (fl_u16)(fl_log_q4(dt) - fl_log_q4(d[i] + 1));
++}
++
++static fl_u32 fl_match_savings_est(fluff_ctx_t *ctx, fl_u32 pos,
++                                   fl_u32 length, fl_u32 distance,
+                                    fl_u8 token_type)
+ {
+-    fl_u32 len_eb;
+-    fl_u32 cost;
+-
+-    if (length < FLUFF_MIN_MATCH) {
+-        return 0;
+-    }
+-
+-    len_eb = (fl_u32)s_len_lut[length - FLUFF_MIN_MATCH].extra_bits;
+-
++    fl_u32 cost, ev, eb, ds, ls, literals;
++    if (length < FLUFF_MIN_MATCH) return 0;
++    ls = s_len_lut[length - FLUFF_MIN_MATCH].sym;
++    eb = s_len_lut[length - FLUFF_MIN_MATCH].extra_bits;
+     if (token_type == 1) {
+-        cost = 18U + len_eb + fl_dist_extra_bits_fast(distance);
++        ds = fl_dist_to_sym(distance, &ev, &cost);
++        cost = ctx->parse_ll_cost[ls] + ctx->parse_d_cost[ds] + (cost + eb) * 16U;
+     } else {
+-        cost = 11U + len_eb;
+-    }
+-
+-    if (length * 8U <= cost) {
+-        return 0;
+-    }
+-    return length * 8U - cost;
++        cost = ctx->parse_ll_cost[fl_rep_token_to_sym(token_type)] + (5U + eb) * 16U;
++    }
++    literals = ctx->parse_prefix[pos + length] - ctx->parse_prefix[pos];
++    return literals > cost ? literals - cost : 0;
+ }
+ 
+ static void fl_insert_range_hyb(fluff_ctx_t *ctx, const fl_u8 *src,
+@@ -2594,6 +2609,20 @@
+     fl_u32 next_insert_abs;
+     fl_u32 num_tokens;
+     int rc;
++    fl_u32 next_refresh = 4096;
++    fl_u32 byte_freq[256];
++    fl_u16 byte_cost[256];
++    fl_u32 j;
++    ctx->parse_prefix = (fl_u32 *)fl_malloc((src_len + 1) * sizeof(fl_u32));
++    if (!ctx->parse_prefix) return BP_ERR_NOMEM;
++    memset(byte_freq, 0, sizeof(byte_freq));
++    for (j = 0; j < src_len; j++) byte_freq[src[j]]++;
++    for (j = 0; j < 256; j++)
++        byte_cost[j] = (fl_u16)(fl_log_q4(src_len + 256) - fl_log_q4(byte_freq[j] + 1) + 8);
++    ctx->parse_prefix[0] = 0;
++    for (j = 0; j < src_len; j++) ctx->parse_prefix[j + 1] = ctx->parse_prefix[j] + byte_cost[src[j]];
++    for (j = 0; j < FLUFF_NUM_LITLEN; j++) ctx->parse_ll_cost[j] = 8 * 16;
++    for (j = 0; j < FLUFF_NUM_DIST; j++) ctx->parse_d_cost[j] = 7 * 16;
+ 
+     i = 0;
+     rep0 = 0;
+@@ -2610,6 +2639,10 @@
+         fl_search_stats_t match_search_stats;
+         fl_u8  match_token_type;
+ 
++        if (i >= next_refresh) {
++            fl_refresh_costs(ctx, ll_freq, d_freq);
++            next_refresh = i + 4096;
++        }
+         abs = file_pos + i;
+         match_len = fl_find_match_hyb(ctx, src, abs, file_pos,
+                                       src_len - i, &match_dist,
+@@ -2621,8 +2654,8 @@
+         fl_insert_range_hyb(ctx, src, file_pos, src_len,
+                             abs, abs + 1, &next_insert_abs);
+ 
+-        if (match_len >= FLUFF_MIN_MATCH) {
+-            m_savings = fl_match_savings_est(match_len, match_dist,
++        if (match_len >= FLUFF_MIN_MATCH && fl_match_savings_est(ctx, i, match_len, match_dist, match_token_type ? match_token_type : 1) > 0) {
++            m_savings = fl_match_savings_est(ctx, i, match_len, match_dist,
+                                              (fl_u8)(match_token_type != 0 ?
+                                                      match_token_type : 1));
+ 
+@@ -2645,12 +2678,12 @@
+                                                      &lazy1_len, &lazy1_dist);
+                 fl_insert_range_hyb(ctx, src, file_pos, src_len,
+                                     abs + 1, abs + 2, &next_insert_abs);
+-                lazy1_savings = fl_match_savings_est(lazy1_len, lazy1_dist,
++                lazy1_savings = fl_match_savings_est(ctx, i + 1, lazy1_len, lazy1_dist,
+                                                      (fl_u8)(lazy1_token_type != 0 ?
+                                                              lazy1_token_type : 1));
+ 
+                 if (lazy1_len >= FLUFF_MIN_MATCH &&
+-                    lazy1_savings > m_savings + 8) {
++                    lazy1_savings > m_savings) {
+                     if (lazy1_len < FLUFF_GOOD_MATCH &&
+                         i + 2 < src_len &&
+                         src_len - (i + 2) >= 4) {
+@@ -2675,13 +2708,13 @@
+                         fl_insert_range_hyb(ctx, src, file_pos, src_len,
+                                             abs + 2, abs + 3,
+                                             &next_insert_abs);
+-                        lazy2_savings = fl_match_savings_est(lazy2_len,
++                        lazy2_savings = fl_match_savings_est(ctx, i + 2, lazy2_len,
+                                                              lazy2_dist,
+                                                              (fl_u8)(lazy2_token_type != 0 ?
+                                                                      lazy2_token_type : 1));
+ 
+                         if (lazy2_len >= FLUFF_MIN_MATCH &&
+-                            lazy2_savings > lazy1_savings + 8) {
++                            lazy2_savings > lazy1_savings) {
+                             fl_record_search_by_result(
+                                 ctx, &match_search_stats,
+                                 FL_SEARCH_OUTCOME_LOOKAHEAD_DROP);
+@@ -2798,6 +2831,8 @@
+         }
+     }
+ 
++    fl_free(ctx->parse_prefix);
++    ctx->parse_prefix = NULL;
+     *out_num_tokens = num_tokens;
+     return BP_OK;
+ }

@@ -1,0 +1,128 @@
+{
+  "level": 8,
+  "block_size": 262144,
+  "input_bytes": 211938580,
+  "baseline_revision": "f627bac5e77da844a863a99a41bdfd8eb3c3d0ee",
+  "results": [
+    {
+      "variant": "adaptive",
+      "encoded_bytes": 64265463,
+      "change_pct": -0.12025580655525836,
+      "source_sha256": "da7419f34d90864cf9f1a2577bba1e32aed07180193cbb7a8f9d47b857e6a1f8"
+    },
+    {
+      "variant": "ans-state",
+      "encoded_bytes": 62451851,
+      "change_pct": -2.9389253402387183,
+      "source_sha256": "c7156dd472cace6fab2f7e8fe690ef658ee1ec962e478ee8ceaa161b31ca4aa7"
+    },
+    {
+      "variant": "backward",
+      "encoded_bytes": 64284429,
+      "change_pct": -0.09077933287960915,
+      "source_sha256": "4d2280ebbe5eed32ea8a181f54d7cfcb4d2965b8bb9ec2976ae5e20f1e0fce4b"
+    },
+    {
+      "variant": "baseline",
+      "encoded_bytes": 64342839,
+      "change_pct": 0.0,
+      "source_sha256": "b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532"
+    },
+    {
+      "variant": "cost14",
+      "encoded_bytes": 64411820,
+      "change_pct": 0.1072085115796595,
+      "source_sha256": "3b49b4c8cc6df38f90ba3f63bd09a1808254da933fb91b735128aeb8a941e533"
+    },
+    {
+      "variant": "cost22",
+      "encoded_bytes": 64335055,
+      "change_pct": -0.012097694352586341,
+      "source_sha256": "c1e81964f12dbac98af420ac9524db6f957cb23833b809554f6309877d0450ca"
+    },
+    {
+      "variant": "dist10",
+      "encoded_bytes": 64410830,
+      "change_pct": 0.10566987881899248,
+      "source_sha256": "1c8fc0ff37d9909565cd1379199d4c786be89d36fcc1a2b0c0037a1d5ca53dce"
+    },
+    {
+      "variant": "fallback",
+      "encoded_bytes": 64329782,
+      "change_pct": -0.020292856521297864,
+      "source_sha256": "4d42580467b8d7051cb3d1da828c2722ef11f010ec624e1d34c3ac4c8e77b61e"
+    },
+    {
+      "variant": "fixed6",
+      "encoded_bytes": 64421749,
+      "change_pct": 0.12263991024703547,
+      "source_sha256": "87403ce52fc5f95cf2906c909586a6dd26ed57d5a757e1ed705d7d33493e9b84"
+    },
+    {
+      "variant": "fixed7",
+      "encoded_bytes": 64353171,
+      "change_pct": 0.016057730993179753,
+      "source_sha256": "434eea4bdf58788580e0033a5f93ed3f7c18f97a6b8bd30bff2e6cc8450293fd"
+    },
+    {
+      "variant": "lazy0",
+      "encoded_bytes": 64449761,
+      "change_pct": 0.16617544650150418,
+      "source_sha256": "876dacc20b4d35a4dc382ce2979a71a97cc1882456fb51314c3f9fe136147f7e"
+    },
+    {
+      "variant": "ll11",
+      "encoded_bytes": 64859397,
+      "change_pct": 0.8028212743301566,
+      "source_sha256": "57d3f9945700a3bc654b6c26eee0c8cc7055fc30acb31a676225e4d8cb3cb9fb"
+    },
+    {
+      "variant": "ll11dist10",
+      "encoded_bytes": 64927388,
+      "change_pct": 0.9084911531491491,
+      "source_sha256": "af13e428673e05ddaaea8f4b7670496b2dd68830811bfc547a056ab5e1466038"
+    },
+    {
+      "variant": "ll12",
+      "encoded_bytes": 65228078,
+      "change_pct": 1.3758158852766877,
+      "source_sha256": "74c7075c7ee87382e0d8b8d1dc9b9362fb37e3004779976c05381aeddaa7cf53"
+    },
+    {
+      "variant": "ll9",
+      "encoded_bytes": 64081336,
+      "change_pct": -0.40642129577154185,
+      "source_sha256": "7518e4ab2ebc8d52824c4a4e5659aa753a260fcffbf8cdc9a9bf79cfd81bfc45"
+    },
+    {
+      "variant": "long10",
+      "encoded_bytes": 64316344,
+      "change_pct": -0.041177853529283936,
+      "source_sha256": "360211249422d38db394c4f1088fecf13e2232a860a0814c7628135260ee7c13"
+    },
+    {
+      "variant": "long12",
+      "encoded_bytes": 64318187,
+      "change_pct": -0.03831350991522209,
+      "source_sha256": "6eb19dfd7e4b30123440186d7354bfb86a45ca6df6da7146d24bd5af9f07d4e1"
+    },
+    {
+      "variant": "long8",
+      "encoded_bytes": 64327164,
+      "change_pct": -0.02436168537729433,
+      "source_sha256": "fd81b19bfcf209dd0a19d48ab939c78183662ec8801bdb7d3c5c91b57d8c6fcf"
+    },
+    {
+      "variant": "marginal",
+      "encoded_bytes": 64302047,
+      "change_pct": -0.06339788643767719,
+      "source_sha256": "75a58484008703d707542837bc048a68113a74fcf77f1025ad6b4e182dcad07c"
+    },
+    {
+      "variant": "rep-fse",
+      "encoded_bytes": 64016722,
+      "change_pct": -0.5068427272846954,
+      "source_sha256": "071d459fd143b7b90e9c295d10b8c1057db98d44fcc043cefeb768fe83b52e32"
+    }
+  ]
+}

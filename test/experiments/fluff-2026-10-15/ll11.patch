@@ -1,0 +1,11 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -656,7 +656,7 @@
+  * ANSI C89 compliant. No compiler extensions outside the fl_u64 typedef.
+  */
+ 
+-#define FSE_LL_BITS   10
++#define FSE_LL_BITS   11
+ #define FSE_LL_L      (1U << FSE_LL_BITS)   /* 1024 */
+ #define FSE_D_BITS    9
+ #define FSE_D_L       (1U << FSE_D_BITS)    /* 512 */

@@ -1,0 +1,38 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -96,7 +96,7 @@
+ #define FLUFF_WINDOW_MASK    (FLUFF_WINDOW_SIZE - 1U)
+ 
+ #define FLUFF_MIN_MATCH      3
+-#define FLUFF_MAX_MATCH      258
++#define FLUFF_MAX_MATCH      4354
+ 
+ #define FLUFF_HASH_BITS      17
+ #define FLUFF_HASH_SIZE      (1U << FLUFF_HASH_BITS)
+@@ -255,7 +255,7 @@
+     /* 273..276 */ 35,43,51,59,
+     /* 277..280 */ 67,83,99,115,
+     /* 281..284 */ 131,163,195,227,
+-    /* 285      */ 258
++    /* 285      */ 259
+ };
+ 
+ static const fl_u8 s_len_extra[] = {
+@@ -265,7 +265,7 @@
+     /* 273..276 */ 3,3,3,3,
+     /* 277..280 */ 4,4,4,4,
+     /* 281..284 */ 5,5,5,5,
+-    /* 285      */ 0
++    /* 285      */ 12
+ };
+ 
+ /*
+@@ -356,7 +356,7 @@
+         fl_u32 cnt  = 1U << eb;
+         for (j = 0; j < cnt; j++) {
+             fl_u32 idx = base + j - FLUFF_MIN_MATCH;
+-            if (idx < 256U) {
++            if (idx < FLUFF_MAX_MATCH - FLUFF_MIN_MATCH + 1U) {
+                 s_len_lut[idx].sym        = (fl_u16)sym;
+                 s_len_lut[idx].extra_bits = (fl_u8)eb;
+                 s_len_lut[idx].base       = (fl_u16)base;

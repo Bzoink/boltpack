@@ -1,0 +1,7 @@
+variant,mode,context_bytes,match_table_bytes,scratch_bytes,persistent_bytes,peak_bytes,after_free_bytes
+baseline,encode,282072,1835008,1378336,3495416,3499776,0
+baseline,decode,282072,0,0,282072,287588,0
+baseline,encode_growth,282072,1835008,1378336,3495416,3499776,0
+candidate,encode,282048,1835008,524304,2641360,2645720,0
+candidate,decode,282048,0,0,282048,287564,0
+candidate,encode_growth,282048,1835008,524304,2641360,3165662,0

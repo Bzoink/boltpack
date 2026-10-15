@@ -1,0 +1,40 @@
+--- a/fluff.c
++++ b/fluff.c
+@@ -832,10 +832,10 @@
+ 
+         if (k < m) {
+             nb       = (fl_u32)(db + 1U);
+-            new_base = k << nb;
++            new_base = ((ns + k) << nb) - L;
+         } else {
+             nb       = (fl_u32)db;
+-            new_base = (m << (db + 1U)) + ((k - m) << db);
++            new_base = ((ns + k) << nb) - L;
+         }
+ 
+         dtab[i].symbol   = (fl_u16)sym;
+@@ -1036,7 +1036,7 @@
+         senc[s].db_lo    = db;
+         senc[s].db_hi    = (fl_u8)(db + 1);
+         senc[s].m        = m;
+-        senc[s].max_hi   = m << (db + 1);
++        senc[s].max_hi   = (ns << (db + 1)) - L;
+     }
+ 
+     free(spread); free(sym_k); free(slot_off);
+@@ -1062,11 +1062,11 @@
+     if (ns == 0) return y; /* should not happen */
+ 
+     if (y < mhi) {
++        nb = db_lo;
++        k  = m + (y >> db_lo);
++    } else {
+         nb = db_hi;
+-        k  = y >> db_hi;
+-    } else {
+-        nb = db_lo;
+-        k  = m + ((y - mhi) >> db_lo);
++        k  = (y - mhi) >> db_hi;
+     }
+     fse_bits_write(bits, y & ((1U << nb) - 1U), nb);
+     return slots[senc[sym].slot_off + k];
