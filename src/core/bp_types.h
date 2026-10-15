@@ -77,7 +77,7 @@ typedef struct {
 # ifdef BP_MINI
 #  define BP_VERSION_MINOR 3
 # else
-#  define BP_VERSION_MINOR 7
+#  define BP_VERSION_MINOR 8
 # endif
 #endif
 
