@@ -297,7 +297,7 @@ WCX_RC     = $(WCX_SRCDIR)/boltpack_wcx.rc
 WCX_ZSTD_CPPFLAGS = -DBOLTPACK_ZSTD -I$(ZSTDDIR)
 
 WIN_SRCDIR = src/frontend/win
-WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(BOLTLZDIR)
+WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -I$(COREDIR) -I$(BOLTLZDIR)
 WIN_SRCS   = $(WIN_SRCDIR)/main.c \
              $(WIN_SRCDIR)/bp_net_win.c \
              $(COREDIR)/archiver.c \
