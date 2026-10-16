@@ -190,12 +190,13 @@ parallel-compression controls below.
 `make win32` / `make win64` builds. Builds without OpenMP reject those flags
 instead of silently ignoring them.
 
-On OpenMP-enabled Linux-family builds, BoltLZ, Fluff, and Zstandard use an
-automatic multi-processor policy for larger workloads. BoltLZ parallelizes
-independent archive blocks without changing their encoded representation; a
-single file uses that path only when it has at least two blocks per worker.
-Use `--single-thread` to opt out, or `-j N` from advanced help to choose an
-explicit worker count. `-j 1` also selects the sequential path.
+On OpenMP-enabled Linux and Windows CLI builds, BoltLZ, Fluff, and Zstandard
+use an automatic multi-processor policy for larger workloads. BoltLZ
+parallelizes independent archive blocks without changing their encoded
+representation; a single file uses that path only when it has at least two
+blocks per worker. Use `--single-thread` to opt out, or `-j N` from advanced
+help to choose an explicit worker count. `-j 1` also selects the sequential
+path. These controls appear only in builds with the parallel feature enabled.
 
 ---
 
@@ -226,11 +227,11 @@ surface used by the Linux-family frontends: long-form commands such as
 basic `boltpack help` page that hides expert compression tuning. Run
 `boltpack help advanced` to show the full Windows CLI surface.
 
-When Fluff is selected, those Windows CLI builds also enable the fast-fluff
-path for method `3`. Larger workloads now default to automatic
-multi-processor compression; use `--single-thread` to force the sequential
-path, or `-j N` / `-g N` from advanced help when you want explicit fast-fluff
-thread and grouping control.
+On OpenMP-enabled Windows CLI builds, BoltLZ, Fluff, and zstd use multiple
+workers automatically for sufficiently large workloads. Use
+`--single-thread` to force serial compression, or `-j N` to set the worker
+count. `-g N` tunes Fluff's grouped-block size. The build-aware help omits
+these controls when OpenMP support is absent.
 
 ---
 
@@ -1059,7 +1060,8 @@ All `BP_ERR_*` codes are translated to human-readable messages from `STR#` 128 a
 **File:** `src/frontend/macosx/main.c`
 **Compiler:** Apple Clang (Xcode) or `arm64-apple-macosx11-clang` cross-compiler
 **Interface:** Command-line
-**Target:** macOS 10.6 Snow Leopard and later (ARM64 primary, x86_64 secondary)
+**Target:** Apple Silicon macOS 11+ in the repository Makefile target; native
+source kits also support Intel macOS 10.9+.
 
 Native PowerPC Mac OS X 10.4/10.5 CLI builds are also a supported practical
 workflow when built on the machine itself. In that case, compile with
@@ -1086,6 +1088,12 @@ For Intel Mac builds, add `-DBP_CREATOR_CPU=BP_CPU_X86_64`.
 
 For native PowerPC Mac OS X 10.4/10.5 builds, add
 `-DBP_CREATOR_CPU=BP_CPU_PPC32` and use a native compiler on the Mac.
+
+The repository's `make macosx` CLI target uses the portable C89 codecs and
+does not include OpenMP or zstd. It has no parallel compression controls and
+does not list `-Z` in its help, though generic level and preset descriptions
+still mention zstd. The modern Cocoa GUI has a separate OpenMP build path
+described below.
 
 ### macOS: Native Compile Packages
 
@@ -1270,6 +1278,10 @@ x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
     src/frontend/haiku/main.c src/core/boltlz.c \
     -o boltpack
 ```
+
+The standard `make haiku` CLI target uses the serial C89 Fluff path and omits
+zstd. Its help does not show the unavailable method-4 selector, though generic
+level and preset descriptions still mention zstd.
 
 ### Haiku: bp_io_t Implementation
 

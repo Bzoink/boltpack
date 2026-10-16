@@ -1,6 +1,8 @@
 # BoltPack Native Build Guide
 
-BoltPack can be compiled natively on 13 different operating systems. This source package contains everything needed to build on any of them.
+BoltPack has native frontends for dozens of operating systems and CPU families.
+This guide covers repository build targets and the source kits used when a
+native toolchain is required.
 
 ## Quick Start
 
@@ -16,11 +18,12 @@ cd boltpack
 make
 ```
 
-### Linux-Hosted Fast-Fluff Targets
+### OpenMP-Enabled Parallel Compression Builds
 
-On Linux hosts with OpenMP available, the repository also provides modern
-targets that enable the optional parallel Fluff encoder
-(`BOLTPACK_FAST_FLUFF`) for method `3`:
+On Linux hosts with OpenMP available, these targets enable the optional
+parallel compression paths. The `BOLTPACK_FAST_FLUFF` build switch controls
+parallel Fluff and BoltLZ; supported CLI builds can also parallelize independent
+zstd files:
 
 ```bash
 make modern
@@ -34,22 +37,28 @@ make haiku-gui
 make macosx-gui
 ```
 
-`make modern` builds the Linux x86-64 CLI with fast-fluff enabled. `make arm64`
-does the same for the dedicated Linux ARM64 CLI build. On those Linux-family
-CLI builds, selecting Fluff now auto-enables multi-processor compression for
-larger workloads by default; `--single-thread` forces the sequential path, and
-`boltpack help advanced` exposes the expert `-j N` / `-g N` overrides.
+`make modern` builds the Linux x86-64 CLI with OpenMP enabled. `make arm64`
+does the same for the dedicated Linux ARM64 CLI build. On supported Linux and
+Windows CLI builds, BoltLZ, Fluff, and zstd automatically use multiple workers
+for sufficiently large workloads. `--single-thread` forces serial compression;
+`boltpack help advanced` lists `-j N` for the worker count and `-g N` for Fluff
+grouping.
 
-`make win32` and `make win64` now build the Windows CLI with the same
-fast-fluff support. On those Windows CLI builds, selecting Fluff now
-auto-enables multi-processor compression for larger workloads by default;
-`--single-thread` forces the sequential path, and `boltpack help advanced`
-exposes the expert `-j N` / `-g N` overrides.
+`make win32` and `make win64` build the Windows CLI with the same OpenMP
+support. Builds without OpenMP keep compression serial and omit threading
+controls from advanced CLI help.
 
-The Linux/Windows FLTK, macOS Cocoa, and Haiku GUI targets surface the same
-feature as a `Use Multi-threaded Fluff` toggle when Fluff is selected. The
-macOS GUI target still requires an osxcross or native macOS toolchain with
-OpenMP support, and `make haiku-gui` still requires the Haiku cross SDK.
+The Linux/Windows FLTK, macOS Cocoa, and Haiku GUI targets surface parallel
+Fluff as a `Use Multi-threaded Fluff` toggle. Their OpenMP builds also provide
+the parallel BoltLZ path where enabled by the frontend. The macOS GUI target
+requires an osxcross or native macOS toolchain with OpenMP support, and
+`make haiku-gui` still requires the Haiku cross SDK.
+
+For the generic Makefile build, set `ENABLE_FAST_FLUFF=0` to omit the C11/
+OpenMP encoder and `ENABLE_ZSTD=0` to omit the C99 zstd library. These switches
+do not apply to target-specific recipes that explicitly set their feature
+flags; check the target recipe when building outside the generic Linux CLI
+target.
 
 ### Other platforms
 
@@ -142,9 +151,11 @@ Target summary:
   with a toolchain that supports the required `-arch` values.
 - `legacy-all`: Builds both legacy GUI targets in sequence.
 
-The modern `intel` and `arm64` GUI builds also compile `src/core/fluff_fast.c`
-with `-DBOLTPACK_FAST_FLUFF -fopenmp`, so the Cocoa `Use Multi-threaded Fluff`
-toggle is active whenever the host toolchain provides OpenMP.
+The modern Intel and Apple Silicon Cocoa GUI builds compile
+`src/core/fluff_fast.c` with
+`-DBOLTPACK_FAST_FLUFF -fopenmp`, so the `Use Multi-threaded Fluff` toggle is
+available when the host toolchain provides OpenMP. The same OpenMP build also
+enables parallel BoltLZ in frontends that set its worker policy.
 
 Useful environment overrides:
 

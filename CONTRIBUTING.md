@@ -3,10 +3,10 @@
 Thanks for your interest in BoltPack. Bug reports, portability fixes, and new
 platform frontends are all welcome.
 
-BoltPack has one unusual constraint that shapes almost every contribution: the
-archive core must compile as **strict ANSI C89** on compilers from the 1980s and
-1990s. Please read [Core Language Rules](#core-language-rules) before touching
-anything under `src/core/`.
+BoltPack keeps a **strict ANSI C89 portable baseline** for its archive core and
+baseline codecs. Optional modern components have separate requirements: the
+parallel Fluff encoder uses C11/OpenMP, and zstd uses C99. Please read
+[Core Language Rules](#core-language-rules) before changing core code.
 
 ## Reporting Bugs
 
@@ -29,7 +29,7 @@ Do **not** open a public issue for a security vulnerability — see
 
 ```sh
 make            # Linux x86-64 CLI at build/linux/boltpack
-make modern     # OpenMP-enabled fast-fluff encoder
+make modern     # OpenMP-enabled parallel compression
 make debug      # debug symbols + AddressSanitizer + UBSanitizer
 make clean
 ```
@@ -64,9 +64,10 @@ Use `make unit-test-asan` or `make debug` for anything memory-sensitive.
 
 ## Core Language Rules
 
-These are non-negotiable for `src/core/` and `lib/`. They exist because the core
-is compiled by Aztec C, Lattice C, Turbo C, SAS/C, MPW C, and other pre-C99
-compilers.
+These rules apply to the portable C89 sources in `src/core/` and to new
+first-party code unless a component is explicitly marked as an exception. They
+allow the baseline codecs to build with older compilers used by constrained
+platforms.
 
 - `/* */` comments only — no `//`
 - Declare all variables at the top of a block; no mixed declarations and code
@@ -80,14 +81,17 @@ compilers.
 - The core never calls `fopen`/`fread` directly — it goes through the `bp_io_t`
   callbacks so non-POSIX platforms can supply their own I/O
 
-There is exactly one sanctioned exception: `bp_off_t` in `bp_types.h` uses
-`__extension__ typedef long long` (GCC/Clang) and `__int64` (MSVC) to express a
-64-bit file offset on ILP32 platforms. See [docs/portability.md](docs/portability.md)
-for the rationale.
+The `bp_off_t` definition in `bp_types.h` uses `__extension__ typedef long
+long` (GCC/Clang) and `__int64` (MSVC) to express a 64-bit file offset on ILP32
+platforms. The separate `src/core/fluff_fast.c` module uses C11 and OpenMP;
+`lib/zstd/` uses C99. Those optional components have their own build flags and
+must not become requirements for the portable baseline. See
+[docs/portability.md](docs/portability.md) for details.
 
-Frontend code under `src/frontend/<platform>/` may use platform APIs freely, but
-those dependencies must not leak into the core. There is no multithreading in
-the core; `fluff_fast.c` (OpenMP) is a frontend-layer concern.
+Frontend code under `src/frontend/<platform>/` may use its platform APIs and
+language, but those dependencies must not leak into the portable baseline. The
+baseline C89 paths do not create threads. OpenMP batching is isolated in the
+optional fast-Fluff module and enabled only by supported build targets.
 
 ## Style
 
