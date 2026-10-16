@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef BOLTPACK_FAST_FLUFF
+#include <omp.h>
+#endif
 
 /*
  * Sanity ceiling for block sizes read from entry headers during
@@ -37,6 +40,7 @@
  * typical modern RAM budgets.
  */
 #define FAST_FLUFF_MAX_BATCH 64
+#define FAST_BOLTLZ_MAX_BATCH 64
 #endif /* BOLTPACK_FAST_FLUFF */
 
 /* ---- helpers ----------------------------------------------------------- */
@@ -304,6 +308,88 @@ static int bp_fast_fluff_ensure(bp_archive_t *ar, bp_uint32 block_size,
     ar->fast_fluff_out_size = out_size;
     return BP_OK;
 }
+
+static void bp_fast_boltlz_release(bp_archive_t *ar)
+{
+    if (ar == NULL) return;
+    free(ar->fast_boltlz_in_base);
+    free(ar->fast_boltlz_out_base);
+    free(ar->fast_boltlz_work_base);
+    ar->fast_boltlz_in_base = NULL;
+    ar->fast_boltlz_out_base = NULL;
+    ar->fast_boltlz_work_base = NULL;
+    ar->fast_boltlz_ctx_threads = 0;
+    ar->fast_boltlz_batch_blocks = 0;
+    ar->fast_boltlz_block_size = 0;
+    ar->fast_boltlz_out_size = 0;
+    ar->fast_boltlz_work_size = 0;
+}
+
+static int bp_fast_boltlz_ensure(bp_archive_t *ar, bp_uint32 block_size,
+                                 bp_uint32 out_size, int nthreads)
+{
+    int batch_blocks;
+    bp_uint32 work_size;
+
+    if (ar == NULL) return BP_ERR_INVALID_ARG;
+    if (nthreads > FAST_BOLTLZ_MAX_BATCH)
+        nthreads = FAST_BOLTLZ_MAX_BATCH;
+    if (nthreads < 2) {
+        bp_fast_boltlz_release(ar);
+        return BP_OK;
+    }
+    batch_blocks = nthreads;
+    work_size = bp_compress_work_size();
+    if (work_size == 0) return BP_ERR_INVALID_ARG;
+
+    if (ar->fast_boltlz_in_base != NULL &&
+        ar->fast_boltlz_ctx_threads == (bp_uint32)nthreads &&
+        ar->fast_boltlz_batch_blocks == (bp_uint32)batch_blocks &&
+        ar->fast_boltlz_block_size == block_size &&
+        ar->fast_boltlz_out_size == out_size &&
+        ar->fast_boltlz_work_size == work_size) {
+        return BP_OK;
+    }
+
+    bp_fast_boltlz_release(ar);
+    ar->fast_boltlz_in_base = (bp_uint8 *)malloc(
+        (size_t)batch_blocks * (size_t)block_size);
+    ar->fast_boltlz_out_base = (bp_uint8 *)malloc(
+        (size_t)batch_blocks * (size_t)out_size);
+    ar->fast_boltlz_work_base = malloc(
+        (size_t)nthreads * (size_t)work_size);
+    if (ar->fast_boltlz_in_base == NULL ||
+        ar->fast_boltlz_out_base == NULL ||
+        ar->fast_boltlz_work_base == NULL) {
+        bp_fast_boltlz_release(ar);
+        return BP_ERR_NOMEM;
+    }
+
+    ar->fast_boltlz_ctx_threads = (bp_uint32)nthreads;
+    ar->fast_boltlz_batch_blocks = (bp_uint32)batch_blocks;
+    ar->fast_boltlz_block_size = block_size;
+    ar->fast_boltlz_out_size = out_size;
+    ar->fast_boltlz_work_size = work_size;
+    return BP_OK;
+}
+
+static int bp_fast_boltlz_effective_threads(bp_uint64 file_size,
+                                            bp_uint32 block_size,
+                                            int nthreads)
+{
+    bp_uint32 min_bytes;
+    if (nthreads > FAST_BOLTLZ_MAX_BATCH)
+        nthreads = FAST_BOLTLZ_MAX_BATCH;
+    while (nthreads > 1) {
+        /* At least two blocks per worker amortizes staging and OpenMP startup
+         * costs while still using available cores on medium-sized files. */
+        min_bytes = block_size * (bp_uint32)(2 * nthreads);
+        if (bp_u64_gte(file_size, bp_u64_from_u32(min_bytes)))
+            return nthreads;
+        nthreads--;
+    }
+    return 0;
+}
 #endif
 
 void bp_set_fast_fluff(bp_archive_t *ar, int nthreads)
@@ -311,6 +397,20 @@ void bp_set_fast_fluff(bp_archive_t *ar, int nthreads)
     if (ar == NULL) return;
 #ifdef BOLTPACK_FAST_FLUFF
     bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
+    ar->fast_fluff_threads = (nthreads > 0) ? nthreads : 0;
+#else
+    (void)nthreads;
+    ar->fast_fluff_threads = 0;
+#endif
+}
+
+void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads)
+{
+    if (ar == NULL) return;
+#ifdef BOLTPACK_FAST_FLUFF
+    bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
     ar->fast_fluff_threads = (nthreads > 0) ? nthreads : 0;
 #else
     (void)nthreads;
@@ -789,6 +889,156 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                 if (!any_compressed_block) {
                     fields[20] = BP_METHOD_STORED;
                 }
+            } else if (ar->fast_fluff_threads > 1 &&
+                       actual_method == BP_METHOD_BOLTLZ &&
+                       bp_fast_boltlz_effective_threads(
+                           file_size, bsize, ar->fast_fluff_threads) > 1) {
+                bp_uint8 *fast_in_base;
+                bp_uint8 *fast_out_base;
+                void *fast_work_base;
+                bp_uint8 *batch_srcs[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint8 *batch_dsts[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_src_lens[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_dst_lens[FAST_BOLTLZ_MAX_BATCH];
+                int batch_status[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_total;
+                bp_uint32 batch_written;
+                bp_uint32 work_size;
+                int nthreads_bz;
+                int batch_cap_bz;
+                int batch_n;
+                int b;
+
+                nthreads_bz = bp_fast_boltlz_effective_threads(
+                    file_size, bsize, ar->fast_fluff_threads);
+                rc = bp_fast_boltlz_ensure(ar, bsize, out_buf_size,
+                                           nthreads_bz);
+                if (rc != BP_OK) return rc;
+
+                fast_in_base = ar->fast_boltlz_in_base;
+                fast_out_base = ar->fast_boltlz_out_base;
+                fast_work_base = ar->fast_boltlz_work_base;
+                work_size = ar->fast_boltlz_work_size;
+                nthreads_bz = (int)ar->fast_boltlz_ctx_threads;
+                batch_cap_bz = (int)ar->fast_boltlz_batch_blocks;
+
+                for (b = 0; b < batch_cap_bz; b++) {
+                    batch_srcs[b] = fast_in_base +
+                                    (size_t)b * (size_t)bsize;
+                    batch_dsts[b] = fast_out_base +
+                                    (size_t)b * (size_t)out_buf_size;
+                }
+
+                while (!bp_u64_is_zero(remaining)) {
+                    batch_n = 0;
+                    batch_total = 0;
+                    while (batch_n < batch_cap_bz &&
+                           !bp_u64_is_zero(remaining)) {
+                        bp_uint32 chunk =
+                            (remaining.hi != 0 || remaining.lo > bsize)
+                            ? bsize : remaining.lo;
+                        long n_read;
+
+                        n_read = file_io->read(file_io->handle,
+                                               batch_srcs[batch_n], chunk);
+                        if (n_read != (long)chunk) {
+                            char lbuf[512];
+                            sprintf(lbuf,
+                                "boltpack: low-level read failed for entry %.200s: "
+                                "requested=%u read=%ld errno=%d (%s)",
+                                name, (unsigned)chunk, n_read,
+                                errno, strerror(errno));
+                            bp_core_log(ar, lbuf);
+                            return BP_ERR_IO;
+                        }
+                        adler = bp_checksum_typed(ck_type, adler,
+                                                  batch_srcs[batch_n], chunk);
+                        batch_src_lens[batch_n] = chunk;
+                        batch_total += chunk;
+                        remaining = bp_u64_sub(remaining,
+                                               bp_u64_from_u32(chunk));
+                        batch_n++;
+                    }
+
+                    /* BoltLZ blocks have independent match histories. */
+#pragma omp parallel for schedule(dynamic) num_threads(nthreads_bz)
+                    for (b = 0; b < batch_n; b++) {
+                        int tid;
+                        bp_uint32 comp_len;
+                        void *worker_work;
+
+                        tid = omp_get_thread_num();
+                        if (tid < 0 || tid >= nthreads_bz) tid = 0;
+                        worker_work = (bp_uint8 *)fast_work_base +
+                                      (size_t)tid * (size_t)work_size;
+                        comp_len = out_buf_size;
+                        batch_status[b] = bp_compress_block_work(
+                            batch_srcs[b], batch_src_lens[b], batch_dsts[b],
+                            &comp_len, worker_work, ar->method_level);
+                        batch_dst_lens[b] = comp_len;
+                    }
+
+                    for (b = 0; b < batch_n; b++) {
+                        if (batch_status[b] != BP_OK)
+                            return batch_status[b];
+                    }
+
+                    batch_written = 0;
+                    for (b = 0; b < batch_n; b++) {
+                        bp_uint8 blk_hdr[BP_BLOCK_HDR_V3];
+                        bp_uint64 bytes_done;
+
+                        if (batch_dst_lens[b] >=
+                            batch_src_lens[b] - batch_src_lens[b] / 100) {
+                            batch_dst_lens[b] = batch_src_lens[b];
+                            memcpy(batch_dsts[b], batch_srcs[b],
+                                   (size_t)batch_src_lens[b]);
+                        } else {
+                            any_compressed_block = 1;
+                        }
+
+                        bp_write_le32(blk_hdr + 0, batch_dst_lens[b]);
+                        bp_write_le32(blk_hdr + 4, batch_src_lens[b]);
+                        bp_write_le32(blk_hdr + 8,
+                            bp_crc32(0, batch_dsts[b], batch_dst_lens[b]));
+                        rc = write_buf(dst_io, blk_hdr, BP_BLOCK_HDR_V3);
+                        if (rc != BP_OK) return rc;
+                        rc = write_buf(dst_io, batch_dsts[b],
+                                       batch_dst_lens[b]);
+                        if (rc != BP_OK) return rc;
+
+                        total_comp = bp_u64_add(total_comp,
+                            bp_u64_from_u32(batch_dst_lens[b] +
+                                            BP_BLOCK_HDR_V3));
+                        batch_written += batch_src_lens[b];
+
+                        if (record_entry && ar->progress_fn) {
+                            bp_progress_t p;
+                            memset(&p, 0, sizeof(p));
+                            bytes_done = bp_u64_sub(file_size,
+                                bp_u64_add(remaining,
+                                    bp_u64_from_u32(batch_total -
+                                                    batch_written)));
+                            p.file_index = ar->entries_written;
+                            p.file_count = 0;
+                            p.file_name = name;
+                            p.file_orig_size = orig64;
+                            p.file_bytes_done = bytes_done;
+                            p.file_comp_size = total_comp;
+                            p.archive_orig_total = bp_u64_add(
+                                ar->archive_orig_total, bytes_done);
+                            p.archive_comp_total = bp_u64_add(
+                                ar->archive_comp_total, total_comp);
+                            p.archive_orig_done = bp_u64_add(
+                                ar->archive_orig_done, bytes_done);
+                            if (ar->progress_fn(&p, ar->progress_data) != 0)
+                                return BP_ERR_ABORTED;
+                        }
+                    }
+                }
+
+                if (!any_compressed_block)
+                    fields[20] = BP_METHOD_STORED;
             } else
 #endif /* BOLTPACK_FAST_FLUFF */
             {
@@ -1230,6 +1480,7 @@ void bp_archive_close(bp_archive_t *ar)
     if (ar == NULL) return;
 #ifdef BOLTPACK_FAST_FLUFF
     bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
 #endif
     if (ar->entry_list) {
         for (i = 0; i < ar->entries_written; i++) {

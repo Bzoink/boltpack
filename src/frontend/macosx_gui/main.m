@@ -2196,6 +2196,10 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
         int nthreads = fast_fluff_thread_count();
         if (nthreads > 1)
             bp_set_fast_fluff(&ar, nthreads);
+    } else if (g_compression_method == BP_METHOD_BOLTLZ) {
+        int nthreads = fast_fluff_thread_count();
+        if (nthreads > 1)
+            bp_set_fast_boltlz(&ar, nthreads);
     }
 #endif
 

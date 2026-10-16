@@ -92,6 +92,8 @@ typedef enum {
 } fast_thread_policy_t;
 
 #define FAST_FLUFF_AUTO_MIN_BYTES (4UL * 1024UL * 1024UL)
+#define FAST_BOLTLZ_AUTO_MIN_BYTES (1UL * 1024UL * 1024UL)
+#define FAST_COMPRESSION_MAX_THREADS 64
 
 static int g_verbosity = VERB_DEFAULT;
 static fast_thread_policy_t g_fast_thread_policy = FAST_THREAD_AUTO;
@@ -790,20 +792,28 @@ static int choose_fast_fluff_threads(bp_uint64 total_size, int data_count,
     bp_uint64 min_size;
     int threads;
 
-    if (method != BP_METHOD_FLUFF)
+    if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF
+#ifdef BOLTPACK_ZSTD
+        && method != BP_METHOD_ZSTD
+#endif
+        )
         return 0;
     if (g_fast_thread_policy == FAST_THREAD_SINGLE)
         return 0;
 
-    threads = fluff_fast_get_threads();
+    threads = (g_fast_thread_policy == FAST_THREAD_EXPLICIT)
+        ? g_fast_threads : fluff_fast_get_threads();
     if (threads <= 1 || data_count <= 0)
         return 0;
+    if (threads > FAST_COMPRESSION_MAX_THREADS)
+        threads = FAST_COMPRESSION_MAX_THREADS;
 
     if (g_fast_thread_policy == FAST_THREAD_EXPLICIT) {
         if (g_fast_threads > 0 && g_fast_threads < threads)
             threads = g_fast_threads;
     } else {
-        min_size = bp_u64_from_ulong(FAST_FLUFF_AUTO_MIN_BYTES);
+        min_size = bp_u64_from_ulong(method == BP_METHOD_BOLTLZ
+            ? FAST_BOLTLZ_AUTO_MIN_BYTES : FAST_FLUFF_AUTO_MIN_BYTES);
         if (!bp_u64_gte(total_size, min_size))
             return 0;
     }
@@ -1225,6 +1235,13 @@ static int add_job_list_parallel(bp_archive_t *ar, const add_job_list_t *list,
             if (batch_n == 1) {
                 double hint = (double)list->items[i].file_size.lo +
                               (double)list->items[i].file_size.hi * 4294967296.0;
+                if (ar->method == BP_METHOD_BOLTLZ &&
+                    hint < 4.0 * (double)ar->block_size) {
+                    rc = add_job(ar, &list->items[i]);
+                    if (rc != BP_OK) return rc;
+                    i++;
+                    continue;
+                }
                 if (!tmp_fits_on_tmp_drive(hint) && !tmp_fits_on_archive_drive(hint)) {
                     rc = add_job(ar, &list->items[i]);
                     if (rc != BP_OK) return rc;
@@ -1261,7 +1278,10 @@ static int add_job_list_with_policy(bp_archive_t *ar,
     summarize_data_jobs(list, &total_size, &data_count);
     threads = choose_fast_fluff_threads(total_size, data_count, method);
     if (threads > 1) {
-        bp_set_fast_fluff(ar, threads);
+        if (method == BP_METHOD_BOLTLZ)
+            bp_set_fast_boltlz(ar, threads);
+        else if (method == BP_METHOD_FLUFF)
+            bp_set_fast_fluff(ar, threads);
 #ifdef BOLTPACK_FAST_FLUFF
         return add_job_list_parallel(ar, list, threads);
 #endif
@@ -1683,7 +1703,7 @@ static void usage_basic(void)
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
         "  -q / -qq         Quiet / silent\n"
-        "  --single-thread  Disable automatic parallel fluff\n");
+        "  --single-thread  Disable automatic parallel compression\n");
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.blt folder\n"
@@ -1724,9 +1744,9 @@ static void usage_advanced(void)
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
         "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
-        "  -j N             Parallel fluff jobs/threads (fast-fluff Windows builds)\n"
+        "  -j N             Parallel BoltLZ, fluff and zstd (OpenMP Windows builds)\n"
         "  -g N             Fluff blocks per history group (fast-fluff Windows builds)\n"
-        "  --single-thread  Disable automatic parallel fluff\n");
+        "  --single-thread  Disable automatic parallel compression\n");
     fprintf(stderr,
         "  -q               Quiet (summary only)\n"
         "  -qq              Silent (errors only)\n"
@@ -2693,7 +2713,7 @@ int main(int argc, char **argv)
 
 #ifndef BOLTPACK_FAST_FLUFF
     if (g_fast_thread_policy == FAST_THREAD_EXPLICIT && g_fast_threads > 0) {
-        fprintf(stderr, "boltpack: -j requires a fast-fluff-enabled Windows build\n");
+        fprintf(stderr, "boltpack: -j requires an OpenMP-enabled Windows build\n");
         return 1;
     }
     if (g_fast_group_blocks > 0) {

@@ -160,10 +160,9 @@ $(TARGET): $(OBJS)
 $(BUILDDIR)/core/%.o: $(COREDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o $@ $<
 
-# archiver.c must use -DBOLTPACK_FAST_FLUFF to compile the parallel batch path
-# and -DBOLTPACK_ZSTD to compile the zstd dispatch.
+# archiver.c uses OpenMP for both parallel Fluff and BoltLZ batch paths.
 $(BUILDDIR)/core/archiver.o: $(COREDIR)/archiver.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
-	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
+	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
 # fluff.c is the hot decompression path: compile with -O3 and (on native
 # linux/x86-64 builds) -march=native so the compiler can exploit CMOV,
@@ -666,7 +665,7 @@ ARM64_CORE_OBJS = \
 .PHONY: arm64
 arm64:
 	mkdir -p $(ARM64_BUILDDIR)
-	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD \
+	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/archiver.c \
 	    -o $(ARM64_BUILDDIR)/archiver.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
@@ -1316,7 +1315,7 @@ LINUX_GUI_CORE_OBJS = \
 .PHONY: linux-gui
 linux-gui:
 	mkdir -p $(LINUX_GUI_BUILDDIR)
-	gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
+	gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
 	    -c $(COREDIR)/archiver.c    -o $(LINUX_GUI_BUILDDIR)/archiver.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/compress.c    -o $(LINUX_GUI_BUILDDIR)/compress.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/boltlite.c        -o $(LINUX_GUI_BUILDDIR)/boltlite.o
@@ -1491,7 +1490,7 @@ win64-fltk-gui:
 		fi; \
 	fi
 	mkdir -p $(WIN64_FLTK_GUI_BUILDDIR)
-	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
+	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
 	    -c $(COREDIR)/archiver.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/archiver.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/compress.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/compress.o
@@ -1623,7 +1622,7 @@ win32-fltk-gui:
 		fi; \
 	fi
 	mkdir -p $(WIN32_FLTK_GUI_BUILDDIR)
-	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -m32 \
+	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -m32 \
 	    -c $(COREDIR)/archiver.c    -o $(WIN32_FLTK_GUI_BUILDDIR)/archiver.o
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 \
 	    -c $(COREDIR)/compress.c    -o $(WIN32_FLTK_GUI_BUILDDIR)/compress.o
@@ -1795,7 +1794,7 @@ HAIKU_GUI_PRIVATE_INCLUDE ?= /opt/sil/x86_64-unknown-haiku/include/private/inter
 haiku-gui:
 	set -e
 	mkdir -p $(HAIKU_GUI_BUILDDIR)
-	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) \
+	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
 	    -c $(COREDIR)/archiver.c -o $(HAIKU_GUI_BUILDDIR)/archiver.o
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/compress.c -o $(HAIKU_GUI_BUILDDIR)/compress.o
