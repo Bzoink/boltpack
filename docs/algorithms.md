@@ -1,4 +1,4 @@
-# BoltPack Compression Algorithms v1.2
+# BoltPack Compression Algorithms
 
 **Status:** Stable
 **Scope:** Current codec implementations shipped in BoltPack v1.8
@@ -168,8 +168,8 @@ The current implementation combines:
 1. A hybrid hash-chain match finder.
 1. A three-entry repeat-distance ring.
 1. A rep-aware greedy parser with lazy lookahead.
-1. FSE/tANS entropy coding (experimental normal blocks use stream version
-   `0x09`, grouped reset blocks use `0x89`).
+1. FSE/tANS entropy coding (current normal blocks use stream version `0x09`;
+   grouped reset blocks use `0x89`).
 
 The encoder writes the compact `0x09` block format. The decoder also accepts
 the earlier `0x07`/`0x87` and `0x08`/`0x88` FSE/tANS blocks and the original adaptive range coder
@@ -190,17 +190,17 @@ Rep-match lengths keep the `0x07` flat 5-bit raw index. (Entropy-coding them
 through the litlen FSE table was evaluated and measured net-negative on every
 corpus file, so it was not adopted.)
 
-The experimental encoder now writes `0x09`/`0x89`, using the same headers,
-alphabets, and table sizes with a shifted ANS state interval. The parser is
-unchanged. Older decoders reject these versions; the current decoder retains
-the older layouts. See [the experiment results](fluff-experiments-2026-10-15.md)
-and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x89-experimental-shifted-state-fse).
+BoltPack 1.8 introduced the current encoder layout, `0x09`/`0x89`, using the
+same headers, alphabets, and table sizes with a shifted ANS state interval.
+The parser is unchanged. Earlier BoltPack versions reject these streams; the
+current decoder retains the older layouts. See [the experiment results](fluff-experiments-2026-10-15.md)
+and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x89-shifted-state-fse).
 
 ### 5.2 Format-Fixed Parameters
 
 | Parameter               | Value           | Notes                                                                                                                                                                      |
 | ----------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stream version          | `0x09` / `0x89` | Experimental shifted-state FSE; reads legacy `0x07`/`0x87`, `0x08`/`0x88`, and `0x06` |
+| Stream version          | `0x09` / `0x89` | Current shifted-state FSE; reads legacy `0x07`/`0x87`, `0x08`/`0x88`, and `0x06` |
 | Window bits             | 18              | 256 KB window                                                                                                                                                              |
 | Window size             | 262144          | `1 << 18`                                                                                                                                                                  |
 | Minimum match           | 3               | Shared by normal and repeat matches                                                                                                                                        |
@@ -210,7 +210,7 @@ and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x8
 | Default chain depth     | 256             | Tuned by compression level                                                                                                                                                 |
 | Good-match early stop   | 64              | Stop deeper chain search at large matches                                                                                                                                  |
 | Lit/len alphabet        | 289             | Literals, EOB, match lengths, rep-match symbols                                                                                                                            |
-| Distance alphabet       | 48              | Current v1.0 distance buckets                                                                                                                                              |
+| Distance alphabet       | 48              | Format-defined distance categories                                                                                                                                        |
 | Repeat-distance symbols | 286-288         | Reuse `rep0`, `rep1`, `rep2`                                                                                                                                               |
 
 ### 5.2a Modern Fast-Fluff Path
@@ -248,9 +248,9 @@ The current Fluff encoder is best understood as the following concrete stages.
 1. **Rep-aware greedy parsing with lazy lookahead.**
    `fl_parse_greedy()` evaluates the current position, then checks `i + 1`. If
    the lazy candidate wins by more than 8 bits, it may also evaluate `i + 2`
-   before committing. This is the current kept parser. The discarded parser
-   experiments and profiling-only heuristics are not part of the v1.0
-   algorithm description.
+   before committing. This is the current kept parser. Discarded parser
+   experiments and profiling-only heuristics are not part of the shipped
+   algorithm.
 1. **FSE/tANS emission.**
    After tokenization, the encoder normalizes lit/len and distance symbol
    frequencies to power-of-two table sizes (`L = 1024` for lit/len,
@@ -354,8 +354,8 @@ write method `3` archives rather than introducing a separate archive method.
 
 ## 6. Method 4: zstd (Zstandard)
 
-zstd is BoltPack’s highest-ratio codec and the default recommendation for
-modern 64-bit targets when maximum compression is needed.
+zstd is BoltPack’s highest-ratio codec and a good choice on modern targets that
+include method 4.
 
 ### 6.1 Overview
 
@@ -386,10 +386,13 @@ The default block size for zstd archives is 256 KB (same as Fluff).
 
 ### 6.3 Availability
 
-Method 4 requires the `BOLTPACK_ZSTD` compile-time flag, which is enabled by
-default for the Linux, macOS, Windows 32/64-bit, ARM64, and RISC-V targets.
-Vintage targets (DOS 16-bit, Win16, Amiga 68 K, Atari ST, Classic Mac 68 K)
-do not link `lib/zstd/` and return `BP_ERR_UNSUPPORTED_METHOD` for method 4.
+Method 4 requires the `BOLTPACK_ZSTD` compile-time flag. The standard Linux
+and Windows CLI builds, the dedicated Linux ARM64 build, and Linux/Windows
+FLTK GUI builds include it. The repository macOS CLI and native macOS source
+kits, the RISC-V and Haiku CLIs, and constrained vintage targets currently omit
+it. A frontend built without the flag rejects method 4 with
+`BP_ERR_UNSUPPORTED_METHOD`; its CLI help omits the unavailable selector where
+the frontend has build-aware help.
 
 ### 6.4 Memory Profile
 
@@ -423,8 +426,8 @@ Relevant checks include:
 1. `test/check_boltpack.py` for end-to-end archive behavior.
 1. `make unit-test` for the C unit suites in `test/unit/`.
 
-The v1.0 codec documentation is meant to track the code that ships. Historical
-planning material and discarded codec variants are intentionally left out.
+This reference tracks the codecs shipped in BoltPack 1.8. Historical experiment
+reports remain separate from the implementation description.
 
 ## 9. References
 
@@ -436,4 +439,4 @@ planning material and discarded codec variants are intentionally left out.
 1. [specification-1.0.md](specification-1.0.md) for the exact BoltPack wire
    format.
 
-**Last reviewed:** June 2026
+**Last reviewed:** October 2026

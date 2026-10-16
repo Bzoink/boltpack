@@ -12,7 +12,7 @@ The earlier ANS transitions were invertible, but partitioned the stored state
 interval differently from the probability model used for normalization. The
 new mapping uses virtual states in `[L, 2L)`, storing `state - L`. Both the
 literal/length and distance alphabets use the new mapping. The exact equations
-and legacy mapping are in [the format specification](specification-1.0.md#346b-versions-0x09-and-0x89-experimental-shifted-state-fse).
+and legacy mapping are in [the format specification](specification-1.0.md#346b-versions-0x09-and-0x89-shifted-state-fse).
 
 The match finder, parse decisions, search depths, window, repeat ring, token
 alphabets, normalization and table sizes are unchanged. The encoder computes

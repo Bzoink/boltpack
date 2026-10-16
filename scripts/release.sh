@@ -21,21 +21,20 @@ print_help() {
 BoltPack Release Manager
 
 Usage:
-  ./scripts/release.sh create      Create a draft release for v1.0
+  ./scripts/release.sh create      Create a draft release for the VERSION value
   ./scripts/release.sh upload      Generate checksums and upload packages from dist/
   ./scripts/release.sh checksums   Generate dist/SHA256SUMS.txt only
-  ./scripts/release.sh publish     Publish the draft release (notifies followers)
+  ./scripts/release.sh publish     Publish the draft release
   ./scripts/release.sh status      Show release status and asset list
 
 Notes:
-  - Requires GitHub API token in GITHUB_TOKEN environment variable
+  - Uses GITHUB_TOKEN or an authenticated GitHub CLI session
   - Draft releases are invisible to users until published
   - Assets can be added or replaced incrementally; run upload as many times as needed
   - Release ID is saved to .release-id so upload/publish work before a git tag exists
 
 To get started:
-  1. Set your GitHub token:   export GITHUB_TOKEN='your_token_here'
-     (Create at https://github.com/settings/tokens — needs repo scope)
+  1. Authenticate with gh auth login, or set GITHUB_TOKEN for this shell
   2. Create draft:             ./scripts/release.sh create
   3. Build and package:        make && ./scripts/create-packages.sh
   4. Upload packages:          ./scripts/release.sh upload

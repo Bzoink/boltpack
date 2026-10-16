@@ -1692,23 +1692,38 @@ static void usage_basic(void)
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
         "  -2               boltlz compression (default)\n"
-        "  -F               Use fluff compression\n"
-        "  -Z               Use zstd compression (modern builds)\n");
+        "  -F               Use fluff compression\n");
+#ifdef BOLTPACK_ZSTD
+    fprintf(stderr, "  -Z               Use zstd compression\n");
+#endif
+#ifdef BOLTPACK_ZSTD
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
-        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n");
+#else
+    fprintf(stderr,
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff 9)\n");
+#endif
+    fprintf(stderr,
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
-        "  -q / -qq         Quiet / silent\n"
-        "  --single-thread  Disable automatic parallel compression\n");
+        "  -q / -qq         Quiet / silent\n");
+#ifdef BOLTPACK_FAST_FLUFF
+    fprintf(stderr, "  --single-thread  Disable automatic parallel compression\n");
+#endif
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.blt folder\n"
-        "  boltpack extract -o out backup.blt\n"
-        "  boltpack create -F --single-thread backup.blt folder\n");
+        "  boltpack extract -o out backup.blt\n");
+#ifdef BOLTPACK_FAST_FLUFF
+    fprintf(stderr, "  boltpack create -F --single-thread backup.blt folder\n");
+#endif
     fprintf(stderr,
         "\nFor advanced compression options, run: boltpack help advanced\n");
 #ifdef BOLTPACK_NET
@@ -1731,22 +1746,46 @@ static void usage_advanced(void)
         "  info (i)         Show archive information\n"
         "  delete (d)       Delete files from archive\n",
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
+    fprintf(stderr, "\nOptions:\n");
+#ifdef BOLTPACK_ZSTD
     fprintf(stderr,
-        "\nOptions:\n"
-        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F/-Z)\n"
+        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F/-Z)\n");
+#else
+    fprintf(stderr,
+        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n");
+#endif
+    fprintf(stderr,
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
         "  -2               boltlz compression (default)\n"
-        "  -F               Use fluff compression (defaults to 256k blocks)\n"
+        "  -F               Use fluff compression (defaults to 256k blocks)\n");
+#ifdef BOLTPACK_ZSTD
+    fprintf(stderr,
         "  -Z               Use zstd compression (defaults to 256k blocks, method 4)\n");
+#endif
+#ifdef BOLTPACK_ZSTD
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9, 8=default; zstd: 1-9, 3=default)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
-        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
-        "  -j N             Parallel BoltLZ, fluff and zstd (OpenMP Windows builds)\n"
-        "  -g N             Fluff blocks per history group (fast-fluff Windows builds)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n");
+#else
+    fprintf(stderr,
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9, 8=default)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff 9)\n");
+#endif
+#ifdef BOLTPACK_FAST_FLUFF
+    fprintf(stderr,
+        "  -j N             Parallel BoltLZ and fluff"
+#ifdef BOLTPACK_ZSTD
+        " and zstd"
+#endif
+        "\n"
+        "  -g N             Fluff blocks per history group\n"
         "  --single-thread  Disable automatic parallel compression\n");
+#endif
     fprintf(stderr,
         "  -q               Quiet (summary only)\n"
         "  -qq              Silent (errors only)\n"

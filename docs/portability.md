@@ -1,10 +1,10 @@
 # BoltPack Portability Guide
 
-BoltPack enforces **strict ANSI C (C89/C90)** across the entire project —
-compression layer, archiver core, and CLI frontend. This is a deliberate design
-constraint, not a fallback. By restricting the codebase to the lowest common
-denominator of C compilers, BoltPack can be compiled on virtually any system
-with a C89 compiler and a standard C library.
+BoltPack keeps a **strict ANSI C (C89/C90) portable baseline** for the archive
+core and baseline codecs. Optional modern components use C11/OpenMP for the
+parallel Fluff encoder and C99 for zstd. Frontends use C, C++, Objective-C, or
+C# according to the platform. A target can omit optional codecs when its
+compiler does not provide their requirements.
 
 This document covers portability constraints, supported environments, and the
 toolchain landscape. Native per-platform build procedures live in `BUILD.md`.
@@ -23,7 +23,7 @@ toolchain landscape. Native per-platform build procedures live in `BUILD.md`.
 | QNX Neutrino                                           | x86 / x86_64 / ARM         | QNX                 | qcc (Watcom) / GCC ports                                |
 | Plan 9                                                 | x86 / ARM / MIPS / PowerPC | Plan 9              | 9c / pcc                                                |
 | Classic Mac OS                                         | 68k                        | Mac OS 7–9          | CodeWarrior 8.x / MPW (C89)                             |
-| macOS Intel                                            | x86_64                     | macOS 10.6–12       | Clang/GCC                                               |
+| macOS Intel                                            | x86_64                     | macOS 10.9+         | Clang/GCC                                               |
 | macOS Apple Silicon                                    | ARM64                      | macOS 11+           | Clang / Rosetta for Intel binaries                      |
 | Classic Amiga                                          | 68k                        | AmigaOS 2.x/3.x     | SAS/C, VBCC, GCC                                        |
 | Atari TOS/MiNT                                         | 68k                        | Atari TOS / MiNT    | m68k-atari-mint-gcc                                     |
@@ -50,7 +50,7 @@ toolchain landscape. Native per-platform build procedures live in `BUILD.md`.
 | Sinclair QL / X68000                                   | 68k                        | QDOS / Human68k     | GCC (m68k-elf / m68k-x68k-human)                        |
 | CP/M-86                                                | 8086                       | CP/M-86             | Aztec C / Turbo C (?)                                   |
 | MS-DOS                                                 | 8086+                      | DOS                 | Turbo C, DJGPP, Watcom                                  |
-| WebAssembly                                            | x86_64/RISCV?              | Node / Browser      | Emscripten (`emcc`)                                     |
+| WebAssembly                                            | wasm32                     | Node / Browser      | Emscripten (`emcc`)                                     |
 | Windows 9x/NT                                          | x86                        | Win95/98/NT4/2000   | MSVC 6, Watcom, MinGW                                   |
 | Windows GUI (FLTK) 32-bit                              | x86                        | Windows XP+         | MinGW-w64 (i686) + FLTK 1.4 cross-compiled              |
 | Windows GUI (FLTK) 64-bit                              | x86_64                     | Windows Vista+      | MinGW-w64 (x86_64) + FLTK 1.4 cross-compiled            |
@@ -97,9 +97,12 @@ No runtime detection is needed — the compiler resolves the branch at build tim
 
 ## Coding Constraints
 
-### Language: ANSI C (C89/C90)
+### Portable baseline: ANSI C (C89/C90)
 
-All code in the **compression** and **archiver** layers must compile as strict C89. This means:
+The archive core and baseline codecs are kept compatible with strict C89. This
+applies to sources such as `archiver.c`, `compress.c`, `boltlite.c`, `boltlz.c`,
+and the portable `fluff.c` encoder/decoder. New language features are avoided
+in those files:
 
 - **No C99 features**: no `//` comments, no mixed declarations and code, no `<stdint.h>`, no `<stdbool.h>`, no variable-length arrays, no designated initializers.
 - **No `long long`**: use `unsigned long` (at least 32 bits per C89). BoltLZ uses 32-bit block lengths with a maximum of 256 KiB.
@@ -108,19 +111,25 @@ All code in the **compression** and **archiver** layers must compile as strict C
 
 **Exception:** `bp_off_t` in `bp_types.h` uses `__int64` (MSVC) or `__extension__ long long` (GCC/Clang) on 32-bit hosts to support files larger than 2 GB. On LP64 hosts, `long` is already 64 bits. BoltLZ also uses guarded compiler intrinsics with portable fallbacks. The offset type is justified by the impossibility of expressing a 64-bit signed offset in portable C89 on ILP32 platforms.
 
-**Third-party C99 exemption:** `lib/zstd/` is compiled as C99 (or later)
-because that library uses features unavailable in C89. It is isolated behind a
-thin C89-compatible wrapper (`src/core/zstd_wrap.h` / `src/core/zstd_wrap.c`).
-BoltLZ in `src/core/boltlz.c` is an original C89 implementation and compiles with the same
-`-ansi -pedantic` flags as the core. All code in `src/core/` and
-`src/frontend/` must remain strict C89.
+**Optional modern components:** `src/core/fluff_fast.c` is a separate C11 and
+OpenMP encoder used by enabled modern builds. The vendored `lib/zstd/` library
+is compiled as C99 behind `src/core/zstd_wrap.c`. The wrapper and the portable
+baseline remain usable without those optional components. Frontend source may
+use the language required by its platform, including C++, Objective-C, or C#;
+it is not subject to the C89 rule.
+
+The generic Makefile can omit both optional components with
+`ENABLE_FAST_FLUFF=0 ENABLE_ZSTD=0`. Some platform-specific recipes set feature
+flags directly and do not honor these generic switches; consult
+[`BUILD.md`](BUILD.md) and the target recipe before using an older compiler.
 
 **Availability of method 4 (zstd):** The zstd codec (`lib/zstd/`) is linked only
-when the `BOLTPACK_ZSTD` preprocessor flag is set. Modern targets (Linux, macOS,
-Windows 32/64-bit, ARM64, RISC-V) enable it by default. Vintage/constrained
-targets (DOS 16-bit, Win16, Amiga 68 K, Atari ST, Classic Mac 68 K) do **not**
-define `BOLTPACK_ZSTD` and will return `BP_ERR_UNSUPPORTED_METHOD` when
-encountering a method-4 archive.
+when the `BOLTPACK_ZSTD` preprocessor flag is set. The standard Linux and
+Windows CLI builds, dedicated Linux ARM64 build, and Linux/Windows FLTK GUI
+builds include it. The repository macOS CLI and native macOS source kits, the
+RISC-V and Haiku CLIs, and constrained vintage targets omit it. A frontend
+without the flag returns `BP_ERR_UNSUPPORTED_METHOD` for method-4 archives;
+build-aware CLI help hides the selector when supported by that frontend.
 
 ### Integer sizes
 

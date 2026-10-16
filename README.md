@@ -10,9 +10,9 @@ Lightweight file archiver designed for maximum portability — from an 8088 PC
 running DOS to a modern x86-64 Linux box, including AmigaOS, Atari TOS,
 Classic Mac OS, RISC OS, Haiku, Plan 9, z/OS, and many more.
 
-The archive core is strict ANSI C89 and compiles on virtually any system with a
-C compiler. Platform-specific concerns (file I/O, encoding, GUI) live in
-isolated frontends.
+The portable archive core and baseline codecs use strict ANSI C89. Optional
+modern builds add the C11/OpenMP Fluff encoder and the C99 zstd library;
+frontends use the language and system APIs of each platform.
 
 BoltPack is intended to run on real vintage hardware as well as modern systems,
 to ease data transfer and archival between platforms.
@@ -24,33 +24,33 @@ to ease data transfer and archival between platforms.
 
 ## Downloads
 
-Pre-built binaries for the current release (**v1.7**) are below. Every release
+Pre-built binaries for the current release (**v1.8**) are below. Every release
 also ships `SHA256SUMS.txt` for verification.
 
 | Platform                      | Download                                                                                                                                   |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Linux x86-64                  | [boltpack-1.7-linux-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-x86-64.tar.gz)             |
-| Linux x86-64 static (musl)    | [boltpack-1.7-musl-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-musl-x86-64.tar.gz)               |
-| Linux x86-64 GUI (FLTK)       | [boltpack-1.7-linux-gui-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-gui-x86-64.tar.gz)     |
-| Linux ARM64                   | [boltpack-1.7-linux-arm64-ARM.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-arm64-ARM.tar.gz)       |
-| Linux ARM32                   | [boltpack-1.7-linux-arm32-arm.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-linux-arm32-arm.tar.gz)       |
-| Linux RISC-V 64               | [boltpack-1.7-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-riscv-riscv64.tar.gz)           |
-| GNU Hurd x86-64               | [boltpack-1.7-hurd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-hurd-x86-64.tar.gz)               |
-| Windows 64-bit installer      | [boltpack-1.7-win64-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-setup.exe)                     |
-| Windows 64-bit CLI            | [boltpack-1.7-win64-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-x86-64.zip)                   |
-| Windows 64-bit GUI (FLTK)     | [boltpack-1.7-win64-fltk-gui-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win64-fltk-gui-x86-64.zip) |
-| Windows 32-bit installer      | [boltpack-1.7-win32-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-setup.exe)                     |
-| Windows 32-bit CLI            | [boltpack-1.7-win32-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-x86.zip)                         |
-| Windows 32-bit GUI (FLTK)     | [boltpack-1.7-win32-fltk-gui-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win32-fltk-gui-x86.zip)       |
-| Total Commander plugin 64-bit | [boltpack-1.7-totalcmd-plugin-win64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-totalcmd-plugin-win64.zip) |
-| Total Commander plugin 32-bit | [boltpack-1.7-totalcmd-plugin-win32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-totalcmd-plugin-win32.zip) |
-| Windows 3.x 16-bit (mini)     | [boltpack-1.7-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-win16-x86.zip)                         |
-| MS-DOS 16-bit (mini)          | [boltpack-1.7-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-dos16-x86.zip)                         |
-| OS/2 1.x 16-bit (mini)        | [boltpack-1.7-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-os2-16-x86.zip)                       |
-| Amiga 68k (CLI + GUI)         | [boltpack-1.7-amiga-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-amiga-m68k.zip)                       |
-| Atari TOS + GEM GUI           | [boltpack-1.7-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-atari-m68k.zip)                       |
-| Classic Mac OS 68k GUI        | [boltpack-1.7-mac68k.hqx](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-mac68k.hqx)                               |
-| WebAssembly                   | [boltpack-1.7-wasm-wasm32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.7/boltpack-1.7-wasm-wasm32.zip)                     |
+| Linux x86-64                  | [boltpack-1.8-linux-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-linux-x86-64.tar.gz)             |
+| Linux x86-64 static (musl)    | [boltpack-1.8-musl-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-musl-x86-64.tar.gz)               |
+| Linux x86-64 GUI (FLTK)       | [boltpack-1.8-linux-gui-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-linux-gui-x86-64.tar.gz)     |
+| Linux ARM64                   | [boltpack-1.8-linux-arm64-ARM.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-linux-arm64-ARM.tar.gz)       |
+| Linux ARM32                   | [boltpack-1.8-linux-arm32-arm.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-linux-arm32-arm.tar.gz)       |
+| Linux RISC-V 64               | [boltpack-1.8-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-riscv-riscv64.tar.gz)           |
+| GNU Hurd x86-64               | [boltpack-1.8-hurd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-hurd-x86-64.tar.gz)               |
+| Windows 64-bit installer      | [boltpack-1.8-win64-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win64-setup.exe)                     |
+| Windows 64-bit CLI            | [boltpack-1.8-win64-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win64-x86-64.zip)                   |
+| Windows 64-bit GUI (FLTK)     | [boltpack-1.8-win64-fltk-gui-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win64-fltk-gui-x86-64.zip) |
+| Windows 32-bit installer      | [boltpack-1.8-win32-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win32-setup.exe)                     |
+| Windows 32-bit CLI            | [boltpack-1.8-win32-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win32-x86.zip)                         |
+| Windows 32-bit GUI (FLTK)     | [boltpack-1.8-win32-fltk-gui-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win32-fltk-gui-x86.zip)       |
+| Total Commander plugin 64-bit | [boltpack-1.8-totalcmd-plugin-win64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-totalcmd-plugin-win64.zip) |
+| Total Commander plugin 32-bit | [boltpack-1.8-totalcmd-plugin-win32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-totalcmd-plugin-win32.zip) |
+| Windows 3.x 16-bit (mini)     | [boltpack-1.8-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-win16-x86.zip)                         |
+| MS-DOS 16-bit (mini)          | [boltpack-1.8-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-dos16-x86.zip)                         |
+| OS/2 1.x 16-bit (mini)        | [boltpack-1.8-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-os2-16-x86.zip)                       |
+| Amiga 68k (CLI + GUI)         | [boltpack-1.8-amiga-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-amiga-m68k.zip)                       |
+| Atari TOS + GEM GUI           | [boltpack-1.8-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-atari-m68k.zip)                       |
+| Classic Mac OS 68k GUI        | [boltpack-1.8-mac68k.hqx](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-mac68k.hqx)                               |
+| WebAssembly                   | [boltpack-1.8-wasm-wasm32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.8/boltpack-1.8-wasm-wasm32.zip)                     |
 
 Source kits for platforms that require a native build (macOS, Solaris, IRIX,
 HP-UX, AIX, OpenBSD, RISC OS, MorphOS, AROS, Sinclair QL, Sharp X68000, Haiku,
@@ -96,11 +96,12 @@ BoltLZ defaults to Balanced; `-l 1` selects Fast and `-l 2` selects Balanced.
 Fluff and zstd support levels 1–9. When `-F` or `-Z` is used without `-b`, block
 size is set to 256 KB automatically.
 
-On OpenMP-enabled modern builds, selecting Fluff auto-enables multi-processor
-compression for larger workloads. Use `--single-thread` to force the sequential
-path; `-j N` and `-g N` tune thread count and grouping (see
-`boltpack help advanced`). The Linux/Windows FLTK, macOS Cocoa, and Haiku GUIs
-expose the same feature as a **Use Multi-threaded Fluff** toggle.
+On OpenMP-enabled Linux and Windows CLI builds, BoltLZ, Fluff, and zstd
+automatically use multiple processors for sufficiently large workloads. Use
+`--single-thread` to force serial compression, `-j N` to set the worker count,
+and `-g N` to tune Fluff grouping (see `boltpack help advanced`). Linux FLTK,
+Windows FLTK, macOS Cocoa, and Haiku GUIs expose a **Use Multi-threaded Fluff**
+toggle.
 
 ## Platform Support
 
@@ -121,7 +122,7 @@ families, compiler requirements, and C89 coding constraints.
 
 ```sh
 make            # Linux x86-64 (default)
-make modern     # OpenMP-enabled Fluff encoder
+make modern     # OpenMP-enabled parallel compression
 make arm64      # Linux ARM64
 make musl       # static binary (musl libc)
 make linux-gui  # FLTK GUI
@@ -161,7 +162,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 ## Repository Layout
 
 ```text
-src/core/        Archive core + compression layer (strict C89)
+src/core/        Portable C89 core; optional Fluff C11/OpenMP and zstd C99
 src/core/mini/   16-bit mini variant core
 src/frontend/    One frontend per platform
 lib/             Vendored zstd 1.5.7

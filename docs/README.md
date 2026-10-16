@@ -35,16 +35,17 @@ make
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
 | `RELEASES.md`          | Release workflow (maintainer reference)                |
 
-## Design Proposals
+## Codec Development and Evaluations
 
-| File                                                               | Purpose                                                                            |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| [boltlz-design.md](boltlz-design.md)                               | Custom BoltLZ successor: algorithm experiments, tradeoffs, and benchmark workflow  |
-| [boltlz-development.md](boltlz-development.md)                     | Experimental codec, block format, checks, and reproducible benchmark commands      |
-| [boltlz-code-review.md](boltlz-code-review.md)                     | Code analysis, measured operation counts, and speed-first optimization priorities  |
-| [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation, compiler coverage, and full-block robustness checks |
-| [fluff-experiments-2026-10-15.md](fluff-experiments-2026-10-15.md) | Measured Fluff ratio experiments, retained ANS layout, and reproduction commands |
-| [fluff-memory-2026-10-15.md](fluff-memory-2026-10-15.md) | Fluff allocation accounting, buffer reuse, and memory/speed measurements |
+| File                                                               | Purpose                                                                             |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| [boltlz-design.md](boltlz-design.md)                               | BoltLZ representation, token layout, and decoder constraints                       |
+| [boltlz-development.md](boltlz-development.md)                     | BoltLZ implementation, benchmarks, and reproducible validation commands             |
+| [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation and full-block robustness checks                      |
+| [boltlite-evaluation-2026-10-14.md](boltlite-evaluation-2026-10-14.md) | BoltLite format-5 evaluation and measured tradeoffs                                  |
+| [fluff-compression-review.md](fluff-compression-review.md)         | Pre-v1.8 Fluff ratio review, historical baseline, speed budget, and experiment plan |
+| [fluff-experiments-2026-10-15.md](fluff-experiments-2026-10-15.md) | Measured Fluff ratio experiments and reproduction commands                           |
+| [fluff-memory-2026-10-15.md](fluff-memory-2026-10-15.md)           | Fluff allocation accounting, buffer reuse, and memory/speed measurements             |
 
 ## Elsewhere in the Repository
 

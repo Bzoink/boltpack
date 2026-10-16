@@ -323,10 +323,11 @@ Version `0x08` differs from `0x07` only in the header encoding (compact count
 tables and narrower scalar fields, §3.4.4); the FSE bitstream and raw extra-bit
 stream that carry the LZ77 tokens are byte-for-byte identical between the two.
 
-Version `0x09` is an experimental encoding with the same compact header,
-alphabets, and table sizes as `0x08`, but a different ANS state layout
-(§3.4.6b). Earlier decoders reject it. Header bytes must not be relabeled
-between `0x08` and `0x09` because the payloads have different semantics.
+Version `0x09`, introduced as the current Fluff encoder format in BoltPack 1.8,
+uses the same compact header, alphabets, and table sizes as `0x08`, but a
+different ANS state layout (§3.4.6b). Earlier decoders reject it. Header bytes
+must not be relabeled between `0x08` and `0x09` because the payloads have
+different semantics.
 
 #### 3.4.2 Block Layout — Versions `0x07` and `0x87` (legacy FSE/tANS layout)
 
@@ -356,7 +357,7 @@ from the end towards the start.
 | 2    | `0x09` or `0x89` | `version`     | `0x09` = shifted-state compact FSE; `0x89` = reset variant; `0x07`/`0x87` and `0x08`/`0x88` = legacy FSE; `0x06` = range coder |
 | 3    | `0x12`           | `window_bits` | `18` = 256 KB window (informational; always 18)                                                                      |
 
-Experimental encoders write version `0x09` for normal blocks and `0x89` when
+Current encoders write version `0x09` for normal blocks and `0x89` when
 a grouped batch must reset history. Decoders MUST accept `0x06`, `0x07`,
 `0x87`, `0x08`, `0x88`, `0x09`, and `0x89`. Any other version value MUST be rejected with
 `ERR_CORRUPT`.
@@ -484,7 +485,7 @@ final entries do not sum to exactly `L`.
 
 All are little-endian. Total scalar tail: 10 bytes (vs. 16 in v0x07).
 
-#### 3.4.6b Versions `0x09` and `0x89` (experimental shifted-state FSE)
+#### 3.4.6b Versions `0x09` and `0x89` (shifted-state FSE)
 
 These versions use the header, token grammar, symbol spread, and table sizes
 of §3.4.6a. `0x89` resets history before decoding; `0x09` preserves it. Only
