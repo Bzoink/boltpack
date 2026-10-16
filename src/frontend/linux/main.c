@@ -57,6 +57,8 @@ typedef enum {
 } fast_thread_policy_t;
 
 #define FAST_FLUFF_AUTO_MIN_BYTES (4UL * 1024UL * 1024UL)
+#define FAST_BOLTLZ_AUTO_MIN_BYTES (1UL * 1024UL * 1024UL)
+#define FAST_COMPRESSION_MAX_THREADS 64
 /* Mixed-corpus tuning favored a 4 MiB large-file cutoff at -j 16, -g 4. */
 #define FAST_FLUFF_LARGE_FILE_THRESHOLD_SCALE 0.25
 
@@ -1060,8 +1062,8 @@ static void summarize_data_jobs(const add_job_list_t *list,
     }
 }
 
-static int choose_fast_fluff_threads(const add_job_list_t *list,
-                                     bp_uint8 method)
+static int choose_parallel_compression_threads(const add_job_list_t *list,
+                                              bp_uint8 method)
 {
 #ifdef BOLTPACK_FAST_FLUFF
     bp_uint64 total_size;
@@ -1069,7 +1071,7 @@ static int choose_fast_fluff_threads(const add_job_list_t *list,
     int data_count;
     int threads;
 
-    if (method != BP_METHOD_FLUFF
+    if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF
 #ifdef BOLTPACK_ZSTD
         && method != BP_METHOD_ZSTD
 #endif
@@ -1078,9 +1080,12 @@ static int choose_fast_fluff_threads(const add_job_list_t *list,
     if (g_fast_thread_policy == FAST_THREAD_SINGLE)
         return 0;
 
-    threads = fluff_fast_get_threads();
+    threads = (g_fast_thread_policy == FAST_THREAD_EXPLICIT)
+        ? g_fast_threads : fluff_fast_get_threads();
     if (threads <= 1)
         return 0;
+    if (threads > FAST_COMPRESSION_MAX_THREADS)
+        threads = FAST_COMPRESSION_MAX_THREADS;
 
     summarize_data_jobs(list, &total_size, &data_count);
     if (data_count <= 0)
@@ -1090,7 +1095,8 @@ static int choose_fast_fluff_threads(const add_job_list_t *list,
         if (g_fast_threads > 0 && g_fast_threads < threads)
             threads = g_fast_threads;
     } else {
-        min_size = bp_u64_from_ulong(FAST_FLUFF_AUTO_MIN_BYTES);
+        min_size = bp_u64_from_ulong(method == BP_METHOD_BOLTLZ
+            ? FAST_BOLTLZ_AUTO_MIN_BYTES : FAST_FLUFF_AUTO_MIN_BYTES);
         if (!bp_u64_gte(total_size, min_size))
             return 0;
     }
@@ -1109,10 +1115,12 @@ static int add_job_list_with_policy(bp_archive_t *ar,
 {
     int threads;
 
-    threads = choose_fast_fluff_threads(list, method);
+    threads = choose_parallel_compression_threads(list, method);
     if (threads > 1) {
         if (method == BP_METHOD_FLUFF)
             bp_set_fast_fluff(ar, threads);
+        else if (method == BP_METHOD_BOLTLZ)
+            bp_set_fast_boltlz(ar, threads);
 #ifdef BOLTPACK_FAST_FLUFF
         {
             int saved_threads;
@@ -1154,6 +1162,11 @@ static int job_prefers_inner_threads(const bp_archive_t *ar,
         return 0;
     if (job->entry_type != BP_TYPE_DATA)
         return 0;
+
+    if (ar->method == BP_METHOD_BOLTLZ) {
+        threshold = 4.0 * (double)ar->block_size;
+        return u64_to_double(job->file_size) >= threshold;
+    }
 
     group_blocks = fluff_fast_get_group_blocks();
     if (group_blocks < 1)
@@ -1384,6 +1397,14 @@ static int add_job_list_parallel(bp_archive_t *ar, const add_job_list_t *list)
                     i++;
                     continue;
                 }
+            }
+            if (batch_n == 1 && ar->method == BP_METHOD_BOLTLZ &&
+                !job_prefers_inner_threads(ar, &list->items[i],
+                                           g_fast_threads)) {
+                rc = add_job(ar, &list->items[i]);
+                if (rc != BP_OK) return rc;
+                i++;
+                continue;
             }
             rc = add_data_job_batch(ar, &list->items[i], batch_n);
             if (rc != BP_OK) {
@@ -1721,7 +1742,7 @@ static void usage_basic(void)
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
         "  -q / -qq         Quiet / silent\n"
-        "  --single-thread  Disable automatic parallel fluff\n");
+        "  --single-thread  Disable automatic parallel compression\n");
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.bolt folder\n"
@@ -1763,10 +1784,10 @@ static void usage_advanced(void)
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
         "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
-        "  -j N             Parallel threads for fluff and zstd compression (modern builds)\n");
+        "  -j N             Parallel threads for BoltLZ, fluff and zstd (modern builds)\n");
     fprintf(stderr,
         "  -g N             Fluff blocks per history group (fast-fluff Linux builds, including arm64)\n"
-        "  --single-thread  Disable automatic parallel fluff\n"
+        "  --single-thread  Disable automatic parallel compression\n"
         "  -q               Quiet (summary only)\n"
         "  -qq              Silent (errors only)\n"
         "  -o PATH          Output directory for extraction\n"
@@ -3107,7 +3128,7 @@ int main(int argc, char **argv)
 
 #ifndef BOLTPACK_FAST_FLUFF
     if (g_fast_thread_policy == FAST_THREAD_EXPLICIT && g_fast_threads > 0) {
-        fprintf(stderr, "boltpack: -j requires a fast-fluff-enabled Linux build\n");
+        fprintf(stderr, "boltpack: -j requires an OpenMP-enabled modern Linux build\n");
         return 1;
     }
     if (g_fast_group_blocks > 0) {

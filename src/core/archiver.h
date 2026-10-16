@@ -84,7 +84,7 @@ typedef struct {
     bp_uint64       archive_orig_total;
     bp_uint64       archive_comp_total;
     bp_uint64       archive_orig_done;  /* running sum of completed entries */
-    int             fast_fluff_threads; /* 0 = sequential; >1 = requested worker count */
+    int             fast_fluff_threads; /* OpenMP worker count for Fluff/BoltLZ */
     void           *fast_fluff_ctx;     /* internal cached modern context */
     bp_uint8       *fast_fluff_in_base; /* internal cached input slab */
     bp_uint8       *fast_fluff_out_base;/* internal cached output slab */
@@ -94,6 +94,14 @@ typedef struct {
     bp_uint32       fast_fluff_block_size;
     bp_uint32       fast_fluff_out_size;
     bp_uint32       fast_fluff_hist_size;
+    bp_uint8       *fast_boltlz_in_base;
+    bp_uint8       *fast_boltlz_out_base;
+    void           *fast_boltlz_work_base;
+    bp_uint32       fast_boltlz_ctx_threads;
+    bp_uint32       fast_boltlz_batch_blocks;
+    bp_uint32       fast_boltlz_block_size;
+    bp_uint32       fast_boltlz_out_size;
+    bp_uint32       fast_boltlz_work_size;
     void           *seq_fluff_ctx;       /* cached sequential Fluff compress context */
     bp_uint8       *seq_in_buf;          /* cached sequential compress input buffer */
     bp_uint8       *seq_out_buf;         /* cached sequential compress output buffer */
@@ -278,7 +286,7 @@ int bp_archive_query_tail(bp_io_t *io,
                           bp_uint64 *tail_off,
                           bp_uint64 *tail_size);
 
-/* --- Parallel fluff compression ----------------------------------------- */
+/* --- Parallel compression (modern OpenMP builds) ------------------------ */
 
 /*
  * bp_set_fast_fluff: enable parallel fluff compression for subsequent
@@ -296,5 +304,12 @@ int bp_archive_query_tail(bp_io_t *io,
  * method is allowed but has no effect.
  */
 void bp_set_fast_fluff(bp_archive_t *ar, int nthreads);
+
+/* Enable independent-block BoltLZ compression on modern OpenMP builds.
+ * nthreads > 1 requests up to that many workers; short files stay sequential.
+ * nthreads <= 1 selects the sequential path. Requires
+ * -DBOLTPACK_FAST_FLUFF and -fopenmp, and must be called after archive create
+ * and before adding entries. The archive method must be BP_METHOD_BOLTLZ. */
+void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads);
 
 #endif /* BP_ARCHIVER_H */

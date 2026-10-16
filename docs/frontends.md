@@ -165,14 +165,14 @@ Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion n
 | `-f`              | Force overwrite                               |
 | `-n`              | Dry run                                       |
 | `-q` / `-qq`      | Quiet / silent                                |
-| `--single-thread` | Force sequential Fluff on modern builds       |
+| `--single-thread` | Force sequential compression on modern builds  |
 
 ### Advanced Help
 
 The default `boltpack help` page hides expert tuning and debug switches.
 Run `boltpack help advanced` to show the full Linux-family CLI surface,
 including `debug-fluff` / `T`, compression-method tuning, and the explicit
-fast-fluff controls below.
+parallel-compression controls below.
 
 | Flag   | Description                                                                               |
 | ------ | ----------------------------------------------------------------------------------------- |
@@ -182,18 +182,20 @@ fast-fluff controls below.
 | `--light` | Fast preset: BoltLZ 1; Fluff/zstd 1                                                   |
 | `--standard` | Default preset: BoltLZ 2; Fluff 8; zstd 3                                          |
 | `--best` | Highest preset: BoltLZ 2; Fluff/zstd 9                                                 |
-| `-j N` | Use fast-fluff with `N` worker threads (fast-fluff CLI builds only)                       |
+| `-j N` | Use up to `N` worker threads for BoltLZ, Fluff, or zstd (OpenMP CLI builds only)            |
 | `-g N` | Group `N` Fluff blocks per shared-history batch before reset (fast-fluff CLI builds only) |
 
-`-j` and `-g` are exposed by fast-fluff-enabled CLI builds such as
+`-j` and `-g` are exposed by OpenMP-enabled CLI builds such as
 `make modern`, the dedicated `make arm64` target, and the Windows
-`make win32` / `make win64` builds. Non-fast-fluff CLI builds reject those
-flags instead of silently ignoring them.
+`make win32` / `make win64` builds. Builds without OpenMP reject those flags
+instead of silently ignoring them.
 
-On the fast-fluff-enabled Linux-family builds, selecting Fluff now uses an
-automatic multi-processor policy by default for larger workloads. Use
-`--single-thread` to opt out, or `-j N` from advanced help when you want an
-explicit worker count instead of the automatic choice.
+On OpenMP-enabled Linux-family builds, BoltLZ, Fluff, and Zstandard use an
+automatic multi-processor policy for larger workloads. BoltLZ parallelizes
+independent archive blocks without changing their encoded representation; a
+single file uses that path only when it has at least two blocks per worker.
+Use `--single-thread` to opt out, or `-j N` from advanced help to choose an
+explicit worker count. `-j 1` also selects the sequential path.
 
 ---
 

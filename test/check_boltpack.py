@@ -147,7 +147,7 @@ def test_linux_help_and_long_form_cli() -> None:
     check("debug-fluff" not in help_text,
         "help: hides debug-fluff from default page")
     check("-j N" not in help_text,
-        "help: hides advanced fast-fluff tuning from default page")
+          "help: hides advanced parallel-compression tuning from default page")
     check("help advanced" in help_text,
         "help: points users to advanced help")
 
@@ -157,7 +157,7 @@ def test_linux_help_and_long_form_cli() -> None:
     check("debug-fluff" in adv_text,
         "help advanced: shows debug-fluff command")
     check("-j N" in adv_text and "-g N" in adv_text,
-          "help advanced: shows fast-fluff tuning switches")
+          "help advanced: shows parallel and fast-fluff tuning switches")
 
     with tempfile.TemporaryDirectory(prefix="bp_long_cli_") as tmp:
         src = os.path.join(tmp, "src")
@@ -645,6 +645,53 @@ def test_fast_fluff_threaded_roundtrip() -> None:
                         os.path.join(ext, "src"), src_digests)
 
 
+def test_fast_boltlz_threaded_roundtrip() -> None:
+    section("Parallel BoltLZ block roundtrip (-j 2)")
+
+    with tempfile.TemporaryDirectory(prefix="bp_fast_boltlz_") as tmp:
+        src = os.path.join(tmp, "src")
+        ext = os.path.join(tmp, "ext")
+        threaded_arc = os.path.join(tmp, "threaded.bolt")
+        serial_arc = os.path.join(tmp, "serial.bolt")
+        small_src = os.path.join(tmp, "small")
+        os.makedirs(src)
+        os.makedirs(ext)
+        os.makedirs(small_src)
+
+        make_file(os.path.join(src, "big.bin"), 8 * 1024 * 1024,
+                  "text", 867)
+        make_file(os.path.join(small_src, "small.bin"), 16 * 1024,
+                  "text", 868)
+        src_digests = file_tree_digests(src)
+
+        threaded = run_bp("c", "-2", "-j", "2", "threaded.bolt", "src",
+                          cwd=tmp)
+        check(threaded.returncode == 0,
+              "parallel BoltLZ create: exit 0")
+        serial = run_bp("c", "-2", "--single-thread", "serial.bolt", "src",
+                        cwd=tmp)
+        check(serial.returncode == 0,
+              "single-thread BoltLZ create: exit 0")
+
+        if threaded.returncode == 0 and serial.returncode == 0:
+            check(os.path.getsize(threaded_arc) == os.path.getsize(serial_arc),
+                  "parallel BoltLZ preserves the sequential archive size")
+
+        r = run_bp("t", "threaded.bolt", cwd=tmp)
+        check(r.returncode == 0, "parallel BoltLZ test: exit 0")
+        r = run_bp("x", "-o", "ext", "threaded.bolt", cwd=tmp)
+        check(r.returncode == 0, "parallel BoltLZ extract: exit 0")
+        roundtrip_check("parallel BoltLZ", src, threaded_arc,
+                        os.path.join(ext, "src"), src_digests)
+
+        small = run_bp("c", "-2", "-j", "2", "small.bolt", "small",
+                       cwd=tmp)
+        check(small.returncode == 0,
+              "small BoltLZ file with -j stays on a valid sequential path")
+        r = run_bp("t", "small.bolt", cwd=tmp)
+        check(r.returncode == 0, "small BoltLZ archive test: exit 0")
+
+
 def test_compression_fallback() -> None:
     section("Compression fallback: incompressible data stored as-is")
 
@@ -705,6 +752,7 @@ def main() -> int:
         test_fluff_levels,
         test_zstd_levels,
         test_fast_fluff_threaded_roundtrip,
+        test_fast_boltlz_threaded_roundtrip,
         test_compression_fallback,
     ]
 

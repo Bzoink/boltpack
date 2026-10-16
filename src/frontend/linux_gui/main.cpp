@@ -2536,6 +2536,10 @@ static void create_worker(CreateWork *w)
             int nthreads = fast_fluff_thread_count();
             if (nthreads > 1)
                 bp_set_fast_fluff(&ar, nthreads);
+        } else if (w->method == BP_METHOD_BOLTLZ) {
+            int nthreads = fast_fluff_thread_count();
+            if (nthreads > 1)
+                bp_set_fast_boltlz(&ar, nthreads);
         }
 #endif
 
