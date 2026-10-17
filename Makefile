@@ -142,7 +142,7 @@ define check_cc
 	    { printf '  SKIP  %s (%s not usable)\n' '$(2)' '$(firstword $(1))'; exit 0; }
 endef
 
-.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools
+.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools linux-i386
 
 # Version stamp: every object that bakes BP_VERSION_MAJOR/MINOR in via
 # BP_VER_DEFS (or MINI_BP_VER_DEFS) must depend on this file so that editing
@@ -153,6 +153,21 @@ $(BUILDDIR)/.version: VERSION VERSION_MINI | $(BUILDDIR)
 	    | cmp -s - $@ || printf '%s %s\n' "$$(cat VERSION 2>/dev/null)" "$$(cat VERSION_MINI 2>/dev/null)" > $@
 
 all: $(TARGET)
+
+# 32-bit Linux CLI. Keep its artifacts separate from the native Linux build so
+# aggregate builds cannot overwrite build/linux/boltpack with a 32-bit binary.
+linux-i386:
+	mkdir -p build/linux-x86
+	@if ! printf 'int main(void){return 0;}\n' | gcc -m32 -x c -o /dev/null - >/dev/null 2>&1; then \
+	    rm -f build/linux-x86/boltpack; \
+	    echo '  SKIP  linux-i386 (gcc -m32 cannot compile and link a test program)'; \
+	    exit 0; \
+	fi
+	$(MAKE) FRONTEND=linux CC=gcc \
+	    CFLAGS='$(CFLAGS) -m32' LDFLAGS='$(LDFLAGS) -m32' \
+	    BOLTLZ_CORE_CFLAGS='$(BOLTLZ_CORE_CFLAGS) -m32' \
+	    ZSTD_CC_FLAGS='$(ZSTD_CC_FLAGS) -m32' FLUFF_NATIVE_FLAGS= \
+	    BUILDDIR=build/linux-x86 TARGET=build/linux-x86/boltpack all
 
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) $(FAST_FLUFF_LDFLAGS) -o $@ $(OBJS)
@@ -474,7 +489,7 @@ wasm:
 # -noixemul: link against native AmigaDOS clib (no ixemul.library)
 # -pedantic is omitted because AmigaOS NDK headers are not strict C89.
 # The Amiga package ships both the CLI and the GadTools GUI build.
-AMIGA68K_CC      = /opt/amiga/bin/m68k-amigaos-gcc
+AMIGA68K_CC      ?= /opt/amiga/bin/m68k-amigaos-gcc
 AMIGA68K_CFLAGS  = -noixemul -Wall -Wextra -Wno-unused-function -O2
 AMIGA68K_BUILDDIR = build/amiga
 
@@ -541,6 +556,11 @@ MACOS68K_MULTIVERSAL_RINCLUDES = $(RETRO68_ROOT)/multiversal/RIncludes
 .PHONY: macos9-68k
 macos9-68k:
 	mkdir -p $(MACOS68K_BUILDDIR)
+	@if ! printf 'int main(void){return 0;}\n' | $(MACOS68K_CC) -x c -o /dev/null - >/dev/null 2>&1; then \
+	    rm -f $(MACOS68K_BUILDDIR)/.rsrc/BoltPack; \
+	    echo '  SKIP  macos9-68k (Retro68 compiler cannot link a test program)'; \
+	    exit 0; \
+	fi
 	$(MACOS68K_CC) $(MACOS68K_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
@@ -905,7 +925,7 @@ os2:
 	    -o $(OS2_BUILDDIR)/boltpack.exe
 
 # Sinclair QL (QDOS / SMSQ/E)
-QL_CC=qcc
+QL_CC ?= qcc
 QL_CFLAGS=-O
 QL_BUILDDIR=build/ql
 
@@ -924,8 +944,8 @@ ql:
 	    -o ../../../$(QL_BUILDDIR)/boltpack
 
 # Sharp X68000 (Human68k)
-# Toolchain: elf2x68k (https://github.com/yunkya2/elf2x68k)
-X68K_CC=m68k-xelf-gcc
+# Toolchain: m68k-x680x-human-gcc (GCC cross-compiler for Human68k).
+X68K_CC ?= m68k-x680x-human-gcc
 X68K_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
 X68K_BUILDDIR=build/x68k
 
@@ -946,14 +966,29 @@ x68k:
 
 
 
-# GNU Hurd (x86 / x86-64)
-HURD_CC      = gcc
+# GNU Hurd (x86 / x86-64). Use a Hurd-targeting cross compiler, never the
+# host Linux compiler. Supported triples include i386-gnu and x86_64-pc-gnu.
+HURD_CC      ?= x86_64-gnu-gcc
 HURD_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto
 HURD_BUILDDIR = build/hurd
+HURD_TARGET   = $(shell $(HURD_CC) -dumpmachine 2>/dev/null)
 
 .PHONY: hurd
 hurd:
-	mkdir -p $(HURD_BUILDDIR)
+	@mkdir -p $(HURD_BUILDDIR)
+	@if [ -f $(HURD_BUILDDIR)/boltpack ]; then \
+	    osabi=$$(od -An -tu1 -j7 -N1 $(HURD_BUILDDIR)/boltpack 2>/dev/null | tr -d '[:space:]'); \
+	    if [ "$$osabi" != 4 ]; then rm -f $(HURD_BUILDDIR)/boltpack; fi; \
+	fi
+	$(call check_cc,$(HURD_CC) $(HURD_CFLAGS),hurd)
+	@target='$(HURD_TARGET)'; \
+	case "$$target" in *linux*|*kfreebsd*|*freebsd*|*netbsd*|*openbsd*|*darwin*|*mingw*|*cygwin*) \
+	    printf 'ERROR: HURD_CC=%s targets %s, not GNU/Hurd.\n' '$(HURD_CC)' "$$target" >&2; exit 1 ;; \
+	esac; \
+	case "$$target" in \
+	    i?86-gnu*|i?86-*-gnu*|x86_64-gnu*|x86_64-*-gnu*) ;; \
+	    *) printf 'ERROR: HURD_CC=%s targets %s; expected an x86 GNU/Hurd compiler.\n' '$(HURD_CC)' "$${target:-<unknown>}" >&2; exit 1 ;; \
+	esac
 	$(HURD_CC) $(HURD_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
@@ -965,6 +1000,11 @@ hurd:
 	    src/frontend/linux/bp_net.c \
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(HURD_BUILDDIR)/boltpack
+	@osabi=$$(od -An -tu1 -j7 -N1 $(HURD_BUILDDIR)/boltpack 2>/dev/null | tr -d '[:space:]'); \
+	if [ "$$osabi" != 4 ]; then \
+	    printf 'ERROR: %s has ELF OSABI %s; expected GNU/Hurd (4).\n' '$(HURD_BUILDDIR)/boltpack' "$${osabi:-<unknown>}" >&2; \
+	    rm -f $(HURD_BUILDDIR)/boltpack; exit 1; \
+	fi
 
 # ---- Test and fuzz targets --------------------------------------------------
 

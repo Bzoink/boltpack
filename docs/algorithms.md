@@ -1,7 +1,7 @@
 # BoltPack Compression Algorithms
 
 **Status:** Stable
-**Scope:** Current codec implementations shipped in BoltPack v1.8
+**Scope:** Current codec implementations shipped in BoltPack v1.9
 
 This document describes the algorithms that are actually implemented in the
 current codebase. It intentionally covers only the kept codecs and their
@@ -149,6 +149,13 @@ Each block is compressed independently. The archive stores blocks verbatim
 when compression saves less than 1%. Input capacity and exact output length
 are checked, and archives carry file and block CRC-32 checksums. All
 GCC/Clang codec builds use `-O2`.
+
+OpenMP-enabled Linux and Windows CLI builds can compress independent BoltLZ
+blocks in parallel for sufficiently large files. The writer buffers a bounded
+batch, gives each worker its own workspace, and writes completed blocks in
+archive order, so the stream format and decoder remain unchanged. Small files
+stay sequential; `-j N` limits workers and `--single-thread` disables the
+parallel path. Other builds use sequential compression.
 
 16-bit mini builds include the same decoder through the decoder-only build
 path and accept blocks within their existing 32 KiB memory limit. They
@@ -426,7 +433,7 @@ Relevant checks include:
 1. `test/check_boltpack.py` for end-to-end archive behavior.
 1. `make unit-test` for the C unit suites in `test/unit/`.
 
-This reference tracks the codecs shipped in BoltPack 1.8. Historical experiment
+This reference tracks the codecs shipped in BoltPack 1.9. Historical experiment
 reports remain separate from the implementation description.
 
 ## 9. References

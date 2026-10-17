@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build BoltPack natively on a Unix host that is not part of the aggregate
 # Linux-hosted cross-build workflow.
-# Usage: sh scripts/native-unix/build-native.sh [openbsd|solaris|irix|hpux|aix|all]
+# Usage: sh scripts/native-unix/build-native.sh [openbsd|solaris|irix|hpux|aix]
 
 set -eu
 
@@ -10,7 +10,7 @@ cd "$ROOT"
 
 usage() {
     cat <<EOF
-Usage: sh scripts/native-unix/build-native.sh [openbsd|solaris|irix|hpux|aix|all]
+Usage: sh scripts/native-unix/build-native.sh [openbsd|solaris|irix|hpux|aix]
 
 Targets:
   openbsd  Build the OpenBSD CLI frontend natively
@@ -18,7 +18,6 @@ Targets:
   irix     Build the IRIX CLI frontend natively
   hpux     Build the HP-UX CLI frontend natively
   aix      Build the AIX CLI frontend natively
-  all      Build every native-Unix target in sequence
 
 Environment:
   CC      C compiler to use (defaults to cc, gcc, or clang)
@@ -28,6 +27,21 @@ Notes:
   - The default CFLAGS are aimed at GCC/Clang ports on these systems.
   - For vendor compilers, override CC and CFLAGS explicitly.
 EOF
+}
+
+check_native_host() {
+    target="$1"
+    host=$(uname -s)
+
+    case "$target:$host" in
+        openbsd:OpenBSD|solaris:SunOS|irix:IRIX|irix:IRIX64|hpux:HP-UX|aix:AIX)
+            return 0
+            ;;
+        *)
+            echo "Refusing to build $target with the $host host compiler; run this helper on the matching target OS." >&2
+            return 1
+            ;;
+    esac
 }
 
 find_c_compiler() {
@@ -49,6 +63,8 @@ build_target() {
     target="$1"
     label="$2"
     outdir="$3"
+
+    check_native_host "$target"
 
     mkdir -p "$outdir"
 
@@ -85,11 +101,8 @@ case "${1:-}" in
         build_target aix "AIX CLI" "${AIX_OUTDIR:-build/aix}"
         ;;
     all)
-        build_target openbsd "OpenBSD CLI" "${OPENBSD_OUTDIR:-build/openbsd}"
-        build_target solaris "Solaris CLI" "${SOLARIS_OUTDIR:-build/solaris}"
-        build_target irix "IRIX CLI" "${IRIX_OUTDIR:-build/irix}"
-        build_target hpux "HP-UX CLI" "${HPUX_OUTDIR:-build/hpux}"
-        build_target aix "AIX CLI" "${AIX_OUTDIR:-build/aix}"
+        echo "These targets require different native operating systems; run one target on each matching host." >&2
+        exit 2
         ;;
     -h|--help|help)
         usage
