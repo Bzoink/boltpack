@@ -8,6 +8,8 @@
   sequential path.
 - Parallel BoltLZ writes blocks in their original order and keeps the existing
   archive format and decoder compatibility.
+- Windows installers leave long PATH values unchanged instead of risking
+  truncation.
 - Bolt Mini remains at version 1.3.
 
 ## 1.8 — Fluff compression improvements
