@@ -1,5 +1,15 @@
 # Release Notes
 
+## 1.9 — Parallel BoltLZ compression
+
+- OpenMP-enabled Linux and Windows CLI builds compress independent BoltLZ
+  blocks in parallel on sufficiently large files. `-j N` sets the worker limit;
+  `--single-thread` forces sequential compression. Small files stay on the
+  sequential path.
+- Parallel BoltLZ writes blocks in their original order and keeps the existing
+  archive format and decoder compatibility.
+- Bolt Mini remains at version 1.3.
+
 ## 1.8 — Fluff compression improvements
 
 - Fluff's encoder improves compression ratio and reduces encoder memory use.

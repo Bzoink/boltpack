@@ -42,7 +42,7 @@ resource 'vers' (1) {
     0x01, 0x08, release, 0x00,
     verUS,
     "1.0",
-    "BoltPack 1.8 \0xA9 2026 Tony Mattsson"
+    "BoltPack 1.9 \0xA9 2026 Tony Mattsson"
 };
 
 
@@ -254,7 +254,7 @@ resource 'DLOG' (131) {
 resource 'DITL' (133) {
     {
         {  86, 136, 106, 216 }, Button     { enabled,  "OK" };
-        {   8,  20,  28, 332 }, StaticText { disabled, "BoltPack 1.8" };
+        {   8,  20,  28, 332 }, StaticText { disabled, "BoltPack 1.9" };
         {  32,  20,  52, 332 }, StaticText { disabled,
             "\0xA9 2026 Tony Mattsson" };
         {  56,  20,  76, 332 }, StaticText { disabled,

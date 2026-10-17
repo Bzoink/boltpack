@@ -121,9 +121,15 @@ build_target() {
 # Wrapper for standalone Makefile targets that don't use the FRONTEND pattern.
 # build_make_target <target> <compiler> <expected-output>
 build_make_target() {
-    target_name="$1"
-    compiler="$2"
-    output="$3"
+    local target_name="$1"
+    local compiler="$2"
+    local output="$3"
+    local before_stamp=""
+    local after_stamp=""
+
+    if [ -f "$output" ]; then
+        before_stamp=$(stat -c '%y' -- "$output" 2>/dev/null || true)
+    fi
 
     if ! command -v "$compiler" >/dev/null 2>&1; then
         echo "  SKIP  $target_name ($compiler not found)"
@@ -132,22 +138,29 @@ build_make_target() {
 
     echo "  BUILD $target_name ($compiler)"
     if [ -n "$VERBOSE" ]; then
-        if make "$target_name" 2>&1 | sed 's/^/        /'; then
-            echo "  OK    $output"
-            return 0
-        else
+        if ! make "$target_name" 2>&1 | sed 's/^/        /'; then
             echo "  FAIL  $target_name"
             return 1
         fi
     else
-        if make "$target_name" >/dev/null 2>&1; then
-            echo "  OK    $output"
-            return 0
-        else
+        if ! make "$target_name" >/dev/null 2>&1; then
             echo "  FAIL  $target_name"
             return 1
         fi
     fi
+
+    if [ ! -f "$output" ]; then
+        echo "  SKIP  $target_name (build completed without producing $output)"
+        return 0
+    fi
+
+    after_stamp=$(stat -c '%y' -- "$output" 2>/dev/null || true)
+    if [ -n "$before_stamp" ] && [ "$before_stamp" = "$after_stamp" ]; then
+        echo "  SKIP  $target_name (build left the existing output unchanged)"
+        return 0
+    fi
+
+    echo "  OK    $output"
 }
 
 # ---- targets -------------------------------------------------------------
@@ -162,11 +175,15 @@ do_linux_static() {
 }
 
 do_linux_i386() {
-    build_target linux gcc "-m32" "-fuse-ld=bfd -m32" ""
-    if [ -f build/linux/boltpack ]; then
-        cp build/linux/boltpack build/linux/boltpack-i386
-        echo "  OK    build/linux/boltpack-i386"
+    local output="build/linux-x86/boltpack"
+
+    if ! printf 'int main(void){return 0;}\n' | gcc -m32 -x c -o /dev/null - >/dev/null 2>&1; then
+        rm -f "$output"
+        echo "  SKIP  linux-i386 (gcc -m32 cannot compile and link a test program)"
+        return 0
     fi
+
+    build_make_target linux-i386 gcc "$output"
 }
 
 do_linux32mini() {
@@ -196,10 +213,14 @@ do_linux32mini() {
 }
 
 do_dos_djgpp() {
-    if [ -d /usr/local/djgpp/bin ]; then
-        PATH="/usr/local/djgpp/bin:$PATH"
-        export PATH
-    fi
+    local djgpp_bin
+    for djgpp_bin in "${DJGPP_BIN:-}" /opt/djgpp/cross/bin /usr/local/djgpp/bin; do
+        if [ -n "$djgpp_bin" ] && [ -x "$djgpp_bin/i586-pc-msdosdjgpp-gcc" ]; then
+            PATH="$djgpp_bin:$PATH"
+            export PATH
+            break
+        fi
+    done
     build_target dos i586-pc-msdosdjgpp-gcc "" "" ".exe" dos "-std=gnu89" "ENABLE_ZSTD=0"
 }
 
@@ -345,19 +366,21 @@ do_arm64() {
 }
 
 do_amiga_m68k() {
+    local compiler="${AMIGA68K_CC:-/opt/amiga/bin/m68k-amigaos-gcc}"
+
     if [ ! -d "src/frontend/amiga" ]; then
         echo "  SKIP  amiga (no frontend source yet)"
         return 0
     fi
 
-    if ! command -v m68k-amigaos-gcc >/dev/null 2>&1; then
-        echo "  SKIP  amiga (m68k-amigaos-gcc not found)"
+    if ! command -v "$compiler" >/dev/null 2>&1; then
+        echo "  SKIP  amiga ($compiler not found)"
         return 0
     fi
 
-    echo "  BUILD amiga (m68k-amigaos-gcc)"
+    echo "  BUILD amiga ($compiler)"
     if [ -n "$VERBOSE" ]; then
-        if make amiga FLUFF_NATIVE_FLAGS= 2>&1 | sed 's/^/        /'; then
+        if make amiga AMIGA68K_CC="$compiler" FLUFF_NATIVE_FLAGS= 2>&1 | sed 's/^/        /'; then
             echo "  OK    build/amiga/boltpack"
             echo "  OK    build/amiga/boltpack-gui"
             return 0
@@ -366,7 +389,7 @@ do_amiga_m68k() {
             return 1
         fi
     else
-        if make amiga FLUFF_NATIVE_FLAGS= >/dev/null 2>&1; then
+        if make amiga AMIGA68K_CC="$compiler" FLUFF_NATIVE_FLAGS= >/dev/null 2>&1; then
             echo "  OK    build/amiga/boltpack"
             echo "  OK    build/amiga/boltpack-gui"
             return 0
@@ -412,10 +435,19 @@ do_atari() {
 
 do_macos9_68k() {
     local cc="/opt/retro68/toolchain/bin/m68k-apple-macos-gcc"
+    local output="build/macos9-68k/.rsrc/BoltPack"
     if [ ! -x "$cc" ]; then
+        rm -f "$output"
         echo "  SKIP  macos9-68k ($cc not found)"
         return 0
     fi
+
+    if ! printf 'int main(void){return 0;}\n' | "$cc" -x c -o /dev/null - >/dev/null 2>&1; then
+        rm -f "$output"
+        echo "  SKIP  macos9-68k (Retro68 compiler cannot link a test program)"
+        return 0
+    fi
+
     echo "  BUILD macos9-68k ($cc)"
     if [ -n "$VERBOSE" ]; then
         if make macos9-68k 2>&1 | sed 's/^/        /'; then
@@ -481,14 +513,51 @@ do_netbsd() {
     build_make_target netbsd clang build/netbsd/boltpack
 }
 
-do_openbsd() {
-    local crt
-    crt=$(clang -target x86_64--openbsd -print-file-name=crt0.o 2>/dev/null)
-    if [ "$crt" = "crt0.o" ]; then
-        echo "  SKIP  openbsd (no OpenBSD sysroot found)"
-        return 0
+do_native_unix_target() {
+    local target="$1"
+    local host="$(uname -s 2>/dev/null || true)"
+    local supported_hosts
+
+    case "$target" in
+        openbsd) supported_hosts="OpenBSD" ;;
+        solaris) supported_hosts="SunOS" ;;
+        irix)    supported_hosts="IRIX IRIX64" ;;
+        hpux)    supported_hosts="HP-UX" ;;
+        aix)     supported_hosts="AIX" ;;
+        *)
+            echo "  FAIL  $target (unknown native-Unix target)"
+            return 1
+            ;;
+    esac
+
+    case " $supported_hosts " in
+        *" $host "*) ;;
+        *)
+            echo "  SKIP  $target (native build requires $supported_hosts; use its source kit on that host)"
+            return 0
+            ;;
+    esac
+
+    echo "  BUILD $target (native $host build)"
+    if [ -n "$VERBOSE" ]; then
+        if ! sh scripts/native-unix/build-native.sh "$target"; then
+            echo "  FAIL  $target"
+            return 1
+        fi
+    elif ! sh scripts/native-unix/build-native.sh "$target" >/dev/null 2>&1; then
+        echo "  FAIL  $target"
+        return 1
     fi
-    build_make_target openbsd clang build/openbsd/boltpack
+
+    if [ ! -f "build/$target/boltpack" ]; then
+        echo "  FAIL  $target (native helper did not produce build/$target/boltpack)"
+        return 1
+    fi
+    echo "  OK    build/$target/boltpack"
+}
+
+do_openbsd() {
+    do_native_unix_target openbsd
 }
 
 do_macosx() {
@@ -496,7 +565,7 @@ do_macosx() {
 }
 
 do_solaris() {
-    build_make_target solaris x86_64-pc-solaris2.11-gcc build/solaris/boltpack
+    do_native_unix_target solaris
 }
 
 do_illumos() {
@@ -504,15 +573,15 @@ do_illumos() {
 }
 
 do_irix() {
-    build_make_target irix mips-sgi-irix6.5-gcc build/irix/boltpack
+    do_native_unix_target irix
 }
 
 do_hpux() {
-    build_make_target hpux hppa-hp-hpux-gcc build/hpux/boltpack
+    do_native_unix_target hpux
 }
 
 do_aix() {
-    build_make_target aix powerpc-ibm-aix-gcc build/aix/boltpack
+    do_native_unix_target aix
 }
 
 do_riscv() {
@@ -523,8 +592,72 @@ do_musl() {
     build_make_target musl musl-gcc build/musl/boltpack
 }
 
+is_x86_hurd_target() {
+    local target="$1"
+    case "$target" in
+        *linux*|*kfreebsd*|*freebsd*|*netbsd*|*openbsd*|*darwin*|*mingw*|*cygwin*)
+            return 1
+            ;;
+    esac
+    case "$target" in
+        i?86-gnu*|i?86-*-gnu*|x86_64-gnu*|x86_64-*-gnu*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 do_hurd() {
-    build_make_target hurd gcc build/hurd/boltpack
+    local compiler="${HURD_CC:-x86_64-gnu-gcc}"
+    local target output osabi
+    output=build/hurd/boltpack
+
+    # Remove the old false-positive Linux ELF before any skip path can leave
+    # it available to the package creator as if it were a Hurd binary.
+    if [ -f "$output" ]; then
+        osabi=$(od -An -tu1 -j7 -N1 "$output" 2>/dev/null | tr -d '[:space:]')
+        if [ "$osabi" != 4 ]; then
+            rm -f "$output"
+            echo "  REMOVE $output (not a GNU/Hurd ELF binary)"
+        fi
+    fi
+
+    if ! command -v "$compiler" >/dev/null 2>&1; then
+        echo "  SKIP  hurd ($compiler not found; install an x86 GNU/Hurd cross compiler)"
+        return 0
+    fi
+
+    target=$("$compiler" -dumpmachine 2>/dev/null || true)
+    if ! is_x86_hurd_target "$target"; then
+        echo "  SKIP  hurd ($compiler targets '${target:-<unknown>}', not x86 GNU/Hurd)"
+        return 0
+    fi
+
+    if ! printf 'int main(void){return 0;}\n' | "$compiler" -x c -o /dev/null - >/dev/null 2>&1; then
+        echo "  SKIP  hurd ($compiler cannot link a test program; target sysroot unavailable)"
+        return 0
+    fi
+
+    echo "  BUILD hurd ($compiler; target $target)"
+    if [ -n "$VERBOSE" ]; then
+        if ! make hurd HURD_CC="$compiler" 2>&1 | sed 's/^/        /'; then
+            echo "  FAIL  hurd"
+            return 1
+        fi
+    elif ! make hurd HURD_CC="$compiler" >/dev/null 2>&1; then
+        echo "  FAIL  hurd"
+        return 1
+    fi
+
+    if [ ! -f "$output" ]; then
+        echo "  SKIP  hurd ($compiler could not link the target runtime)"
+        return 0
+    fi
+    osabi=$(od -An -tu1 -j7 -N1 "$output" 2>/dev/null | tr -d '[:space:]')
+    if [ "$osabi" != 4 ]; then
+        rm -f "$output"
+        echo "  FAIL  hurd ($output has ELF OSABI ${osabi:-<unknown>}, expected GNU/Hurd 4)"
+        return 1
+    fi
+    echo "  OK    $output [GNU/Hurd]"
 }
 
 do_e2k() {
@@ -536,11 +669,33 @@ do_os2() {
 }
 
 do_ql() {
-    build_make_target ql m68k-qdos-gcc build/ql/boltpack
+    local compiler="${QL_CC:-}"
+    if [ -z "$compiler" ]; then
+        if command -v qcc >/dev/null 2>&1; then
+            compiler=qcc
+        elif command -v m68k-qdos-gcc >/dev/null 2>&1; then
+            compiler=m68k-qdos-gcc
+        else
+            echo "  SKIP  ql (qcc or m68k-qdos-gcc not found)"
+            return 0
+        fi
+    fi
+    QL_CC="$compiler" build_make_target ql "$compiler" build/ql/boltpack
 }
 
 do_x68k() {
-    build_make_target x68k m68k-x680x-human-gcc build/x68k/boltpack.x
+    local compiler="${X68K_CC:-}"
+    if [ -z "$compiler" ]; then
+        if command -v m68k-x680x-human-gcc >/dev/null 2>&1; then
+            compiler=m68k-x680x-human-gcc
+        elif command -v m68k-xelf-gcc >/dev/null 2>&1; then
+            compiler=m68k-xelf-gcc
+        else
+            echo "  SKIP  x68k (m68k-x680x-human-gcc or m68k-xelf-gcc not found)"
+            return 0
+        fi
+    fi
+    X68K_CC="$compiler" build_make_target x68k "$compiler" build/x68k/boltpack.x
 }
 
 # ---- 16-bit targets (Open Watcom) ----------------------------------------
@@ -993,14 +1148,14 @@ Targets:
   linux-gui      Build Linux FLTK GUI (requires FLTK development package)
   linux32mini    Build 32-bit bpmini Linux binary (gcc -m32 required)
   musl           Build with musl-gcc (static musl libc)
-  hurd           Build for GNU Hurd
+  hurd           Build GNU/Hurd binary (requires an x86 GNU/Hurd compiler/sysroot)
 
   arm32|arm      Cross-compile for ARM 32-bit Linux (RPi etc.)
   arm64|aarch64  Cross-compile for ARM 64-bit Linux (RPi 3/4/5)
   riscv          Cross-compile for RISC-V 64 Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
 
-  dos            Cross-compile for DOS (DJGPP with go32 extender)
+  dos            Cross-compile for DOS (DJGPP; optional DJGPP_BIN selects its bin directory)
   win32          Cross-compile for Windows 32-bit (MinGW), includes Total Commander WCX plugin
   win64          Cross-compile for Windows 64-bit (MinGW), includes Total Commander WCX plugin
   win32-fltk-gui  Cross-compile Windows 32-bit FLTK GUI (requires 'make fltk-win32' first)

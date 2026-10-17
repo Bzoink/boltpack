@@ -123,23 +123,52 @@ Function AddInstallDirToPath
     ReadRegStr $R0 HKCU "Environment" "Path"
   ${EndIf}
 
+  ; NSIS strings are limited to 1024 characters by default. Do not write a
+  ; PATH that may already have been truncated by ReadRegStr, or one that would
+  ; overflow when the BoltPack directory is appended.
+  StrLen $R1 $R0
+  ${If} $R1 >= 1022
+    Goto add_path_too_long
+  ${EndIf}
+  StrLen $R1 $INSTDIR
+  ${If} $R1 > 1021
+    Goto add_path_too_long
+  ${EndIf}
+
   StrCpy $R1 ";$R0;"
   ${StrStr} $R2 "$R1" ";$INSTDIR;"
-  ${If} $R2 == ""
-    ${If} $R0 == ""
-      StrCpy $R0 "$INSTDIR"
-    ${Else}
-      StrCpy $R0 "$R0;$INSTDIR"
-    ${EndIf}
-
-    ${If} $MultiUser.InstallMode == "AllUsers"
-      WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$R0"
-    ${Else}
-      WriteRegExpandStr HKCU "Environment" "Path" "$R0"
-    ${EndIf}
-
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${If} $R2 != ""
+    Goto add_path_done
   ${EndIf}
+
+  StrLen $R1 $INSTDIR
+  ${If} $R0 != ""
+    IntOp $R1 $R1 + 1
+  ${EndIf}
+  StrLen $R2 $R0
+  IntOp $R1 $R1 + $R2
+  ${If} $R1 > 1021
+    Goto add_path_too_long
+  ${EndIf}
+
+  ${If} $R0 == ""
+    StrCpy $R0 "$INSTDIR"
+  ${Else}
+    StrCpy $R0 "$R0;$INSTDIR"
+  ${EndIf}
+
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$R0"
+  ${Else}
+    WriteRegExpandStr HKCU "Environment" "Path" "$R0"
+  ${EndIf}
+
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  Goto add_path_done
+
+add_path_too_long:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "PATH is too long for this installer to edit safely, so it was left unchanged. If BoltPack is not already available from PATH, add its installation directory manually."
+add_path_done:
 
   Pop $R2
   Pop $R1
@@ -155,6 +184,17 @@ Function un.RemoveInstallDirFromPath
     ReadRegStr $R0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
   ${Else}
     ReadRegStr $R0 HKCU "Environment" "Path"
+  ${EndIf}
+
+  ; A long PATH may have been truncated by NSIS while reading it. Leave it
+  ; untouched rather than writing back a shortened value during uninstall.
+  StrLen $R1 $R0
+  ${If} $R1 >= 1022
+    Goto remove_path_too_long
+  ${EndIf}
+  StrLen $R1 $INSTDIR
+  ${If} $R1 > 1021
+    Goto remove_path_too_long
   ${EndIf}
 
   ${If} $R0 != ""
@@ -195,6 +235,11 @@ Function un.RemoveInstallDirFromPath
 
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${EndIf}
+  Goto remove_path_done
+
+remove_path_too_long:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "PATH is too long for this uninstaller to edit safely. No PATH changes were made; remove the BoltPack entry manually if it remains."
+remove_path_done:
 
   Pop $R2
   Pop $R1

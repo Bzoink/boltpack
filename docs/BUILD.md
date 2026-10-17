@@ -221,8 +221,10 @@ sh scripts/native-unix/build-native.sh solaris
 sh scripts/native-unix/build-native.sh irix
 sh scripts/native-unix/build-native.sh hpux
 sh scripts/native-unix/build-native.sh aix
-sh scripts/native-unix/build-native.sh all
 ```
+
+Run each command on its matching operating system. The helper refuses to use
+a host compiler to produce an executable labeled for another Unix system.
 
 Useful environment overrides:
 
