@@ -2,6 +2,7 @@
 """Check Linux mini archive metadata and no-clobber behavior."""
 import os
 from pathlib import Path
+import shlex
 import stat
 import struct
 import subprocess
@@ -9,11 +10,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 MINI = Path(os.environ.get("BP_TEST_LINUXMINI", ROOT / "build/linux32mini/bpmini"))
+MINI_RUNNER = shlex.split(os.environ.get("BP_TEST_LINUXMINI_RUNNER", ""))
 FULL = ROOT / "build/linux/boltpack"
 
 
 def run(binary, *args, cwd):
-    return subprocess.run([str(binary), *args], cwd=cwd, capture_output=True)
+    command = [str(binary), *args]
+    if binary == MINI:
+        command = [*MINI_RUNNER, *command]
+    return subprocess.run(command, cwd=cwd, capture_output=True)
 
 
 def main():

@@ -67,6 +67,17 @@ listed as implemented remains unqualified; do not infer it from the core format.
   also built successfully. A Linux CLI fixture with a valid portable FAT
   record returned partial while restoring the directory's Unix mode and epoch
   time.
+- `ASAN_OPTIONS=detect_leaks=0 make CC=gcc unit-test-asan` passed the ASan/UBSan
+  unit suites, including all 231 archive-format checks. Leak detection must be
+  disabled in this container because LeakSanitizer cannot run under its ptrace
+  restrictions.
+- `make mini-all unit-test-dos16` rebuilt the DOS16, Win16, and OS/2-16 mini
+  targets; DOSBox ran the DOS16 unit fixture (20 passed, 0 failed).
+  `test/check_dos16_interop.py` passed DOS16-to-Linux transfer, including nested
+  paths, portable FAT metadata, and fixed-offset timestamps.
+  `make linuxmini` plus `BP_TEST_LINUXMINI_RUNNER=qemu-i386
+  python3 test/check_linuxmini_interop.py` passed Linux mini metadata, full/mini
+  transfer, overwrite preservation, symlink refusal, and corrupt-file cleanup.
 - GUI interaction was not runtime-tested: Xvfb starts but this environment
   cannot open its display. Atari, OS/2, and Windows evidence remains
   cross-build-only; target runtime checks are still outstanding.
