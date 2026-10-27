@@ -435,6 +435,7 @@ static bp_uint64 bp_read_le64(const bp_uint8 *p)
 #ifdef BP_MINI
 #  define BP_MINI_MAX_ENTRIES    65535U
 #  define BP_MINI_MAX_BLOCK_SIZE 32768U
+#  define BP_MINI_MAX_ARCHIVE_SIZE 2147483647UL
 #endif
 
 #endif /* BP_TYPES_H */

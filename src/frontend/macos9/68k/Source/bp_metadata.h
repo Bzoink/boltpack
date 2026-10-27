@@ -32,6 +32,7 @@ typedef struct {
     bp_uint8 type;
     int portable_seen;
     bp_metadata_seen_t **seen;
+    int resource_seen;
 } bp_metadata_group_t;
 
 #define BP_GROUP_BUCKETS 64U
@@ -53,6 +54,8 @@ static void bp_metadata_group_close(bp_metadata_group_t *group)
     }
     group->name = NULL;
     group->seen = NULL;
+    group->portable_seen = 0;
+    group->resource_seen = 0;
 }
 
 static int bp_metadata_group_record(bp_metadata_group_t *group, char **name,
@@ -87,17 +90,26 @@ static int bp_metadata_group_record(bp_metadata_group_t *group, char **name,
         if (take_ownership) *name = NULL;
         group->type = type;
         group->portable_seen = 0;
+        group->resource_seen = 0;
         return BP_OK;
     }
-    if (group->name == NULL || strcmp(group->name, *name) != 0) {
-        group->name = NULL;
-        if (type == BP_TYPE_META && platform == BP_META_PORTABLE) return BP_ERR_CORRUPT;
-        return BP_OK;
+    if (type != BP_TYPE_META && type != BP_TYPE_RSRC) return BP_ERR_CORRUPT;
+    if (group->name == NULL || strcmp(group->name, *name) != 0)
+        return BP_ERR_CORRUPT;
+    if ((group->type == BP_TYPE_DIR) !=
+        ((*name)[strlen(*name) - 1] == '/')) return BP_ERR_CORRUPT;
+    if (type == BP_TYPE_RSRC) {
+        if (group->type != BP_TYPE_DATA || group->resource_seen)
+            return BP_ERR_CORRUPT;
+        group->resource_seen = 1;
     }
-    if (type == BP_TYPE_META && platform == BP_META_PORTABLE) {
-        if ((group->type != BP_TYPE_DATA && group->type != BP_TYPE_DIR) ||
-            group->portable_seen) return BP_ERR_CORRUPT;
-        group->portable_seen = 1;
+    if (type == BP_TYPE_META) {
+        if (group->type != BP_TYPE_DATA && group->type != BP_TYPE_DIR)
+            return BP_ERR_CORRUPT;
+        if (platform == BP_META_PORTABLE) {
+            if (group->portable_seen) return BP_ERR_CORRUPT;
+            group->portable_seen = 1;
+        }
     }
     return BP_OK;
 }

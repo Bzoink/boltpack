@@ -20,6 +20,7 @@
 #include "mini/archiver.h"
 #include "mini/compress.h"
 #include "bp_metadata.h"
+#include "archive_name.h"
 #include "../../src/frontend/mini_shared/dos_time.h"
 #include "../../src/frontend/mini_shared/mini_common.h"
 #include "../../src/frontend/atari/atari_path.h"
@@ -732,6 +733,25 @@ static void test_format6_flags_and_names(void)
     rc = bp_archive_add_entry(&ar, "\xED\xA0\x80", BP_TYPE_DIR, BP_OS_LINUX,
                               NULL, zero, zero);
     UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "UTF-8 surrogate name rejected");
+    rc = bp_archive_add_entry(&ar, "../outside", BP_TYPE_DATA, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "parent traversal name rejected");
+    rc = bp_archive_add_entry(&ar, "a/./b", BP_TYPE_DATA, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "dot path component rejected");
+    rc = bp_archive_add_entry(&ar, "a//b", BP_TYPE_DATA, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "empty path component rejected");
+    rc = bp_archive_add_entry(&ar, "file/", BP_TYPE_DATA, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "file name cannot alias a directory path");
+    rc = bp_archive_add_entry(&ar, "dir", BP_TYPE_DIR, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "directory name requires trailing slash");
+    UNIT_CHECK(!bp_archive_name_valid("a//b", 4) &&
+               !bp_archive_name_valid("a/./b", 5) &&
+               bp_archive_name_valid("dir/", 4),
+               "counted names reject aliases but retain directory spelling");
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
     UNIT_CHECK(rc == BP_OK, "finalize timestamp fixture");
@@ -755,6 +775,16 @@ static void test_format6_flags_and_names(void)
     memset(&ls, 0, sizeof(ls));
     UNIT_CHECK(bp_archive_list(&io, list_cb, &ls) == BP_ERR_CORRUPT,
                "table/header flag mismatch is rejected even with valid CRCs");
+    bp_write_le16(mem.buf + flags_off, BP_ENTRY_FLAG_MTIME_VALID);
+    memcpy(mem.buf + BP_HEADER_SIZE + 4U, "a/./b/", 6U);
+    memcpy(mem.buf + tbl_off.lo + BP_TABLE_HDR_V3 + 2U, "a/./b/", 6U);
+    bp_write_le32(mem.buf + BP_HEADER_TABLE_CRC_OFF,
+                  bp_crc32(0, mem.buf + tbl_off.lo, tbl_size.lo));
+    bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                  bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+    memset(&ls, 0, sizeof(ls));
+    UNIT_CHECK(bp_archive_list(&io, list_cb, &ls) == BP_ERR_CORRUPT,
+               "reader rejects noncanonical paths before listing or extraction");
     free(mem.buf);
 }
 
@@ -837,10 +867,10 @@ static void test_mini_directory_outcomes(void)
     mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP; io = make_mem_io(&mem);
     rc = bp_metadata_fat_encode(metadata, sizeof(metadata), BP_TYPE_DIR, 0x27, 0x21);
     if (rc == BP_OK) rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
-    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR", BP_TYPE_DIR, BP_OS_DOS,
+    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR/", BP_TYPE_DIR, BP_OS_DOS,
                                                    NULL, zero, zero, 0);
     source = make_string_io(&input, metadata, sizeof(metadata));
-    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR", BP_TYPE_META, BP_META_PORTABLE,
+    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR/", BP_TYPE_META, BP_META_PORTABLE,
                                                    &source, bp_u64_from_u32(sizeof(metadata)), zero, 0);
     if (rc == BP_OK) rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
@@ -1008,6 +1038,69 @@ static void test_format6_full_mini_interop(void)
     UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 2 &&
                state.output.size == (long)(2 * FILE1_LEN),
                "mini continues extracting after metadata loss and reports partial");
+    free(mem.buf);
+}
+
+static void test_mini_archive_size_limit(void)
+{
+    static const unsigned char byte[1] = { 'x' };
+    MemIO mem;
+    bp_io_t io, source;
+    bp_mini_archive_t mini;
+    StringSrc input;
+    MiniInteropState state;
+    bp_uint64 zero;
+    bp_uint64 oversized;
+    int rc;
+
+    UNIT_SECTION("Mini interchange archive-size limit");
+    zero = bp_u64_from_u32(0);
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, 0, BP_METHOD_STORED);
+    UNIT_CHECK(rc == BP_OK && mini.block_size == BP_BLOCK_16K,
+               "mini profile defaults to 16 KiB blocks");
+    bp_mini_archive_close(&mini);
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    mem.pos = (long)BP_MINI_MAX_ARCHIVE_SIZE - 1L;
+    source = make_string_io(&input, byte, 1);
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, "FILE.TXT", BP_TYPE_DATA,
+                                           BP_OS_CPM86, &source,
+                                           bp_u64_from_u32(1), zero, 0);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW,
+               "mini writer refuses an entry that crosses the 2 GiB profile limit");
+    bp_mini_archive_close(&mini);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    mem.pos = (long)BP_MINI_MAX_ARCHIVE_SIZE - 10L;
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW,
+               "mini finalizer includes table and footer in the profile limit");
+    bp_mini_archive_close(&mini);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, byte, 1);
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, "FILE.TXT", BP_TYPE_DATA,
+                                           BP_OS_CPM86, &source,
+                                           bp_u64_from_u32(1), zero, 0);
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    bp_mini_archive_close(&mini);
+    UNIT_CHECK(rc == BP_OK, "mini size-limit reader fixture is valid");
+    oversized.hi = 0;
+    oversized.lo = (bp_uint32)BP_MINI_MAX_ARCHIVE_SIZE + 1U;
+    bp_write_le64(mem.buf + 16, oversized);
+    bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                  bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+    memset(&state, 0, sizeof(state));
+    rc = bp_mini_archive_list(&io, mini_interop_list, &state);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW,
+               "mini reader rejects archive headers above the profile limit");
     free(mem.buf);
 }
 
@@ -1423,6 +1516,7 @@ int main(void)
     test_previous_versions_rejected();
     test_format6_flags_and_names();
     test_format6_full_mini_interop();
+    test_mini_archive_size_limit();
     test_mini_directory_outcomes();
     test_mini_directory_queue();
     test_dos_time_interop();

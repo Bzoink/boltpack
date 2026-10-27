@@ -49,6 +49,29 @@ static bp_off_t mini_io_tell(bp_io_t *io)
     return io->tell(io->handle);
 }
 
+/* Bound every byte written by a mini archive writer, including its table and
+ * footer. The limit keeps offsets representable by the smallest supported
+ * signed 32-bit file API. */
+static int mini_archive_write(bp_mini_archive_t *ar,
+                              const void *buf, bp_uint32 count)
+{
+    bp_off_t position;
+    bp_uint64 start, end;
+    if (ar == NULL || ar->io == NULL) return BP_ERR_INVALID_ARG;
+    position = mini_io_tell(ar->io);
+    if (position < 0) return BP_ERR_IO;
+    start = bp_off_to_u64(position);
+    end = bp_u64_add(start, bp_u64_from_u32(count));
+    if (bp_u64_cmp(end, start) < 0 || end.hi != 0 ||
+        end.lo > BP_MINI_MAX_ARCHIVE_SIZE) return BP_ERR_OVERFLOW;
+    return mini_io_write(ar->io, buf, count);
+}
+
+static int mini_archive_size_allowed(bp_uint64 size)
+{
+    return size.hi == 0 && size.lo <= BP_MINI_MAX_ARCHIVE_SIZE;
+}
+
 /* ---- bp_mini_u64_print ------------------------------------------------ */
 
 /*
@@ -162,7 +185,7 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
     ar->io = io;
 
     if (block_size == 0) {
-        block_size = BP_BLOCK_32K;
+        block_size = BP_BLOCK_16K;
     }
     if (block_size > BP_MINI_MAX_BLOCK_SIZE) {
         block_size = BP_MINI_MAX_BLOCK_SIZE;
@@ -212,7 +235,7 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
     hdr[14] = BP_VERSION_MAJOR;
     hdr[15] = BP_VERSION_MINOR;
 
-    return mini_io_write(io, hdr, BP_HEADER_SIZE);
+    return mini_archive_write(ar, hdr, BP_HEADER_SIZE);
 }
 
 /* ---- bp_mini_archive_add_entry ----------------------------------------- */
@@ -259,6 +282,7 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
     }
     name_len = (bp_uint16)strlen(name);
     if (!bp_archive_name_valid(name, (bp_uint32)name_len) ||
+        !bp_archive_name_type_valid(name, (bp_uint32)name_len, entry_type) ||
         (!(flags & BP_ENTRY_FLAG_MTIME_VALID) && !bp_u64_is_zero(mtime)))
         return BP_ERR_INVALID_ARG;
     hdr_size = (bp_uint16)(BP_ENTRY_FIXED + name_len);
@@ -272,11 +296,11 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
     /* Write header_size(2) + name_len(2) */
     bp_write_le16(ehdr,     hdr_size);
     bp_write_le16(ehdr + 2, name_len);
-    rc = mini_io_write(ar->io, ehdr, 4);
+    rc = mini_archive_write(ar, ehdr, 4);
     if (rc != BP_OK) return rc;
 
     /* Write name */
-    rc = mini_io_write(ar->io, (const bp_uint8 *)name, name_len);
+    rc = mini_archive_write(ar, (const bp_uint8 *)name, name_len);
     if (rc != BP_OK) return rc;
 
     /* Build and write the 38-byte fields block.
@@ -301,7 +325,7 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
 
     fields_pos = mini_io_tell(ar->io);
     if (fields_pos < 0) return BP_ERR_IO;
-    rc = mini_io_write(ar->io, fields, 38);
+    rc = mini_archive_write(ar, fields, 38);
     if (rc != BP_OK) return rc;
 
     /* --- Compress and write data blocks --------------------------------- */
@@ -365,9 +389,9 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
             bp_write_le32(blk_hdr,     comp_len);
             bp_write_le32(blk_hdr + 4, chunk);
             bp_write_le32(blk_hdr + 8, bp_mini_crc32(0, out_buf, comp_len));
-            rc = mini_io_write(ar->io, blk_hdr, BP_BLOCK_HDR_V3);
+            rc = mini_archive_write(ar, blk_hdr, BP_BLOCK_HDR_V3);
             if (rc != BP_OK) { free(in_buf); free(out_buf); return rc; }
-            rc = mini_io_write(ar->io, out_buf, comp_len);
+            rc = mini_archive_write(ar, out_buf, comp_len);
             if (rc != BP_OK) { free(in_buf); free(out_buf); return rc; }
 
             total_comp = bp_u64_add(total_comp,
@@ -392,7 +416,7 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
 
         rc = mini_io_seek(ar->io, fields_pos + 8, 0); /* SEEK_SET */
         if (rc != 0) return BP_ERR_IO;
-        rc = mini_io_write(ar->io, patch, 13);
+        rc = mini_archive_write(ar, patch, 13);
         if (rc != BP_OK) return rc;
 
         rc = mini_io_seek(ar->io, 0, 2); /* SEEK_END */
@@ -489,7 +513,7 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
     if (ar == NULL) return BP_ERR_INVALID_ARG;
 
     {
-        bp_metadata_group_t group = { NULL, 0, 0, NULL };
+        bp_metadata_group_t group = { NULL, 0, 0, NULL, 0 };
         for (i = 0; i < ar->entries_written; i++) {
             bp_mini_entry_t *entry = &ar->entry_list[i];
             char *name = entry->name;
@@ -504,6 +528,25 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
 
     table_start = mini_io_tell(ar->io);
     if (table_start < 0) return BP_ERR_IO;
+
+    /* The interchange limit includes every file-table record and footer,
+     * not just the entry payload region. Reject before writing the table. */
+    {
+        bp_uint64 projected, next;
+        projected = bp_off_to_u64(table_start);
+        next = bp_u64_add(projected,
+                          bp_u64_from_u32(BP_TABLE_HDR_V3 + BP_FOOTER_SIZE));
+        if (bp_u64_cmp(next, projected) < 0) return BP_ERR_OVERFLOW;
+        projected = next;
+        for (i = 0; i < ar->entries_written; i++) {
+            bp_uint32 record_size = 2U + (bp_uint32)ar->entry_list[i].name_len +
+                                    BP_TABLE_REC_TAIL_V6;
+            next = bp_u64_add(projected, bp_u64_from_u32(record_size));
+            if (bp_u64_cmp(next, projected) < 0) return BP_ERR_OVERFLOW;
+            projected = next;
+        }
+        if (!mini_archive_size_allowed(projected)) return BP_ERR_OVERFLOW;
+    }
 
     table_crc = 0;
 
@@ -548,7 +591,7 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
         footer[18] = BP_FOOTER_MAGIC_2;
         footer[19] = BP_FOOTER_MAGIC_3;
 
-        rc = mini_io_write(ar->io, footer, BP_FOOTER_SIZE);
+        rc = mini_archive_write(ar, footer, BP_FOOTER_SIZE);
         if (rc != BP_OK) return rc;
     }
 
@@ -582,7 +625,7 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
 
         rc = mini_io_seek(ar->io, 0, 0);
         if (rc != 0) return BP_ERR_IO;
-        rc = mini_io_write(ar->io, hdr, BP_HEADER_SIZE);
+        rc = mini_archive_write(ar, hdr, BP_HEADER_SIZE);
         if (rc != BP_OK) return rc;
     }
 
@@ -625,6 +668,15 @@ static int mini_read_footer(bp_io_t *io,
 
     *table_offset = bp_read_le64(buf);
     *table_size   = bp_read_le64(buf + 8);
+    {
+        bp_uint64 table_end, expected;
+        table_end = bp_u64_add(*table_offset, *table_size);
+        expected = bp_u64_add(table_end,
+                              bp_u64_from_u32(BP_FOOTER_SIZE));
+        if (bp_u64_cmp(table_end, *table_offset) < 0 ||
+            bp_u64_cmp(expected, table_end) < 0) return BP_ERR_CORRUPT;
+        if (!mini_archive_size_allowed(expected)) return BP_ERR_OVERFLOW;
+    }
     return BP_OK;
 }
 
@@ -664,7 +716,11 @@ static int mini_read_archive_header(bp_io_t *io, bp_uint32 *file_count,
     if (creator_cpu)  *creator_cpu  = hdr[13];
     if (ver_major)    *ver_major    = hdr[14];
     if (ver_minor)    *ver_minor    = hdr[15];
-    if (archive_size) *archive_size = bp_read_le64(hdr + 16);
+    {
+        bp_uint64 serialized_size = bp_read_le64(hdr + 16);
+        if (!mini_archive_size_allowed(serialized_size)) return BP_ERR_OVERFLOW;
+        if (archive_size) *archive_size = serialized_size;
+    }
     return BP_OK;
 }
 
@@ -766,6 +822,10 @@ static int mini_read_table_record(bp_io_t *io, bp_mini_entry_t *entry,
     }
     if (tail >= BP_TABLE_REC_TAIL_V6)
         entry->flags = bp_read_le16(fixed + 41);
+    if (!bp_archive_name_type_valid(entry->name, entry->name_len,
+                                    entry->entry_type)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
         !bp_u64_is_zero(entry->mtime)) {
         free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
@@ -849,7 +909,7 @@ static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
     bp_uint32 i;
     bp_uint64 next = bp_u64_from_u32(BP_HEADER_SIZE);
     bp_off_t table_start = mini_io_tell(io);
-    bp_metadata_group_t group = { NULL, 0, 0, NULL };
+    bp_metadata_group_t group = { NULL, 0, 0, NULL, 0 };
     for (i = 0; i < count; i++) {
         bp_mini_entry_t entry;
         bp_off_t resume;

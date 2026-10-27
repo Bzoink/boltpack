@@ -4,8 +4,10 @@
 **Format reviewed:** archive format 5  
 **Scope:** on-disk format, core extraction behavior, and representative platform frontends.
 
-This is a historical audit of format 5. Format 6 implementation has begun;
-see the [plan's status](archive-format-plan.md) for its current progress.
+This is a historical audit of format 5. The full and mini cores now read and
+write format 6; platform interoperability remains incomplete. See the
+[implementation plan](archive-format-plan.md) and
+[capability matrix](interoperability-matrix.md) for current evidence.
 
 ## Summary
 
