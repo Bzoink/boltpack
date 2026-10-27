@@ -1777,7 +1777,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         }
     }
 
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     /* symlinks: we need to capture the target data, use tmpfile */
     if (entry->entry_type == BP_TYPE_SYMLINK) {
@@ -1973,7 +1973,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (g_verbosity == VERB_DEFAULT)
         printf(entry->entry_type == BP_TYPE_SYMLINK ? "    linking: %s\n" : " extracting: %s\n",
                entry->name);
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     output = (bp_extract_output_t *)calloc(1, sizeof(*output));
     if (output == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }

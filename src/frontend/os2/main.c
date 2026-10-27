@@ -1345,7 +1345,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (strlen(entry->name) < sizeof(ctx->subject)) {
             strcpy(ctx->subject, entry->name); ctx->subject_ok = 1;
         }
-        return NULL;
+        return bp_archive_dry_run_stream();
     }
     {
         FILESTATUS3 fs;

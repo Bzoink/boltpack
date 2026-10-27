@@ -55,6 +55,19 @@ static int io_write(bp_io_t *io, const void *buf, bp_uint32 count)
     return (n == (long)count) ? BP_OK : BP_ERR_IO;
 }
 
+static long discard_write(void *handle, const void *buf, bp_uint32 count)
+{
+    (void)handle;
+    (void)buf;
+    return (long)count;
+}
+
+bp_io_t *bp_archive_dry_run_stream(void)
+{
+    static bp_io_t discard_io = { NULL, discard_write, NULL, NULL, NULL };
+    return &discard_io;
+}
+
 static int io_read(bp_io_t *io, void *buf, bp_uint32 count)
 {
     long n = io->read(io->handle, buf, count);
@@ -2648,16 +2661,18 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
                                 archive_orig_total, archive_orig_done,
                                 &checksum, version);
         if (rc != BP_OK) {
-            if (status_fn && out) (void)status_fn(&entry, out, rc, user_data);
+            if (status_fn && out && out != bp_archive_dry_run_stream())
+                (void)status_fn(&entry, out, rc, user_data);
             free(entry.name);
             return rc;
         }
 
         /* verify checksum */
         if (checksum != entry.checksum) {
-            if (status_fn && out)
+            if (status_fn && out && out != bp_archive_dry_run_stream())
                 (void)status_fn(&entry, out, BP_ERR_CHECKSUM, user_data);
-            else if (done_fn && out) done_fn(&entry, out, user_data);
+            else if (done_fn && out && out != bp_archive_dry_run_stream())
+                done_fn(&entry, out, user_data);
             free(entry.name);
             return BP_ERR_CHECKSUM;
         }
@@ -2675,8 +2690,10 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
                 partial = 1;
             if (out == NULL) partial = 1;
             else if (io_write(out, metadata.data, metadata.length) != BP_OK) {
-                if (status_fn) (void)status_fn(&entry, out, BP_ERR_IO, user_data);
-                else if (done_fn) done_fn(&entry, out, user_data);
+                if (status_fn && out != bp_archive_dry_run_stream())
+                    (void)status_fn(&entry, out, BP_ERR_IO, user_data);
+                else if (done_fn && out != bp_archive_dry_run_stream())
+                    done_fn(&entry, out, user_data);
                 free(entry.name); return BP_ERR_IO;
             }
         } else if (out == NULL && entry.entry_type != BP_TYPE_DIR) {
@@ -2685,11 +2702,11 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
             partial = 1;
         }
 
-        if (status_fn && out) {
+        if (status_fn && out && out != bp_archive_dry_run_stream()) {
             rc = status_fn(&entry, out, BP_OK, user_data);
             if (rc == BP_ERR_PARTIAL) partial = 1;
             else if (rc != BP_OK) { free(entry.name); return rc; }
-        } else if (done_fn && out) {
+        } else if (done_fn && out && out != bp_archive_dry_run_stream()) {
             done_fn(&entry, out, user_data);
         }
 

@@ -554,7 +554,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT) print(" extracting: %s\n", entry->name);
-    if (ctx->dry_run) return nil;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     if (!ctx->force) {
         Dir *d2 = dirstat(path);

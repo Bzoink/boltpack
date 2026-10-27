@@ -2144,7 +2144,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     if (ctx->dry_run) {
         ctx->last_subject_ok = 1;
-        return NULL;
+        return bp_archive_dry_run_stream();
     }
 
     /* check for existing file */

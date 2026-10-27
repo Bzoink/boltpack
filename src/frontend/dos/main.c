@@ -1286,7 +1286,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     if (ctx->dry_run) {
         (void)dos_subject_set(ctx, entry, path, NULL);
-        return NULL;
+        return bp_archive_dry_run_stream();
     }
 
     /* check for existing file */

@@ -1076,7 +1076,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->file_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf(" extracting: %s [resource fork]\n", entry->name);
-        if (ctx->dry_run) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
         riscos_create_parent(rsrc_path);
         fh = riscos_open(rsrc_path, OS_Find_OpenOut);
         if (fh == 0) {
@@ -1093,7 +1093,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT)
         printf(" extracting: %s\n", entry->name);
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     if (!ctx->force) {
         riscos_stat_t st_buf;

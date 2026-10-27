@@ -229,6 +229,12 @@ int bp_archive_list(bp_io_t *io, bp_list_fn fn, void *user_data);
  * used. The frontend is responsible for creating parent directories. */
 typedef bp_io_t *(*bp_extract_fn)(const bp_entry_t *entry, void *user_data);
 
+/* Return this stream from an open callback for a dry-run. The core consumes
+ * and checks the entry without storing bytes, and does not call the completion
+ * callback for the discard stream. NULL remains a skipped entry and makes
+ * extraction partial for non-directories. */
+bp_io_t *bp_archive_dry_run_stream(void);
+
 /* Called after each entry is fully extracted (so frontend can close file). */
 typedef void (*bp_extract_done_fn)(const bp_entry_t *entry, bp_io_t *out,
                                    void *user_data);

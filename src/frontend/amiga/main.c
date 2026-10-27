@@ -1347,7 +1347,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (ctx->dry_run) {
         ctx->subject_ok = 1;
         ctx->file_count++;
-        return NULL;
+        return bp_archive_dry_run_stream();
     }
 
     if (lstat(path, &st) == 0) {

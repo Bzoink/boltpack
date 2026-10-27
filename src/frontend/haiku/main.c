@@ -825,7 +825,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->file_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s\n", entry->name);
-        if (ctx->dry_run) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
         fp = tmpfile();
         if (fp == NULL) return NULL;
         io = (bp_io_t *)malloc(sizeof(bp_io_t));
@@ -838,7 +838,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT)
         printf(" extracting: %s\n", entry->name);
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     if (!ctx->force) {
         struct stat st_buf;

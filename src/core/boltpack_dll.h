@@ -43,6 +43,9 @@ BP_EXPORT int   bp_dll_archive_extract_all_ex(bp_io_t *io,
                     bp_extract_fn open_fn, bp_extract_done_status_fn done_fn,
                     bp_progress_fn progress_fn, void *user_data);
 
+/* Return this stream from an extraction callback to validate without writing. */
+BP_EXPORT bp_io_t *bp_dll_archive_dry_run_stream(void);
+
 BP_EXPORT int   bp_dll_archive_test_progress(bp_io_t *io,
                     bp_test_fn fn, void *user_data,
                     bp_progress_fn progress_fn, void *progress_data);

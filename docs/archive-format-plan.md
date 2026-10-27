@@ -742,11 +742,13 @@ non-directory entry as a skipped extraction: it still consumes and verifies
 the payload, returns `BP_ERR_PARTIAL`, and does not deliver resource forks or
 metadata for that skipped subject. Directory callbacks continue to report
 creation failures through frontend state because they do not use streams.
-Three archive-format unit checks cover skipped primary data, portable metadata,
-resource forks, and native metadata. `make unit-test` passes, and the focused
-archive-format suite reports 259 passed, 0 failed. This narrows the core
-behavior but does not replace frontend-specific verification of directory and
-dry-run outcomes.
+`bp_archive_dry_run_stream()` gives dry-run callbacks a distinct discard stream:
+the core validates its bytes and checksums without invoking completion or
+writing output. Two archive-format unit checks cover skipped primary data,
+portable metadata, resource forks, and native metadata; another verifies the
+discard-stream contract. `make CC=gcc test` passes with 260 archive-format and
+154 CLI integration checks, including dry-run archive verification. This does
+not replace frontend-specific verification of directory and dry-run outcomes.
 
 Golden expectations must not be generated solely by the same writer under
 test. On capable destinations require exact bytes/names/attributes. On limited
