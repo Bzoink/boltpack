@@ -68,8 +68,8 @@ bp_uint32 bp_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len);
 bp_uint32 bp_checksum_typed(bp_uint8 ck_type, bp_uint32 running,
                             const bp_uint8 *data, bp_uint32 len);
 
-/* Initial (seed) value for a fresh checksum of the given type:
- * 1 for Adler-32, 0 for CRC-32. */
+/* Initial (seed) value for a fresh checksum of the given type.
+ * CRC-32 is the only archive checksum currently supported and uses seed 0. */
 bp_uint32 bp_checksum_seed(bp_uint8 ck_type);
 
 /* Worst-case BoltLZ encoder workspace, covering both selectable modes. */

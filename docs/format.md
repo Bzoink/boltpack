@@ -1,6 +1,6 @@
 # BoltPack archive format
 
-**Archive format:** 5, little-endian. Writers emit version 5 and readers
+**Archive format:** 6, little-endian. Writers emit version 6 and readers
 reject every other version. The [normative specification](specification-1.0.md)
 defines every field and codec representation.
 
@@ -30,7 +30,7 @@ levels are not recorded in the archive. Block format byte `0x02` identifies
 the BoltLZ representation inside method-2 compressed blocks. Empty files and
 directories are Stored with no data blocks. Symlink payloads are stored raw.
 
-The table header is 16 bytes and each record has a 41-byte fixed tail after
+The table header is 16 bytes and each record has a 43-byte fixed tail after
 the name. All names use the platform-independent archive path conventions
 in the specification. The archive layer validates safe extraction names,
 checksums, declared lengths, and exact decompression sizes.

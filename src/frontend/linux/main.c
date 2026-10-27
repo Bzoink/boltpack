@@ -7,8 +7,13 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __linux__
+#define _XOPEN_SOURCE 700
+#define _POSIX_C_SOURCE 200809L
+#else
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 200112L
+#endif
 
 #ifndef BP_CREATOR_OS
 #  define BP_CREATOR_OS BP_OS_LINUX
@@ -37,6 +42,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <utime.h>
 
 #ifdef BOLTPACK_FAST_FLUFF
@@ -281,6 +287,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_PARTIAL:           return "some entries or attributes were not restored";
     default:                       return "unknown error";
     }
 }
@@ -388,6 +395,19 @@ static void format_u64_count(bp_uint64 v, char *buf, size_t bufsize)
 }
 
 /* ---- progress callback for create/extract ------------------------------ */
+
+typedef struct bp_restore_dir_s {
+    struct bp_restore_dir_s *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+} bp_restore_dir_t;
+
+typedef struct {
+    bp_io_t io; /* first member: callbacks return &io */
+    char *temporary;
+    char *destination;
+} bp_extract_output_t;
 
 typedef struct {
     bp_uint32 file_count_final;
@@ -884,6 +904,16 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     return BP_OK;
 }
 
+static bp_uint64 archive_mtime(time_t value, bp_uint16 *flags)
+{
+    if (value < (time_t)0) {
+        fprintf(stderr, "boltpack: warning: pre-1970 modification time cannot be stored\n");
+        return bp_u64_from_u32(0);
+    }
+    *flags |= BP_ENTRY_FLAG_MTIME_VALID;
+    return bp_off_to_u64((bp_off_t)value);
+}
+
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct stat st;
@@ -898,8 +928,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
     memset(&job, 0, sizeof(job));
     job.path = (char *)path;
-    job.mtime = bp_u64_from_u32((bp_uint32)st.st_mtime);
     job.flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    job.mtime = archive_mtime(st.st_mtime, &job.flags);
 
     if (S_ISDIR(st.st_mode)) {
         if (!ends_with_slash(arcname)) {
@@ -970,6 +1000,8 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
 {
     struct stat st;
     char dir_arc[4096];
+    bp_uint16 mode_flags;
+    bp_uint64 mtime;
     int rc;
 
     if (lstat(path, &st) != 0) {
@@ -977,9 +1009,10 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
         return BP_ERR_IO;
     }
 
+    mode_flags = BP_ENTRY_FLAG_MODE_VALID
+               | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    mtime = archive_mtime(st.st_mtime, &mode_flags);
     if (S_ISDIR(st.st_mode)) {
-        bp_uint16 mode_flags = BP_ENTRY_FLAG_MODE_VALID
-                             | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         if (!ends_with_slash(arcname)) {
             snprintf(dir_arc, sizeof(dir_arc), "%s/", arcname);
         } else {
@@ -987,25 +1020,21 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
         }
         rc = append_job(list, path, dir_arc, BP_TYPE_DIR,
                         bp_u64_from_u32(0),
-                        bp_u64_from_u32((bp_uint32)st.st_mtime), mode_flags);
+                        mtime, mode_flags);
         if (rc != BP_OK) return rc;
         return collect_directory_jobs(list, path, dir_arc);
     }
 
     if (S_ISREG(st.st_mode)) {
-        bp_uint16 mode_flags = BP_ENTRY_FLAG_MODE_VALID
-                             | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         return append_job(list, path, arcname, BP_TYPE_DATA,
                           bp_off_to_u64((bp_off_t)st.st_size),
-                          bp_u64_from_u32((bp_uint32)st.st_mtime), mode_flags);
+                          mtime, mode_flags);
     }
 
     if (S_ISLNK(st.st_mode)) {
-        bp_uint16 mode_flags = BP_ENTRY_FLAG_MODE_VALID
-                             | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         return append_job(list, path, arcname, BP_TYPE_SYMLINK,
                           bp_u64_from_u32(0),
-                          bp_u64_from_u32((bp_uint32)st.st_mtime), mode_flags);
+                          mtime, mode_flags);
     }
 
     return BP_OK;
@@ -1489,8 +1518,80 @@ typedef struct {
     bp_uint32   file_count;
     bp_uint32   dir_count;
     bp_uint32   unsafe_count;  /* entries skipped for unsafe names/targets */
+    bp_uint32   partial_count;
+    bp_uint32   queued_dirs;
+    int         open_error;
+    bp_restore_dir_t *dirs;
     int         slash_warned;  /* printed the leading-'/' warning once */
 } extract_ctx_t;
+
+static int restore_file_metadata(const char *path, bp_uint16 flags,
+                                 bp_uint64 mtime, extract_ctx_t *ctx)
+{
+    if (flags & BP_ENTRY_FLAG_MODE_VALID) {
+        mode_t mode = (mode_t)(flags & BP_ENTRY_FLAG_MODE_MASK);
+        if (mode & 06000) {
+            fprintf(stderr, "boltpack: not restoring set-ID bits on %s\n", path);
+            ctx->partial_count++;
+            mode &= (mode_t)~06000;
+        }
+        if (chmod(path, mode) != 0) return BP_ERR_IO;
+    }
+    if (flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        bp_off_t seconds = bp_u64_to_off(mtime);
+        time_t t = (time_t)seconds;
+        struct stat st;
+        struct utimbuf ut;
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+            (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
+        if (stat(path, &st) != 0) return BP_ERR_IO;
+        ut.actime = st.st_atime;
+        ut.modtime = t;
+        if (utime(path, &ut) != 0) return BP_ERR_IO;
+    }
+    return BP_OK;
+}
+
+/* Inserting longer paths first ensures children precede their parents. */
+static int queue_directory(extract_ctx_t *ctx, const char *path,
+                           const bp_entry_t *entry)
+{
+    bp_restore_dir_t *node, **at;
+    size_t n = strlen(path);
+    if (ctx->queued_dirs >= 65535U) return BP_ERR_OVERFLOW;
+    node = (bp_restore_dir_t *)malloc(sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->path = (char *)malloc(n + 1);
+    if (node->path == NULL) { free(node); return BP_ERR_NOMEM; }
+    memcpy(node->path, path, n + 1);
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    at = &ctx->dirs;
+    while (*at != NULL && strlen((*at)->path) >= n) at = &(*at)->next;
+    node->next = *at;
+    *at = node;
+    ctx->queued_dirs++;
+    return BP_OK;
+}
+
+static int finish_directories(extract_ctx_t *ctx, int apply)
+{
+    int rc = BP_OK;
+    while (ctx->dirs != NULL) {
+        bp_restore_dir_t *node = ctx->dirs;
+        ctx->dirs = node->next;
+        if (apply) {
+            int r = restore_file_metadata(node->path, node->flags, node->mtime, ctx);
+            if (r != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore attributes: %s\n", node->path);
+                if (rc == BP_OK) rc = r;
+            }
+        }
+        free(node->path);
+        free(node);
+    }
+    return rc;
+}
 
 /* Strip leading '/' from an entry name (tar-style), warning once. */
 static const char *extract_entry_name(const bp_entry_t *entry,
@@ -1507,12 +1608,42 @@ static const char *extract_entry_name(const bp_entry_t *entry,
     return name;
 }
 
+/* Reject existing symlinks in archive-controlled directory components.
+ * This prevents traversal through a pre-existing link, but is not a defense
+ * against another process replacing a directory between this check and use. */
+static int extract_parent_is_safe(const extract_ctx_t *ctx, const char *name,
+                                  int include_leaf)
+{
+    char path[4096];
+    size_t base, i, n = strlen(name);
+    struct stat st;
+    if (ctx->out_dir != NULL) {
+        base = strlen(ctx->out_dir);
+        if (base + n + 2 > sizeof(path)) return 0;
+        memcpy(path, ctx->out_dir, base);
+        if (base != 0 && path[base - 1] != '/') path[base++] = '/';
+    } else base = 0;
+    memcpy(path + base, name, n + 1);
+    for (i = 0; i <= n; i++) {
+        char saved;
+        if (name[i] != '/' && !(include_leaf && name[i] == '\0')) continue;
+        if (i == 0) continue;
+        saved = path[base + i];
+        path[base + i] = '\0';
+        if (lstat(path, &st) == 0) {
+            if (!S_ISDIR(st.st_mode)) return 0;
+        } else if (errno != ENOENT) return 0;
+        path[base + i] = saved;
+    }
+    return 1;
+}
+
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char path[4096];
     FILE *fp;
-    bp_io_t *io;
+    bp_extract_output_t *output;
     const char *name;
 
     /* A hostile archive must not choose where we write: refuse ".."
@@ -1525,9 +1656,24 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         return NULL;
     }
 
+    if (!ctx->dry_run && !extract_parent_is_safe(ctx, name,
+                                                entry->entry_type == BP_TYPE_DIR)) {
+        fprintf(stderr, "boltpack: unsafe directory in path: %s\n", entry->name);
+        ctx->unsafe_count++;
+        return NULL;
+    }
+
     if (ctx->out_dir) {
+        if (strlen(ctx->out_dir) + strlen(name) + 2 > sizeof(path)) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
         path_join(path, sizeof(path), ctx->out_dir, name);
     } else {
+        if (strlen(name) >= sizeof(path)) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
         snprintf(path, sizeof(path), "%s", name);
     }
 
@@ -1537,12 +1683,19 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             printf("   creating: %s\n", entry->name);
         }
         if (!ctx->dry_run) {
-            mkdirs(path);
+            int r;
+            if (mkdirs(path) != 0) {
+                ctx->open_error = BP_ERR_IO;
+                return NULL;
+            }
+            r = queue_directory(ctx, path, entry);
+            if (r != BP_OK) ctx->open_error = r;
         }
         return NULL; /* no data to write for directories */
     }
 
     if (entry->entry_type == BP_TYPE_RSRC || entry->entry_type == BP_TYPE_META) {
+        ctx->partial_count++;
         if (g_verbosity == VERB_DEFAULT) {
             printf("   skipping: %s [%s - not supported on this platform]\n",
                    entry->name,
@@ -1570,58 +1723,87 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     /* symlinks: we need to capture the target data, use tmpfile */
     if (entry->entry_type == BP_TYPE_SYMLINK) {
         fp = tmpfile();
-        if (fp == NULL) return NULL;
-        io = (bp_io_t *)malloc(sizeof(bp_io_t));
-        if (io == NULL) { fclose(fp); return NULL; }
-        bp_io_from_file(io, fp);
-        return io;
+        if (fp == NULL) { ctx->open_error = BP_ERR_IO; return NULL; }
+        output = (bp_extract_output_t *)calloc(1, sizeof(*output));
+        if (output == NULL) { fclose(fp); ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        bp_io_from_file(&output->io, fp);
+        return &output->io;
     }
 
     /* regular file */
     if (!ctx->force) {
         struct stat st_buf;
-        if (stat(path, &st_buf) == 0) {
+        if (lstat(path, &st_buf) == 0) {
             fprintf(stderr, "boltpack: file exists (use -f to overwrite): %s\n",
                     path);
+            ctx->open_error = BP_ERR_IO;
             return NULL;
         }
     }
 
-    mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", path);
-        return NULL;
+    if (mkdirs_for_file(path) != 0) { ctx->open_error = BP_ERR_IO; return NULL; }
+    output = (bp_extract_output_t *)calloc(1, sizeof(*output));
+    if (output == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+    output->destination = (char *)malloc(strlen(path) + 1);
+    output->temporary = (char *)malloc(strlen(path) + 32);
+    if (output->destination == NULL || output->temporary == NULL) {
+        free(output->destination); free(output->temporary); free(output);
+        ctx->open_error = BP_ERR_NOMEM; return NULL;
     }
-
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (io == NULL) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    strcpy(output->destination, path);
+    {
+        const char *slash = strrchr(path, '/');
+        int fd;
+        if (slash != NULL)
+            sprintf(output->temporary, "%.*s/.boltpack-XXXXXX",
+                    (int)(slash - path), path);
+        else
+            strcpy(output->temporary, ".boltpack-XXXXXX");
+        fd = mkstemp(output->temporary);
+        if (fd < 0) {
+            fprintf(stderr, "boltpack: cannot create temporary file for %s\n", path);
+            free(output->destination); free(output->temporary); free(output);
+            ctx->open_error = BP_ERR_IO; return NULL;
+        }
+        fp = fdopen(fd, "wb");
+        if (fp == NULL) {
+            close(fd); unlink(output->temporary);
+            free(output->destination); free(output->temporary); free(output);
+            ctx->open_error = BP_ERR_IO; return NULL;
+        }
+    }
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    bp_extract_output_t *output = (bp_extract_output_t *)out;
     FILE *fp = (FILE *)out->handle;
     const char *name = extract_entry_name(entry, ctx);
+    int rc = BP_OK;
+
+    if (status != BP_OK) {
+        fclose(fp);
+        if (output->temporary != NULL) unlink(output->temporary);
+        free(output->temporary);
+        free(output->destination);
+        free(output);
+        return BP_OK;
+    }
 
     if (entry->entry_type == BP_TYPE_SYMLINK) {
-        /* read back the target path from the tmpfile */
         char target[4096];
         char path[4096];
         long len;
 
-        fseek(fp, 0, SEEK_END);
-        len = ftell(fp);
+        len = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
         if (len > 0 && len < (long)sizeof(target)) {
             rewind(fp);
             if (fread(target, 1, (size_t)len, fp) == (size_t)len) {
                 target[len] = '\0';
-                /* Refuse targets that point outside the extraction root:
-                 * a hostile archive could otherwise plant a link and write
-                 * through it with a later entry. */
                 if (!bp_symlink_target_is_safe(name, target)) {
                     fprintf(stderr,
                             "boltpack: skipping symlink with unsafe target: "
@@ -1633,35 +1815,58 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
                     } else {
                         snprintf(path, sizeof(path), "%s", name);
                     }
-                    mkdirs_for_file(path);
-                    symlink(target, path);
+                    if (!extract_parent_is_safe(ctx, name, 0) ||
+                        mkdirs_for_file(path) != 0 || symlink(target, path) != 0) {
+                        rc = BP_ERR_IO;
+                    } else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+#if defined(AT_SYMLINK_NOFOLLOW) && defined(UTIME_OMIT)
+                        bp_off_t seconds = bp_u64_to_off(entry->mtime);
+                        time_t t = (time_t)seconds;
+                        struct timespec times[2];
+                        if (seconds < 0 ||
+                            bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+                            (bp_off_t)t != seconds) {
+                            rc = BP_ERR_OVERFLOW;
+                        } else {
+                            times[0].tv_sec = 0;
+                            times[0].tv_nsec = UTIME_OMIT;
+                            times[1].tv_sec = t;
+                            times[1].tv_nsec = 0;
+                            if (utimensat(AT_FDCWD, path, times, AT_SYMLINK_NOFOLLOW) != 0)
+                                rc = BP_ERR_IO;
+                        }
+#else
+                        fprintf(stderr, "boltpack: symlink time not restored: %s\n", path);
+                        ctx->partial_count++;
+#endif
+                    }
                 }
-            }
-        }
-        fclose(fp);
-        free(out);
-        return;
+            } else rc = BP_ERR_IO;
+        } else rc = BP_ERR_CORRUPT;
+        if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        free(output);
+        return rc;
     }
 
-    /* close regular file, set permissions (if stored), then set mtime */
-    fclose(fp);
-    {
-        char path[4096];
-        struct utimbuf ut;
-
-        if (ctx->out_dir) {
-            path_join(path, sizeof(path), ctx->out_dir, name);
+    if (fclose(fp) != 0) rc = BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = restore_file_metadata(output->temporary, entry->flags, entry->mtime, ctx);
+    if (rc == BP_OK) {
+        if (ctx->force) {
+            if (rename(output->temporary, output->destination) != 0) rc = BP_ERR_IO;
         } else {
-            snprintf(path, sizeof(path), "%s", name);
+            if (link(output->temporary, output->destination) != 0) rc = BP_ERR_IO;
+            else if (unlink(output->temporary) != 0) rc = BP_ERR_IO;
         }
-        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) {
-            chmod(path, (mode_t)(entry->flags & BP_ENTRY_FLAG_MODE_MASK));
-        }
-        ut.actime  = (time_t)entry->mtime.lo;
-        ut.modtime = (time_t)entry->mtime.lo;
-        utime(path, &ut);
     }
-    free(out);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot finish extracting %s\n", output->destination);
+        unlink(output->temporary);
+    }
+    free(output->temporary);
+    free(output->destination);
+    free(output);
+    return rc;
 }
 
 #ifdef BOLTPACK_NET
@@ -1673,11 +1878,17 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
 int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
+    int rc, dir_rc;
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
-    return bp_archive_extract_all(aio, extract_open, extract_done, NULL, &ctx);
+    rc = bp_archive_extract_all_ex(aio, extract_open, extract_done, NULL, &ctx);
+    if (rc == BP_OK && ctx.open_error != BP_OK) rc = ctx.open_error;
+    dir_rc = finish_directories(&ctx, rc == BP_OK);
+    if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
+    if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
+    return rc;
 }
 #endif
 
@@ -2090,7 +2301,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     FILE *fp;
     bp_io_t aio;
     extract_ctx_t ctx;
-    int rc;
+    int rc, dir_rc;
     double start;
     double elapsed;
 
@@ -2109,7 +2320,11 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     }
 
     if (out_dir && !dry_run) {
-        mkdirs(out_dir);
+        if (mkdirs(out_dir) != 0) {
+            fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
+            fclose(fp);
+            return 1;
+        }
     }
 
     bp_io_from_file(&aio, fp);
@@ -2120,10 +2335,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
 
     start = wall_time_seconds();
 
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
-                                g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
-                                &ctx);
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
+                                   g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
+                                   &ctx);
     fclose(fp);
+
+    if (rc == BP_OK && ctx.open_error != BP_OK) rc = ctx.open_error;
+    dir_rc = finish_directories(&ctx, rc == BP_OK);
+    if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
+    if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));

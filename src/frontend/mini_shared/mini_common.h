@@ -38,6 +38,15 @@ void bp_io_from_file(bp_io_t *io, FILE *fp);
 /* Return 1 for a relative archive path safe to use during extraction. */
 int bp_mini_name_is_safe(const char *name);
 
+/* Mini filename conversion uses the configured native codepage. Conversion
+ * fails rather than silently substituting an unrepresentable character. */
+int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size);
+int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size);
+int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
+                            bp_uint8 entry_type, bp_uint8 platform,
+                            bp_io_t *file_io, bp_uint64 file_size,
+                            bp_uint64 mtime, bp_uint16 flags);
+
 /* Convert unsigned long n to decimal in buf[11]; returns pointer to first digit.
  * buf must be at least 11 bytes. */
 char *bp_mini_ultoa(unsigned long n, char *buf);

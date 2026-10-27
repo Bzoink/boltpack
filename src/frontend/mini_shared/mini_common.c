@@ -8,8 +8,81 @@
  */
 
 #include "mini_common.h"
+#include "../../core/bp_codepage.h"
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+/* DOS and the Win16 DOS API use an OEM codepage. OS/2 defaults to CP850;
+ * CP/M is ASCII-only unless an explicit codepage is selected at build time. */
+#ifndef BP_MINI_CODEPAGE
+# if defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_OS2
+#  define BP_MINI_CODEPAGE BP_CP_850
+# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_CPM86
+#  define BP_MINI_CODEPAGE (-1)
+# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_LINUX
+#  define BP_MINI_CODEPAGE BP_CP_UTF8
+# else
+#  define BP_MINI_CODEPAGE BP_CP_437
+# endif
+#endif
+
+int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size)
+{
+    size_t i, n;
+    if (src == NULL || dst == NULL || dst_size == 0 || dst_size > 32767U)
+        return -1;
+    if (BP_MINI_CODEPAGE != -1)
+        return bp_local_to_utf8(src, dst, (int)dst_size, BP_MINI_CODEPAGE);
+    n = strlen(src);
+    if (n >= dst_size) return -1;
+    for (i = 0; i < n; i++) if ((unsigned char)src[i] >= 0x80) return -1;
+    memcpy(dst, src, n + 1);
+    return 0;
+}
+
+int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size)
+{
+    size_t n;
+    char *roundtrip;
+    int rc;
+    if (src == NULL || dst == NULL || dst_size == 0 || dst_size > 32767U)
+        return -1;
+    if (BP_MINI_CODEPAGE == -1)
+        return bp_mini_local_to_utf8(src, dst, dst_size);
+    n = strlen(src);
+    if (n >= 32767U) return -1;
+    if (bp_utf8_to_local(src, dst, (int)dst_size, BP_MINI_CODEPAGE) != 0)
+        return -1;
+    roundtrip = (char *)malloc(n + 1);
+    if (roundtrip == NULL) return -1;
+    rc = bp_local_to_utf8(dst, roundtrip, (int)n + 1, BP_MINI_CODEPAGE);
+    if (rc == 0 && strcmp(src, roundtrip) != 0) rc = -1;
+    free(roundtrip);
+    return rc;
+}
+
+int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
+                            bp_uint8 entry_type, bp_uint8 platform,
+                            bp_io_t *file_io, bp_uint64 file_size,
+                            bp_uint64 mtime, bp_uint16 flags)
+{
+    unsigned long n;
+    char *utf8;
+    int rc;
+    if (name == NULL) return BP_ERR_INVALID_ARG;
+    n = (unsigned long)strlen(name);
+    if (n > 10922UL) return BP_ERR_NAME_TOO_LONG;
+    utf8 = (char *)malloc((size_t)(n * 3UL + 1UL));
+    if (utf8 == NULL) return BP_ERR_NOMEM;
+    if (bp_mini_local_to_utf8(name, utf8, (unsigned int)(n * 3UL + 1UL)) != 0)
+        rc = BP_ERR_INVALID_ARG;
+    else
+        rc = bp_mini_archive_add_entry_ex(ar, utf8, entry_type, platform,
+                                          file_io, file_size, mtime, flags);
+    free(utf8);
+    return rc;
+}
 
 int bp_mini_name_is_safe(const char *name)
 {
@@ -116,6 +189,7 @@ const char *bp_mini_strerror(int code)
     case BP_ERR_ABORTED:             return "operation aborted";
     case BP_ERR_NOT_FOUND:           return "entry not found";
     case BP_ERR_INVALID_ARG:         return "invalid argument";
+    case BP_ERR_PARTIAL:             return "some entries or attributes were not restored";
     default:                          return "unknown error";
     }
 }

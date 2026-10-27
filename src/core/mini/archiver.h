@@ -17,7 +17,7 @@
 #include "../bp_types.h"
 
 /* Maximum file name length in bytes (same as full archiver) */
-#define BP_MAX_NAME_LEN  65535
+#define BP_MAX_NAME_LEN  65493U
 
 /* ---- Entry info -------------------------------------------------------- */
 
@@ -103,6 +103,13 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
                               bp_io_t *file_io, bp_uint64 file_size,
                               bp_uint64 mtime);
 
+/* Explicit entry flags; clear MTIME_VALID and pass zero for an unknown time.
+ * The original entry point treats the supplied mtime as known. */
+int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
+                                 bp_uint8 entry_type, bp_uint8 platform,
+                                 bp_io_t *file_io, bp_uint64 file_size,
+                                 bp_uint64 mtime, bp_uint16 flags);
+
 /* Write file table and footer, patch the header.  Must call before close. */
 int bp_mini_archive_finalize(bp_mini_archive_t *ar);
 
@@ -133,6 +140,11 @@ typedef bp_io_t *(*bp_mini_extract_fn)(const bp_mini_entry_t *entry,
 typedef void (*bp_mini_extract_done_fn)(const bp_mini_entry_t *entry,
                                         bp_io_t *out, void *user_data);
 
+/* Called exactly once for each opened output, on success or failure. */
+typedef int (*bp_mini_extract_done_status_fn)(const bp_mini_entry_t *entry,
+                                               bp_io_t *out, int status,
+                                               void *user_data);
+
 /*
  * Extract all entries.  Per-entry capability checks:
  *   method > BP_METHOD_BOLTLZ  -> prints warning, skips entry.
@@ -143,6 +155,12 @@ int bp_mini_archive_extract_all(bp_io_t *io,
                                 bp_mini_extract_fn open_fn,
                                 bp_mini_extract_done_fn done_fn,
                                 void *user_data);
+
+/* A completion callback may return BP_ERR_PARTIAL to report metadata loss;
+ * extraction continues and the overall result is BP_ERR_PARTIAL. */
+int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   void *user_data);
 
 /* ---- Test ------------------------------------------------------------- */
 

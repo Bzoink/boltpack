@@ -13,7 +13,7 @@
 #include "bp_types.h"
 
 /* Maximum file name length in bytes */
-#define BP_MAX_NAME_LEN  65535
+#define BP_MAX_NAME_LEN  65493U /* 16-bit header_size includes 42 fixed bytes */
 
 /* --- Entry info (used for listing and callbacks) ------------------------ */
 
@@ -121,7 +121,8 @@ int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
 /* Add a file entry to the archive.
  * name: UTF-8 path, entry_type: BP_TYPE_*, platform: BP_OS_*,
  * file_io: source data (NULL for dirs), file_size: size in bytes,
- * mtime: Unix epoch seconds. */
+ * mtime: known Unix epoch seconds (zero is a valid timestamp). Use the _ex
+ * variant with MTIME_VALID clear and mtime zero when the time is unknown. */
 int bp_archive_add_entry(bp_archive_t *ar, const char *name,
                          bp_uint8 entry_type, bp_uint8 platform,
                          bp_io_t *file_io, bp_uint64 file_size,
@@ -129,8 +130,8 @@ int bp_archive_add_entry(bp_archive_t *ar, const char *name,
 
 /* Like bp_archive_add_entry but also sets the entry flags field.
  * flags: combine BP_ENTRY_FLAG_MODE_VALID with (mode & BP_ENTRY_FLAG_MODE_MASK)
- * to store Unix permission bits; pass 0 for the same behaviour as
- * bp_archive_add_entry. */
+ * to store Unix permission bits. Set BP_ENTRY_FLAG_MTIME_VALID if mtime is
+ * known; otherwise mtime must be zero. */
 int bp_archive_add_entry_ex(bp_archive_t *ar, const char *name,
                             bp_uint8 entry_type, bp_uint8 platform,
                             bp_io_t *file_io, bp_uint64 file_size,
@@ -218,12 +219,23 @@ typedef bp_io_t *(*bp_extract_fn)(const bp_entry_t *entry, void *user_data);
 typedef void (*bp_extract_done_fn)(const bp_entry_t *entry, bp_io_t *out,
                                    void *user_data);
 
+/* Called exactly once for every non-NULL output, including on failure.
+ * status is BP_OK only after the entry checksum has been verified. The
+ * callback owns and closes out and can return an error from finalization.
+ * BP_ERR_PARTIAL records incomplete metadata while continuing extraction. */
+typedef int (*bp_extract_done_status_fn)(const bp_entry_t *entry, bp_io_t *out,
+                                         int status, void *user_data);
+
 /* Extract all entries from archive. */
 int bp_archive_extract_all(bp_io_t *io,
                            bp_extract_fn open_fn,
                            bp_extract_done_fn done_fn,
                            bp_progress_fn progress_fn,
                            void *user_data);
+
+int bp_archive_extract_all_ex(bp_io_t *io, bp_extract_fn open_fn,
+                              bp_extract_done_status_fn done_fn,
+                              bp_progress_fn progress_fn, void *user_data);
 
 /* --- Test --------------------------------------------------------------- */
 

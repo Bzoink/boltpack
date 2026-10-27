@@ -313,6 +313,19 @@ The frontend is structurally identical to `dos16/main.c`. Differences:
 - `mkdir` is available; hierarchical extraction works as on DOS 16.
 - Compiler: Watcom C 16-bit (`wcc -bt=windows`), Borland C 3.x, or MSVC 1.5.
 
+The DOS16 and Win16 frontends interpret FAT timestamps using the environment
+variable `BP_TZ_OFFSET`, an integer number of minutes east of UTC. For example,
+`set BP_TZ_OFFSET=60` specifies UTC+01:00 and `set BP_TZ_OFFSET=-300` specifies
+UTC-05:00. This is a fixed offset, so select the offset appropriate to the
+timestamps being transferred; it does not apply historical daylight-saving
+rules. Without a valid setting, creation records unknown timestamps and
+extraction leaves timestamps unrestored. Both operations report incomplete
+metadata with a nonzero exit status. FAT timestamps have two-second resolution;
+extraction reports when an odd second was rounded down. After setting a file's
+time, these frontends read it back and report incomplete metadata if the
+filesystem or emulator did not retain it. For example, DOSBox 0.74-3 can
+acknowledge a timestamp change without applying it on a mounted host directory.
+
 **Compiler flags (Watcom):**
 
 ```makefile

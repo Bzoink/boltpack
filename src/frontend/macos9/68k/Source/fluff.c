@@ -1,11 +1,9 @@
 /*
  * fluff.c -- fluff compression codec for BoltPack
  *
- * Self-contained LZ77 + canonical Huffman compressor/decompressor.
- * Derived from DEFLATE concepts but with relaxed constraints:
- *   - Configurable window size up to 2 MB (vs DEFLATE's 32 KB)
- *   - Match lengths up to 258 bytes     (same as DEFLATE)
- *   - Deeper hash-chain search per level
+ * Self-contained LZ77 + FSE/tANS compressor/decompressor.
+ * Uses a 256 KB window, matches up to 258 bytes, and a three-distance
+ * repeat ring. Compression levels control hash-chain search depth.
  *
  * The stream format is NOT compatible with DEFLATE/zlib/gzip.
  *
@@ -65,8 +63,19 @@ static void fl_free(void *ptr)
     }
 }
 
+static void *fl_calloc(size_t count, size_t size)
+{
+    void *ptr;
+    if (s_fluff_alloc == NULL) return calloc(count, size);
+    if (count != 0 && size > (size_t)-1 / count) return NULL;
+    ptr = fl_malloc(count * size);
+    if (ptr != NULL) memset(ptr, 0, count * size);
+    return ptr;
+}
+
 #define malloc  fl_malloc
 #define free    fl_free
+#define calloc  fl_calloc
 
 /*
  * FLUFF_STATS: when defined, the match finder maintains detailed parse and
@@ -195,6 +204,12 @@ static void fl_free(void *ptr)
  */
 #define FLUFF_STREAM_VERSION_FSE2       0x08
 #define FLUFF_STREAM_VERSION_FSE2_RESET 0x88
+/*
+ * 0x09 / 0x89 keep the compact header and token alphabets, but use ANS
+ * virtual states in [L, 2L), stored with L subtracted. This changes both
+ * FSE streams; the decoder retains the old interval layout for 0x07/0x08.
+ * Public version constants are declared in fluff.h.
+ */
 
 /* ─── Portable helpers ──────────────────────────────────────────────────── */
 
@@ -681,6 +696,7 @@ typedef struct {
     fl_u32  pos;      /* bytes written */
     fl_u32  accum;    /* bit accumulator */
     fl_u32  nbits;    /* bits in accum */
+    int reverse;     /* write bytes from the end of buf */
 } fse_bits_t;
 
 /* ── Frequency normalization ─────────────────────────────────────────── */
@@ -790,7 +806,8 @@ static int fse_normalize(const fl_u32 *freq, fl_u32 nsym,
  * dtab[] must have L entries (indexed 0..L-1).
  */
 static int fse_build_dtab(const fl_u16 *norm, fl_u32 nsym,
-                           fse_dtab_t *dtab, fl_u32 log2l)
+                           fse_dtab_t *dtab, fl_u32 log2l,
+                           int legacy_layout)
 {
     fl_u32 L = 1U << log2l;
     fl_u16 *spread;
@@ -800,7 +817,7 @@ static int fse_build_dtab(const fl_u16 *norm, fl_u32 nsym,
     fl_u32 *sym_k;   /* occurrence counter per symbol */
 
     spread = (fl_u16 *)malloc(L * sizeof(fl_u16));
-    sym_k  = (fl_u32 *)malloc(nsym * sizeof(fl_u32));
+    sym_k  = (fl_u32 *)malloc(nsym * 3U * sizeof(fl_u32));
     if (!spread || !sym_k) {
         free(spread); free(sym_k);
         return -1;
@@ -817,30 +834,53 @@ static int fse_build_dtab(const fl_u16 *norm, fl_u32 nsym,
             pos = (pos + step) & (L - 1);
         }
     }
-    memset(sym_k, 0, nsym * sizeof(fl_u32));
+    if (legacy_layout) {
+        memset(sym_k, 0, nsym * sizeof(fl_u32));
+        for (i = 0; i < L; i++) {
+            fl_u32 sym = spread[i];
+            fl_u32 ns  = norm[sym];
+            fl_u32 k   = sym_k[sym]++;
+            fl_u8  db;
+            fl_u32 m, nb, new_base;
 
-    for (i = 0; i < L; i++) {
-        fl_u32 sym = spread[i];
-        fl_u32 ns  = norm[sym];
-        fl_u32 k   = sym_k[sym]++;
-        fl_u8  db;
-        fl_u32 m, nb, new_base;
+            db = 0;
+            while ((ns << (db + 1)) <= L) db++;
+            m = (L >> db) - ns;
 
-        db = 0;
-        while ((ns << (db + 1)) <= L) db++;
-        m = (L >> db) - ns;
+            if (k < m) {
+                nb       = (fl_u32)(db + 1U);
+                new_base = k << nb;
+            } else {
+                nb       = (fl_u32)db;
+                new_base = (m << (db + 1U)) + ((k - m) << db);
+            }
 
-        if (k < m) {
-            nb       = (fl_u32)(db + 1U);
-            new_base = k << nb;
-        } else {
-            nb       = (fl_u32)db;
-            new_base = (m << (db + 1U)) + ((k - m) << db);
+            dtab[i].symbol   = (fl_u16)sym;
+            dtab[i].num_bits = (fl_u8)nb;
+            dtab[i].new_base = (fl_u16)new_base;
         }
 
-        dtab[i].symbol   = (fl_u16)sym;
-        dtab[i].num_bits = (fl_u8)nb;
-        dtab[i].new_base = (fl_u16)new_base;
+    } else {
+        /* The bit-width cutoff depends only on the symbol, not the state.
+         * Cache it once per symbol instead of recomputing its logarithm
+         * for every occurrence in the spread table. */
+        for (s = 0; s < nsym; s++) {
+            fl_u32 ns = norm[s], db = 0;
+            if (ns) while ((ns << (db + 1)) <= L) db++;
+            sym_k[s * 3] = ns;
+            sym_k[s * 3 + 1] = L >> db;
+            sym_k[s * 3 + 2] = db;
+        }
+        for (i = 0; i < L; i++) {
+            fl_u32 sym = spread[i];
+            fl_u32 *param = sym_k + sym * 3;
+            fl_u32 next = param[0]++;
+            fl_u32 nb = param[2] + (next < param[1]);
+            /* Virtual states [L, 2L) are stored with L subtracted. */
+            dtab[i].symbol = (fl_u16)sym;
+            dtab[i].num_bits = (fl_u8)nb;
+            dtab[i].new_base = (fl_u16)((next << nb) - L);
+        }
     }
 
     free(spread);
@@ -855,6 +895,7 @@ static void fse_bits_init_write(fse_bits_t *b, fl_u8 *buf, fl_u32 cap)
     b->pos   = 0;
     b->accum = 0;
     b->nbits = 0;
+    b->reverse = 0;
 }
 
 static void fse_bits_write(fse_bits_t *b, fl_u32 val, fl_u32 nbits)
@@ -864,7 +905,8 @@ static void fse_bits_write(fse_bits_t *b, fl_u32 val, fl_u32 nbits)
     b->nbits += nbits;
     while (b->nbits >= 8) {
         if (b->pos < b->cap)
-            b->buf[b->pos] = (fl_u8)(b->accum & 0xFFU);
+            b->buf[b->reverse ? b->cap - 1U - b->pos : b->pos] =
+                (fl_u8)(b->accum & 0xFFU);
         b->pos++;
         b->accum >>= 8;
         b->nbits  -= 8;
@@ -877,7 +919,8 @@ static void fse_bits_flush(fse_bits_t *b)
     b->accum |= 1U << b->nbits;
     b->nbits++;
     if (b->pos < b->cap)
-        b->buf[b->pos] = (fl_u8)(b->accum & 0xFFU);
+        b->buf[b->reverse ? b->cap - 1U - b->pos : b->pos] =
+            (fl_u8)(b->accum & 0xFFU);
     b->pos++;
     b->accum = 0;
     b->nbits = 0;
@@ -928,10 +971,23 @@ static fl_u32 fse_bits_read(fse_bits_r_t *b, fl_u32 nbits)
 {
     fl_u32 val;
     if (nbits == 0) return 0;
-    while (b->nbits < nbits) {
-        fl_u8 byte = (b->pos > 0) ? b->buf[--b->pos] : 0;
-        b->accum = (b->accum << 8) | (fl_u32)byte;
-        b->nbits += 8;
+    if (b->nbits < nbits) {
+        /* Refill three bytes together when the 32-bit accumulator has
+         * room. Current callers request at most 17 bits. */
+        if (b->nbits <= 8 && b->pos >= 3) {
+            fl_u32 pos = b->pos - 3;
+            b->accum = (b->accum << 24) | (fl_u32)b->buf[pos] |
+                       ((fl_u32)b->buf[pos + 1] << 8) |
+                       ((fl_u32)b->buf[pos + 2] << 16);
+            b->pos = pos;
+            b->nbits += 24;
+        } else {
+            do {
+                fl_u8 byte = (b->pos > 0) ? b->buf[--b->pos] : 0;
+                b->accum = (b->accum << 8) | (fl_u32)byte;
+                b->nbits += 8;
+            } while (b->nbits < nbits);
+        }
     }
     b->nbits -= nbits;
     val = (b->accum >> b->nbits) & ((1U << nbits) - 1U);
@@ -944,17 +1000,16 @@ static fl_u32 fse_bits_read(fse_bits_r_t *b, fl_u32 nbits)
  * Per-symbol encode parameters.
  * slots[slot_off .. slot_off+count-1] = spread positions for this symbol.
  * State y in [0, L):
- *   if y < max_hi: nb = db_hi, k = y >> db_hi
- *   else:          nb = db_lo, k = m + ((y - max_hi) >> db_lo)
+ *   nb = db_lo + (y >= low_limit)
+ *   k = ((y + table_size) >> nb) - count
  *   emit y & ((1<<nb)-1); new_state = slots[slot_off + k]
  */
 typedef struct {
     fl_u32 slot_off; /* index into slots[] for this symbol's first occurrence */
     fl_u32 count;    /* normalized count ns */
-    fl_u32 m;        /* # occurrences using db_hi bits */
-    fl_u32 max_hi;   /* m << db_hi = threshold: states < max_hi use db_hi */
+    fl_u32 table_size; /* virtual state bias L */
+    fl_u32 low_limit; /* states below this threshold use db_lo bits */
     fl_u8  db_lo;
-    fl_u8  db_hi;
 } fse_sym_enc_t;
 
 /*
@@ -1016,27 +1071,23 @@ static int fse_build_ctab(const fl_u16 *norm, fl_u32 nsym,
     for (s = 0; s < nsym; s++) {
         fl_u32 ns = norm[s];
         fl_u8  db;
-        fl_u32 m;
         if (ns == 0) {
             senc[s].slot_off = 0;
             senc[s].count    = 0;
-            senc[s].m        = 0;
-            senc[s].max_hi   = 0;
+            senc[s].table_size = 0;
+            senc[s].low_limit = 0;
             senc[s].db_lo    = 0;
-            senc[s].db_hi    = 0;
             continue;
         }
         /* db_lo: largest d such that ns << d <= L */
         db = 0;
         while ((ns << (db + 1)) <= L) db++;
-        m = (L >> db) - ns;
 
         senc[s].slot_off = slot_off[s];
         senc[s].count    = ns;
         senc[s].db_lo    = db;
-        senc[s].db_hi    = (fl_u8)(db + 1);
-        senc[s].m        = m;
-        senc[s].max_hi   = m << (db + 1);
+        senc[s].table_size = L;
+        senc[s].low_limit = (ns << (db + 1)) - L;
     }
 
     free(spread); free(sym_k); free(slot_off);
@@ -1052,22 +1103,12 @@ static fl_u32 fse_encode_sym_fast(fl_u32 y, fl_u32 sym,
                                    const fse_sym_enc_t *senc,
                                    fse_bits_t *bits)
 {
-    fl_u32 ns   = senc[sym].count;
-    fl_u32 m    = senc[sym].m;
-    fl_u32 mhi  = senc[sym].max_hi;
-    fl_u8  db_lo = senc[sym].db_lo;
-    fl_u8  db_hi = senc[sym].db_hi;
+    fl_u32 ns = senc[sym].count;
     fl_u32 nb, k;
 
     if (ns == 0) return y; /* should not happen */
-
-    if (y < mhi) {
-        nb = db_hi;
-        k  = y >> db_hi;
-    } else {
-        nb = db_lo;
-        k  = m + ((y - mhi) >> db_lo);
-    }
+    nb = senc[sym].db_lo + (y >= senc[sym].low_limit);
+    k = ((y + senc[sym].table_size) >> nb) - ns;
     fse_bits_write(bits, y & ((1U << nb) - 1U), nb);
     return slots[senc[sym].slot_off + k];
 }
@@ -1333,11 +1374,8 @@ struct fluff_ctx_s {
      * Owned by the context; allocated on first compress, reused thereafter,
      * freed by fluff_ctx_free.  Decode-only contexts never allocate these.
      */
-    fl_u8  *scratch_tokens;     /* LZ77 token byte buffer (2*src_len + 16) */
-    fl_u8  *scratch_tok_types;  /* per-token type index   (src_len + 16)   */
-    fl_u8  *scratch_fse;        /* FSE bitstream scratch  (compress_bound)  */
-    fl_u8  *scratch_raw;        /* raw extra-bits scratch (compress_bound)  */
-    fl_u32  scratch_src_cap;    /* src_len the scratch buffers are sized for */
+    fl_u8  *scratch_tokens;     /* tokens, then raw bits (2*src_len + 16) */
+    fl_u32  scratch_src_cap;    /* largest src_len this buffer can hold */
 };
 
 #define FL_SEARCH_RESULT_NONE               0
@@ -1379,9 +1417,6 @@ fluff_ctx_t *fluff_ctx_alloc(void)
         ctx->hash_chain        = NULL;
         ctx->hash3             = NULL;
         ctx->scratch_tokens    = NULL;
-        ctx->scratch_tok_types = NULL;
-        ctx->scratch_fse       = NULL;
-        ctx->scratch_raw       = NULL;
         ctx->scratch_src_cap   = 0;
     }
     return (fluff_ctx_t *)ctx;
@@ -1394,9 +1429,6 @@ void fluff_ctx_free(fluff_ctx_t *ctx)
         free(ctx->hash_chain);
         free(ctx->hash3);
         free(ctx->scratch_tokens);
-        free(ctx->scratch_tok_types);
-        free(ctx->scratch_fse);
-        free(ctx->scratch_raw);
     }
     free(ctx);
 }
@@ -1428,48 +1460,17 @@ static int fl_ctx_ensure_matchfinder(fluff_ctx_t *ctx)
 }
 
 /*
- * Ensure the context's encoder scratch buffers are large enough for a block
- * of src_len bytes, growing (never shrinking) them as needed.  Buffers are
- * reused across blocks, so the per-block malloc traffic of the old design is
- * eliminated.  Returns BP_OK or BP_ERR_NOMEM.
+ * Grow the token/raw buffer to fit src_len, retaining it across blocks.
+ * Allocate before freeing so a failed growth preserves the previous buffer.
  */
 static int fl_ctx_ensure_scratch(fluff_ctx_t *ctx, fl_u32 src_len)
 {
-    fl_u32 tok_cap;
-    fl_u32 ttype_cap;
-    fl_u32 buf_cap;
-
-    if (ctx->scratch_src_cap >= src_len && ctx->scratch_tokens != NULL) {
-        return BP_OK;
-    }
-
-    /* Sizes mirror the historical per-block allocations. */
-    tok_cap   = src_len * 2U + 16U;
-    ttype_cap = src_len + 16U;
-    buf_cap   = fluff_compress_bound(src_len);
-
+    fl_u8 *tokens;
+    if (ctx->scratch_src_cap >= src_len && ctx->scratch_tokens != NULL) return BP_OK;
+    tokens = (fl_u8 *)malloc(src_len * 2U + 16U);
+    if (tokens == NULL) return BP_ERR_NOMEM;
     free(ctx->scratch_tokens);
-    free(ctx->scratch_tok_types);
-    free(ctx->scratch_fse);
-    free(ctx->scratch_raw);
-    ctx->scratch_tokens    = (fl_u8 *)malloc(tok_cap);
-    ctx->scratch_tok_types = (fl_u8 *)malloc(ttype_cap);
-    ctx->scratch_fse       = (fl_u8 *)malloc(buf_cap);
-    ctx->scratch_raw       = (fl_u8 *)malloc(buf_cap);
-
-    if (ctx->scratch_tokens == NULL || ctx->scratch_tok_types == NULL ||
-        ctx->scratch_fse == NULL || ctx->scratch_raw == NULL) {
-        free(ctx->scratch_tokens);
-        free(ctx->scratch_tok_types);
-        free(ctx->scratch_fse);
-        free(ctx->scratch_raw);
-        ctx->scratch_tokens    = NULL;
-        ctx->scratch_tok_types = NULL;
-        ctx->scratch_fse       = NULL;
-        ctx->scratch_raw       = NULL;
-        ctx->scratch_src_cap   = 0;
-        return BP_ERR_NOMEM;
-    }
+    ctx->scratch_tokens = tokens;
     ctx->scratch_src_cap = src_len;
     return BP_OK;
 }
@@ -2482,8 +2483,8 @@ static int fl_emit_literal_token(fluff_ctx_t *ctx, fl_u8 *tokens,
         if (*num_tokens + 2 > token_cap) {
             return BP_ERR_OVERFLOW;
         }
-        tokens[*num_tokens] = 0;
-        tokens[*num_tokens + 1] = literal;
+        tokens[*num_tokens] = literal;
+        tokens[*num_tokens + 1] = 0;
         *num_tokens += 2;
     }
 
@@ -2512,12 +2513,12 @@ static int fl_emit_match_token(fluff_ctx_t *ctx, fl_u8 *tokens,
             if (*num_tokens + 6 > token_cap) {
                 return BP_ERR_OVERFLOW;
             }
-            tokens[*num_tokens] = 1;
-            tokens[*num_tokens + 1] = (fl_u8)(match_len & 0xFF);
-            tokens[*num_tokens + 2] = (fl_u8)((match_len >> 8) & 0xFF);
-            tokens[*num_tokens + 3] = (fl_u8)(match_dist & 0xFF);
-            tokens[*num_tokens + 4] = (fl_u8)((match_dist >> 8) & 0xFF);
-            tokens[*num_tokens + 5] = (fl_u8)((match_dist >> 16) & 0xFF);
+            tokens[*num_tokens] = (fl_u8)(match_len & 0xFF);
+            tokens[*num_tokens + 1] = (fl_u8)((match_len >> 8) & 0xFF);
+            tokens[*num_tokens + 2] = (fl_u8)(match_dist & 0xFF);
+            tokens[*num_tokens + 3] = (fl_u8)((match_dist >> 8) & 0xFF);
+            tokens[*num_tokens + 4] = (fl_u8)((match_dist >> 16) & 0xFF);
+            tokens[*num_tokens + 5] = 1;
             *num_tokens += 6;
         }
 
@@ -2534,9 +2535,9 @@ static int fl_emit_match_token(fluff_ctx_t *ctx, fl_u8 *tokens,
             if (*num_tokens + 3 > token_cap) {
                 return BP_ERR_OVERFLOW;
             }
-            tokens[*num_tokens] = token_type;
-            tokens[*num_tokens + 1] = (fl_u8)(match_len & 0xFF);
-            tokens[*num_tokens + 2] = (fl_u8)((match_len >> 8) & 0xFF);
+            tokens[*num_tokens] = (fl_u8)(match_len & 0xFF);
+            tokens[*num_tokens + 1] = (fl_u8)((match_len >> 8) & 0xFF);
+            tokens[*num_tokens + 2] = token_type;
             *num_tokens += 3;
         }
 
@@ -2571,7 +2572,9 @@ static int fl_check_header(const fl_u8 *src, fl_u32 src_size,
         && src[2] != FLUFF_STREAM_VERSION_FSE
         && src[2] != FLUFF_STREAM_VERSION_FSE_RESET
         && src[2] != FLUFF_STREAM_VERSION_FSE2
-        && src[2] != FLUFF_STREAM_VERSION_FSE2_RESET) return -1;
+        && src[2] != FLUFF_STREAM_VERSION_FSE2_RESET
+        && src[2] != FLUFF_STREAM_VERSION_FSE3
+        && src[2] != FLUFF_STREAM_VERSION_FSE3_RESET) return -1;
     *win_bits = src[3];
     if (stream_version != NULL) {
         *stream_version = src[2];
@@ -2803,24 +2806,10 @@ static int fl_parse_greedy(fluff_ctx_t *ctx, const fl_u8 *src,
 }
 
 /*
- * fluff_compress_block_ctx: compress one block using a persistent context.
- *
- * Uses FSE (tANS) v0x07 entropy coding.  LZ77 pass is identical to v0x06;
- * the entropy layer is replaced with Finite State Entropy for ~3× faster
- * decompression at similar compression ratio.
- *
- * Block layout (v0x07):
- *   [4]    stream header ('F','L',0x07,win_bits)
- *   [578]  litlen count table (289 × uint16 LE)
- *   [96]   dist   count table (48  × uint16 LE)
- *   [4]    FSE litlen initial state (uint32 LE)
- *   [4]    FSE dist   initial state (uint32 LE)
- *   [4]    FSE bitstream length (uint32 LE)
- *   [4]    raw extra-bits stream length (uint32 LE)
- *   [N]    FSE bitstream (ANS bits, MSB-first per byte)
- *   [M]    raw extra-bits bitstream (uniform bits, MSB-first per byte)
- *
- * Total fixed overhead: 4 + 578 + 96 + 16 = 694 bytes per block.
+ * Compress one block with a persistent context. The v0x09 compact header
+ * stores lit/len and distance count tables, two uint16 ANS states, and two
+ * uint24 stream lengths. The lit/len and mixed distance/extra-bit streams
+ * follow it; both are written and read backwards.
  */
 int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
                               bp_uint8 *dst, bp_uint32 *dst_len,
@@ -2832,8 +2821,6 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     fl_u8    *tokens;
     fl_u32    num_tokens;
     fl_u32    token_cap;
-    fl_u8    *tok_types;  /* one entry per token: 0=lit,1=match,2/3/4=rep */
-    fl_u32    tok_count;
     fl_u32    ll_freq[FLUFF_NUM_LITLEN];
     fl_u32    d_freq[FLUFF_NUM_DIST];
     fl_u16   *ll_norm;
@@ -2843,8 +2830,8 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     fse_sym_enc_t *ll_senc;
     fse_sym_enc_t *d_senc;
     /* Backwards ANS encoder: encode tokens last-to-first. */
-    fl_u8    *fse_buf;    /* FSE bitstream buffer (backwards scratch) */
-    fl_u8    *raw_buf;    /* raw extra-bits buffer */
+    fl_u8    *fse_buf;    /* LL stream written directly into dst */
+    fl_u8    *raw_buf;    /* distance/raw stream reuses consumed tokens */
     fl_u32    fse_cap;
     fl_u32    raw_cap;
     fse_bits_t fse_bits;
@@ -2852,6 +2839,7 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     fl_u32    ll_state;
     fl_u32    d_state;
     fl_u32    hdr_pos;
+    fl_u32    tail_pos;
     fl_u32    fse_len;
     fl_u32    raw_len;
     int       parse_rc;
@@ -2875,7 +2863,6 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     }
     token_cap = src_len * 2 + 16;
     tokens    = ctx->scratch_tokens;
-    tok_types = ctx->scratch_tok_types;
 
     /* --- Pass 1: LZ77 greedy parse → token buffer + frequencies --- */
     memset(ll_freq, 0, sizeof(ll_freq));
@@ -2886,19 +2873,6 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
                                ll_freq, d_freq);
     if (parse_rc != BP_OK) { return parse_rc; }
 
-    /* Forward scan to build tok_types[]: record type of each token in order.
-     * This is the only reliable way to scan backwards later, because token
-     * body bytes can coincide with type marker values (0..4). */
-    tok_count = 0;
-    i = 0;
-    while (i < num_tokens) {
-        fl_u8 t = tokens[i];
-        tok_types[tok_count++] = t;
-        if (t == 1) i += 6;
-        else if (t == 0) i += 2;
-        else i += 3;  /* rep-match: types 2,3,4 */
-    }
-
     /* FSE working tables: embedded in the context (no per-block malloc). */
     ll_norm  = ctx->fse_ll_norm;
     d_norm   = ctx->fse_d_norm;
@@ -2906,10 +2880,8 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     d_slots  = ctx->fse_d_slots;
     ll_senc  = ctx->fse_ll_senc;
     d_senc   = ctx->fse_d_senc;
-    fse_cap  = bound;
-    raw_cap  = bound;
-    fse_buf  = ctx->scratch_fse;
-    raw_buf  = ctx->scratch_raw;
+    raw_cap  = token_cap;
+    raw_buf  = tokens;
 
     /* --- Pass 2a: normalize frequencies → count tables --- */
     /* Ensure EOB has at least 1 so it always gets a slot. */
@@ -2928,9 +2900,35 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
         return BP_ERR_COMPRESS;
     }
 
+    {
+        int nll, nd;
+
+        hdr_pos = 0;
+        dst[hdr_pos++] = 0x46; /* 'F' */
+        dst[hdr_pos++] = 0x4C; /* 'L' */
+        dst[hdr_pos++] = FLUFF_STREAM_VERSION_FSE3;
+        dst[hdr_pos++] = (fl_u8)FLUFF_WINDOW_BITS;
+
+        /* Count tables (compact). */
+        nll = fse_write_counts_compact(dst, bound, hdr_pos,
+                                       ll_norm, FLUFF_NUM_LITLEN);
+        if (nll < 0) return BP_ERR_COMPRESS;
+        hdr_pos += (fl_u32)nll;
+        nd = fse_write_counts_compact(dst, bound, hdr_pos,
+                                      d_norm, FLUFF_NUM_DIST);
+        if (nd < 0) return BP_ERR_COMPRESS;
+        hdr_pos += (fl_u32)nd;
+    }
+    if (hdr_pos + 10U > bound) return BP_ERR_COMPRESS;
+    tail_pos = hdr_pos;
+    hdr_pos += 10;
+    fse_buf = dst + hdr_pos;
+    fse_cap = bound - hdr_pos;
+
     /* --- Pass 2c: ANS-encode tokens BACKWARDS into fse_buf --- */
     fse_bits_init_write(&fse_bits, fse_buf, fse_cap);
     fse_bits_init_write(&raw_bits, raw_buf, raw_cap);
+    raw_bits.reverse = 1;
 
     /* Initial states for both alphabets: start at state 0 (in [0, L)). */
     ll_state = 0;
@@ -2947,28 +2945,32 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     ll_state = fse_encode_sym_fast(ll_state, FLUFF_END_OF_BLOCK,
                                    ll_slots, ll_senc, &fse_bits);
 
-    /* Scan tokens backwards using tok_types[] built in the forward pass.
-     * We cannot guess token boundaries from byte values alone because body
-     * bytes (mlen, dist) can coincide with the type markers 0..4. */
+    /*
+     * Each internal token ends with its type, so it can be read backwards
+     * without a separate index. Raw bytes grow downwards from token_cap.
+     * A normal token consumes 6 bytes before emitting at most 31 raw bits
+     * (17 distance extras + 9 distance ANS bits + 5 length extras); a repeat
+     * consumes 3 before emitting at most 10 bits; a literal consumes 2 and
+     * emits none. Even with a partial byte pending, neither can write more
+     * bytes than it consumes. All fields are loaded before any raw write.
+     * The 16-byte margin also covers the final sentinel. Thus the raw writer
+     * cannot reach unread tokens, even when the token buffer is full.
+     */
     i = num_tokens;
-    {
-        fl_u32 j = tok_count;
-        while (j > 0) {
-        fl_u8 tok;
-        j--;
-        tok = tok_types[j];
+    while (i > 0) {
+        fl_u8 tok = tokens[i - 1];
         if (tok == 1) i -= 6;
         else if (tok == 0) i -= 2;
         else i -= 3;
 
         if (tok == 0) {
             /* Literal */
-            fl_u32 lit = tokens[i + 1];
+            fl_u32 lit = tokens[i];
             ll_state = fse_encode_sym_fast(ll_state, lit,
                                            ll_slots, ll_senc, &fse_bits);
         } else if (tok >= 2 && tok <= 4) {
             /* Rep-match: encode 5-bit len index + extra bits (raw), then sym */
-            fl_u32 mlen = (fl_u32)tokens[i + 1] | ((fl_u32)tokens[i + 2] << 8);
+            fl_u32 mlen = (fl_u32)tokens[i] | ((fl_u32)tokens[i + 1] << 8);
             fl_u32 lev, leb, lsym;
             lsym = fl_len_to_sym(mlen, &lev, &leb);
             /* raw extra bits: backwards into raw_buf */
@@ -2978,9 +2980,9 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
                                            ll_slots, ll_senc, &fse_bits);
         } else {
             /* Regular match */
-            fl_u32 mlen  = (fl_u32)tokens[i + 1] | ((fl_u32)tokens[i + 2] << 8);
-            fl_u32 mdist = (fl_u32)tokens[i + 3] | ((fl_u32)tokens[i + 4] << 8)
-                         | ((fl_u32)tokens[i + 5] << 16);
+            fl_u32 mlen  = (fl_u32)tokens[i] | ((fl_u32)tokens[i + 1] << 8);
+            fl_u32 mdist = (fl_u32)tokens[i + 2] | ((fl_u32)tokens[i + 3] << 8)
+                         | ((fl_u32)tokens[i + 4] << 16);
             fl_u32 lsym, lev, leb;
             fl_u32 dsym, dev, deb;
             lsym = fl_len_to_sym(mlen,  &lev, &leb);
@@ -2994,7 +2996,6 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
             ll_state = fse_encode_sym_fast(ll_state, lsym,
                                            ll_slots, ll_senc, &fse_bits);
         }
-        } /* end while j > 0 */
     }
 
     fse_bits_flush(&fse_bits);
@@ -3002,59 +3003,17 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     fse_len = fse_bits.pos;
     raw_len = raw_bits.pos;
 
-    /* --- Assemble output (v0x08) --- */
-    /*
-     * Header layout:
-     *   [0..3]   stream header ('F','L',0x08,win_bits)
-     *   [var]    ll_norm count table (compact: varint + zero-run, R1)
-     *   [var]    d_norm  count table (compact, R1)
-     *   [2]      ll initial state (uint16 LE, R3)
-     *   [2]      d  initial state (uint16 LE, R3)
-     *   [3]      fse bitstream length (uint24 LE, R3)
-     *   [3]      raw bitstream length (uint24 LE, R3)
-     *   [N]      fse bitstream (reversed so decoder reads forward)
-     *   [M]      raw bitstream (reversed so decoder reads forward)
-     */
-    {
-        int nll, nd;
-
-        hdr_pos = 0;
-        dst[hdr_pos++] = 0x46; /* 'F' */
-        dst[hdr_pos++] = 0x4C; /* 'L' */
-        dst[hdr_pos++] = FLUFF_STREAM_VERSION_FSE2;
-        dst[hdr_pos++] = (fl_u8)FLUFF_WINDOW_BITS;
-
-        /* Count tables (compact). */
-        nll = fse_write_counts_compact(dst, bound, hdr_pos,
-                                       ll_norm, FLUFF_NUM_LITLEN);
-        if (nll < 0) return BP_ERR_COMPRESS;
-        hdr_pos += (fl_u32)nll;
-        nd = fse_write_counts_compact(dst, bound, hdr_pos,
-                                      d_norm, FLUFF_NUM_DIST);
-        if (nd < 0) return BP_ERR_COMPRESS;
-        hdr_pos += (fl_u32)nd;
-
-        /* Fixed tail: 2+2+3+3 = 10 bytes of states/lengths, then streams. */
-        if (hdr_pos + 10U + fse_len + raw_len > bound) {
-            return BP_ERR_COMPRESS;
-        }
-
-        /* Initial states (uint16). */
-        fse_write_u16(dst, hdr_pos, ll_state); hdr_pos += 2;
-        fse_write_u16(dst, hdr_pos, d_state);  hdr_pos += 2;
-
-        /* Stream lengths (uint24). */
-        fse_write_u24(dst, hdr_pos, fse_len);  hdr_pos += 3;
-        fse_write_u24(dst, hdr_pos, raw_len);  hdr_pos += 3;
-
-        /* FSE bitstream: decoder reads backward from end, so store as-is. */
-        memcpy(dst + hdr_pos, fse_buf, fse_len);
-        hdr_pos += fse_len;
-
-        /* Raw bitstream: decoder reads backward from end, so store as-is. */
-        memcpy(dst + hdr_pos, raw_buf, raw_len);
-        hdr_pos += raw_len;
-    }
+    if (fse_len > bound - hdr_pos || raw_len > bound - hdr_pos - fse_len)
+        return BP_ERR_COMPRESS;
+    fse_write_u16(dst, tail_pos, ll_state);
+    fse_write_u16(dst, tail_pos + 2, d_state);
+    fse_write_u24(dst, tail_pos + 4, fse_len);
+    fse_write_u24(dst, tail_pos + 7, raw_len);
+    hdr_pos += fse_len;
+    /* Restore the stream's original byte order after the downward writes. */
+    for (i = 0; i < raw_len; i++)
+        dst[hdr_pos + i] = raw_buf[raw_cap - 1U - i];
+    hdr_pos += raw_len;
 
     *dst_len = hdr_pos;
 
@@ -3272,13 +3231,16 @@ static int fl_decompress_fse(const bp_uint8 *src, bp_uint32 src_len,
     fl_u32    raw_len;
     int       norm_ok;
     int       v2;
+    int       legacy_layout;
     int       rc = BP_OK;
 
     if (fl_check_header(src, src_len, &win_bits, &stream_version) != 0)
         { rc = BP_ERR_CORRUPT; goto cleanup; }
 
+    legacy_layout = (stream_version != FLUFF_STREAM_VERSION_FSE3 &&
+                     stream_version != FLUFF_STREAM_VERSION_FSE3_RESET);
     v2 = (stream_version == FLUFF_STREAM_VERSION_FSE2 ||
-          stream_version == FLUFF_STREAM_VERSION_FSE2_RESET);
+          stream_version == FLUFF_STREAM_VERSION_FSE2_RESET || !legacy_layout);
 
     out_cap  = *dst_len;
     out_pos  = 0;
@@ -3311,8 +3273,10 @@ static int fl_decompress_fse(const bp_uint8 *src, bp_uint32 src_len,
     hdr_pos += (fl_u32)norm_ok;
 
     /* Build decode tables. */
-    if (fse_build_dtab(ll_norm, FLUFF_NUM_LITLEN, ll_dtab, FSE_LL_BITS) != 0 ||
-        fse_build_dtab(d_norm,  FLUFF_NUM_DIST,   d_dtab,  FSE_D_BITS)  != 0)
+    if (fse_build_dtab(ll_norm, FLUFF_NUM_LITLEN, ll_dtab, FSE_LL_BITS,
+                       legacy_layout) != 0 ||
+        fse_build_dtab(d_norm, FLUFF_NUM_DIST, d_dtab, FSE_D_BITS,
+                       legacy_layout) != 0)
         { rc = BP_ERR_CORRUPT; goto cleanup; }
 
     /* Read initial states and stream lengths.
@@ -3424,7 +3388,8 @@ int fluff_decompress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     if (src_len < FLUFF_HDR_SIZE) return BP_ERR_CORRUPT;
 
     if (src[2] == FLUFF_STREAM_VERSION_FSE_RESET ||
-        src[2] == FLUFF_STREAM_VERSION_FSE2_RESET) {
+        src[2] == FLUFF_STREAM_VERSION_FSE2_RESET ||
+        src[2] == FLUFF_STREAM_VERSION_FSE3_RESET) {
         /* Context-independent block: reset ring buffer before decoding.
          * Use the lightweight decode-only reset to avoid the 1.75 MB hash
          * memset which is irrelevant during decompression. */
@@ -3432,7 +3397,8 @@ int fluff_decompress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
         return fl_decompress_fse(src, src_len, dst, dst_len, ctx);
     }
     if (src[2] == FLUFF_STREAM_VERSION_FSE ||
-        src[2] == FLUFF_STREAM_VERSION_FSE2)
+        src[2] == FLUFF_STREAM_VERSION_FSE2 ||
+        src[2] == FLUFF_STREAM_VERSION_FSE3)
         return fl_decompress_fse(src, src_len, dst, dst_len, ctx);
     return fl_decompress_rc(src, src_len, dst, dst_len, ctx);
 }

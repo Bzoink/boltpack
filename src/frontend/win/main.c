@@ -68,13 +68,16 @@ static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
 {
     wchar_t wbuf[BP_MAX_PATH];
     int wlen, alen;
+    BOOL used_default = FALSE;
+    UINT cp = GetACP();
 
-    wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wbuf, BP_MAX_PATH);
+    wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wbuf, BP_MAX_PATH);
     if (wlen == 0) return -1;
 
-    alen = WideCharToMultiByte(CP_ACP, 0, wbuf, wlen, acp, acp_size,
-                               NULL, NULL);
-    if (alen == 0) return -1;
+    alen = WideCharToMultiByte(CP_ACP, cp == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS,
+                               wbuf, wlen, acp, acp_size, NULL,
+                               cp == CP_UTF8 ? NULL : &used_default);
+    if (alen == 0 || used_default) return -1;
 
     return 0;
 }
@@ -659,7 +662,8 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
         }
 
         if (acp_to_utf8(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
-            strcpy(arcname_utf8, job->arcname);
+            fprintf(stderr, "boltpack: cannot encode filename: %s\n", job->arcname);
+            return BP_ERR_INVALID_ARG;
         }
 
         return bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DIR,
@@ -701,7 +705,9 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
         bp_io_from_file(&fio, fp);
 
         if (acp_to_utf8(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
-            strcpy(arcname_utf8, job->arcname);
+            fprintf(stderr, "boltpack: cannot encode filename: %s\n", job->arcname);
+            fclose(fp);
+            return BP_ERR_INVALID_ARG;
         }
 
         rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA,
@@ -1146,17 +1152,18 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
             bp_io_from_file(&packed_jobs[i].tmp_io, tmp_fp);
             if (acp_to_utf8(jobs[i].arcname, arcname_utf8,
                             sizeof(arcname_utf8)) != 0) {
-                strcpy(arcname_utf8, jobs[i].arcname);
+                local_rc = BP_ERR_INVALID_ARG;
+            } else {
+                local_rc = bp_archive_pack_entry(&worker_ar,
+                                                 arcname_utf8,
+                                                 BP_TYPE_DATA,
+                                                 BP_OS_WINDOWS,
+                                                 &src_io,
+                                                 actual_sz,
+                                                 jobs[i].mtime,
+                                                 &packed_jobs[i].tmp_io,
+                                                 &packed_jobs[i].packed);
             }
-            local_rc = bp_archive_pack_entry(&worker_ar,
-                                             arcname_utf8,
-                                             BP_TYPE_DATA,
-                                             BP_OS_WINDOWS,
-                                             &src_io,
-                                             actual_sz,
-                                             jobs[i].mtime,
-                                             &packed_jobs[i].tmp_io,
-                                             &packed_jobs[i].packed);
         }
 
         if (src_fp != NULL) {
@@ -1354,7 +1361,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         /* Store as UTF-8 in the archive */
         if (acp_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8)) != 0) {
-            strcpy(dir_arc_utf8, dir_arc); /* fallback: store as-is */
+            fprintf(stderr, "boltpack: cannot encode filename: %s\n", dir_arc);
+            return BP_ERR_INVALID_ARG;
         }
 
         rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_WINDOWS,
@@ -1384,7 +1392,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         /* Store as UTF-8 in the archive */
         if (acp_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
-            strcpy(arcname_utf8, arcname); /* fallback: store as-is */
+            fprintf(stderr, "boltpack: cannot encode filename: %s\n", arcname);
+            fclose(fp);
+            return BP_ERR_INVALID_ARG;
         }
 
         rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_WINDOWS,
@@ -1513,8 +1523,9 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     /* Convert UTF-8 archive name to ACP for filesystem and display */
     if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
-        strncpy(local_name, name, BP_MAX_PATH - 1);
-        local_name[BP_MAX_PATH - 1] = '\0';
+        fprintf(stderr, "boltpack: cannot represent archive name: %s\n", name);
+        ctx->unsafe_count++;
+        return NULL;
     }
 
     if (ctx->out_dir) {
@@ -1599,8 +1610,8 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
     {
         const char *name = extract_entry_name(entry, ctx);
         if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
-            strncpy(local_name, name, BP_MAX_PATH - 1);
-            local_name[BP_MAX_PATH - 1] = '\0';
+            free(out);
+            return;
         }
     }
 
@@ -1610,9 +1621,23 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
     } else {
         strcpy(path, local_name);
     }
-    ut.actime  = (time_t)entry->mtime.lo;
-    ut.modtime = (time_t)entry->mtime.lo;
-    utime(path, &ut);
+    if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        bp_off_t seconds = bp_u64_to_off(entry->mtime);
+        time_t t = (time_t)seconds;
+        struct _stat64 st;
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+            (bp_off_t)t != seconds || _stat64(path, &st) != 0) {
+            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+            ctx->unsafe_count++;
+        } else {
+            ut.actime = (time_t)st.st_atime;
+            ut.modtime = t;
+            if (utime(path, &ut) != 0) {
+                fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+                ctx->unsafe_count++;
+            }
+        }
+    }
 
     free(out);
 }
@@ -2104,7 +2129,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
 
     if (ctx.unsafe_count != 0) {
         fprintf(stderr,
-                "boltpack: %lu entr%s skipped (unsafe name)\n",
+                "boltpack: %lu entr%s skipped or attributes not restored\n",
                 (unsigned long)ctx.unsafe_count,
                 ctx.unsafe_count == 1 ? "y" : "ies");
         return 1;

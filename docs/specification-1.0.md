@@ -1,12 +1,12 @@
 # BoltPack Specification v1.0
 
-**Format Version:** 5 (only)
-**Software Version:** 1.7
+**Format Version:** 6 (only)
+**Software Version:** 1.9
 **Status:** Development
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-26
 
-> **Archive format 5.** Method 2 uses BoltLZ format 2. Method 1 uses the
-> compact BoltLite stream defined below. Readers accept only version 5 and reject
+> **Archive format 6.** Method 2 uses BoltLZ format 2. Method 1 uses the
+> compact BoltLite stream defined below. Readers accept only version 6 and reject
 > every other archive version with `BP_ERR_VERSION`.
 > The header, file-table, entry, and block CRC-32 fields are mandatory.
 
@@ -81,7 +81,7 @@ A BoltPack archive consists of three sequential sections:
 | Offset | Size | Field            | Type   | Description                                                            |
 | ------ | ---- | ---------------- | ------ | ---------------------------------------------------------------------- |
 | 0      | 4    | `magic`          | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT")                           |
-| 4      | 2    | `format_version` | u16 LE | `0x0005`; readers reject every other archive version                 |
+| 4      | 2    | `format_version` | u16 LE | `0x0006`; readers reject every other archive version                 |
 | 6      | 2    | `flags`          | u16 LE | Reserved; must be `0x0000`. Fail with `ERR_CORRUPT` if nonzero.        |
 | 8      | 4    | `file_count`     | u32 LE | Number of entries (0 to 4,294,967,295)                                 |
 | 12     | 1    | `creator_os`     | u8     | Platform that created the archive (see Section 2.6)                    |
@@ -94,7 +94,7 @@ A BoltPack archive consists of three sequential sections:
 **Validation:**
 
 - `magic != 0x544C4F42` → `ERR_NOT_ARCHIVE`
-- `format_version != 5` → `BP_ERR_VERSION`
+- `format_version != 6` → `BP_ERR_VERSION`
 - `flags != 0x0000` → `ERR_CORRUPT`
 - `header_crc != CRC-32(header[0..28))` → `ERR_CORRUPT`; after reading the
   file table, `table_crc != CRC-32(table region)` → `ERR_CORRUPT`.
@@ -112,7 +112,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | Offset | Size | Field             | Type   | Description                                                               |
 | ------ | ---- | ----------------- | ------ | ------------------------------------------------------------------------- |
 | 0      | 2    | `header_size`     | u16 LE | Total entry header size (offset 0 to start of comp data)                  |
-| 2      | 2    | `name_len`        | u16 LE | Length of file name in bytes (no null terminator; max 65535)              |
+| 2      | 2    | `name_len`        | u16 LE | Length of file name in bytes (no null terminator; max 65493)              |
 | 4      | N    | `name`            | bytes  | File name (UTF-8, forward-slash separated; path is relative)              |
 | 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
 | 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
@@ -121,38 +121,74 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
-| 31+N   | 1    | `platform`        | u8     | Metadata platform origin (OS code; same as `creator_os` table)            |
-| 32+N   | 8    | `mtime`           | u64 LE | Modification time (Unix epoch seconds, UTC)                               |
+| 31+N   | 1    | `platform`        | u8     | OS code or, for portable metadata only, namespace `0xFE`                  |
+| 32+N   | 8    | `mtime`           | u64 LE | Modification time (unsigned Unix epoch seconds, UTC), when valid         |
 | 40+N   | 2    | `flags`           | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently.          |
 
-**Entry flags (format 5):**
+**Entry flags (format 6):**
 
 | Bit(s) | Constant                   | Description                                                      |
 | ------ | -------------------------- | ---------------------------------------------------------------- |
 | 15     | `BP_ENTRY_FLAG_MODE_VALID` | Bits 0–11 contain valid Unix permission bits                     |
+| 14     | `BP_ENTRY_FLAG_MTIME_VALID` | Modification time is known, including the Unix epoch           |
 | 0–11   | `BP_ENTRY_FLAG_MODE_MASK`  | Unix mode bits (`st_mode & 0x0FFF`)                              |
-| 12–14  | —                          | Reserved; writers MUST write zero; readers MUST accept any value |
+| 12–13  | —                          | Reserved; writers MUST write zero; readers MUST accept any value |
 
 When bit 15 is set, bits 0–11 encode the 12-bit Unix permission+type-low field
 (`st_mode & 0x0FFF`). An extractor that supports POSIX permissions SHOULD apply
 `chmod(path, flags & 0x0FFF)` after writing the extracted file.
 
+When bit 14 is clear, `mtime` MUST be zero and extractors MUST leave the
+destination's modification time unchanged. When it is set, zero represents
+1970-01-01 00:00:00 UTC. Pre-1970 times cannot be represented by this unsigned
+field. Extractors MUST report times their destination API cannot represent.
+
 **Key constraints:**
 
-- `header_size` **MUST** equal `4 + name_len + 38` for format version 5.
+- `header_size` **MUST** equal `4 + name_len + 38` for format version 6.
 - `name_len` MUST NOT be zero (empty names forbidden).
-- `name` MUST be valid UTF-8; decoder MAY reject on invalid sequences.
+- `name` MUST be valid UTF-8, without embedded NULs; readers MUST reject invalid sequences.
 - `name` MUST NOT contain `..` components or absolute paths (security check).
-- `name_len > 2^16−1` → entry is invalid; skip with `ERR_CORRUPT`.
+- `name_len > 65493` → entry is invalid: the fixed header plus name must fit in `u16`.
 - If `entry_type == 4` (directory), `original_size` and `compressed_size` MUST both be zero.
 
 **Entry type details:**
 
 - **`0` (data):** Regular file or stream. Payload contains file content.
 - **`1` (rsrc):** Mac OS resource fork. Payload contains Classic Mac resource data. Ignore on non-Mac platforms.
-- **`2` (metadata):** Metadata entry (extended attributes, ACLs). Payload contains platform-specific data. Ignored by most extractors.
+- **`2` (metadata):** Metadata entry. Payload is platform-specific or a portable envelope as defined below. Extractors report unsupported metadata.
 - **`3` (symlink):** Symbolic link. Payload contains the link target path (UTF-8, forward-slash separated, max 65535 bytes).
 - **`4` (directory):** Directory record. `original_size` and `compressed_size` MUST be zero. Payload is absent. Platform-specific creation code applies (e.g., NTFS ACL, POSIX mode bits extracted from `mtime` / `flags`).
+
+#### 2.3.1.1 Portable metadata envelope
+
+The `platform` value `0xFE` is reserved for portable metadata and is not a
+creator OS. Its payload is an envelope of at most 256 uncompressed bytes:
+
+| Offset | Size | Field |
+| ------ | ---- | ----- |
+| 0 | 4 | ASCII `BPMT` |
+| 4 | 1 | Envelope version, currently `1` |
+| 5 | 1 | Subject entry type: `0` (file) or `4` (directory) |
+| 6 | 2 | Number of TLVs, little-endian |
+| 8 | variable | TLVs: kind `u16 LE`, value length `u16 LE`, then value bytes |
+
+Kind `1` is the FAT attribute record; its length is exactly two bytes: a
+validity mask followed by a value mask. Bits `0x01`, `0x02`, `0x04`, and
+`0x20` represent read-only, hidden, system, and archive respectively. Other
+bits in either mask and values outside the validity mask are invalid. The
+record is a singleton. An unknown, well-framed TLV may be skipped and must be
+reported as unsupported; truncated TLVs, duplicate FAT records, an incorrect
+count, trailing bytes, and bad checksums are corruption. Unknown envelope
+versions are unsupported rather than interpreted as version 1.
+
+For example, `42 50 4d 54 01 00 01 00 01 00 02 00 27 21` represents
+one file FAT record with all four attributes known, read-only and archive set.
+Portable metadata follows its subject or other supplementary entries for that
+subject, with the exact same archive name. It must not be applied unless that
+subject was successfully extracted. When both native and portable values exist,
+native values for the matching platform take precedence per attribute; portable
+values are fallback for attributes not supplied by native metadata.
 
 #### 2.3.2 Compressed Data Layout
 
@@ -220,7 +256,7 @@ For data that does not compress well, method 0 stores payload verbatim:
 
 **ID:** `1`
 
-**Codec:** BoltPack compact BoltLite, archive-format-5 bitstream
+**Codec:** BoltPack compact BoltLite, introduced with archive format 5
 
 **History window:** 4,096 bytes
 
@@ -248,9 +284,8 @@ overlong output, and trailing encoded bytes.
 The encoder requires `BOLTLITE_WORK_SIZE` (18,432) bytes and the usual worst-case
 output capacity `original_size + original_size / 8 + 16`. Decoding needs no
 scratch memory. On 16-bit mini targets, blocks are limited to 32 KiB and the
-matcher uses native 16-bit positions, lengths and distances. Archive format 5
-is required for this bitstream; older BoltPack binaries remain the extraction
-path for format-4 archives.
+matcher uses native 16-bit positions, lengths and distances. Format 6 retains
+this codec representation while using the new archive header and table rules.
 
 ### 3.3 Method 2: BoltLZ
 
@@ -996,10 +1031,11 @@ Followed by `entry_count` records:
 | 36+N   | 1    | `method`          | u8     | Compression method (0–4)                |
 | 37+N   | 2    | `header_size`     | u16 LE | Entry header size                       |
 | 39+N   | 4    | `checksum`        | u32 LE | Entry payload checksum                  |
+| 43+N   | 2    | `flags`           | u16 LE | Entry flags, identical to the entry header |
 
-The record tail is 41 bytes. Its final three fields duplicate values from
-the entry header so listing, info, delete, and copy operations need not seek
-to each entry to recover them.
+The fixed record tail is 43 bytes. Fields duplicated in the entry header,
+including the name, sizes, type, platform, time, method, checksum, header size,
+and flags, MUST match their inline counterparts before extraction or editing.
 
 **Validation:**
 
@@ -1200,10 +1236,10 @@ Every BoltPack reader **MUST:**
 2. Support **method 0** (stored).
 3. Return `BP_ERR_UNSUPPORTED_METHOD` for any compressed method it does not implement.
 4. Compute and validate CRC-32 checksums.
-5. Reject archives whose format version is not exactly 5.
+5. Reject archives whose format version is not exactly 6.
 6. Handle zero-length entries, empty directories, and symlinks.
 7. Support both **blocked** and **single-blob** compressed data.
-8. Restore modification times (mtime) during extraction.
+8. Restore known modification times where representable, and report failures.
 9. Report clear error messages for all error conditions.
 
 Full v1.0 implementations SHOULD support all compressed methods:
@@ -1218,7 +1254,7 @@ Full v1.0 implementations SHOULD support all compressed methods:
 Every BoltPack writer **SHOULD:**
 
 1. Set archive header magic to `0x544C4F42` ("BOLT").
-2. Set format version to `0x0001`.
+2. Set format version to `0x0006`.
 3. Set creator fields accurately (OS, CPU, BoltPack version).
 4. Choose compression method based on file characteristics:
    - Method 3 (fluff) for text, source code, and other ratio-sensitive data.
@@ -1264,9 +1300,9 @@ To support future enhancements without breaking existing readers:
 
 ### 10.2 Archive version policy
 
-Writers MUST emit archive version 5. Readers MUST reject every other version
+Writers MUST emit archive version 6. Readers MUST reject every other version
 with `BP_ERR_VERSION` before interpreting compressed blocks or file-table
-records. New archives use the 16-byte table header, 41-byte record tails,
+records. New archives use the 16-byte table header, 43-byte record tails,
 and 12-byte CRC-protected block headers described above. No conversion or
 compatibility decoding is performed.
 

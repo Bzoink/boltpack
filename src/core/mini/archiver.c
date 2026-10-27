@@ -16,6 +16,8 @@
  */
 
 #include "archiver.h"
+#include "../archive_name.h"
+#include "../bp_metadata.h"
 #include "compress.h"
 #include <stdlib.h>
 #include <string.h>
@@ -215,10 +217,10 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
 
 /* ---- bp_mini_archive_add_entry ----------------------------------------- */
 
-int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
-                              bp_uint8 entry_type, bp_uint8 platform,
-                              bp_io_t *file_io, bp_uint64 file_size,
-                              bp_uint64 mtime)
+int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
+                                 bp_uint8 entry_type, bp_uint8 platform,
+                                 bp_io_t *file_io, bp_uint64 file_size,
+                                 bp_uint64 mtime, bp_uint16 flags)
 {
     bp_uint16 name_len;
     bp_uint16 hdr_size;
@@ -252,10 +254,13 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
         return BP_ERR_OVERFLOW;
     }
 
-    name_len = (bp_uint16)strlen(name);
     if ((unsigned long)strlen(name) > BP_MAX_NAME_LEN) {
         return BP_ERR_NAME_TOO_LONG;
     }
+    name_len = (bp_uint16)strlen(name);
+    if (!bp_archive_name_valid(name, (bp_uint32)name_len) ||
+        (!(flags & BP_ENTRY_FLAG_MTIME_VALID) && !bp_u64_is_zero(mtime)))
+        return BP_ERR_INVALID_ARG;
     hdr_size = (bp_uint16)(BP_ENTRY_FIXED + name_len);
 
     rc = mini_entry_list_grow(ar);
@@ -292,6 +297,7 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
     fields[26] = entry_type;
     fields[27] = platform;
     bp_write_le64(fields + 28, mtime);
+    bp_write_le16(fields + 36, flags);
 
     fields_pos = mini_io_tell(ar->io);
     if (fields_pos < 0) return BP_ERR_IO;
@@ -414,7 +420,7 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
     ent->entry_type        = entry_type;
     ent->platform          = platform;
     ent->mtime             = mtime;
-    ent->flags             = 0;
+    ent->flags             = flags;
     ent->header_size       = hdr_size;
     ent->offset            = bp_off_to_u64(entry_offset);
 
@@ -425,6 +431,16 @@ int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
 /* ---- bp_mini_archive_finalize ------------------------------------------ */
 
 /* Write `len` bytes while folding them into the running CRC-32 *crc. */
+int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
+                              bp_uint8 entry_type, bp_uint8 platform,
+                              bp_io_t *file_io, bp_uint64 file_size,
+                              bp_uint64 mtime)
+{
+    return bp_mini_archive_add_entry_ex(ar, name, entry_type, platform,
+                                        file_io, file_size, mtime,
+                                        BP_ENTRY_FLAG_MTIME_VALID);
+}
+
 static int mini_write_crc(bp_io_t *io, bp_uint32 *crc,
                           const bp_uint8 *buf, bp_uint32 len)
 {
@@ -437,7 +453,7 @@ static int mini_write_table_record(bp_io_t *io, bp_uint32 *crc,
                                    const bp_mini_entry_t *e)
 {
     bp_uint8 rec_hdr[2];
-    bp_uint8 rec_fields[BP_TABLE_REC_TAIL_V3];
+    bp_uint8 rec_fields[BP_TABLE_REC_TAIL_V6];
     int rc;
 
     bp_write_le16(rec_hdr, e->name_len);
@@ -456,7 +472,8 @@ static int mini_write_table_record(bp_io_t *io, bp_uint32 *crc,
     rec_fields[34] = e->method;                     /* v3: method */
     bp_write_le16(rec_fields + 35, e->header_size); /* v3: header_size */
     bp_write_le32(rec_fields + 37, e->checksum);    /* v3: payload checksum */
-    return mini_write_crc(io, crc, rec_fields, BP_TABLE_REC_TAIL_V3);
+    bp_write_le16(rec_fields + 41, e->flags);
+    return mini_write_crc(io, crc, rec_fields, BP_TABLE_REC_TAIL_V6);
 }
 
 int bp_mini_archive_finalize(bp_mini_archive_t *ar)
@@ -657,6 +674,16 @@ static int mini_verify_table_crc(bp_io_t *io, bp_uint16 version)
 
     rc = mini_read_footer(io, &tbl_off, &tbl_sz);
     if (rc != BP_OK) return rc;
+    {
+        bp_off_t end_pos = mini_io_tell(io);
+        bp_uint64 table_end = bp_u64_add(tbl_off, tbl_sz);
+        bp_uint64 expected = bp_u64_add(table_end, bp_u64_from_u32(BP_FOOTER_SIZE));
+        if (end_pos < 0 || bp_u64_cmp(table_end, tbl_off) < 0 ||
+            bp_u64_cmp(expected, table_end) < 0 ||
+            bp_u64_cmp(expected, bp_off_to_u64(end_pos)) != 0 ||
+            bp_u64_cmp(expected, bp_read_le64(hdr + 16)) != 0)
+            return BP_ERR_CORRUPT;
+    }
 
     rc = mini_io_seek(io, bp_u64_to_off(tbl_off), 0);
     if (rc != 0) return BP_ERR_IO;
@@ -682,24 +709,28 @@ static int mini_read_table_record(bp_io_t *io, bp_mini_entry_t *entry,
                                   bp_uint16 version)
 {
     bp_uint8 buf2[2];
-    bp_uint8 fixed[BP_TABLE_REC_TAIL_V3];
+    bp_uint8 fixed[BP_TABLE_REC_TAIL_V6];
     bp_uint32 tail;
     bp_uint16 name_len;
     char *name;
     int rc;
 
-    tail = (version >= BP_FORMAT_VERSION) ? BP_TABLE_REC_TAIL_V3
+    tail = (version >= BP_FORMAT_VERSION) ? BP_TABLE_REC_TAIL_V6
                                           : BP_TABLE_REC_TAIL_V2;
 
     rc = mini_io_read(io, buf2, 2);
     if (rc != BP_OK) return rc;
     name_len = bp_read_le16(buf2);
+    if (name_len == 0 || name_len > BP_MAX_NAME_LEN) return BP_ERR_CORRUPT;
 
     name = (char *)malloc((size_t)(name_len + 1));
     if (name == NULL) return BP_ERR_NOMEM;
 
     rc = mini_io_read(io, name, (bp_uint32)name_len);
     if (rc != BP_OK) { free(name); return rc; }
+    if (!bp_archive_name_valid(name, (bp_uint32)name_len)) {
+        free(name); return BP_ERR_CORRUPT;
+    }
     name[name_len] = '\0';
 
     rc = mini_io_read(io, fixed, tail);
@@ -719,6 +750,12 @@ static int mini_read_table_record(bp_io_t *io, bp_mini_entry_t *entry,
         entry->header_size = bp_read_le16(fixed + 35);
         entry->checksum    = bp_read_le32(fixed + 37);
     }
+    if (tail >= BP_TABLE_REC_TAIL_V6)
+        entry->flags = bp_read_le16(fixed + 41);
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        !bp_u64_is_zero(entry->mtime)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     return BP_OK;
 }
 
@@ -729,11 +766,14 @@ static int mini_read_table_record(bp_io_t *io, bp_mini_entry_t *entry,
  */
 static int mini_read_inline_meta(bp_io_t *io, bp_uint64 entry_offset,
                                  bp_uint8 *method, bp_uint32 *block_size,
-                                 bp_uint32 *checksum, bp_uint8 *checksum_type)
+                                 bp_uint32 *checksum, bp_uint8 *checksum_type,
+                                 const bp_mini_entry_t *expected)
 {
     bp_uint8 buf4[4];
     bp_uint8 fields[38];
+    bp_uint8 name_buf[128];
     bp_uint16 name_len;
+    bp_uint32 pos;
     int rc;
 
     rc = mini_io_seek(io, bp_u64_to_off(entry_offset), 0); /* SEEK_SET */
@@ -743,9 +783,25 @@ static int mini_read_inline_meta(bp_io_t *io, bp_uint64 entry_offset,
     rc = mini_io_read(io, buf4, 4);
     if (rc != BP_OK) return rc;
     name_len = bp_read_le16(buf4 + 2);
+    if (name_len == 0 || name_len > BP_MAX_NAME_LEN ||
+        bp_read_le16(buf4) != (bp_uint16)(BP_ENTRY_FIXED + name_len))
+        return BP_ERR_CORRUPT;
 
-    if (name_len > 0) {
-        rc = mini_io_seek(io, (bp_off_t)name_len, 1); /* SEEK_CUR */
+    if (expected != NULL) {
+        if (name_len != expected->name_len ||
+            bp_read_le16(buf4) != expected->header_size) return BP_ERR_CORRUPT;
+        pos = 0;
+        while (pos < name_len) {
+            bp_uint32 n = (bp_uint32)name_len - pos;
+            if (n > sizeof(name_buf)) n = sizeof(name_buf);
+            rc = mini_io_read(io, name_buf, n);
+            if (rc != BP_OK) return rc;
+            if (memcmp(name_buf, expected->name + pos, (size_t)n) != 0)
+                return BP_ERR_CORRUPT;
+            pos += n;
+        }
+    } else {
+        rc = mini_io_seek(io, (bp_off_t)name_len, 1);
         if (rc != 0) return BP_ERR_IO;
     }
 
@@ -759,7 +815,56 @@ static int mini_read_inline_meta(bp_io_t *io, bp_uint64 entry_offset,
     *method        = fields[20];
     *checksum_type = fields[21];
     *block_size    = bp_read_le32(fields + 22);
+    if (expected != NULL &&
+        (bp_u64_cmp(bp_read_le64(fields), expected->original_size) != 0 ||
+         bp_u64_cmp(bp_read_le64(fields + 8), expected->compressed_size) != 0 ||
+         *checksum != expected->checksum || *method != expected->method ||
+         *checksum_type != BP_CKSUM_CRC32 || fields[26] != expected->entry_type ||
+         fields[27] != expected->platform ||
+         bp_u64_cmp(bp_read_le64(fields + 28), expected->mtime) != 0 ||
+         bp_read_le16(fields + 36) != expected->flags))
+        return BP_ERR_CORRUPT;
     return BP_OK;
+}
+
+/* Validate all table/header pairs and resource limits before opening output. */
+static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
+                                  bp_uint16 version, bp_uint64 table_offset)
+{
+    bp_uint32 i;
+    bp_uint64 next = bp_u64_from_u32(BP_HEADER_SIZE);
+    bp_off_t table_start = mini_io_tell(io);
+    for (i = 0; i < count; i++) {
+        bp_mini_entry_t entry;
+        bp_off_t resume;
+        bp_uint8 method, checksum_type;
+        bp_uint32 block_size, checksum;
+        int rc = mini_read_table_record(io, &entry, version);
+        if (rc != BP_OK) return rc;
+        resume = mini_io_tell(io);
+        if (resume < 0 || bp_u64_cmp(entry.offset, next) != 0) {
+            free(entry.name); return BP_ERR_CORRUPT;
+        }
+        rc = mini_read_inline_meta(io, entry.offset, &method, &block_size,
+                                   &checksum, &checksum_type, &entry);
+        if (rc == BP_OK && method > BP_METHOD_BOLTLZ) rc = BP_ERR_UNSUPPORTED_METHOD;
+        if (rc == BP_OK && (entry.original_size.hi != 0 ||
+                            block_size > BP_MINI_MAX_BLOCK_SIZE)) rc = BP_ERR_OVERFLOW;
+        if (rc == BP_OK && entry.entry_type > BP_TYPE_DIR) rc = BP_ERR_CORRUPT;
+        if (rc == BP_OK && entry.entry_type == BP_TYPE_SYMLINK) rc = BP_ERR_PARTIAL;
+        if (rc == BP_OK && entry.entry_type == BP_TYPE_META &&
+            entry.platform == BP_META_PORTABLE && entry.original_size.lo > BP_META_MAX_SIZE)
+            rc = BP_ERR_CORRUPT;
+        next = bp_u64_add(entry.offset, bp_u64_from_u32(entry.header_size));
+        next = bp_u64_add(next, entry.compressed_size);
+        if (bp_u64_cmp(next, entry.offset) < 0 || bp_u64_cmp(next, table_offset) > 0)
+            rc = BP_ERR_CORRUPT;
+        free(entry.name);
+        if (rc != BP_OK) return rc;
+        if (mini_io_seek(io, resume, 0) != 0) return BP_ERR_IO;
+    }
+    if (bp_u64_cmp(next, table_offset) != 0) return BP_ERR_CORRUPT;
+    return mini_io_seek(io, table_start, 0) == 0 ? BP_OK : BP_ERR_IO;
 }
 
 /* ---- decompress & write one entry's data ------------------------------- */
@@ -918,13 +1023,17 @@ int bp_mini_archive_list(bp_io_t *io, bp_mini_list_fn fn, void *user_data)
     bp_uint64  table_size;
     bp_uint8   tbl_hdr[BP_TABLE_HDR_V3];
     bp_uint32  entry_count;
+    bp_uint32  header_count;
     bp_uint32  i;
     bp_uint16  dummy_version;
     bp_uint32  hdr_sz;
     int        rc;
 
-    rc = mini_read_archive_header(io, NULL, NULL, NULL, NULL, NULL,
+    rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
+    if (rc != BP_OK) return rc;
+
+    rc = mini_verify_table_crc(io, dummy_version);
     if (rc != BP_OK) return rc;
 
     hdr_sz = (dummy_version >= BP_FORMAT_VERSION) ? BP_TABLE_HDR_V3 : BP_TABLE_HDR_V2;
@@ -943,6 +1052,7 @@ int bp_mini_archive_list(bp_io_t *io, bp_mini_list_fn fn, void *user_data)
         return BP_ERR_MAGIC;
     }
     entry_count = bp_read_le32(tbl_hdr + 4);
+    if (entry_count != header_count) return BP_ERR_CORRUPT;
 
     for (i = 0; i < entry_count; i++) {
         bp_mini_entry_t entry;
@@ -989,6 +1099,9 @@ int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info)
                                   &info->archive_size);
     if (rc != BP_OK) return rc;
 
+    rc = mini_verify_table_crc(io, info->version);
+    if (rc != BP_OK) return rc;
+
     hdr_sz = (info->version >= BP_FORMAT_VERSION) ? BP_TABLE_HDR_V3 : BP_TABLE_HDR_V2;
 
     rc = mini_read_footer(io, &table_offset, &table_size);
@@ -1005,6 +1118,7 @@ int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info)
         return BP_ERR_MAGIC;
     }
     entry_count = bp_read_le32(tbl_hdr + 4);
+    if (entry_count != info->file_count) return BP_ERR_CORRUPT;
 
     for (i = 0; i < entry_count; i++) {
         bp_mini_entry_t entry;
@@ -1021,7 +1135,7 @@ int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info)
             /* v2: seek to inline entry header to read compression method */
             saved_pos = mini_io_tell(io);
             if (mini_read_inline_meta(io, entry.offset,
-                                      &m, &bs, &cs, &ct) == BP_OK) {
+                                      &m, &bs, &cs, &ct, NULL) == BP_OK) {
                 if (m < 5) info->method_counts[m]++;
             }
             mini_io_seek(io, saved_pos, 0);
@@ -1039,23 +1153,28 @@ int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info)
 
 /* ---- bp_mini_archive_extract_all --------------------------------------- */
 
-int bp_mini_archive_extract_all(bp_io_t *io,
-                                bp_mini_extract_fn open_fn,
-                                bp_mini_extract_done_fn done_fn,
-                                void *user_data)
+static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
+                                 bp_mini_extract_done_fn done_fn,
+                                 bp_mini_extract_done_status_fn status_fn,
+                                 void *user_data)
 {
     bp_uint64  table_offset;
     bp_uint64  table_size;
     bp_uint8   tbl_hdr[BP_TABLE_HDR_V3];
     bp_uint32  entry_count;
+    bp_uint32  header_count;
     bp_uint32  i;
     bp_uint16  dummy_version;
     bp_uint32  hdr_sz;
     mini_extract_bufs_t bufs = {NULL, NULL, 0, 0};
     int        rc;
+    int        partial = 0;
 
-    rc = mini_read_archive_header(io, NULL, NULL, NULL, NULL, NULL,
+    rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
+    if (rc != BP_OK) return rc;
+
+    rc = mini_verify_table_crc(io, dummy_version);
     if (rc != BP_OK) return rc;
 
     hdr_sz = (dummy_version >= BP_FORMAT_VERSION) ? BP_TABLE_HDR_V3 : BP_TABLE_HDR_V2;
@@ -1074,6 +1193,11 @@ int bp_mini_archive_extract_all(bp_io_t *io,
         return BP_ERR_MAGIC;
     }
     entry_count = bp_read_le32(tbl_hdr + 4);
+    if (entry_count != header_count) return BP_ERR_CORRUPT;
+    if (entry_count > BP_MINI_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+
+    rc = mini_preflight_extract(io, entry_count, dummy_version, table_offset);
+    if (rc != BP_OK) return rc;
 
     for (i = 0; i < entry_count; i++) {
         bp_mini_entry_t entry;
@@ -1083,6 +1207,10 @@ int bp_mini_archive_extract_all(bp_io_t *io,
         bp_uint8  checksum_type;
         bp_io_t  *out;
         bp_off_t  table_resume;
+        int skip_metadata;
+        int portable;
+        bp_metadata_sink_t *metadata = NULL;
+        bp_portable_metadata_t parsed;
 
         rc = mini_read_table_record(io, &entry, dummy_version);
         if (rc != BP_OK) {
@@ -1101,7 +1229,7 @@ int bp_mini_archive_extract_all(bp_io_t *io,
 
         rc = mini_read_inline_meta(io, entry.offset,
                                    &method, &block_size, &checksum,
-                                   &checksum_type);
+                                   &checksum_type, &entry);
         if (rc != BP_OK) {
             free(entry.name);
             mini_bufs_free(&bufs);
@@ -1113,15 +1241,15 @@ int bp_mini_archive_extract_all(bp_io_t *io,
         entry.checksum_type = checksum_type;
 
         /* Capability checks */
-        if (method > BP_METHOD_FLUFF) {
+        if (method > BP_METHOD_BOLTLZ) {
 #ifndef BP_MINI_QUIET
             fprintf(stderr,
                     "bpmini: skipping %s: method %u not supported by mini\n",
                     entry.name, (unsigned)method);
 #endif
             free(entry.name);
-            mini_io_seek(io, table_resume, 0);
-            continue;
+            mini_bufs_free(&bufs);
+            return BP_ERR_UNSUPPORTED_METHOD;
         }
         if (entry.original_size.hi != 0) {
 #ifndef BP_MINI_QUIET
@@ -1130,8 +1258,8 @@ int bp_mini_archive_extract_all(bp_io_t *io,
                     entry.name);
 #endif
             free(entry.name);
-            mini_io_seek(io, table_resume, 0);
-            continue;
+            mini_bufs_free(&bufs);
+            return BP_ERR_OVERFLOW;
         }
         if (block_size > BP_MINI_MAX_BLOCK_SIZE) {
 #ifndef BP_MINI_QUIET
@@ -1145,9 +1273,43 @@ int bp_mini_archive_extract_all(bp_io_t *io,
             return BP_ERR_OVERFLOW;
         }
 
+        if (entry.entry_type > BP_TYPE_DIR) {
+            free(entry.name); mini_bufs_free(&bufs); return BP_ERR_CORRUPT;
+        }
+        if (entry.entry_type == BP_TYPE_SYMLINK) {
+#ifndef BP_MINI_QUIET
+            fprintf(stderr, "bpmini: symbolic link not supported: %s\n", entry.name);
+#endif
+            free(entry.name); mini_bufs_free(&bufs); return BP_ERR_PARTIAL;
+        }
+        skip_metadata = entry.entry_type == BP_TYPE_META || entry.entry_type == BP_TYPE_RSRC;
+        portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
+        if (portable && entry.original_size.lo > BP_META_MAX_SIZE) {
+            free(entry.name); mini_bufs_free(&bufs); return BP_ERR_CORRUPT;
+        }
+        if (portable) {
+            metadata = (bp_metadata_sink_t *)malloc(sizeof(*metadata));
+            if (metadata == NULL) { free(entry.name); mini_bufs_free(&bufs); return BP_ERR_NOMEM; }
+            bp_metadata_sink_init(metadata);
+        }
+        if (skip_metadata) {
+#ifndef BP_MINI_QUIET
+            fprintf(stderr, "bpmini: metadata not restored: %s\n", entry.name);
+#endif
+            partial = 1;
+        }
         out = NULL;
-        if (open_fn != NULL) {
+        if (!skip_metadata && open_fn != NULL) {
             out = open_fn(&entry, user_data);
+        }
+        if (!skip_metadata && entry.entry_type != BP_TYPE_DIR && out == NULL)
+            partial = 1;
+
+        if (bp_u64_is_zero(entry.original_size) && checksum != 0) {
+            if (out && status_fn) (void)status_fn(&entry, out, BP_ERR_CHECKSUM, user_data);
+            else if (out && done_fn) done_fn(&entry, out, user_data);
+            free(metadata);
+            free(entry.name); mini_bufs_free(&bufs); return BP_ERR_CHECKSUM;
         }
 
         /* Decompress: io is now positioned at the first block by
@@ -1155,34 +1317,60 @@ int bp_mini_archive_extract_all(bp_io_t *io,
         if (entry.entry_type != BP_TYPE_DIR &&
             entry.entry_type != BP_TYPE_SYMLINK &&
             !bp_u64_is_zero(entry.original_size)) {
-            rc = mini_extract_data(io, out,
+            rc = mini_extract_data(io, portable ? &metadata->io : out,
                                    entry.original_size, block_size,
                                    method, checksum, &bufs, dummy_version);
-            if (rc != BP_OK && rc != BP_ERR_CHECKSUM) {
-                /* IO or decompress error -- fatal */
-                if (out && done_fn) done_fn(&entry, out, user_data);
+            if (rc != BP_OK) {
+                if (out && status_fn) (void)status_fn(&entry, out, rc, user_data);
+                else if (out && done_fn) done_fn(&entry, out, user_data);
+                free(metadata);
                 free(entry.name);
                 mini_bufs_free(&bufs);
                 return rc;
             }
-            if (rc == BP_ERR_CHECKSUM) {
-#ifndef BP_MINI_QUIET
-                fprintf(stderr,
-                        "bpmini: checksum mismatch for %s\n", entry.name);
-#endif
+        }
+
+        if (portable) {
+            rc = bp_metadata_parse(metadata->data, metadata->length, &parsed);
+            free(metadata);
+            if (rc == BP_ERR_CORRUPT) {
+                free(entry.name); mini_bufs_free(&bufs); return rc;
             }
         }
 
-        if (out && done_fn) {
+        if (out && status_fn) {
+            rc = status_fn(&entry, out, BP_OK, user_data);
+            if (rc == BP_ERR_PARTIAL) {
+                partial = 1;
+            } else if (rc != BP_OK) {
+                free(entry.name); mini_bufs_free(&bufs); return rc;
+            }
+        } else if (out && done_fn) {
             done_fn(&entry, out, user_data);
         }
 
         free(entry.name);
-        mini_io_seek(io, table_resume, 0); /* restore table position */
+        if (mini_io_seek(io, table_resume, 0) != 0) {
+            mini_bufs_free(&bufs); return BP_ERR_IO;
+        }
     }
 
     mini_bufs_free(&bufs);
-    return BP_OK;
+    return partial ? BP_ERR_PARTIAL : BP_OK;
+}
+
+int bp_mini_archive_extract_all(bp_io_t *io, bp_mini_extract_fn open_fn,
+                                bp_mini_extract_done_fn done_fn, void *user_data)
+{
+    return mini_extract_all_impl(io, open_fn, done_fn, NULL, user_data);
+}
+
+int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   void *user_data)
+{
+    if (done_fn == NULL) return BP_ERR_INVALID_ARG;
+    return mini_extract_all_impl(io, open_fn, NULL, done_fn, user_data);
 }
 
 /* ---- bp_mini_archive_test ---------------------------------------------- */
@@ -1193,13 +1381,15 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
     bp_uint64  table_size;
     bp_uint8   tbl_hdr[BP_TABLE_HDR_V3];
     bp_uint32  entry_count;
+    bp_uint32  header_count;
     bp_uint32  i;
     bp_uint16  dummy_version;
     bp_uint32  hdr_sz;
     mini_extract_bufs_t bufs = {NULL, NULL, 0, 0};
     int        rc;
+    int        overall = BP_OK;
 
-    rc = mini_read_archive_header(io, NULL, NULL, NULL, NULL, NULL,
+    rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
     if (rc != BP_OK) return rc;
 
@@ -1223,6 +1413,7 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
         return BP_ERR_MAGIC;
     }
     entry_count = bp_read_le32(tbl_hdr + 4);
+    if (entry_count != header_count) return BP_ERR_CORRUPT;
 
     for (i = 0; i < entry_count; i++) {
         bp_mini_entry_t entry;
@@ -1232,6 +1423,9 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
         bp_uint8  checksum_type;
         bp_off_t  table_resume;
         int       result;
+        int       portable;
+        bp_metadata_sink_t *metadata = NULL;
+        bp_portable_metadata_t parsed;
 
         rc = mini_read_table_record(io, &entry, dummy_version);
         if (rc != BP_OK) {
@@ -1248,7 +1442,7 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
 
         rc = mini_read_inline_meta(io, entry.offset,
                                    &method, &block_size, &checksum,
-                                   &checksum_type);
+                                   &checksum_type, &entry);
         if (rc != BP_OK) {
             free(entry.name);
             mini_bufs_free(&bufs);
@@ -1258,7 +1452,13 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
         entry.block_size = block_size;
         entry.checksum   = checksum;
 
-        if (method > BP_METHOD_FLUFF) {
+        portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
+        if (portable) {
+            metadata = (bp_metadata_sink_t *)malloc(sizeof(*metadata));
+            if (metadata == NULL) { free(entry.name); mini_bufs_free(&bufs); return BP_ERR_NOMEM; }
+            bp_metadata_sink_init(metadata);
+        }
+        if (method > BP_METHOD_BOLTLZ) {
             result = BP_ERR_UNSUPPORTED_METHOD;
         } else if (entry.original_size.hi != 0) {
 #ifndef BP_MINI_QUIET
@@ -1266,7 +1466,9 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
                     "bpmini: skipping test of %s: too large for mini\n",
                     entry.name);
 #endif
-            result = BP_OK;
+            result = BP_ERR_OVERFLOW;
+        } else if (portable && entry.original_size.lo > BP_META_MAX_SIZE) {
+            result = BP_ERR_CORRUPT;
         } else if (block_size > BP_MINI_MAX_BLOCK_SIZE) {
 #ifndef BP_MINI_QUIET
             fprintf(stderr,
@@ -1276,19 +1478,27 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
 #endif
             result = BP_ERR_OVERFLOW;
         } else {
-            result = mini_extract_data(io, NULL, /* out_io=NULL for test */
+            result = mini_extract_data(io, portable ? &metadata->io : NULL,
                                        entry.original_size, block_size,
                                        method, checksum, &bufs, dummy_version);
+            if (result == BP_OK && portable)
+                result = bp_metadata_parse(metadata->data, metadata->length, &parsed);
         }
+
+        free(metadata);
+
+        if (result != BP_OK && overall == BP_OK) overall = result;
 
         if (fn != NULL) {
             fn(&entry, result, user_data);
         }
 
         free(entry.name);
-        mini_io_seek(io, table_resume, 0);
+        if (mini_io_seek(io, table_resume, 0) != 0) {
+            mini_bufs_free(&bufs); return BP_ERR_IO;
+        }
     }
 
     mini_bufs_free(&bufs);
-    return BP_OK;
+    return overall;
 }

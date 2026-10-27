@@ -22,6 +22,7 @@ make
 | `architecture.md`      | Layer boundaries, core interfaces, progress model, and error flow |
 | `specification-1.0.md` | Normative archive and codec rules                                 |
 | `format.md`            | Concise overview of the `.bolt` / `.blt` file format              |
+| `archive-format-audit.md` | Portability and filesystem-attribute preservation audit         |
 | `algorithms.md`        | BoltLite, boltlz, and Fluff implementation behavior                   |
 | `portability.md`       | Supported environments, C89 constraints, and toolchain reference  |
 | `frontends.md`         | Frontend responsibilities and platform-specific integration notes |
@@ -32,6 +33,7 @@ make
 | ---------------------- | ------------------------------------------------------ |
 | `BUILD.md`             | Native build procedures and platform-specific caveats  |
 | `mini.md`              | 16-bit mini variant architecture and capability limits |
+| [archive-format-plan.md](archive-format-plan.md) | Proposed format evolution, extraction fixes, and interoperability qualification |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
 | `RELEASES.md`          | Release workflow (maintainer reference)                |
 

@@ -129,6 +129,8 @@ static int on_list(const bp_mini_entry_t *e, void *user_data)
 #define MAX_EXTRACTED 256
 static char g_extracted[MAX_EXTRACTED][BP_MAX_PATH];
 static int  g_extracted_count = 0;
+static int  g_extract_partial = 0;
+static char g_extract_path[BP_MAX_PATH];
 
 static int already_extracted(const char *name)
 {
@@ -151,15 +153,27 @@ static void record_extracted(const char *name)
 static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 {
     char flat[BP_MAX_PATH];
+    char local_name[BP_MAX_PATH];
     FILE *fp;
 
     (void)user_data;
 
     if (e->entry_type == BP_TYPE_DIR) {
+        fprintf(stderr, PROG_NAME ": directory cannot be restored: %s\n", e->name);
+        g_extract_partial = 1;
         return NULL; /* CP/M-86: no directories */
     }
 
-    to_8dot3(e->name, flat);
+    if (strchr(e->name, '/') != NULL ||
+        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0) {
+        fprintf(stderr, PROG_NAME ": name cannot be represented: %s\n", e->name);
+        return NULL;
+    }
+    to_8dot3(local_name, flat);
+    if (strcmp(flat, local_name) != 0) {
+        fprintf(stderr, PROG_NAME ": name is not uppercase 8.3: %s\n", e->name);
+        return NULL;
+    }
 
     if (already_extracted(flat)) {
         fprintf(stderr, PROG_NAME ": skip duplicate %s (from %s)\n",
@@ -173,6 +187,12 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 
     printf("  x  %s\n", flat);
 
+    fp = fopen(flat, "rb");
+    if (fp != NULL) {
+        fclose(fp);
+        fprintf(stderr, PROG_NAME ": file already exists: %s\n", flat);
+        return NULL;
+    }
     fp = fopen(flat, "wb");
     if (fp == NULL) {
         fprintf(stderr, PROG_NAME ": cannot create %s\n", flat);
@@ -180,6 +200,7 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     }
 
     record_extracted(flat);
+    strcpy(g_extract_path, flat);
 
     {
         static bp_io_t io;
@@ -188,14 +209,18 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     }
 }
 
-static void on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
-                            void *user_data)
+static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
+                           int status, void *user_data)
 {
-    (void)e;
     (void)user_data;
-    if (out == NULL) return;
-    fclose((FILE *)out->handle);
-    /* No mtime on CP/M-86 */
+    if (out == NULL) return BP_ERR_INVALID_ARG;
+    if (fclose((FILE *)out->handle) != 0) return BP_ERR_IO;
+    if (status != BP_OK) (void)remove(g_extract_path);
+    else if (e->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        fprintf(stderr, PROG_NAME ": timestamp not restored: %s\n", e->name);
+        g_extract_partial = 1;
+    }
+    return BP_OK;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -274,8 +299,8 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         }
 
         bp_io_from_file(&file_io, in);
-        rc = bp_mini_archive_add_entry(&ar, arc_name, BP_TYPE_DATA,
-                                       BP_OS_CPM86, &file_io, fsize, mtime);
+        rc = bp_mini_add_local_entry(&ar, arc_name, BP_TYPE_DATA,
+                                     BP_OS_CPM86, &file_io, fsize, mtime, 0);
         fclose(in);
 
         if (rc != BP_OK) {
@@ -311,12 +336,14 @@ static int cmd_extract(const char *arc_path)
     }
     bp_io_from_file(&arc_io, fp);
     g_extracted_count = 0;
+    g_extract_partial = 0;
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_extract_all(&arc_io, on_extract_open,
+        rc = bp_mini_archive_extract_all_ex(&arc_io, on_extract_open,
                                          on_extract_done, NULL);
     }
+    if (rc == BP_OK && g_extract_partial) rc = BP_ERR_PARTIAL;
     fclose(fp);
 
     if (rc != BP_OK) {

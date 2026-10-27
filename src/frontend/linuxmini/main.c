@@ -68,13 +68,18 @@ static void make_parents(const char *path)
     }
 }
 
-static void set_mtime(const char *path, bp_uint64 mtime)
+static int set_mtime(const char *path, bp_uint64 mtime)
 {
+    bp_off_t seconds = bp_u64_to_off(mtime);
+    time_t t = (time_t)seconds;
+    struct stat st;
     struct utimbuf ut;
-    if (mtime.hi == 0 && mtime.lo == 0) return;
-    ut.actime  = (time_t)mtime.lo;
-    ut.modtime = (time_t)mtime.lo;
-    utime(path, &ut);
+    if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+        (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
+    if (stat(path, &st) != 0) return BP_ERR_IO;
+    ut.actime = st.st_atime;
+    ut.modtime = t;
+    return utime(path, &ut) == 0 ? BP_OK : BP_ERR_IO;
 }
 
 /* ---- list callback ----------------------------------------------------- */
@@ -108,6 +113,7 @@ static int on_list(const bp_mini_entry_t *e, void *user_data)
 
 typedef struct {
     char dest[BP_MAX_PATH];
+    char current_path[BP_MAX_PATH];
 } extract_ctx_t;
 
 static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
@@ -115,6 +121,7 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char path[BP_MAX_PATH];
     FILE *fp;
+    struct stat st;
 
     if (!bp_mini_name_is_safe(e->name)) return NULL;
     if (ctx->dest[0] && strlen(ctx->dest) + strlen(e->name) + 2 >= sizeof(path))
@@ -145,6 +152,10 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
         printf("  x  "); print_utf8_safe(e->name, e->name_len); putchar('\n');
     }
 
+    if (lstat(path, &st) == 0) {
+        fprintf(stderr, PROG_NAME ": file already exists: %s\n", path);
+        return NULL;
+    }
     fp = fopen(path, "wb");
     if (fp == NULL) {
         fprintf(stderr, PROG_NAME ": cannot create %s\n", path);
@@ -153,30 +164,28 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 
     {
         static bp_io_t io;
+        strcpy(ctx->current_path, path);
         bp_io_from_file(&io, fp);
         return &io;
     }
 }
 
-static void on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
-                            void *user_data)
+static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
+                           int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-    FILE *fp;
-    char path[BP_MAX_PATH];
-
-    (void)ctx;
-
-    if (out == NULL) return;
-    fp = (FILE *)out->handle;
-    fclose(fp);
-
-    if (ctx->dest[0]) {
-        snprintf(path, BP_MAX_PATH, "%s/%s", ctx->dest, e->name);
-    } else {
-        snprintf(path, BP_MAX_PATH, "%s", e->name);
+    if (out == NULL) return BP_ERR_INVALID_ARG;
+    if (fclose((FILE *)out->handle) != 0) return BP_ERR_IO;
+    if (status != BP_OK) {
+        (void)remove(ctx->current_path);
+        return BP_OK;
     }
-    set_mtime(path, e->mtime);
+    if ((e->flags & BP_ENTRY_FLAG_MODE_VALID) &&
+        chmod(ctx->current_path, (mode_t)(e->flags & 01777U)) != 0)
+        return BP_ERR_IO;
+    if (e->flags & BP_ENTRY_FLAG_MTIME_VALID)
+        return set_mtime(ctx->current_path, e->mtime);
+    return BP_OK;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -251,8 +260,8 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
         printf("  a  %s/\n", arc_name);
     }
 
-    return bp_mini_archive_add_entry(ar, arc_name, BP_TYPE_DIR, platform,
-                                     NULL, z, z);
+    return bp_mini_archive_add_entry_ex(ar, arc_name, BP_TYPE_DIR, platform,
+                                        NULL, z, z, 0);
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
@@ -411,7 +420,7 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_extract_all(&arc_io,
+        rc = bp_mini_archive_extract_all_ex(&arc_io,
                                          on_extract_open,
                                          on_extract_done,
                                          &ctx);
