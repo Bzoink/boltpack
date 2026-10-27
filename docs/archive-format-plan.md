@@ -303,8 +303,19 @@ restores representable times and portable FAT attributes, and defers directory
 restoration. It reports POSIX modes, symlinks, and resource forks as partial.
 Its path-based checks have a race with concurrent parent substitution, and it
 has cross-build evidence but no Windows runtime qualification. The Windows
-FLTK GUI, DLL/.NET, and Total Commander paths still need equivalent lifecycle
-review; share helpers where practical.
+FLTK GUI now uses strict UTF-8-to-ACP name and destination-root projection
+(and opens the chooser-selected archive path through UTF-16), Windows component
+checks, case-insensitive projected-path preflight, reparse-point checks for the
+chosen root and traversed directories, and sibling staging committed only after
+the core reports a verified checksum and successful close. It restores
+representable file and deferred directory times plus portable FAT flags, and
+reports modes, links, resource forks, unsupported metadata, and lossy restores
+as partial. Its collision preflight is bounded at 65,535 selected primary
+entries and 65,535 projected path nodes; exceeding either bound refuses before
+output changes. Win32 and Win64 cross-builds pass; Windows runtime tests,
+parent-swap race coverage, and names outside the active ACP remain unqualified. DLL/.NET
+and Total Commander paths still need equivalent lifecycle review; share helpers
+where practical.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level

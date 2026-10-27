@@ -22,6 +22,7 @@
 #  include <shellapi.h>
 #  include <direct.h>       /* _mkdir */
 #  include <io.h>           /* _access */
+#  include <fcntl.h>
 #  include <sys/utime.h>    /* _utime, _utimbuf */
 #  include "resource.h"
 /* map POSIX names to Windows equivalents */
@@ -74,6 +75,10 @@
 #include <condition_variable>
 #include <set>
 #include <map>
+#include <cwchar>
+#include <algorithm>
+#include <stdint.h>
+#include <new>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -88,6 +93,7 @@
 /* BoltPack core (C linkage) */
 extern "C" {
 #include "../../core/archiver.h"
+#include "../../core/bp_metadata.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
@@ -167,6 +173,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_COMPRESS:           return "compression failed";
     case BP_ERR_DECOMPRESS:         return "decompression failed";
     case BP_ERR_ABORTED:            return "operation aborted";
+    case BP_ERR_PARTIAL:             return "some names or attributes were not restored";
     case BP_ERR_NOT_FOUND:          return "entry not found";
     case BP_ERR_INVALID_ARG:        return "invalid argument";
     default:                        return "unknown error";
@@ -2068,14 +2075,281 @@ struct ExtractCtx {
     ProgressCtx          *progress;
     std::set<std::string> filter; /* empty = extract all; non-empty = only these names */
     ExtractMode           mode;
-    std::map<void *, std::string> resolved_paths;
     std::set<std::string> reserved_flat_paths;
+    std::map<std::string, std::string> flattened_paths;
+    struct DirectoryRestore {
+        std::string path;
+        bp_uint64 mtime;
+        bool mtime_valid;
+        bp_uint8 fat_valid;
+        bp_uint8 fat_value;
+    };
+    std::vector<DirectoryRestore> directories;
+    bp_metadata_sink_t metadata;
+    std::string last_subject_name;
+    std::string last_subject_path;
+    bp_uint8 last_subject_type;
+    bool last_subject_valid;
+    bool last_subject_ok;
+    int open_error;
+    unsigned partial_count;
+    bool preflight_refused;
 
     ExtractCtx()
-        : progress(NULL), mode(EXTRACT_KEEP_FOLDERS)
+        : progress(NULL), mode(EXTRACT_KEEP_FOLDERS), last_subject_type(0),
+          last_subject_valid(false), last_subject_ok(false), open_error(BP_OK),
+          partial_count(0), preflight_refused(false)
     {
     }
 };
+
+struct StagedExtractFile {
+    bp_io_t io;                 /* must remain first: callbacks receive &io */
+    std::string target;
+    std::string temporary;
+};
+
+static LONG g_extract_temp_counter = 0;
+
+static bool win_component_is_safe(const WCHAR *component, size_t length)
+{
+    size_t i, base_length = length;
+    WCHAR base[16];
+    if (length == 0 || component[length - 1] == L'.' ||
+        component[length - 1] == L' ') return false;
+    for (i = 0; i < length; ++i) {
+        WCHAR c = component[i];
+        if (c < 32 || c == L'<' || c == L'>' || c == L':' || c == L'"' ||
+            c == L'|' || c == L'?' || c == L'*' || c == L'\\') return false;
+        if (c == L'.' && base_length == length) base_length = i;
+    }
+    if (base_length == 0 || base_length >= sizeof(base) / sizeof(base[0])) return true;
+    memcpy(base, component, base_length * sizeof(WCHAR));
+    base[base_length] = L'\0';
+    if (_wcsicmp(base, L"CON") == 0 || _wcsicmp(base, L"PRN") == 0 ||
+        _wcsicmp(base, L"AUX") == 0 || _wcsicmp(base, L"NUL") == 0) return false;
+    if (base_length == 4 &&
+        (_wcsnicmp(base, L"COM", 3) == 0 || _wcsnicmp(base, L"LPT", 3) == 0) &&
+        base[3] >= L'1' && base[3] <= L'9') return false;
+    return true;
+}
+
+/* Project archive UTF-8 to the active Windows code page without substitution. */
+static int project_windows_name(const char *utf8, char *local, size_t capacity)
+{
+    WCHAR wide[MAX_PATH];
+    size_t length, start, i;
+    int wide_length, bytes;
+    BOOL used_default = FALSE;
+    UINT codepage = GetACP();
+    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    if (utf8 == NULL || local == NULL || capacity == 0 || !bp_name_is_safe(utf8))
+        return BP_ERR_PARTIAL;
+    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                                      wide, MAX_PATH);
+    if (wide_length <= 0) return BP_ERR_PARTIAL;
+    length = (size_t)wide_length - 1;
+    if (length == 0 || length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    start = 0;
+    for (i = 0; i <= length; ++i) {
+        size_t component_length;
+        if (i < length && wide[i] != L'/') continue;
+        component_length = i - start;
+        if (component_length == 0) {
+            if (i == length && length > 0 && wide[length - 1] == L'/') break;
+            return BP_ERR_INVALID_ARG;
+        }
+        if (!win_component_is_safe(wide + start, component_length))
+            return BP_ERR_INVALID_ARG;
+        start = i + 1;
+    }
+    bytes = WideCharToMultiByte(codepage, flags, wide, wide_length, local,
+                                (int)capacity, NULL,
+                                codepage == CP_UTF8 ? NULL : &used_default);
+    if (bytes <= 0 || used_default) return BP_ERR_PARTIAL;
+    for (char *p = local; *p; p = CharNextA(p))
+        if (*p == '/') *p = '\\';
+    return BP_OK;
+}
+
+static int utf8_path_to_acp(const char *utf8, std::string *local)
+{
+    int wide_length, local_length;
+    UINT codepage = GetACP();
+    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    BOOL used_default = FALSE;
+    std::vector<WCHAR> wide;
+    std::vector<char> bytes;
+    if (utf8 == NULL || local == NULL) return BP_ERR_INVALID_ARG;
+    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                                     NULL, 0);
+    if (wide_length <= 0 || wide_length > MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    wide.resize((size_t)wide_length);
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                            &wide[0], wide_length) <= 0) return BP_ERR_PARTIAL;
+    local_length = WideCharToMultiByte(codepage, flags, &wide[0], wide_length,
+                                       NULL, 0, NULL,
+                                       codepage == CP_UTF8 ? NULL : &used_default);
+    if (local_length <= 0 || local_length > MAX_PATH || used_default)
+        return BP_ERR_PARTIAL;
+    bytes.resize((size_t)local_length);
+    used_default = FALSE;
+    if (WideCharToMultiByte(codepage, flags, &wide[0], wide_length, &bytes[0],
+                            local_length, NULL,
+                            codepage == CP_UTF8 ? NULL : &used_default) <= 0 ||
+        used_default) return BP_ERR_PARTIAL;
+    local->assign(&bytes[0]);
+    return BP_OK;
+}
+
+static FILE *open_utf8_file(const std::string &path, const wchar_t *mode)
+{
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                     path.c_str(), -1, NULL, 0);
+    std::vector<WCHAR> wide;
+    if (length <= 0) return NULL;
+    wide.resize((size_t)length);
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1,
+                            &wide[0], length) <= 0) return NULL;
+    return _wfopen(&wide[0], mode);
+}
+
+static int ensure_windows_directories(const std::string &root,
+                                     const std::string &relative,
+                                     bool include_leaf)
+{
+    std::string current = root;
+    size_t pos = 0, end = relative.size();
+    DWORD attr = GetFileAttributesA(current.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attr & FILE_ATTRIBUTE_REPARSE_POINT)) return BP_ERR_INVALID_ARG;
+    while (end > 0 && (relative[end - 1] == '\\' || relative[end - 1] == '/')) --end;
+    while (pos < end) {
+        size_t next = relative.find('\\', pos);
+        bool leaf;
+        if (next == std::string::npos || next > end) next = end;
+        leaf = next == end;
+        if (!include_leaf && leaf) break;
+        if (!current.empty() && current[current.size() - 1] != '\\' &&
+            current[current.size() - 1] != '/') current += '\\';
+        current.append(relative, pos, next - pos);
+        attr = GetFileAttributesA(current.c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES) {
+            DWORD error = GetLastError();
+            if ((error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) ||
+                (!CreateDirectoryA(current.c_str(), NULL) &&
+                 GetLastError() != ERROR_ALREADY_EXISTS)) return BP_ERR_IO;
+            attr = GetFileAttributesA(current.c_str());
+        }
+        if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attr & FILE_ATTRIBUTE_REPARSE_POINT)) return BP_ERR_INVALID_ARG;
+        pos = next + 1;
+    }
+    return BP_OK;
+}
+
+static int open_windows_staged_file(const std::string &target,
+                                    std::string *temporary, FILE **file)
+{
+    std::string directory = target;
+    size_t slash = directory.find_last_of("\\/");
+    int attempt;
+    if (slash == std::string::npos) return BP_ERR_INVALID_ARG;
+    directory.resize(slash + 1);
+    for (attempt = 0; attempt < 256; ++attempt) {
+        char suffix[48];
+        LONG serial = InterlockedIncrement(&g_extract_temp_counter);
+        HANDLE handle;
+        int fd;
+        FILE *fp;
+        snprintf(suffix, sizeof(suffix), ".boltpack-%08lx.tmp",
+                 (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
+        *temporary = directory + suffix;
+        handle = CreateFileA(temporary->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
+                             NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return BP_ERR_IO;
+        }
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_WRONLY);
+        if (fd < 0) { CloseHandle(handle); DeleteFileA(temporary->c_str()); return BP_ERR_IO; }
+        fp = _fdopen(fd, "wb");
+        if (fp == NULL) { _close(fd); DeleteFileA(temporary->c_str()); return BP_ERR_IO; }
+        *file = fp;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int apply_windows_fat(const std::string &path, bp_uint8 valid, bp_uint8 value)
+{
+    DWORD old_attributes = GetFileAttributesA(path.c_str());
+    DWORD actual, desired;
+    if (old_attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_PARTIAL;
+    desired = (old_attributes & ~(DWORD)valid) | (DWORD)value;
+    if (!SetFileAttributesA(path.c_str(), desired)) return BP_ERR_PARTIAL;
+    actual = GetFileAttributesA(path.c_str());
+    return actual != INVALID_FILE_ATTRIBUTES && (actual & valid) == value
+         ? BP_OK : BP_ERR_PARTIAL;
+}
+
+static int queue_directory_restore(ExtractCtx *ctx, const std::string &path,
+                                   bp_uint64 mtime, bool mtime_valid)
+{
+    size_t i;
+    if (ctx->directories.size() >= 65535U) return BP_ERR_OVERFLOW;
+    for (i = 0; i < ctx->directories.size(); ++i) {
+        if (ctx->directories[i].path == path) {
+            if (mtime_valid) {
+                ctx->directories[i].mtime = mtime;
+                ctx->directories[i].mtime_valid = true;
+            }
+            return BP_OK;
+        }
+    }
+    ExtractCtx::DirectoryRestore node;
+    node.path = path;
+    node.mtime = mtime;
+    node.mtime_valid = mtime_valid;
+    node.fat_valid = 0;
+    node.fat_value = 0;
+    ctx->directories.push_back(node);
+    return BP_OK;
+}
+
+static int finish_directory_restores(ExtractCtx *ctx)
+{
+    int result = BP_OK;
+    std::sort(ctx->directories.begin(), ctx->directories.end(),
+              [](const ExtractCtx::DirectoryRestore &a,
+                 const ExtractCtx::DirectoryRestore &b) {
+                  return a.path.size() > b.path.size();
+              });
+    for (size_t i = 0; i < ctx->directories.size(); ++i) {
+        const ExtractCtx::DirectoryRestore &node = ctx->directories[i];
+        if (node.mtime_valid) {
+            bp_off_t seconds = bp_u64_to_off(node.mtime);
+            time_t t = (time_t)seconds;
+            struct _stat64 st;
+            struct utimbuf ut;
+            if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), node.mtime) != 0 ||
+                (bp_off_t)t != seconds || _stat64(node.path.c_str(), &st) != 0) {
+                result = BP_ERR_PARTIAL;
+            } else {
+                ut.actime = (time_t)st.st_atime;
+                ut.modtime = t;
+                if (utime(node.path.c_str(), &ut) != 0) result = BP_ERR_PARTIAL;
+            }
+        }
+        if (node.fat_valid && apply_windows_fat(node.path, node.fat_valid,
+                                                node.fat_value) != BP_OK)
+            result = BP_ERR_PARTIAL;
+    }
+    ctx->directories.clear();
+    return result;
+}
 
 static bool selection_needs_extract_mode_choice(const std::vector<std::string> &names)
 {
@@ -2179,6 +2453,121 @@ static std::string reserve_flattened_path(ExtractCtx *ctx, const std::string &en
     }
 }
 
+struct ExtractPreflight {
+    ExtractCtx *ctx;
+    std::map<std::wstring, int> nodes; /* 1 = directory, 2 = non-directory */
+    std::set<std::wstring> primaries;
+    unsigned int primary_count;
+    int result;
+    ExtractPreflight() : ctx(NULL), primary_count(0), result(BP_OK) {}
+};
+
+static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data);
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *user_data);
+
+static std::wstring windows_case_key(const std::string &local)
+{
+    WCHAR wide[MAX_PATH];
+    int length = MultiByteToWideChar(CP_ACP, 0, local.c_str(), -1, wide, MAX_PATH);
+    std::wstring key;
+    if (length <= 0) return key;
+    key.assign(wide, wide + length - 1);
+    while (!key.empty() && key[key.size() - 1] == L'\\') key.resize(key.size() - 1);
+    if (!key.empty()) CharLowerBuffW(&key[0], (DWORD)key.size());
+    return key;
+}
+
+static int extract_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    ExtractPreflight *preflight = (ExtractPreflight *)user_data;
+    ExtractCtx *ctx = preflight->ctx;
+    std::string ename(entry->name ? entry->name : "");
+    char projected[MAX_PATH];
+    std::string local, path;
+    int rc;
+    if (!entry->name || !bp_name_is_safe(entry->name)) {
+        preflight->result = BP_ERR_INVALID_ARG;
+        return 1;
+    }
+    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+        return 0;
+    if (!extract_filter_matches(ctx, ename) ||
+        (entry->entry_type == BP_TYPE_DIR && !ctx->filter.empty() &&
+         ctx->mode == EXTRACT_FILES_ONLY)) return 0;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (entry->entry_type == BP_TYPE_SYMLINK &&
+        !ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY) return 0;
+    if (++preflight->primary_count > 65535U) {
+        preflight->result = BP_ERR_OVERFLOW;
+        return 1;
+    }
+    rc = project_windows_name(entry->name, projected, sizeof(projected));
+    if (rc != BP_OK) { preflight->result = rc; return 1; }
+    local = projected;
+    if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY) {
+        if (entry->entry_type != BP_TYPE_DATA) return 0;
+        path = reserve_flattened_path(ctx, local);
+        ctx->flattened_paths[ename] = path;
+        return 0;
+    }
+
+    std::wstring key = windows_case_key(local);
+    if (key.empty()) { preflight->result = BP_ERR_PARTIAL; return 1; }
+    if (!preflight->primaries.insert(key).second) {
+        preflight->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    bool is_dir = entry->entry_type == BP_TYPE_DIR;
+    size_t pos = 0;
+    for (;;) {
+        size_t slash = key.find(L'\\', pos);
+        bool final = slash == std::wstring::npos;
+        std::wstring prefix = final ? key : key.substr(0, slash);
+        int kind = final ? (is_dir ? 1 : 2) : 1;
+        std::map<std::wstring, int>::iterator found = preflight->nodes.find(prefix);
+        if (found != preflight->nodes.end() && found->second != kind) {
+            preflight->result = BP_ERR_PARTIAL;
+            return 1;
+        }
+        if (found == preflight->nodes.end() && preflight->nodes.size() >= 65535U) {
+            preflight->result = BP_ERR_OVERFLOW;
+            return 1;
+        }
+        preflight->nodes[prefix] = kind;
+        if (final) break;
+        pos = slash + 1;
+    }
+    return 0;
+}
+
+static int extract_with_preflight(bp_io_t *io, ExtractCtx *ctx,
+                                  bp_progress_fn progress_fn)
+{
+    ExtractPreflight preflight;
+    int rc;
+    preflight.ctx = ctx;
+    rc = bp_archive_list(io, extract_preflight_entry, &preflight);
+    if (preflight.result != BP_OK) {
+        ctx->preflight_refused = true;
+        return preflight.result;
+    }
+    if (rc != BP_OK) return rc;
+    if (io->seek == NULL || io->seek(io->handle, 0, 0) != 0) return BP_ERR_IO;
+    rc = bp_archive_extract_all_ex(io, extract_open_cb, extract_done_cb,
+                                   progress_fn, ctx);
+    {
+        int dir_rc = finish_directory_restores(ctx);
+        if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+            if (ctx->open_error != BP_OK) rc = ctx->open_error;
+            else if (dir_rc != BP_OK || ctx->partial_count != 0)
+                rc = BP_ERR_PARTIAL;
+        }
+    }
+    return rc;
+}
+
 static int extract_progress_cb(const bp_progress_t *p, void *user_data)
 {
     ExtractCtx *ectx = (ExtractCtx *)user_data;
@@ -2189,67 +2578,187 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
     std::string ename(entry->name ? entry->name : "");
+    std::string local_name;
     std::string path;
+    char projected[MAX_PATH];
+    int rc;
 
-    if (!entry->name || !bp_name_is_safe(entry->name)) return NULL;
+    if (!entry->name || !bp_name_is_safe(entry->name)) {
+        ctx->partial_count++;
+        ctx->last_subject_valid = false;
+        return NULL;
+    }
 
     if (entry->entry_type == BP_TYPE_DIR) {
-        if (!ctx->filter.empty())
+        if (!extract_filter_matches(ctx, ename) ||
+            (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY)) {
+            ctx->last_subject_valid = false;
             return NULL;
-        path = join_dest_path(ctx->dest_dir, ename);
-        mkdirs(path.c_str());
+        }
+        rc = project_windows_name(entry->name, projected, sizeof(projected));
+        if (rc != BP_OK) { ctx->partial_count++; ctx->last_subject_valid = false; return NULL; }
+        local_name = projected;
+        path = join_dest_path(ctx->dest_dir, local_name);
+        rc = ensure_windows_directories(ctx->dest_dir, local_name, true);
+        if (rc != BP_OK) { ctx->open_error = rc; return NULL; }
+        ctx->last_subject_name = ename;
+        ctx->last_subject_path = path;
+        ctx->last_subject_type = entry->entry_type;
+        ctx->last_subject_valid = true;
+        ctx->last_subject_ok = true;
+        rc = queue_directory_restore(ctx, path, entry->mtime,
+                     (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0);
+        if (rc != BP_OK) { ctx->open_error = rc; ctx->last_subject_ok = false; }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial_count++;
         return NULL;
     }
 
-    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+    if (entry->entry_type == BP_TYPE_META) {
+        if (!extract_filter_matches(ctx, ename)) return NULL;
+        if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY &&
+            ctx->flattened_paths.find(ename) == ctx->flattened_paths.end()) return NULL;
+        if (entry->platform != BP_META_PORTABLE || !ctx->last_subject_valid ||
+            !ctx->last_subject_ok || ctx->last_subject_name != ename) {
+            ctx->partial_count++;
+            return NULL;
+        }
+        bp_metadata_sink_init(&ctx->metadata);
+        return &ctx->metadata.io;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC) {
+        if (extract_filter_matches(ctx, ename) &&
+            (ctx->filter.empty() || ctx->mode != EXTRACT_FILES_ONLY ||
+             ctx->flattened_paths.find(ename) != ctx->flattened_paths.end()))
+            ctx->partial_count++;
         return NULL;
+    }
 
-    if (!extract_filter_matches(ctx, ename))
+    if (!extract_filter_matches(ctx, ename)) {
+        ctx->last_subject_valid = false;
         return NULL;
+    }
 
-    if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY)
-        path = reserve_flattened_path(ctx, ename);
-    else
-        path = join_dest_path(ctx->dest_dir, ename);
+    if (entry->entry_type != BP_TYPE_DATA) {
+        ctx->partial_count++;
+        ctx->last_subject_valid = false;
+        return NULL;
+    }
+    rc = project_windows_name(entry->name, projected, sizeof(projected));
+    if (rc != BP_OK) { ctx->partial_count++; ctx->last_subject_valid = false; return NULL; }
+    local_name = projected;
+    if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY) {
+        std::map<std::string, std::string>::const_iterator mapped =
+            ctx->flattened_paths.find(ename);
+        path = mapped == ctx->flattened_paths.end()
+             ? reserve_flattened_path(ctx, local_name) : mapped->second;
+        rc = ensure_windows_directories(ctx->dest_dir, "", false);
+    } else {
+        path = join_dest_path(ctx->dest_dir, local_name);
+        rc = ensure_windows_directories(ctx->dest_dir, local_name, false);
+    }
+    if (rc != BP_OK) { ctx->open_error = rc; ctx->last_subject_valid = false; return NULL; }
 
-    mkdirs_for_file(path.c_str());
-    FILE *fp = fopen(path.c_str(), "wb");
-    if (!fp) return NULL;
-
-    bp_io_t *io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    ctx->resolved_paths[io->handle] = path;
-    return io;
+    StagedExtractFile *staged = new (std::nothrow) StagedExtractFile();
+    if (staged == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+    FILE *fp = NULL;
+    rc = open_windows_staged_file(path, &staged->temporary, &fp);
+    if (rc != BP_OK) {
+        delete staged;
+        ctx->open_error = rc;
+        ctx->last_subject_valid = false;
+        return NULL;
+    }
+    staged->target = path;
+    bp_io_from_file(&staged->io, fp);
+    ctx->last_subject_name = ename;
+    ctx->last_subject_path = path;
+    ctx->last_subject_type = entry->entry_type;
+    ctx->last_subject_valid = true;
+    ctx->last_subject_ok = false;
+    return &staged->io;
 }
 
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
-
-    if (out) {
-        std::string path;
-        std::map<void *, std::string>::iterator it = ctx->resolved_paths.find(out->handle);
-
-        if (it != ctx->resolved_paths.end()) {
-            path = it->second;
-            ctx->resolved_paths.erase(it);
-        } else {
-            path = join_dest_path(ctx->dest_dir, entry->name ? entry->name : "");
+    if (entry->entry_type == BP_TYPE_META) {
+        bp_portable_metadata_t parsed;
+        int rc;
+        (void)out;
+        if (status != BP_OK) return status;
+        rc = bp_metadata_parse(ctx->metadata.data, ctx->metadata.length, &parsed);
+        if (rc == BP_ERR_CORRUPT) return rc;
+        if (parsed.supported_version && parsed.subject_type != ctx->last_subject_type)
+            return BP_ERR_CORRUPT;
+        if (parsed.has_fat) {
+            if (ctx->last_subject_type == BP_TYPE_DIR) {
+                size_t i;
+                bool found = false;
+                for (i = 0; i < ctx->directories.size(); ++i) {
+                    if (ctx->directories[i].path == ctx->last_subject_path) {
+                        ctx->directories[i].fat_valid = parsed.fat_valid;
+                        ctx->directories[i].fat_value = parsed.fat_value;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return BP_ERR_IO;
+            } else if (apply_windows_fat(ctx->last_subject_path,
+                                         parsed.fat_valid,
+                                         parsed.fat_value) != BP_OK) {
+                ctx->partial_count++;
+            }
         }
-
-        fclose((FILE *)out->handle);
-
-        /* restore mtime */
-        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) && !path.empty()) {
-            struct utimbuf ut;
-            ut.actime  = (time_t)bp_u64_to_ulong(entry->mtime);
-            ut.modtime = (time_t)bp_u64_to_ulong(entry->mtime);
-            utime(path.c_str(), &ut);
-        }
-
-        free(out);
+        if (rc == BP_ERR_PARTIAL || parsed.has_unknown) ctx->partial_count++;
+        return (rc == BP_ERR_PARTIAL || parsed.has_unknown) ? BP_ERR_PARTIAL : BP_OK;
     }
+
+    if (entry->entry_type == BP_TYPE_DIR) return status;
+
+    StagedExtractFile *staged = (StagedExtractFile *)out;
+    FILE *fp = (FILE *)out->handle;
+    int result = status;
+    if (status != BP_OK) {
+        fclose(fp);
+        DeleteFileA(staged->temporary.c_str());
+        delete staged;
+        ctx->last_subject_ok = false;
+        return status;
+    }
+    if (fclose(fp) != 0) result = BP_ERR_IO;
+    if (result == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+        bp_off_t seconds = bp_u64_to_off(entry->mtime);
+        time_t t = (time_t)seconds;
+        struct _stat64 st;
+        struct utimbuf ut;
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+            (bp_off_t)t != seconds || _stat64(staged->temporary.c_str(), &st) != 0) {
+            result = BP_ERR_PARTIAL;
+        } else {
+            ut.actime = (time_t)st.st_atime;
+            ut.modtime = t;
+            if (utime(staged->temporary.c_str(), &ut) != 0) result = BP_ERR_PARTIAL;
+        }
+    }
+    if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) result = BP_ERR_PARTIAL;
+    if (result == BP_OK || result == BP_ERR_PARTIAL) {
+        if (!MoveFileExA(staged->temporary.c_str(), staged->target.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileA(staged->temporary.c_str());
+            delete staged;
+            ctx->last_subject_ok = false;
+            return BP_ERR_IO;
+        }
+        ctx->last_subject_ok = true;
+        delete staged;
+        if (result == BP_ERR_PARTIAL) ctx->partial_count++;
+        return result;
+    }
+    DeleteFileA(staged->temporary.c_str());
+    delete staged;
+    ctx->last_subject_ok = false;
+    return result;
 }
 
 #ifdef BOLTPACK_NET
@@ -2264,13 +2773,14 @@ static int gui_extract_io(bp_io_t *aio, const char *out_dir, int force,
                           void *ud)
 {
     ExtractCtx ctx;
+    int rc;
     (void)force;
     (void)ud;
-    ctx.dest_dir = (out_dir && *out_dir) ? out_dir : ".";
+    rc = utf8_path_to_acp((out_dir && *out_dir) ? out_dir : ".", &ctx.dest_dir);
+    if (rc != BP_OK) return rc;
     ctx.progress = NULL;
     ctx.mode     = EXTRACT_KEEP_FOLDERS;
-    return bp_archive_extract_all(aio, extract_open_cb, extract_done_cb,
-                                  NULL, &ctx);
+    return extract_with_preflight(aio, &ctx, NULL);
 }
 #endif
 
@@ -2282,14 +2792,13 @@ struct ExtractWork {
 
 static void extract_worker(ExtractWork *w)
 {
-    FILE *fp = fopen(w->archive_path.c_str(), "rb");
+    FILE *fp = open_utf8_file(w->archive_path, L"rb");
     if (!fp) { w->result = BP_ERR_IO; w->ectx.progress->finished.store(true); return; }
 
     bp_io_t io;
     bp_io_from_file(&io, fp);
 
-    w->result = bp_archive_extract_all(&io, extract_open_cb, extract_done_cb,
-                                       extract_progress_cb, &w->ectx);
+    w->result = extract_with_preflight(&io, &w->ectx, extract_progress_cb);
     fclose(fp);
     w->ectx.progress->finished.store(true);
 }
@@ -2314,7 +2823,10 @@ static void do_extract()
 
     ExtractWork work;
     work.archive_path       = g_archive_path;
-    work.ectx.dest_dir      = dest;
+    if (utf8_path_to_acp(dest, &work.ectx.dest_dir) != BP_OK) {
+        fl_alert("The selected destination path cannot be represented by the active Windows code page.");
+        return;
+    }
     work.ectx.progress      = create_progress_window("Extracting...");
     work.result              = BP_OK;
 
@@ -2328,8 +2840,12 @@ static void do_extract()
     int rc = work.result;
     destroy_progress_window(work.ectx.progress);
 
-    if (rc == BP_ERR_ABORTED) {
+    if (work.ectx.preflight_refused) {
+        fl_alert("Extraction was not started. A selected name is not representable on Windows or collides with another selected path.");
+    } else if (rc == BP_ERR_ABORTED) {
         fl_message("Extraction cancelled.");
+    } else if (rc == BP_ERR_PARTIAL) {
+        fl_message("Extraction finished with some names or attributes not restored.");
     } else if (rc != BP_OK) {
         fl_alert("Extraction error:\n%s", bp_strerror(rc));
     } else {
@@ -2370,7 +2886,10 @@ static void do_extract_selected()
 
     ExtractWork work;
     work.archive_path  = g_archive_path;
-    work.ectx.dest_dir = dest;
+    if (utf8_path_to_acp(dest, &work.ectx.dest_dir) != BP_OK) {
+        fl_alert("The selected destination path cannot be represented by the active Windows code page.");
+        return;
+    }
     work.ectx.progress = create_progress_window("Extracting...");
     work.ectx.mode     = mode;
     work.result        = BP_OK;
@@ -2392,8 +2911,12 @@ static void do_extract_selected()
     int rc = work.result;
     destroy_progress_window(work.ectx.progress);
 
-    if (rc == BP_ERR_ABORTED) {
+    if (work.ectx.preflight_refused) {
+        fl_alert("Extraction was not started. A selected name is not representable on Windows or collides with another selected path.");
+    } else if (rc == BP_ERR_ABORTED) {
         fl_message("Extraction cancelled.");
+    } else if (rc == BP_ERR_PARTIAL) {
+        fl_message("Extraction finished with some names or attributes not restored.");
     } else if (rc != BP_OK) {
         fl_alert("Extraction error:\n%s", bp_strerror(rc));
     } else {
