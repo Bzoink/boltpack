@@ -32,6 +32,7 @@
 #include "../../core/compress.h"
 #include "../../core/bp_codepage.h"
 #include "../../core/fluff.h"
+#include "../posix/archive_preflight.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -1496,6 +1497,37 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     return 0;
 }
 
+typedef struct {
+    bp_posix_preflight_t paths;
+    int error;
+} extract_preflight_ctx_t;
+
+static int extract_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    extract_preflight_ctx_t *ctx = (extract_preflight_ctx_t *)user_data;
+    int rc;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!bp_name_is_safe(entry->name)) rc = BP_ERR_PARTIAL;
+    else rc = bp_posix_preflight_add(&ctx->paths, entry->name,
+                                     entry->name_len,
+                                     entry->entry_type == BP_TYPE_DIR);
+    if (rc != BP_OK) { ctx->error = rc; return 1; }
+    return 0;
+}
+
+static int extract_preflight_archive(bp_io_t *io)
+{
+    extract_preflight_ctx_t ctx;
+    int rc;
+    memset(&ctx, 0, sizeof(ctx));
+    rc = bp_archive_list(io, extract_preflight_entry, &ctx);
+    if (ctx.error != BP_OK) rc = ctx.error;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&ctx.paths);
+    bp_posix_preflight_free(&ctx.paths);
+    return rc;
+}
+
 /* ---- extract callbacks ------------------------------------------------- */
 
 typedef struct {
@@ -2542,6 +2574,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
 
+    bp_io_from_file(&aio, fp);
+    rc = extract_preflight_archive(&aio);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: archive has names that cannot be mapped safely: %s\n",
+                bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+
     if (out_dir && !dry_run) {
         if (mkdirs(out_dir) != 0) {
             fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
@@ -2550,7 +2591,6 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         }
     }
 
-    bp_io_from_file(&aio, fp);
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
