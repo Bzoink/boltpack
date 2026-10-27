@@ -365,6 +365,11 @@ until their checksums pass, and commits them without overwriting an existing
 destination. A process able to rename an already-open directory outside the
 extraction tree remains a separate concurrent-mutation limitation.
 
+The Linux mini CLI supports `--interchange-profile-1` for archive creation.
+It defaults to BoltLite with 16 KiB blocks, accepts Stored or BoltLite, and
+uses the mini writer's entry-count, per-entry, block-size, and serialized-size
+limits. The resulting archive is readable by both mini and full readers.
+
 Mini preflight and finalization retain a bounded hash table plus one name
 reference per primary entry to detect duplicate names and trailing-slash aliases. A constrained
 system can return an out-of-memory error before extraction or finalization;

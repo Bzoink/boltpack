@@ -46,6 +46,27 @@ def make_path_conflict_archive(helper, destination, reverse=False):
     subprocess.run(command, check=True, cwd=ROOT, capture_output=True)
 
 
+def mini_entry_properties(path):
+    archive = path.read_bytes()
+    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
+    record = table_offset + 16
+    entries = {}
+    for _ in range(count):
+        name_length = struct.unpack_from("<H", archive, record)[0]
+        name = bytes(archive[record + 2:record + 2 + name_length]).decode("utf-8")
+        fields = record + 2 + name_length
+        entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
+        inline_fields = entry_offset + 4 + name_length
+        method = archive[inline_fields + 20]
+        block_size = struct.unpack_from("<I", archive, inline_fields + 22)[0]
+        entry_type = archive[fields + 16]
+        if entry_type in (0, 3, 4):
+            entries[name] = (method, block_size)
+        record = fields + 43
+    return entries
+
+
 def run(binary, *args, cwd):
     command = [str(binary), *args]
     if binary == MINI:
@@ -93,6 +114,29 @@ def main():
         result = run(FULL, "x", "-o", "full", "mini.blt", cwd=root)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         assert (root / "full/src/child/file.txt").read_bytes() == b"mini metadata\n"
+
+        profile_data = root / "profile.bin"
+        profile_data.write_bytes(b"A" * 65536)
+        result = run(MINI, "c", "--interchange-profile-1", "mini-profile.blt",
+                     "profile.bin", cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        profile_entries = mini_entry_properties(root / "mini-profile.blt")
+        assert profile_entries["profile.bin"] == (1, 16384), \
+            f"mini profile did not select BoltLite/16 KiB: {profile_entries}"
+        assert run(MINI, "t", "mini-profile.blt", cwd=root).returncode == 0
+        assert run(FULL, "t", "mini-profile.blt", cwd=root).returncode == 0
+
+        result = run(MINI, "c", "--interchange-profile-1", "-m0",
+                     "mini-profile-stored.blt", "profile.bin", cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        stored_entries = mini_entry_properties(root / "mini-profile-stored.blt")
+        assert stored_entries["profile.bin"] == (0, 16384)
+        assert run(MINI, "t", "mini-profile-stored.blt", cwd=root).returncode == 0
+        assert run(FULL, "t", "mini-profile-stored.blt", cwd=root).returncode == 0
+        result = run(MINI, "c", "--interchange-profile-1", "-m2",
+                     "mini-profile-rejected.blt", "profile.bin", cwd=root)
+        assert result.returncode != 0
+        assert not (root / "mini-profile-rejected.blt").exists()
 
         conflict_archive = root / "prefix-conflict.blt"
         helper = build_path_conflict_helper(root)

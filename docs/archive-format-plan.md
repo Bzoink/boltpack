@@ -635,7 +635,11 @@ POSIX modes, FAT flags, links, and platform metadata. Distinguish compiled,
 host-tested, emulator-tested, and hardware-tested support.
 
 The mini writer and reader enforce the 2,147,483,647-byte serialized-size
-limit, including table and footer bytes. The full writer now offers
+limit, including table and footer bytes. The Linux mini CLI exposes
+`--interchange-profile-1` for creation, defaulting to BoltLite with 16 KiB
+blocks and permitting Stored or BoltLite. Its QEMU interop fixture verifies
+the method and block settings and integrity-checks both methods with the mini
+and full readers. The full writer now offers
 `BP_PROFILE_INTERCHANGE_1`, which selects BoltLite with 16 KiB blocks and
 checks codecs, block and per-entry sizes, physical entry count, and projected
 archive size during create, append, packed-entry commit, and archive copy.
