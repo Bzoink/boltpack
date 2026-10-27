@@ -325,6 +325,8 @@ collision and reserved-name preflight, path-based reparse checks, exclusive
 sibling staging with checksum-verified publication, portable FAT and valid
 timestamp restoration, and deferred directory metadata. It stages new archives
 before replacement and writes portable FAT metadata when creating them.
+Its path preflight is bounded at 65,535 primary entries and 65,535 unique
+projected path nodes; either limit refuses extraction before output changes.
 Symlinks, resource forks, POSIX modes, unsupported metadata, and
 unrepresentable source times are reported as partial. The DLL provides
 status-aware extraction, correctly sized archive-context allocation, Unicode

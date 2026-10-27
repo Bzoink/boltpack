@@ -455,6 +455,10 @@ namespace BoltPack
             public string preflightError;
             public readonly Dictionary<string, byte> paths =
                 new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+            public readonly HashSet<string> pathNodes =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public readonly HashSet<string> descendantPrefixes =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, byte> subjectTypes =
                 new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             public readonly HashSet<string> existingFiles =
@@ -526,19 +530,39 @@ namespace BoltPack
                                 entry.entry_type == NativeMethods.BP_TYPE_DIR);
                             string key = relative.Normalize(NormalizationForm.FormC)
                                 .Replace('/', '\\');
-                            foreach (var prior in ctx.paths)
+                            if (ctx.paths.Count >= 65535)
+                                throw new IOException("The archive exceeds the .NET frontend's 65,535-primary-entry preflight limit.");
+                            if (ctx.paths.ContainsKey(key))
+                                throw new IOException("Two archive entries map to the same Windows path: " + name);
+
+                            string[] components = key.Split('\\');
+                            string prefix = "";
+                            int newNodeCount = 0;
+                            for (int i = 0; i < components.Length; i++)
                             {
-                                if (string.Equals(prior.Key, key,
-                                        StringComparison.OrdinalIgnoreCase))
-                                    throw new IOException("Two archive entries map to the same Windows path: " + name);
-                                if (prior.Value != NativeMethods.BP_TYPE_DIR &&
-                                    key.StartsWith(prior.Key + "\\",
-                                             StringComparison.OrdinalIgnoreCase))
-                                    throw new IOException("A file conflicts with a child path: " + name);
-                                if (entry.entry_type != NativeMethods.BP_TYPE_DIR &&
-                                    prior.Key.StartsWith(key + "\\",
-                                        StringComparison.OrdinalIgnoreCase))
-                                    throw new IOException("A file conflicts with an existing child path: " + name);
+                                prefix = i == 0 ? components[i] : prefix + "\\" + components[i];
+                                if (i < components.Length - 1)
+                                {
+                                    byte ancestorType;
+                                    if (ctx.paths.TryGetValue(prefix, out ancestorType) &&
+                                        ancestorType != NativeMethods.BP_TYPE_DIR)
+                                        throw new IOException("A file conflicts with a child path: " + name);
+                                }
+                                if (!ctx.pathNodes.Contains(prefix)) newNodeCount++;
+                            }
+                            if (ctx.pathNodes.Count + newNodeCount > 65535)
+                                throw new IOException("The archive exceeds the .NET frontend's 65,535-path-node preflight limit.");
+                            if (entry.entry_type != NativeMethods.BP_TYPE_DIR &&
+                                ctx.descendantPrefixes.Contains(key))
+                                throw new IOException("A file conflicts with an existing child path: " + name);
+
+                            prefix = "";
+                            for (int i = 0; i < components.Length; i++)
+                            {
+                                prefix = i == 0 ? components[i] : prefix + "\\" + components[i];
+                                ctx.pathNodes.Add(prefix);
+                                if (i < components.Length - 1)
+                                    ctx.descendantPrefixes.Add(prefix);
                             }
                             ctx.paths.Add(key, entry.entry_type);
                             ctx.subjectTypes.Add(key, entry.entry_type);
@@ -1572,20 +1596,32 @@ namespace BoltPack
         private static void PreflightCreateItems(List<CreateItem> items, string baseDir)
         {
             var seen = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var descendants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (CreateItem item in items)
             {
                 string name = MakeArchiveName(item.path, baseDir, item.directory);
                 string key = name.Normalize(NormalizationForm.FormC).Replace('/', '\\');
-                foreach (var prior in seen)
+                if (seen.ContainsKey(key))
+                    throw new IOException("Two source paths map to the same Windows archive name: " + name);
+                string[] components = key.Split('\\');
+                string prefix = "";
+                for (int i = 0; i < components.Length; i++)
                 {
-                    if (string.Equals(prior.Key, key, StringComparison.OrdinalIgnoreCase) ||
-                        (!prior.Value && key.StartsWith(prior.Key + "\\",
-                            StringComparison.OrdinalIgnoreCase)) ||
-                        (!item.directory && prior.Key.StartsWith(key + "\\",
-                            StringComparison.OrdinalIgnoreCase)))
-                        throw new IOException("Two source paths map to the same Windows archive name: " + name);
+                    prefix = i == 0 ? components[i] : prefix + "\\" + components[i];
+                    bool ancestorIsDirectory;
+                    if (i < components.Length - 1 &&
+                        seen.TryGetValue(prefix, out ancestorIsDirectory) && !ancestorIsDirectory)
+                        throw new IOException("A source file conflicts with a child archive name: " + name);
                 }
+                if (!item.directory && descendants.Contains(key))
+                    throw new IOException("A source file conflicts with an existing child archive name: " + name);
                 seen.Add(key, item.directory);
+                prefix = "";
+                for (int i = 0; i < components.Length - 1; i++)
+                {
+                    prefix = i == 0 ? components[i] : prefix + "\\" + components[i];
+                    descendants.Add(prefix);
+                }
             }
         }
 
