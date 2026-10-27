@@ -142,7 +142,7 @@ define check_cc
 	    { printf '  SKIP  %s (%s not usable)\n' '$(2)' '$(firstword $(1))'; exit 0; }
 endef
 
-.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools linux-i386
+.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools linux-i386 dos-host-test dos-djgpp
 
 # Version stamp: every object that bakes BP_VERSION_MAJOR/MINOR in via
 # BP_VER_DEFS (or MINI_BP_VER_DEFS) must depend on this file so that editing
@@ -153,6 +153,24 @@ $(BUILDDIR)/.version: VERSION VERSION_MINI | $(BUILDDIR)
 	    | cmp -s - $@ || printf '%s %s\n' "$$(cat VERSION 2>/dev/null)" "$$(cat VERSION_MINI 2>/dev/null)" > $@
 
 all: $(TARGET)
+
+# Build the full DOS frontend with the host toolchain and exercise its
+# destination projection and staged extraction lifecycle. This is not a DOS
+# target build; it complements, but does not replace, a DJGPP/DOSBox run.
+dos-host-test:
+	$(MAKE) FRONTEND=dos CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    CFLAGS='$(CFLAGS) -DBP_DOS_TEST_ATTRIBUTES' \
+	    BUILDDIR=build/dos-host-test TARGET=build/dos-host-test/boltpack all
+	$(MAKE) FRONTEND=linux CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 all
+	python3 test/check_dos_frontend_host.py \
+	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
+
+# Full DOS command-line build using the DJGPP cross-toolchain.
+DOS_CC ?= i586-pc-msdosdjgpp-gcc
+dos-djgpp:
+	$(call check_cc,$(DOS_CC),full DOS DJGPP)
+	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/dos-djgpp TARGET=build/dos-djgpp/boltpack.exe all
 
 # 32-bit Linux CLI. Keep its artifacts separate from the native Linux build so
 # aggregate builds cannot overwrite build/linux/boltpack with a 32-bit binary.

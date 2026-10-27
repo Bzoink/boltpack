@@ -32,12 +32,20 @@ deferred directory mode/time metadata. Unsupported metadata and resource forks
 produce a partial result. This frontend has build evidence but still needs
 interactive runtime tests. This plan remains incomplete: other frontends and wrappers
 still need comparable metadata and extraction lifecycle coverage. The full DOS
-frontend remains a separate gap: its source uses the legacy extraction API,
-writes directly to final paths, does not check close status, applies timestamps
-after checksum failure, and can return success after skipping unsupported
-metadata. It has no build target or runtime fixture in this environment. Do not
-claim format-6 safe extraction for this adapter until it uses status-aware
-completion and stages output. The Windows CLI
+frontend now uses a bounded CP850 projected-name preflight and status-aware
+staged file extraction. It checks close and checksum status before publication,
+removes failed stages, uses a recovery name during forced replacement, and
+reports skipped resource forks and symlinks as partial. It captures and
+restores portable FAT flags with DJGPP's DOS attribute API; directory times
+and flags are deferred until children finish. The reproducible
+`make dos-host-test` target validates frontend logic with a host build,
+including CP850 case aliases and injected write/close failures, but does not
+validate DOS APIs.
+`make dos-djgpp` is the actual cross-build target, but it skips here because
+the DJGPP compiler is unavailable; no DOS runtime fixture is available either.
+The full DOS CLI's path-based publication has no protection against a
+concurrent parent-directory change. Generated short-name aliases on systems
+without long filename support are not modeled by its preflight. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization
 remain open. The full Atari CLI now validates the base GEMDOS 8.3 ASCII path

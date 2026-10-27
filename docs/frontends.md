@@ -363,6 +363,13 @@ boltpack-config.exe --help      # Show usage
 make FRONTEND=dos
 ```
 
+This uses the host compiler to build `build/dos/boltpack`; it is useful for
+checking the frontend's C89 source and host-side behavior, but it is not a DOS
+binary. `make dos-host-test` runs its staged-extraction and projected-name
+fixtures. `make dos-djgpp` builds the DOS executable when the
+`i586-pc-msdosdjgpp-gcc` toolchain is available; this environment does not
+have that compiler. A DOS runtime test remains a separate check.
+
 Cross-compile from Linux:
 
 ```sh
@@ -373,9 +380,27 @@ i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
     -o boltpack.exe
 ```
 
-### DOS: bp_io_t Implementation
+### DOS: bp_io_t and Extraction
 
-Same `<stdio.h>` wrapper as the Linux frontend. DJGPP provides POSIX-compatible `fopen`/`fread`/`fwrite`/`fseek`/`ftell`.
+Archive input uses the `<stdio.h>` adapter. Extracted files use exclusive
+same-directory 8.3-style stages opened with `O_CREAT|O_EXCL`; the frontend
+checks the core's checksum status and the file descriptor close before
+publishing. Forced replacement moves an existing regular file to a recovery
+name and restores it if publication fails. A CP850 projected-path preflight
+rejects case aliases and file/directory-prefix conflicts before creating the
+output tree. With DJGPP, creation writes portable FAT metadata and extraction
+restores known FAT flags, deferring directory flags and timestamps until
+children finish. The host test build simulates the flags and does not validate
+the DOS APIs. Resource forks and symlinks are reported as unsupported, as are
+metadata records the frontend cannot apply.
+Preflight does not model generated short-name aliases on filesystems without
+long filename support.
+The pathname-based adapter cannot prevent a concurrent parent-directory
+substitution.
+
+Native DJGPP compilation and DOS runtime validation remain outstanding in
+this environment because the cross-compiler and DOS runtime fixture are not
+available.
 
 ### DOS: Directory Recursion
 
