@@ -408,8 +408,12 @@ Directory timestamp restoration is not supported on plain DOS and is reported
 as partial. The host test build simulates FAT flags and does not validate the
 DOS APIs. Resource forks and symlinks are reported as unsupported, as are
 metadata records the frontend cannot apply.
-Preflight does not model generated short-name aliases on filesystems without
-long filename support.
+Preflight checks the destination volume's long filename support with DJGPP.
+When it is unavailable, every archive path component and output-root component
+must fit a conservative 8.3 profile; names requiring generated aliases are
+refused before output changes. Non-DJGPP DOS builds use this conservative
+profile because they do not query volume-specific LFN support. The host fixture
+simulates a no-LFN volume and checks both archive names and output roots.
 The pathname-based adapter cannot prevent a concurrent parent-directory
 substitution.
 

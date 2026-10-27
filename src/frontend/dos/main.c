@@ -799,6 +799,7 @@ typedef struct {
 typedef struct {
     dos_name_index_t *index;
     const char *out_dir;
+    int long_names;
     int error;
 } dos_preflight_t;
 
@@ -850,6 +851,79 @@ static int dos_component_supported(const char *component, size_t length)
         (memcmp(upper, "COM", 3) == 0 || memcmp(upper, "LPT", 3) == 0))
         return 0;
     return 1;
+}
+
+/* Return true only for a component that can be represented without a
+ * generated short-name alias.  DJGPP has the platform's own 8.3 predicate;
+ * the portable fallback accepts a conservative ASCII subset. */
+static int dos_component_is_83(const char *component, size_t length)
+{
+#ifdef __DJGPP__
+    char name[BP_MAX_PATH];
+    if (length == 0 || length >= sizeof(name)) return 0;
+    memcpy(name, component, length);
+    name[length] = '\0';
+    return _is_DOS83(name) != 0;
+#else
+    size_t stem = 0, ext = 0, i;
+    if (length == 0) return 0;
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem == 0 || stem > 8U) return 0;
+    if (stem < length) {
+        if (stem + 1U == length) return 0;
+        ext = length - stem - 1U;
+        if (ext > 3U || memchr(component + stem + 1U, '.', ext) != NULL)
+            return 0;
+    }
+    for (i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)component[i];
+        if (ch == '.') continue;
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') || strchr("$%'-_@~`!(){}^#&", ch)))
+            return 0;
+    }
+    return 1;
+#endif
+}
+
+static int dos_output_path_is_83(const char *path)
+{
+    const char *p = path;
+    const char *start;
+    size_t length;
+    if (p == NULL || *p == '\0') return 1;
+    if (((p[0] >= 'A' && p[0] <= 'Z') ||
+         (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':') p += 2;
+    while (*p == '/' || *p == '\\') p++;
+    start = p;
+    for (;;) {
+        if (*p == '/' || *p == '\\' || *p == '\0') {
+            length = (size_t)(p - start);
+            if (length != 0 &&
+                !((length == 1U && start[0] == '.') ||
+                  (length == 2U && start[0] == '.' && start[1] == '.')) &&
+                (!dos_component_supported(start, length) ||
+                 !dos_component_is_83(start, length))) return 0;
+            if (*p == '\0') break;
+            start = p + 1;
+        }
+        p++;
+    }
+    return 1;
+}
+
+static int dos_destination_has_lfn(const char *path)
+{
+#ifdef __DJGPP__
+    return _use_lfn(path != NULL && *path != '\0' ? path : ".") != 0;
+#elif defined(BP_DOS_TEST_ATTRIBUTES)
+    const char *no_lfn = getenv("BP_DOS_TEST_NO_LFN");
+    (void)path;
+    return no_lfn == NULL || strcmp(no_lfn, "1") != 0;
+#else
+    (void)path;
+    return 0;
+#endif
 }
 
 static int dos_name_index_add(dos_name_index_t *index, const char *exact,
@@ -934,6 +1008,12 @@ static int dos_preflight_entry(const bp_entry_t *entry, void *user_data)
                 preflight->error = BP_ERR_PARTIAL;
                 return 1;
             }
+            if (!preflight->long_names &&
+                !dos_component_is_83(segment_start,
+                                     (size_t)(p - segment_start))) {
+                preflight->error = BP_ERR_PARTIAL;
+                return 1;
+            }
             component_length = (size_t)(p - local);
             if (component_length == 0 || component_length >= sizeof(component)) {
                 preflight->error = BP_ERR_CORRUPT;
@@ -962,7 +1042,12 @@ static int dos_preflight_archive(bp_io_t *io, const char *out_dir)
     if (index.buckets == NULL) return BP_ERR_NOMEM;
     preflight.index = &index;
     preflight.out_dir = out_dir;
+    preflight.long_names = dos_destination_has_lfn(out_dir);
     preflight.error = BP_OK;
+    if (!preflight.long_names && !dos_output_path_is_83(out_dir)) {
+        dos_name_index_free(&index);
+        return BP_ERR_PARTIAL;
+    }
     rc = bp_archive_list(io, dos_preflight_entry, &preflight);
     if (preflight.error != BP_OK) rc = preflight.error;
     dos_name_index_free(&index);
