@@ -995,6 +995,23 @@ def test_format6_metadata_roundtrip() -> None:
             check(fh.read() == b"existing", "format 6: existing output is not overwritten")
 
 
+def test_extract_dry_run() -> None:
+    section("Extraction dry run")
+    with tempfile.TemporaryDirectory(prefix="bp_dry_run_") as tmp:
+        source = os.path.join(tmp, "src")
+        output = os.path.join(tmp, "preview")
+        os.mkdir(source)
+        with open(os.path.join(source, "file.txt"), "wb") as fh:
+            fh.write(b"validated without writing\n")
+        result = run_bp("c", "sample.bolt", "src", cwd=tmp)
+        check(result.returncode == 0, "dry run: create fixture archive")
+        result = run_bp("x", "--dry-run", "-o", "preview", "sample.bolt",
+                        cwd=tmp)
+        check(result.returncode == 0, "dry run: archive verifies successfully")
+        check(not os.path.exists(output),
+              "dry run: destination tree is not created")
+
+
 def test_extract_symlink_parent() -> None:
     section("Extraction rejects symlink directory components")
     with tempfile.TemporaryDirectory(prefix="bp_symlink_parent_") as tmp:
@@ -1100,6 +1117,7 @@ def main() -> int:
         test_fast_fluff_threaded_roundtrip,
         test_fast_boltlz_threaded_roundtrip,
         test_format6_metadata_roundtrip,
+        test_extract_dry_run,
         test_extract_symlink_parent,
         test_duplicate_source_names,
         test_compression_fallback,

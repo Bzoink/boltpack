@@ -59,12 +59,13 @@ listed as implemented remains unqualified; do not infer it from the core format.
   option. There is no Windows runtime in this environment, so option behavior,
   profile round trips, and reparse-point race checks remain unqualified.
 - On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
-  including 256 archive-format checks and 151 CLI integration checks. The
+  including 256 archive-format checks and 154 CLI integration checks. The
   archive checks include independently laid-out blocked and single-blob
   archives through both cores, and explicit rejection of versions 1–5 by full
   and mini info/test readers.
   The full run exercised profile create, append, incompatible-option refusal,
-  and byte-preserving refusal of an extended-codec archive. `make linux-gui`
+  byte-preserving refusal of an extended-codec archive, and dry-run validation
+  without destination creation. `make linux-gui`
   also built successfully. A Linux CLI fixture with a valid portable FAT
   record returned partial while restoring the directory's Unix mode and epoch
   time.
