@@ -172,7 +172,7 @@ dos-host-test:
 # branches disabled, then exercise directory-relative extraction. These host
 # shims do not replace target-system builds or runtime checks.
 POSIX_DIRFD_HOST_DIR = build/posix-dirfd-host
-POSIX_DIRFD_FRONTENDS = hurd solaris illumos
+POSIX_DIRFD_FRONTENDS = hurd solaris illumos freebsd netbsd openbsd
 POSIX_DIRFD_HOST_BINS = $(foreach frontend,$(POSIX_DIRFD_FRONTENDS),$(POSIX_DIRFD_HOST_DIR)/$(frontend)/boltpack)
 
 $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/linux/main.c \
@@ -180,7 +180,8 @@ $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 	mkdir -p $(@D)
-	$(CC) -U__linux__ -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto \
+	$(CC) -U__linux__ -DBP_POSIX_USE_DIRFD_EXTRACTION=1 \
+	    -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
