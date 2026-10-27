@@ -981,7 +981,7 @@ QL_CC ?= qcc
 QL_CFLAGS=-O
 QL_BUILDDIR=build/ql
 
-.PHONY: ql
+.PHONY: ql ql-host-test
 ql:
 	$(call check_cc,$(QL_CC),ql)
 	mkdir -p $(QL_BUILDDIR)
@@ -994,6 +994,20 @@ ql:
 	    main.c \
 	    ../../../$(BOLTLZDIR)/boltlz.c \
 	    -o ../../../$(QL_BUILDDIR)/boltpack
+
+# Host-build the ANSI-C QL frontend to exercise profile wiring and archive
+# interoperability when the QDOS cross-compiler/runtime is unavailable.
+QL_HOST_DIR = build/ql-host
+QL_HOST_BIN = $(QL_HOST_DIR)/boltpack
+ql-host-test:
+	mkdir -p $(QL_HOST_DIR)
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -Isrc/core src/core/archiver.c src/core/compress.c \
+	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+	    src/frontend/ql/main.c src/core/boltlz.c -o $(QL_HOST_BIN)
+	$(MAKE) CC=$(CC) all linuxmini
+	python3 test/check_ql_profile.py $(QL_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
 
 # Sharp X68000 (Human68k)
 # Toolchain: m68k-x680x-human-gcc (GCC cross-compiler for Human68k).
