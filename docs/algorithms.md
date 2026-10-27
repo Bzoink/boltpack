@@ -118,7 +118,7 @@ worst_case = src_len + src_len / 8 + 16
 
 The public API requires `BOLTLITE_WORK_SIZE` bytes for compression; the decoder's
 work argument is ignored and may be null. The method-1 bitstream changed with
-archive format 5, so current readers reject format-4 archives. Previous
+archive format 5; current readers accept format 6 only. Previous
 BoltPack binaries remain available to extract those archives.
 
 ## 4. Method 2: BoltLZ

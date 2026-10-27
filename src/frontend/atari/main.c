@@ -33,6 +33,7 @@
  */
 
 #include "../../core/archiver.h"
+#include "../../core/bp_time.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
@@ -247,6 +248,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_PARTIAL:           return "some attributes were not restored";
     default:                       return "unknown error";
     }
 }
@@ -497,9 +499,9 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_ATARI,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_ATARI,
                                 &meta_io, bp_u64_from_u32((bp_uint32)ATARI_META_PAYLOAD),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
@@ -671,6 +673,10 @@ typedef struct {
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    int         mtime_errors;
+    int         skip_errors;
+    int         subject_ok;
+    char        subject[BP_MAX_PATH];
 } extract_ctx_t;
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
@@ -683,6 +689,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     meta_extract_t *mex;
     bp_uint32       meta_sz;
 
+    if (entry->entry_type != BP_TYPE_META) ctx->subject_ok = 0;
     if (!bp_name_is_safe(entry->name)) return NULL;
 
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
@@ -703,12 +710,19 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run) mkdirs(path);
+        if (!ctx->dry_run && mkdirs(path) == 0 && strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+        }
         return NULL;
     }
 
     /* --- Atari metadata: capture into buffer for apply in done() ------ */
     if (entry->entry_type == BP_TYPE_META) {
+        if (!ctx->subject_ok || strcmp(entry->name, ctx->subject) != 0) {
+            ctx->subject_ok = 0;
+            return NULL;
+        }
         if (entry->platform != BP_OS_ATARI) return NULL;
 
         meta_sz = bp_u64_to_u32(entry->original_size);
@@ -752,6 +766,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (stat(path, &st_buf) == 0) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
+            ctx->skip_errors++;
             return NULL;
         }
     }
@@ -769,15 +784,15 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     return io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
 
     /* --- Metadata: apply TOS attributes to fs object ------------------ */
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
-        if (entry->platform == BP_OS_ATARI && !ctx->dry_run &&
+        if (status == BP_OK && entry->platform == BP_OS_ATARI && !ctx->dry_run &&
             mex->wctx.len >= ATARI_META_PAYLOAD) {
             char path[BP_MAX_PATH];
             char local_name[BP_MAX_PATH];
@@ -795,18 +810,23 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
             atari_apply_attrib(path, mex->buf[0]);
         }
         free(mex);
-        return;
+        return BP_OK;
     }
 
     /* --- Regular file: close and set modification time ---------------- */
     {
         FILE *fp = (FILE *)out->handle;
-        fclose(fp);
+        if (fclose(fp) != 0 && status == BP_OK) { free(out); return BP_ERR_IO; }
+
+        if (status != BP_OK) { free(out); return BP_OK; }
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+        }
 
         if (!ctx->dry_run) {
             char           path[BP_MAX_PATH];
             char           local_name[BP_MAX_PATH];
-            struct utimbuf ut;
 
             if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
                                  ATARI_CP) != 0) {
@@ -818,12 +838,15 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
             else
                 strcpy(path, local_name);
 
-            ut.actime  = (time_t)entry->mtime.lo;
-            ut.modtime = (time_t)entry->mtime.lo;
-            utime(path, &ut);
+            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                bp_restore_mtime(path, entry->mtime) != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+                ctx->mtime_errors++;
+            }
         }
         free(out);
     }
+    return BP_OK;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -1132,10 +1155,12 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     ctx.dry_run = dry_run;
 
     start = clock();
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
     fclose(fp);
+
+    if (rc == BP_OK && (ctx.mtime_errors || ctx.skip_errors)) rc = BP_ERR_PARTIAL;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));

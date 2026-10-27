@@ -86,9 +86,9 @@ typedef struct {
 
 /* --- Format constants --------------------------------------------------- */
 
-/* This build writes and reads archive format 5 only. Every other version
+/* This build writes and reads archive format 6 only. Every other version
  * is rejected before table or block data is interpreted. */
-#define BP_FORMAT_VERSION      5
+#define BP_FORMAT_VERSION      6
 
 #define BP_MAGIC_0  0x42  /* 'B' */
 #define BP_MAGIC_1  0x4F  /* 'O' */
@@ -119,6 +119,7 @@ typedef struct {
  */
 #define BP_TABLE_REC_TAIL_V2   34
 #define BP_TABLE_REC_TAIL_V3   41
+#define BP_TABLE_REC_TAIL_V6   43 /* v3 tail plus entry flags (2) */
 
 /*
  * Byte offsets of the v3 CRC-32 fields inside the 32-byte archive header
@@ -181,6 +182,7 @@ typedef struct {
 #define BP_OS_WIN16        0x1F  /* Windows 3.x (16-bit) */
 #define BP_OS_HURD         0x20
 #define BP_OS_X68K         0x21  /* Sharp X68000 (Human68k) */
+#define BP_META_PORTABLE    0xFE  /* BP_TYPE_META namespace, not a creator OS */
 /* aliases used by archiver.c auto-detection and by frontend guards */
 #define BP_OS_HAIKU        BP_OS_BEOS
 #define BP_OS_MACOS        BP_OS_MACOSX
@@ -221,6 +223,7 @@ typedef struct {
 
 /* Entry flags field (entry header offset 40+N, 2 bytes) */
 #define BP_ENTRY_FLAG_MODE_VALID  0x8000U /* bit 15: mode bits below are valid */
+#define BP_ENTRY_FLAG_MTIME_VALID 0x4000U /* bit 14: mtime is known, including zero */
 #define BP_ENTRY_FLAG_MODE_MASK   0x0FFFU /* bits 0-11: Unix mode bits (rwxrwxrwx + sticky/sgid/suid) */
 
 /* Block sizes */
@@ -251,6 +254,7 @@ typedef struct {
 #define BP_ERR_ABORTED            -13
 #define BP_ERR_NOT_FOUND          -14
 #define BP_ERR_INVALID_ARG        -15
+#define BP_ERR_PARTIAL            -16 /* data or metadata could not be restored */
 
 /* --- I/O callback interface --------------------------------------------- */
 
@@ -357,14 +361,15 @@ static bp_uint32 bp_u64_to_u32(bp_uint64 v)
     return v.lo;
 }
 
-/* Convert a bp_uint64 archive offset to bp_off_t for seeking.
- * On 32/16-bit platforms the high word is silently discarded;
- * archives > 2 GB cannot be seeked on such hosts (known limitation). */
+/* Convert a bp_uint64 archive offset to bp_off_t for seeking. Return -1
+ * when it cannot be represented by the platform's signed offset type. */
 static bp_off_t bp_u64_to_off(bp_uint64 v)
 {
 #if defined(_MSC_VER) || defined(__GNUC__) || defined(__clang__) || (ULONG_MAX > 0xFFFFFFFFUL)
+    if (v.hi & 0x80000000UL) return (bp_off_t)-1;
     return ((bp_off_t)v.hi << 32) | (bp_off_t)v.lo;
 #else
+    if (v.hi != 0 || v.lo > 0x7FFFFFFFUL) return (bp_off_t)-1;
     return (bp_off_t)v.lo;
 #endif
 }

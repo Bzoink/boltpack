@@ -880,10 +880,10 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
                            st.attributes);
         rctx.buf = meta_buf; rctx.size = RISCOS_META_SIZE; rctx.pos = 0;
         bp_io_from_rbuf(&meta_io, &rctx);
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_META, BP_OS_RISCOS,
+        rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_META, BP_OS_RISCOS,
                                   &meta_io,
                                   bp_u64_from_u32(RISCOS_META_SIZE),
-                                  bp_u64_from_u32(0));
+                                  bp_u64_from_u32(0), 0);
         if (rc != BP_OK) return rc;
 
         /* Recurse into directory */
@@ -946,10 +946,10 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
                            st.attributes);
         rctx.buf = meta_buf; rctx.size = RISCOS_META_SIZE; rctx.pos = 0;
         bp_io_from_rbuf(&meta_io, &rctx);
-        return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_RISCOS,
+        return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_RISCOS,
                                     &meta_io,
                                     bp_u64_from_u32(RISCOS_META_SIZE),
-                                    bp_u64_from_u32(0));
+                                    bp_u64_from_u32(0), 0);
     }
 }
 

@@ -692,6 +692,53 @@ def test_fast_boltlz_threaded_roundtrip() -> None:
         check(r.returncode == 0, "small BoltLZ archive test: exit 0")
 
 
+def test_format6_metadata_roundtrip() -> None:
+    section("Format 6: timestamps, permissions and overwrite protection")
+    with tempfile.TemporaryDirectory(prefix="bp_format6_") as tmp:
+        source = os.path.join(tmp, "src")
+        os.mkdir(source)
+        filename = os.path.join(source, "epoch.txt")
+        with open(filename, "wb") as fh:
+            fh.write(b"format six\n")
+        os.chmod(filename, 0o640)
+        os.utime(filename, (0, 0))
+        os.chmod(source, 0o750)
+        os.utime(source, (1234567890, 1234567890))
+        r = run_bp("c", "--single-thread", "sample.bolt", "src", cwd=tmp)
+        check(r.returncode == 0, "format 6: create")
+        r = run_bp("x", "-o", "ext", "sample.bolt", cwd=tmp)
+        check(r.returncode == 0, "format 6: extract")
+        restored = os.path.join(tmp, "ext", "src")
+        target = os.path.join(restored, "epoch.txt")
+        check(os.stat(target).st_mtime == 0, "format 6: Unix epoch is preserved")
+        check(os.stat(target).st_mode & 0o777 == 0o640, "format 6: file mode is preserved")
+        check(os.stat(restored).st_mode & 0o777 == 0o750, "format 6: directory mode is preserved")
+        check(os.stat(restored).st_mtime == 1234567890, "format 6: directory mtime is restored after children")
+        with open(target, "wb") as fh:
+            fh.write(b"existing")
+        r = run_bp("x", "-o", "ext", "sample.bolt", cwd=tmp)
+        check(r.returncode != 0, "format 6: existing output reports incomplete extraction")
+        with open(target, "rb") as fh:
+            check(fh.read() == b"existing", "format 6: existing output is not overwritten")
+
+
+def test_extract_symlink_parent() -> None:
+    section("Extraction rejects symlink directory components")
+    with tempfile.TemporaryDirectory(prefix="bp_symlink_parent_") as tmp:
+        os.mkdir(os.path.join(tmp, "src"))
+        with open(os.path.join(tmp, "src", "file"), "wb") as fh:
+            fh.write(b"payload")
+        check(run_bp("c", "--single-thread", "sample.bolt", "src", cwd=tmp).returncode == 0,
+              "symlink parent: create archive")
+        os.mkdir(os.path.join(tmp, "ext"))
+        os.mkdir(os.path.join(tmp, "outside"))
+        os.symlink(os.path.join(tmp, "outside"), os.path.join(tmp, "ext", "src"))
+        r = run_bp("x", "-o", "ext", "sample.bolt", cwd=tmp)
+        check(r.returncode != 0, "symlink parent: extraction reports skipped entries")
+        check(not os.path.exists(os.path.join(tmp, "outside", "file")),
+              "symlink parent: file is not written outside destination")
+
+
 def test_compression_fallback() -> None:
     section("Compression fallback: incompressible data stored as-is")
 
@@ -753,6 +800,8 @@ def main() -> int:
         test_zstd_levels,
         test_fast_fluff_threaded_roundtrip,
         test_fast_boltlz_threaded_roundtrip,
+        test_format6_metadata_roundtrip,
+        test_extract_symlink_parent,
         test_compression_fallback,
     ]
 

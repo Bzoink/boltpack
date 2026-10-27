@@ -17,6 +17,10 @@
 #include "bp_types.h"
 #include "compress.h"
 #include "archiver.h"
+#include "mini/archiver.h"
+#include "mini/compress.h"
+#include "bp_metadata.h"
+#include "../../src/frontend/mini_shared/dos_time.h"
 
 /* ======================================================================== */
 /* Memory-backed bp_io_t                                                     */
@@ -276,7 +280,7 @@ static void test_header_bytes(void)
 
         /* format version (little-endian uint16) */
         UNIT_CHECK(mem.buf[4] == BP_FORMAT_VERSION && mem.buf[5] == 0x00,
-                   "format version == 5 (little-endian)");
+                   "format version == 6 (little-endian)");
 
         /* file_count (little-endian uint32 at offset 8) must be 2 */
         UNIT_CHECK(mem.buf[8] == 2 && mem.buf[9] == 0 &&
@@ -673,7 +677,7 @@ static void test_previous_versions_rejected(void)
     mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
     if (!mem.buf) exit(2);
     mem.cap = MEM_IO_CAP;
-    UNIT_SECTION("Archive format: version 5 only");
+    UNIT_SECTION("Archive format: version 6 only");
     for (version = 1; version < BP_FORMAT_VERSION; version++) {
         rc = create_test_archive(&mem, BP_METHOD_BOLTLZ);
         if (rc != BP_OK) { UNIT_CHECK(0, "prepare version-rejection fixture"); break; }
@@ -687,6 +691,360 @@ static void test_previous_versions_rejected(void)
                    "info rejects previous version with valid header CRC");
         UNIT_CHECK(bp_archive_test(&io, test_cb, NULL) == BP_ERR_VERSION,
                    "test rejects previous version with valid header CRC");
+    }
+    free(mem.buf);
+}
+
+static void test_format6_flags_and_names(void)
+{
+    MemIO mem;
+    bp_io_t io;
+    bp_archive_t ar;
+    ListState ls;
+    bp_uint64 zero = bp_u64_from_u32(0);
+    bp_uint64 tbl_off, tbl_size;
+    bp_uint32 flags_off;
+    int rc;
+
+    UNIT_SECTION("Archive format 6: timestamp validity and names");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0;
+    mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+    rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    UNIT_CHECK(rc == BP_OK, "create format 6 archive");
+    if (rc != BP_OK) { free(mem.buf); return; }
+    rc = bp_archive_add_entry_ex(&ar, "known/", BP_TYPE_DIR, BP_OS_LINUX,
+                                 NULL, zero, zero, BP_ENTRY_FLAG_MTIME_VALID);
+    UNIT_CHECK(rc == BP_OK, "known Unix epoch zero is accepted");
+    rc = bp_archive_add_entry_ex(&ar, "unknown/", BP_TYPE_DIR, BP_OS_LINUX,
+                                 NULL, zero, zero, 0);
+    UNIT_CHECK(rc == BP_OK, "unknown timestamp is accepted");
+    rc = bp_archive_add_entry_ex(&ar, "bad/", BP_TYPE_DIR, BP_OS_LINUX,
+                                 NULL, zero, bp_u64_from_u32(1), 0);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "unknown time must be encoded as zero");
+    rc = bp_archive_add_entry(&ar, "\xC0\xAF", BP_TYPE_DIR, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "overlong UTF-8 name rejected");
+    rc = bp_archive_add_entry(&ar, "\xED\xA0\x80", BP_TYPE_DIR, BP_OS_LINUX,
+                              NULL, zero, zero);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "UTF-8 surrogate name rejected");
+    rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "finalize timestamp fixture");
+    memset(&ls, 0, sizeof(ls));
+    rc = bp_archive_list(&io, list_cb, &ls);
+    UNIT_CHECK(rc == BP_OK && ls.count == 2, "list timestamp fixture");
+    UNIT_CHECK((ls.entries[0].flags & BP_ENTRY_FLAG_MTIME_VALID) != 0 &&
+               (ls.entries[1].flags & BP_ENTRY_FLAG_MTIME_VALID) == 0,
+               "table distinguishes epoch zero from unknown time");
+
+    tbl_off = bp_read_le64(mem.buf + mem.size - BP_FOOTER_SIZE);
+    tbl_size = bp_read_le64(mem.buf + mem.size - BP_FOOTER_SIZE + 8);
+    flags_off = tbl_off.lo + BP_TABLE_HDR_V3 + 2U + 6U + 41U;
+    UNIT_CHECK(mem.buf[flags_off] == 0 && mem.buf[flags_off + 1] == 0x40,
+               "format 6 table contains the expected little-endian flag bytes");
+    bp_write_le16(mem.buf + flags_off, 0);
+    bp_write_le32(mem.buf + BP_HEADER_TABLE_CRC_OFF,
+                  bp_crc32(0, mem.buf + tbl_off.lo, tbl_size.lo));
+    bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                  bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+    memset(&ls, 0, sizeof(ls));
+    UNIT_CHECK(bp_archive_list(&io, list_cb, &ls) == BP_ERR_CORRUPT,
+               "table/header flag mismatch is rejected even with valid CRCs");
+    free(mem.buf);
+}
+
+typedef struct {
+    MemIO output;
+    bp_io_t io;
+    bp_uint16 flags;
+    int count;
+    int done_status;
+    int report_partial;
+} MiniInteropState;
+
+static int mini_interop_list(const bp_mini_entry_t *entry, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    s->flags = entry->flags;
+    s->count++;
+    return BP_OK;
+}
+
+static bp_io_t *mini_interop_open(const bp_mini_entry_t *entry, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    s->flags = entry->flags;
+    s->count++;
+    return &s->io;
+}
+
+static int mini_interop_done(const bp_mini_entry_t *entry, bp_io_t *out,
+                             int status, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    (void)entry;
+    (void)out;
+    s->done_status = status;
+    return s->report_partial ? BP_ERR_PARTIAL : BP_OK;
+}
+
+static void test_format6_full_mini_interop(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_archive_t full;
+    bp_mini_archive_t mini;
+    StringSrc input;
+    MiniInteropState state;
+    ListState full_list;
+    bp_uint8 output[256];
+    bp_uint64 zero = bp_u64_from_u32(0);
+    int rc;
+
+    UNIT_SECTION("Archive format 6: full and mini interoperability");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&full, "FILE.TXT", BP_TYPE_DATA,
+                                     BP_OS_LINUX, &source,
+                                     bp_u64_from_u32(FILE1_LEN), zero,
+                                     BP_ENTRY_FLAG_MTIME_VALID);
+    if (rc == BP_OK) rc = bp_archive_finalize(&full);
+    bp_archive_close(&full);
+    UNIT_CHECK(rc == BP_OK, "full writer creates mini-compatible archive");
+
+    memset(&state, 0, sizeof(state));
+    state.output.buf = output; state.output.cap = sizeof(output);
+    state.io = make_mem_io(&state.output);
+    rc = bp_mini_archive_list(&io, mini_interop_list, &state);
+    UNIT_CHECK(rc == BP_OK && state.count == 1 &&
+               (state.flags & BP_ENTRY_FLAG_MTIME_VALID) != 0,
+               "mini list receives known-zero timestamp flag");
+    state.count = 0; state.done_status = 99;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                         mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_OK && state.done_status == BP_OK &&
+               state.output.size == (long)FILE1_LEN &&
+               memcmp(output, FILE1_DATA, FILE1_LEN) == 0,
+               "mini extracts full-writer bytes and verifies checksum");
+
+    /* The first stored block begins after the inline header and block header. */
+    mem.buf[BP_HEADER_SIZE + BP_ENTRY_FIXED + 8 + BP_BLOCK_HDR_V3] ^= 1;
+    state.output.pos = state.output.size = 0; state.done_status = 99;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                         mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_ERR_CHECKSUM && state.done_status == BP_ERR_CHECKSUM,
+               "mini reports corrupt payload and gives cleanup the failure status");
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
+               "mini test returns failure for a bad block without a callback");
+    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
+               "full test returns failure for a bad block without a callback");
+
+    mem.pos = mem.size = 0;
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_BOLTLITE);
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, "MINI.TXT", BP_TYPE_DATA,
+                                           BP_OS_CPM86, &source,
+                                           bp_u64_from_u32(FILE1_LEN), zero, 0);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, "SECOND.TXT", BP_TYPE_DATA,
+                                           BP_OS_CPM86, &source,
+                                           bp_u64_from_u32(FILE1_LEN), zero, 0);
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    bp_mini_archive_close(&mini);
+    UNIT_CHECK(rc == BP_OK, "mini writer creates full-compatible archive");
+    {
+        unsigned first = BP_HEADER_SIZE;
+        unsigned name_len = bp_read_le16(mem.buf + first + 2);
+        bp_uint64 packed_size = bp_read_le64(mem.buf + first + 4 + name_len + 8);
+        unsigned second = first + bp_read_le16(mem.buf + first) + (unsigned)packed_size.lo;
+        unsigned flag_offset = second + bp_read_le16(mem.buf + second) - 2;
+        mem.buf[flag_offset] ^= 1;
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                             mini_interop_done, &state);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && state.count == 0,
+                   "mini preflights all entry headers before opening output");
+        mem.buf[flag_offset] ^= 1;
+    }
+    memset(&full_list, 0, sizeof(full_list));
+    rc = bp_archive_list(&io, list_cb, &full_list);
+    UNIT_CHECK(rc == BP_OK && full_list.count == 2 &&
+               !(full_list.entries[0].flags & BP_ENTRY_FLAG_MTIME_VALID),
+               "full list receives mini's unknown-time flag");
+    rc = bp_archive_test(&io, NULL, NULL);
+    UNIT_CHECK(rc == BP_OK, "full reader verifies mini-writer bytes");
+    memset(&state, 0, sizeof(state));
+    state.output.buf = output; state.output.cap = sizeof(output);
+    state.io = make_mem_io(&state.output);
+    state.report_partial = 1;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                         mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 2 &&
+               state.output.size == (long)(2 * FILE1_LEN),
+               "mini continues extracting after metadata loss and reports partial");
+    free(mem.buf);
+}
+
+static void test_dos_time_interop(void)
+{
+    bp_uint64 utc;
+    unsigned date, time;
+    int rc;
+    UNIT_SECTION("DOS local time conversion");
+    date = (20U << 9) | (2U << 5) | 29U;
+    time = (1U << 11) | (30U << 5);
+    rc = bp_dos_local_to_utc(date, time, 60L, &utc);
+    UNIT_CHECK(rc == 0 && utc.hi == 0 && utc.lo == 951784200UL,
+               "leap-day local time converts using offset east of UTC");
+    rc = bp_dos_utc_to_local(utc, 60L, &date, &time);
+    UNIT_CHECK(rc == 0 && date == ((20U << 9) | (2U << 5) | 29U) &&
+               time == ((1U << 11) | (30U << 5)),
+               "local time round-trips with the same fixed offset");
+    rc = bp_dos_local_to_utc((21U << 9) | (2U << 5) | 29U, 0, 0, &utc);
+    UNIT_CHECK(rc != 0, "invalid leap day rejected");
+    rc = bp_dos_local_to_utc((127U << 9) | (12U << 5) | 31U,
+                             (23U << 11) | (59U << 5) | 29U, 0, &utc);
+    UNIT_CHECK(rc == 0 && utc.hi == 1,
+               "2107 DOS time does not wrap at 32 bits");
+    rc = bp_dos_utc_to_local(utc, 0, &date, &time);
+    UNIT_CHECK(rc == 0 && date == ((127U << 9) | (12U << 5) | 31U),
+               "2107 DOS time round-trips");
+    utc = bp_u64_from_u32(951784201UL);
+    rc = bp_dos_utc_to_local(utc, 60, &date, &time);
+    UNIT_CHECK(rc == 1, "odd seconds report FAT timestamp rounding");
+    utc = bp_u64_from_u32(0);
+    UNIT_CHECK(bp_dos_utc_to_local(utc, 0, &date, &time) < 0,
+               "pre-1980 time is not clamped");
+}
+
+static void test_portable_metadata(void)
+{
+    static const bp_uint8 golden[] = {
+        0x42, 0x50, 0x4d, 0x54, 1, 0, 1, 0, 1, 0, 2, 0, 0x27, 0x21
+    };
+    bp_uint8 bytes[32];
+    bp_portable_metadata_t m;
+    int rc;
+    UNIT_SECTION("Portable metadata envelope");
+    rc = bp_metadata_fat_encode(bytes, sizeof(bytes), BP_TYPE_DATA, 0x27, 0x21);
+    UNIT_CHECK(rc == BP_OK && memcmp(bytes, golden, sizeof(golden)) == 0,
+               "encoder agrees with independently specified FAT bytes");
+    rc = bp_metadata_parse(golden, sizeof(golden), &m);
+    UNIT_CHECK(rc == BP_OK && m.supported_version && m.has_fat &&
+               m.fat_valid == 0x27 && m.fat_value == 0x21,
+               "decoder preserves FAT validity and value masks");
+    memcpy(bytes, golden, sizeof(golden)); bytes[13] = 0x08;
+    UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_CORRUPT,
+               "FAT value outside validity mask rejected");
+    memcpy(bytes, golden, sizeof(golden)); bytes[6] = 2;
+    memcpy(bytes + sizeof(golden), golden + 8, 6);
+    UNIT_CHECK(bp_metadata_parse(bytes, 20, &m) == BP_ERR_CORRUPT,
+               "duplicate FAT record rejected");
+    memcpy(bytes, golden, sizeof(golden)); bytes[10] = 3;
+    UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_CORRUPT,
+               "truncated TLV rejected");
+    memcpy(bytes, golden, sizeof(golden)); bytes[8] = 9;
+    UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_PARTIAL &&
+               m.has_unknown, "unknown well-framed TLV reports partial");
+    memcpy(bytes, golden, sizeof(golden)); bytes[4] = 2;
+    UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_PARTIAL &&
+               !m.supported_version, "unknown schema version is not interpreted");
+    memcpy(bytes, golden, sizeof(golden)); bytes[14] = 0;
+    UNIT_CHECK(bp_metadata_parse(bytes, 15, &m) == BP_ERR_CORRUPT,
+               "trailing envelope bytes rejected");
+}
+
+static bp_io_t *full_metadata_test_open(const bp_entry_t *entry, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    (void)entry;
+    s->count++;
+    return &s->io;
+}
+
+static int full_metadata_test_done(const bp_entry_t *entry, bp_io_t *out,
+                                   int status, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    (void)entry; (void)out;
+    if (status == BP_OK && s->report_partial) return BP_ERR_PARTIAL;
+    return status;
+}
+
+static void test_portable_metadata_archive(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_archive_t ar;
+    StringSrc input;
+    MiniInteropState state;
+    bp_uint8 bytes[BP_META_FAT_SIZE], output[256];
+    int malformed, rc;
+    UNIT_SECTION("Portable metadata archive validation");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    for (malformed = 0; malformed < 2; malformed++) {
+        mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP;
+        io = make_mem_io(&mem);
+        bp_metadata_fat_encode(bytes, sizeof(bytes), BP_TYPE_DATA, 0x27, 0x21);
+        if (malformed) bytes[10] = 3;
+        rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+        source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+        if (rc == BP_OK)
+            rc = bp_archive_add_entry(&ar, "FILE.TXT", BP_TYPE_DATA,
+                                      BP_OS_LINUX, &source,
+                                      bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+        source = make_string_io(&input, bytes, sizeof(bytes));
+        if (rc == BP_OK)
+            rc = bp_archive_add_entry_ex(&ar, "FILE.TXT", BP_TYPE_META,
+                                         BP_META_PORTABLE, &source,
+                                         bp_u64_from_u32(sizeof(bytes)), bp_u64_from_u32(0), 0);
+        if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+        bp_archive_close(&ar);
+        UNIT_CHECK(rc == BP_OK, "portable metadata fixture written");
+        rc = bp_archive_test(&io, NULL, NULL);
+        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
+                   "full archive test validates portable metadata framing");
+        rc = bp_mini_archive_test(&io, NULL, NULL);
+        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
+                   "mini archive test validates portable metadata framing");
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                        full_metadata_test_done, NULL, &state);
+        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK) &&
+                   state.count == (malformed ? 1 : 2),
+                   "full extraction validates metadata before opening its output");
+        if (!malformed) {
+            memset(&state, 0, sizeof(state));
+            state.output.buf = output; state.output.cap = sizeof(output);
+            state.io = make_mem_io(&state.output);
+            state.report_partial = 1;
+            rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                            full_metadata_test_done, NULL, &state);
+            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 2,
+                       "full extraction continues after incomplete metadata");
+        }
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                             mini_interop_done, &state);
+        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_ERR_PARTIAL),
+                   "mini extraction rejects malformed or reports skipped metadata");
     }
     free(mem.buf);
 }
@@ -705,6 +1063,11 @@ int main(void)
 
     test_header_bytes();
     test_previous_versions_rejected();
+    test_format6_flags_and_names();
+    test_format6_full_mini_interop();
+    test_dos_time_interop();
+    test_portable_metadata();
+    test_portable_metadata_archive();
 
     UNIT_SECTION("Archive format: Stored method");
     test_list_method("list (Stored)", BP_METHOD_STORED);

@@ -463,10 +463,10 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_OS2,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_OS2,
                                 &meta_io,
                                 bp_u64_from_u32(OS2_META_PAYLOAD),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
@@ -628,6 +628,10 @@ typedef struct {
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    bp_uint32   mtime_errors;
+    bp_uint32   skip_errors;
+    int         subject_ok;
+    char        subject[BP_MAX_PATH];
 } extract_ctx_t;
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
@@ -640,6 +644,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     FILE           *fp;
     bp_uint32       meta_sz;
 
+    if (entry->entry_type != BP_TYPE_META) ctx->subject_ok = 0;
     if (!bp_name_is_safe(entry->name)) return NULL;
 
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0) {
@@ -654,11 +659,18 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run) mkdirs(path);
+        if (!ctx->dry_run && mkdirs(path) == 0 && strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+        }
         return NULL;
     }
 
     if (entry->entry_type == BP_TYPE_META) {
+        if (!ctx->subject_ok || strcmp(entry->name, ctx->subject) != 0) {
+            ctx->subject_ok = 0;
+            return NULL;
+        }
         if (entry->platform != BP_OS_OS2) return NULL;
         meta_sz = bp_u64_to_u32(entry->original_size);
         if (meta_sz == 0 || meta_sz > OS2_META_PAYLOAD + 4) return NULL;
@@ -691,6 +703,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &tmp_fs, sizeof(tmp_fs))
             == NO_ERROR) {
             fprintf(stderr, "boltpack: file exists (use -f to overwrite): %s\n", path);
+            ctx->skip_errors++;
             return NULL;
         }
     }
@@ -704,13 +717,13 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     return io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
 
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
-        if (entry->platform == BP_OS_OS2 && !ctx->dry_run
+        if (status == BP_OK && entry->platform == BP_OS_OS2 && !ctx->dry_run
             && mex->wctx.len >= OS2_META_PAYLOAD) {
             char path[BP_MAX_PATH], local_name[BP_MAX_PATH];
             if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0)
@@ -720,36 +733,48 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
             os2_apply_attr(path, mex->buf[0]);
         }
         free(mex);
-        return;
+        return BP_OK;
     }
 
     {
         FILE *fp = (FILE *)out->handle;
         char  path[BP_MAX_PATH], local_name[BP_MAX_PATH];
         FILESTATUS3 fs;
-        fclose(fp);
+        if (fclose(fp) != 0 && status == BP_OK) { free(out); return BP_ERR_IO; }
+        if (status != BP_OK) { free(out); return BP_OK; }
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+        }
         if (!ctx->dry_run) {
             if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0)
                 strncpy(local_name, entry->name, sizeof(local_name) - 1);
             if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
             else              strcpy(path, local_name);
             /* Restore mtime via DosSetPathInfo */
-            if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR) {
+            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                entry->mtime.hi == 0 &&
+                DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR) {
                 time_t t = (time_t)entry->mtime.lo;
                 struct tm *tm_p = gmtime(&t);
-                if (tm_p) {
+                if (t >= 0 && (bp_uint32)t == entry->mtime.lo && tm_p &&
+                    tm_p->tm_year >= 80 && tm_p->tm_year <= 207) {
                     fs.fdateLastWrite.year    = (USHORT)(tm_p->tm_year - 80);
                     fs.fdateLastWrite.month   = (USHORT)(tm_p->tm_mon + 1);
                     fs.fdateLastWrite.day     = (USHORT)tm_p->tm_mday;
                     fs.ftimeLastWrite.hours   = (USHORT)tm_p->tm_hour;
                     fs.ftimeLastWrite.minutes = (USHORT)tm_p->tm_min;
                     fs.ftimeLastWrite.twosecs = (USHORT)(tm_p->tm_sec / 2);
-                    DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU);
-                }
+                    if (DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU) != NO_ERROR)
+                        ctx->mtime_errors++;
+                } else ctx->mtime_errors++;
+            } else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+                ctx->mtime_errors++;
             }
         }
         free(out);
     }
+    return BP_OK;
 }
 
 /* ---- test callback ---------------------------------------------------- */
@@ -1059,11 +1084,17 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
     start = clock();
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
     fclose(fp);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
+    if (ctx.skip_errors) return 1;
+    if (ctx.mtime_errors) {
+        fprintf(stderr, "boltpack: could not restore %lu modification time(s)\n",
+                (unsigned long)ctx.mtime_errors);
+        return 1;
+    }
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
     if (g_verbosity < VERB_SILENT) {
         printf("%lu file%s, %lu director%s",

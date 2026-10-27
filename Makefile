@@ -1171,6 +1171,7 @@ mini-test:
 	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/boltlite.o        $(COREDIR)/boltlite.c
 	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -O2 -c -o $(MINI_TEST_DIR)/boltlz_decomp.o  $(MINI_COREDIR)/boltlz_decomp.c
 	$(CC) $(MINI_TEST_FRONT) -I$(COREDIR) -c -o $(MINI_TEST_DIR)/mini_common.o $(MINI_SHARED)/mini_common.c
+	$(CC) $(MINI_TEST_CORE)  -I$(COREDIR) -c -o $(MINI_TEST_DIR)/bp_codepage.o $(COREDIR)/bp_codepage.c
 	$(CC) $(MINI_TEST_CORE)  -Wall        -O2 -c -o $(MINI_TEST_DIR)/boltlz.o     $(BOLTLZDIR)/boltlz.c
 	$(CC) $(MINI_TEST_FRONT) -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
 	    -c -o $(MINI_TEST_DIR)/main_dos16.o  src/frontend/dos16/main.c
@@ -1182,7 +1183,7 @@ mini-test:
 	    -c -o $(MINI_TEST_DIR)/main_os2_16.o src/frontend/os2_16/main.c
 	$(CC) $(MINI_TEST_FRONT) -o $(MINI_TEST_DIR)/bpmini-test \
 	    $(MINI_TEST_DIR)/archiver.o $(MINI_TEST_DIR)/compress.o \
-	    $(MINI_TEST_DIR)/boltlite.o $(MINI_TEST_DIR)/mini_common.o \
+	    $(MINI_TEST_DIR)/boltlite.o $(MINI_TEST_DIR)/mini_common.o $(MINI_TEST_DIR)/bp_codepage.o \
 	    $(MINI_TEST_DIR)/boltlz.o $(MINI_TEST_DIR)/main_dos16.o
 	@echo "  OK    $(MINI_TEST_DIR)/bpmini-test [C89 core check + linux test binary]"
 
@@ -1210,6 +1211,7 @@ linuxmini:
 	$(CC) $(LINUXMINI_CFLAGS) -I$(COREDIR)                          -c -o $(LINUXMINI_BDIR)/boltlite.o        $(COREDIR)/boltlite.c
 	$(CC) $(LINUXMINI_CFLAGS)  -Wall              -O2 -c -o $(LINUXMINI_BDIR)/boltlz.o     $(BOLTLZDIR)/boltlz.c
 	$(CC) $(LINUXMINI_FFLAGS) -I$(COREDIR) -I$(MINI_COREDIR)        -c -o $(LINUXMINI_BDIR)/mini_common.o $(MINI_SHARED)/mini_common.c
+	$(CC) $(LINUXMINI_CFLAGS) -I$(COREDIR) -c -o $(LINUXMINI_BDIR)/bp_codepage.o $(COREDIR)/bp_codepage.c
 	$(CC) $(LINUXMINI_FFLAGS) -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
 	    -c -o $(LINUXMINI_BDIR)/main.o src/frontend/linuxmini/main.c
 	$(CC) -m32 -fuse-ld=bfd -Wl,--gc-sections \
@@ -1217,7 +1219,7 @@ linuxmini:
 	    -o $(LINUXMINI_EXE) \
 	    $(LINUXMINI_BDIR)/archiver.o $(LINUXMINI_BDIR)/compress.o \
 	    $(LINUXMINI_BDIR)/boltlite.o $(LINUXMINI_BDIR)/boltlz.o \
-	    $(LINUXMINI_BDIR)/mini_common.o $(LINUXMINI_BDIR)/main.o
+	    $(LINUXMINI_BDIR)/mini_common.o $(LINUXMINI_BDIR)/bp_codepage.o $(LINUXMINI_BDIR)/main.o
 	@echo "  OK    $(LINUXMINI_EXE)"
 
 # ---- dos16: Open Watcom, 16-bit DOS compact model -----------------------
@@ -1234,6 +1236,7 @@ dos16:
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/main.obj       src/frontend/dos16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
 	    file {$(DOS16_BDIR)/archiver.obj} \
@@ -1241,6 +1244,7 @@ dos16:
 	    file {$(DOS16_BDIR)/boltlite.obj} \
 	    file {$(DOS16_BDIR)/boltlz_decomp.obj} \
 	    file {$(DOS16_BDIR)/mini_common.obj} \
+	    file {$(DOS16_BDIR)/bp_codepage.obj} \
 	    file {$(DOS16_BDIR)/main.obj} \
 	    name $(DOS16_EXE)
 	@echo "  OK    $(DOS16_EXE)"
@@ -1259,6 +1263,7 @@ win16:
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/main.obj       src/frontend/win16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system windows option eliminate \
 	    file {$(WIN16_BDIR)/archiver.obj} \
@@ -1266,6 +1271,7 @@ win16:
 	    file {$(WIN16_BDIR)/boltlite.obj} \
 	    file {$(WIN16_BDIR)/boltlz_decomp.obj} \
 	    file {$(WIN16_BDIR)/mini_common.obj} \
+	    file {$(WIN16_BDIR)/bp_codepage.obj} \
 	    file {$(WIN16_BDIR)/main.obj} \
 	    name $(WIN16_EXE)
 	@echo "  OK    $(WIN16_EXE)"
@@ -1286,6 +1292,7 @@ os2-16:
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/main.obj       src/frontend/os2_16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system os2 option eliminate \
 	    file {$(OS2_16_BDIR)/archiver.obj} \
@@ -1293,6 +1300,7 @@ os2-16:
 	    file {$(OS2_16_BDIR)/boltlite.obj} \
 	    file {$(OS2_16_BDIR)/boltlz_decomp.obj} \
 	    file {$(OS2_16_BDIR)/mini_common.obj} \
+	    file {$(OS2_16_BDIR)/bp_codepage.obj} \
 	    file {$(OS2_16_BDIR)/main.obj} \
 	    name $(OS2_16_EXE)
 	@echo "  OK    $(OS2_16_EXE)"
@@ -1306,7 +1314,7 @@ os2-16:
 #   cc -DSIZEOF_INT=2 -DSIZEOF_LONG=4 -DBP_MINI \
 #      -DBP_CREATOR_OS=BP_OS_CPM86 -DBP_CREATOR_CPU=BP_CPU_8086 \
 #      src/core/mini/archiver.c src/core/mini/compress.c \
-#      src/core/boltlite.c \
+#      src/core/boltlite.c src/core/bp_codepage.c \
 #      src/frontend/mini_shared/mini_common.c \
 #      src/core/mini/boltlz_decomp.c \
 #      src/frontend/cpm86/main.c \
@@ -1996,12 +2004,14 @@ $(UNIT_BUILD_DIR)/test_archive_format: \
     $(COREDIR)/boltlite.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
+    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
     $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
-	$(CC) $(UNIT_CFLAGS) -O2 $(FLUFF_NATIVE_FLAGS) -o $@ \
+	$(CC) $(UNIT_CFLAGS) -DBP_MINI -O2 $(FLUFF_NATIVE_FLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
-	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c \
+	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c
 
 $(UNIT_BUILD_DIR)/test_archive_format_asan: \
     $(UNIT_TEST_DIR)/test_archive_format.c \
@@ -2010,12 +2020,14 @@ $(UNIT_BUILD_DIR)/test_archive_format_asan: \
     $(COREDIR)/boltlite.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
+    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
     $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
-	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ \
+	$(CC) $(UNIT_ASAN_FLAGS) -DBP_MINI $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
-	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c \
+	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c
 
 # --- mini_test_compress (full-core API on Linux; Open Watcom variant below) ---
 $(UNIT_BUILD_DIR)/mini_test_compress: \

@@ -8,6 +8,8 @@
  */
 
 #include "archiver.h"
+#include "archive_name.h"
+#include "bp_metadata.h"
 #include "fluff.h"
 #include "compress.h"
 #include "boltlite.h"
@@ -18,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef BOLTPACK_FAST_FLUFF
+#include <omp.h>
+#endif
 
 /*
  * Sanity ceiling for block sizes read from entry headers during
@@ -37,6 +42,7 @@
  * typical modern RAM budgets.
  */
 #define FAST_FLUFF_MAX_BATCH 64
+#define FAST_BOLTLZ_MAX_BATCH 64
 #endif /* BOLTPACK_FAST_FLUFF */
 
 /* ---- helpers ----------------------------------------------------------- */
@@ -304,6 +310,88 @@ static int bp_fast_fluff_ensure(bp_archive_t *ar, bp_uint32 block_size,
     ar->fast_fluff_out_size = out_size;
     return BP_OK;
 }
+
+static void bp_fast_boltlz_release(bp_archive_t *ar)
+{
+    if (ar == NULL) return;
+    free(ar->fast_boltlz_in_base);
+    free(ar->fast_boltlz_out_base);
+    free(ar->fast_boltlz_work_base);
+    ar->fast_boltlz_in_base = NULL;
+    ar->fast_boltlz_out_base = NULL;
+    ar->fast_boltlz_work_base = NULL;
+    ar->fast_boltlz_ctx_threads = 0;
+    ar->fast_boltlz_batch_blocks = 0;
+    ar->fast_boltlz_block_size = 0;
+    ar->fast_boltlz_out_size = 0;
+    ar->fast_boltlz_work_size = 0;
+}
+
+static int bp_fast_boltlz_ensure(bp_archive_t *ar, bp_uint32 block_size,
+                                 bp_uint32 out_size, int nthreads)
+{
+    int batch_blocks;
+    bp_uint32 work_size;
+
+    if (ar == NULL) return BP_ERR_INVALID_ARG;
+    if (nthreads > FAST_BOLTLZ_MAX_BATCH)
+        nthreads = FAST_BOLTLZ_MAX_BATCH;
+    if (nthreads < 2) {
+        bp_fast_boltlz_release(ar);
+        return BP_OK;
+    }
+    batch_blocks = nthreads;
+    work_size = bp_compress_work_size();
+    if (work_size == 0) return BP_ERR_INVALID_ARG;
+
+    if (ar->fast_boltlz_in_base != NULL &&
+        ar->fast_boltlz_ctx_threads == (bp_uint32)nthreads &&
+        ar->fast_boltlz_batch_blocks == (bp_uint32)batch_blocks &&
+        ar->fast_boltlz_block_size == block_size &&
+        ar->fast_boltlz_out_size == out_size &&
+        ar->fast_boltlz_work_size == work_size) {
+        return BP_OK;
+    }
+
+    bp_fast_boltlz_release(ar);
+    ar->fast_boltlz_in_base = (bp_uint8 *)malloc(
+        (size_t)batch_blocks * (size_t)block_size);
+    ar->fast_boltlz_out_base = (bp_uint8 *)malloc(
+        (size_t)batch_blocks * (size_t)out_size);
+    ar->fast_boltlz_work_base = malloc(
+        (size_t)nthreads * (size_t)work_size);
+    if (ar->fast_boltlz_in_base == NULL ||
+        ar->fast_boltlz_out_base == NULL ||
+        ar->fast_boltlz_work_base == NULL) {
+        bp_fast_boltlz_release(ar);
+        return BP_ERR_NOMEM;
+    }
+
+    ar->fast_boltlz_ctx_threads = (bp_uint32)nthreads;
+    ar->fast_boltlz_batch_blocks = (bp_uint32)batch_blocks;
+    ar->fast_boltlz_block_size = block_size;
+    ar->fast_boltlz_out_size = out_size;
+    ar->fast_boltlz_work_size = work_size;
+    return BP_OK;
+}
+
+static int bp_fast_boltlz_effective_threads(bp_uint64 file_size,
+                                            bp_uint32 block_size,
+                                            int nthreads)
+{
+    bp_uint32 min_bytes;
+    if (nthreads > FAST_BOLTLZ_MAX_BATCH)
+        nthreads = FAST_BOLTLZ_MAX_BATCH;
+    while (nthreads > 1) {
+        /* At least two blocks per worker amortizes staging and OpenMP startup
+         * costs while still using available cores on medium-sized files. */
+        min_bytes = block_size * (bp_uint32)(2 * nthreads);
+        if (bp_u64_gte(file_size, bp_u64_from_u32(min_bytes)))
+            return nthreads;
+        nthreads--;
+    }
+    return 0;
+}
 #endif
 
 void bp_set_fast_fluff(bp_archive_t *ar, int nthreads)
@@ -311,6 +399,20 @@ void bp_set_fast_fluff(bp_archive_t *ar, int nthreads)
     if (ar == NULL) return;
 #ifdef BOLTPACK_FAST_FLUFF
     bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
+    ar->fast_fluff_threads = (nthreads > 0) ? nthreads : 0;
+#else
+    (void)nthreads;
+    ar->fast_fluff_threads = 0;
+#endif
+}
+
+void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads)
+{
+    if (ar == NULL) return;
+#ifdef BOLTPACK_FAST_FLUFF
+    bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
     ar->fast_fluff_threads = (nthreads > 0) ? nthreads : 0;
 #else
     (void)nthreads;
@@ -528,10 +630,13 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
 
     ck_type = BP_CKSUM_CRC32; /* CRC-32 is the only compiled archive checksum */
 
-    name_len = (bp_uint16)strlen(name);
     if (strlen(name) > BP_MAX_NAME_LEN) {
         return BP_ERR_NAME_TOO_LONG;
     }
+    name_len = (bp_uint16)strlen(name);
+    if (!bp_archive_name_valid(name, (bp_uint32)name_len) ||
+        (!(flags & BP_ENTRY_FLAG_MTIME_VALID) && !bp_u64_is_zero(mtime)))
+        return BP_ERR_INVALID_ARG;
 
     hdr_size = (bp_uint16)(BP_ENTRY_FIXED + name_len);
 
@@ -789,6 +894,156 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                 if (!any_compressed_block) {
                     fields[20] = BP_METHOD_STORED;
                 }
+            } else if (ar->fast_fluff_threads > 1 &&
+                       actual_method == BP_METHOD_BOLTLZ &&
+                       bp_fast_boltlz_effective_threads(
+                           file_size, bsize, ar->fast_fluff_threads) > 1) {
+                bp_uint8 *fast_in_base;
+                bp_uint8 *fast_out_base;
+                void *fast_work_base;
+                bp_uint8 *batch_srcs[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint8 *batch_dsts[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_src_lens[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_dst_lens[FAST_BOLTLZ_MAX_BATCH];
+                int batch_status[FAST_BOLTLZ_MAX_BATCH];
+                bp_uint32 batch_total;
+                bp_uint32 batch_written;
+                bp_uint32 work_size;
+                int nthreads_bz;
+                int batch_cap_bz;
+                int batch_n;
+                int b;
+
+                nthreads_bz = bp_fast_boltlz_effective_threads(
+                    file_size, bsize, ar->fast_fluff_threads);
+                rc = bp_fast_boltlz_ensure(ar, bsize, out_buf_size,
+                                           nthreads_bz);
+                if (rc != BP_OK) return rc;
+
+                fast_in_base = ar->fast_boltlz_in_base;
+                fast_out_base = ar->fast_boltlz_out_base;
+                fast_work_base = ar->fast_boltlz_work_base;
+                work_size = ar->fast_boltlz_work_size;
+                nthreads_bz = (int)ar->fast_boltlz_ctx_threads;
+                batch_cap_bz = (int)ar->fast_boltlz_batch_blocks;
+
+                for (b = 0; b < batch_cap_bz; b++) {
+                    batch_srcs[b] = fast_in_base +
+                                    (size_t)b * (size_t)bsize;
+                    batch_dsts[b] = fast_out_base +
+                                    (size_t)b * (size_t)out_buf_size;
+                }
+
+                while (!bp_u64_is_zero(remaining)) {
+                    batch_n = 0;
+                    batch_total = 0;
+                    while (batch_n < batch_cap_bz &&
+                           !bp_u64_is_zero(remaining)) {
+                        bp_uint32 chunk =
+                            (remaining.hi != 0 || remaining.lo > bsize)
+                            ? bsize : remaining.lo;
+                        long n_read;
+
+                        n_read = file_io->read(file_io->handle,
+                                               batch_srcs[batch_n], chunk);
+                        if (n_read != (long)chunk) {
+                            char lbuf[512];
+                            sprintf(lbuf,
+                                "boltpack: low-level read failed for entry %.200s: "
+                                "requested=%u read=%ld errno=%d (%s)",
+                                name, (unsigned)chunk, n_read,
+                                errno, strerror(errno));
+                            bp_core_log(ar, lbuf);
+                            return BP_ERR_IO;
+                        }
+                        adler = bp_checksum_typed(ck_type, adler,
+                                                  batch_srcs[batch_n], chunk);
+                        batch_src_lens[batch_n] = chunk;
+                        batch_total += chunk;
+                        remaining = bp_u64_sub(remaining,
+                                               bp_u64_from_u32(chunk));
+                        batch_n++;
+                    }
+
+                    /* BoltLZ blocks have independent match histories. */
+#pragma omp parallel for schedule(dynamic) num_threads(nthreads_bz)
+                    for (b = 0; b < batch_n; b++) {
+                        int tid;
+                        bp_uint32 comp_len;
+                        void *worker_work;
+
+                        tid = omp_get_thread_num();
+                        if (tid < 0 || tid >= nthreads_bz) tid = 0;
+                        worker_work = (bp_uint8 *)fast_work_base +
+                                      (size_t)tid * (size_t)work_size;
+                        comp_len = out_buf_size;
+                        batch_status[b] = bp_compress_block_work(
+                            batch_srcs[b], batch_src_lens[b], batch_dsts[b],
+                            &comp_len, worker_work, ar->method_level);
+                        batch_dst_lens[b] = comp_len;
+                    }
+
+                    for (b = 0; b < batch_n; b++) {
+                        if (batch_status[b] != BP_OK)
+                            return batch_status[b];
+                    }
+
+                    batch_written = 0;
+                    for (b = 0; b < batch_n; b++) {
+                        bp_uint8 blk_hdr[BP_BLOCK_HDR_V3];
+                        bp_uint64 bytes_done;
+
+                        if (batch_dst_lens[b] >=
+                            batch_src_lens[b] - batch_src_lens[b] / 100) {
+                            batch_dst_lens[b] = batch_src_lens[b];
+                            memcpy(batch_dsts[b], batch_srcs[b],
+                                   (size_t)batch_src_lens[b]);
+                        } else {
+                            any_compressed_block = 1;
+                        }
+
+                        bp_write_le32(blk_hdr + 0, batch_dst_lens[b]);
+                        bp_write_le32(blk_hdr + 4, batch_src_lens[b]);
+                        bp_write_le32(blk_hdr + 8,
+                            bp_crc32(0, batch_dsts[b], batch_dst_lens[b]));
+                        rc = write_buf(dst_io, blk_hdr, BP_BLOCK_HDR_V3);
+                        if (rc != BP_OK) return rc;
+                        rc = write_buf(dst_io, batch_dsts[b],
+                                       batch_dst_lens[b]);
+                        if (rc != BP_OK) return rc;
+
+                        total_comp = bp_u64_add(total_comp,
+                            bp_u64_from_u32(batch_dst_lens[b] +
+                                            BP_BLOCK_HDR_V3));
+                        batch_written += batch_src_lens[b];
+
+                        if (record_entry && ar->progress_fn) {
+                            bp_progress_t p;
+                            memset(&p, 0, sizeof(p));
+                            bytes_done = bp_u64_sub(file_size,
+                                bp_u64_add(remaining,
+                                    bp_u64_from_u32(batch_total -
+                                                    batch_written)));
+                            p.file_index = ar->entries_written;
+                            p.file_count = 0;
+                            p.file_name = name;
+                            p.file_orig_size = orig64;
+                            p.file_bytes_done = bytes_done;
+                            p.file_comp_size = total_comp;
+                            p.archive_orig_total = bp_u64_add(
+                                ar->archive_orig_total, bytes_done);
+                            p.archive_comp_total = bp_u64_add(
+                                ar->archive_comp_total, total_comp);
+                            p.archive_orig_done = bp_u64_add(
+                                ar->archive_orig_done, bytes_done);
+                            if (ar->progress_fn(&p, ar->progress_data) != 0)
+                                return BP_ERR_ABORTED;
+                        }
+                    }
+                }
+
+                if (!any_compressed_block)
+                    fields[20] = BP_METHOD_STORED;
             } else
 #endif /* BOLTPACK_FAST_FLUFF */
             {
@@ -999,7 +1254,7 @@ seq_done:
             packed_out->entry_type = entry_type;
             packed_out->platform = platform;
             packed_out->mtime = mtime;
-            packed_out->flags = 0;
+            packed_out->flags = flags;
             packed_out->serialized_size = bp_u64_add(bp_u64_from_u32(hdr_size),
                                                      total_comp);
         }
@@ -1022,7 +1277,7 @@ int bp_archive_add_entry(bp_archive_t *ar, const char *name,
                          bp_uint64 mtime)
 {
     return bp_archive_write_entry(ar, name, entry_type, platform,
-                                  file_io, file_size, mtime, 0,
+                                  file_io, file_size, mtime, BP_ENTRY_FLAG_MTIME_VALID,
                                   ar->io, NULL, 1);
 }
 
@@ -1043,7 +1298,7 @@ int bp_archive_pack_entry(bp_archive_t *ar, const char *name,
                           bp_packed_entry_t *packed)
 {
     return bp_archive_write_entry(ar, name, entry_type, platform,
-                                  file_io, file_size, mtime, 0,
+                                  file_io, file_size, mtime, BP_ENTRY_FLAG_MTIME_VALID,
                                   dst_io, packed, 0);
 }
 
@@ -1071,7 +1326,7 @@ static int write_crc(bp_io_t *io, bp_uint32 *crc,
 static int write_table_record(bp_io_t *io, bp_uint32 *crc, const bp_entry_t *e)
 {
     bp_uint8 rec_hdr[2];
-    bp_uint8 rec_fields[BP_TABLE_REC_TAIL_V3];
+    bp_uint8 rec_fields[BP_TABLE_REC_TAIL_V6];
     int rc;
 
     bp_write_le16(rec_hdr, e->name_len);
@@ -1090,7 +1345,8 @@ static int write_table_record(bp_io_t *io, bp_uint32 *crc, const bp_entry_t *e)
     rec_fields[34] = e->method;                    /* v3: method */
     bp_write_le16(rec_fields + 35, e->header_size);/* v3: header_size */
     bp_write_le32(rec_fields + 37, e->checksum);   /* v3: payload checksum */
-    return write_crc(io, crc, rec_fields, BP_TABLE_REC_TAIL_V3);
+    bp_write_le16(rec_fields + 41, e->flags);
+    return write_crc(io, crc, rec_fields, BP_TABLE_REC_TAIL_V6);
 }
 
 /* Patch the v3 CRC fields into the 32-byte header already on disk, and
@@ -1230,6 +1486,7 @@ void bp_archive_close(bp_archive_t *ar)
     if (ar == NULL) return;
 #ifdef BOLTPACK_FAST_FLUFF
     bp_fast_fluff_release(ar);
+    bp_fast_boltlz_release(ar);
 #endif
     if (ar->entry_list) {
         for (i = 0; i < ar->entries_written; i++) {
@@ -1274,7 +1531,7 @@ static int read_footer(bp_io_t *io, bp_uint64 *table_offset, bp_uint64 *table_si
     return BP_OK;
 }
 
-/* Read archive header and validate.  Accepts only archive format 5.
+/* Read archive header and validate.  Accepts only archive format 6.
  * out_version (may be NULL) receives the on-disk version so callers can
  * parse version-specific structures (e.g. the file-table record layout).
  * The 32-byte header's own CRC-32 is verified here. */
@@ -1300,6 +1557,9 @@ static int read_header(bp_io_t *io, bp_uint32 *file_count,
     if (version != BP_FORMAT_VERSION) {
         return BP_ERR_VERSION;
     }
+
+    /* Format 5 reserves the 16-bit flags field at bytes 6-7. */
+    if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
 
     if (version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
@@ -1351,6 +1611,9 @@ static int open_file_table(bp_io_t *io, bp_uint32 *out_count,
  *   1. the file-table CRC-32 stored in the header;
  *   2. the archive_size field matches the actual file size.
  * A no-op returning BP_OK for v2 archives. */
+static int verify_table_entries(bp_io_t *io, bp_uint16 version,
+                                bp_uint32 file_count);
+
 static int verify_table_crc(bp_io_t *io, bp_uint16 version)
 {
     bp_uint8 hdr[BP_HEADER_SIZE];
@@ -1372,12 +1635,15 @@ static int verify_table_crc(bp_io_t *io, bp_uint16 version)
 
     /* archive_size normative check: stored value must equal actual file size */
     {
+        bp_off_t actual_end = io_tell(io);
         bp_uint64 stored_sz  = bp_read_le64(hdr + 16);
-        bp_uint64 actual_sz  = bp_u64_add(tbl_off,
-                               bp_u64_add(tbl_sz,
-                               bp_u64_from_u32((bp_uint32)BP_FOOTER_SIZE)));
-        if (!bp_u64_is_zero(stored_sz) &&
-            bp_u64_cmp(stored_sz, actual_sz) != 0)
+        bp_uint64 table_end = bp_u64_add(tbl_off, tbl_sz);
+        bp_uint64 expected = bp_u64_add(table_end,
+                                bp_u64_from_u32((bp_uint32)BP_FOOTER_SIZE));
+        if (actual_end < 0 || bp_u64_cmp(table_end, tbl_off) < 0 ||
+            bp_u64_cmp(expected, table_end) < 0 ||
+            bp_u64_cmp(expected, bp_off_to_u64(actual_end)) != 0 ||
+            bp_u64_cmp(stored_sz, expected) != 0)
             return BP_ERR_TRUNCATED;
     }
 
@@ -1395,7 +1661,7 @@ static int verify_table_crc(bp_io_t *io, bp_uint16 version)
         rem = bp_u64_sub(rem, bp_u64_from_u32(chunk));
     }
     if (calc != stored) return BP_ERR_CORRUPT; /* structural, not data checksum */
-    return BP_OK;
+    return verify_table_entries(io, version, bp_read_le32(hdr + 8));
 }
 
 /* Read a single entry from the file table.
@@ -1404,24 +1670,29 @@ static int verify_table_crc(bp_io_t *io, bp_uint16 version)
  * with method + header_size + checksum).  Caller must free entry->name. */
 static int read_table_entry(bp_io_t *io, bp_entry_t *entry, bp_uint16 version)
 {
-    bp_uint8 buf[BP_TABLE_REC_TAIL_V3];
+    bp_uint8 buf[BP_TABLE_REC_TAIL_V6];
     bp_uint32 tail;
     int rc;
 
     memset(entry, 0, sizeof(*entry));
-    tail = (version >= BP_FORMAT_VERSION) ? BP_TABLE_REC_TAIL_V3
+    tail = (version >= BP_FORMAT_VERSION) ? BP_TABLE_REC_TAIL_V6
                                           : BP_TABLE_REC_TAIL_V2;
 
     /* name_len (2 bytes) */
     rc = io_read(io, buf, 2);
     if (rc != BP_OK) return rc;
     entry->name_len = bp_read_le16(buf);
+    if (entry->name_len == 0 || entry->name_len > BP_MAX_NAME_LEN)
+        return BP_ERR_CORRUPT;
 
     /* name */
     entry->name = (char *)malloc((size_t)(entry->name_len + 1));
     if (entry->name == NULL) return BP_ERR_NOMEM;
     rc = io_read(io, entry->name, entry->name_len);
     if (rc != BP_OK) { free(entry->name); entry->name = NULL; return rc; }
+    if (!bp_archive_name_valid(entry->name, (bp_uint32)entry->name_len)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     entry->name[entry->name_len] = '\0';
 
     /* fixed tail: original_size(8) + compressed_size(8) + entry_type(1) +
@@ -1440,6 +1711,12 @@ static int read_table_entry(bp_io_t *io, bp_entry_t *entry, bp_uint16 version)
         entry->method      = buf[34];
         entry->header_size = bp_read_le16(buf + 35);
         entry->checksum    = bp_read_le32(buf + 37);
+    }
+    if (tail >= BP_TABLE_REC_TAIL_V6)
+        entry->flags = bp_read_le16(buf + 41);
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        !bp_u64_is_zero(entry->mtime)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
     }
 
     return BP_OK;
@@ -1462,10 +1739,19 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     entry->header_size = bp_read_le16(pre);
     entry->name_len    = bp_read_le16(pre + 2);
 
+    /* Fixed fields must fit inside the declared header before reading them. */
+    if (entry->name_len == 0 || entry->name_len > BP_MAX_NAME_LEN ||
+        (bp_uint32)entry->header_size !=
+            (bp_uint32)BP_ENTRY_FIXED + (bp_uint32)entry->name_len)
+        return BP_ERR_CORRUPT;
+
     entry->name = (char *)malloc((size_t)(entry->name_len + 1));
     if (entry->name == NULL) return BP_ERR_NOMEM;
     rc = io_read(io, entry->name, entry->name_len);
     if (rc != BP_OK) { free(entry->name); entry->name = NULL; return rc; }
+    if (!bp_archive_name_valid(entry->name, (bp_uint32)entry->name_len)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     entry->name[entry->name_len] = '\0';
 
     /* remaining 38 bytes of fixed fields */
@@ -1483,6 +1769,17 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     entry->mtime           = bp_read_le64(buf + 28);
     entry->flags           = bp_read_le16(buf + 36);
 
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        !bp_u64_is_zero(entry->mtime)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
+
+    /* Format 5 writes CRC-32 only; reject retired/unknown checksum kinds. */
+    if (entry->checksum_type != BP_CKSUM_CRC32) {
+        free(entry->name); entry->name = NULL;
+        return BP_ERR_CORRUPT;
+    }
+
     /* skip any unknown trailing header bytes (forward compatibility) */
     {
         bp_uint16 expected = (bp_uint16)(BP_ENTRY_FIXED + entry->name_len);
@@ -1497,6 +1794,66 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     }
 
     return BP_OK;
+}
+
+/* Validate duplicated table and inline fields before any extraction or
+ * archive edit can use them. Entry payloads occupy one contiguous region. */
+static int verify_table_entries(bp_io_t *io, bp_uint16 version,
+                                bp_uint32 file_count)
+{
+    bp_uint32 count, i;
+    bp_uint64 table_off, table_size, next;
+    int rc;
+
+    rc = read_footer(io, &table_off, &table_size);
+    if (rc != BP_OK) return rc;
+    rc = open_file_table(io, &count, NULL, version);
+    if (rc != BP_OK) return rc;
+    if (count != file_count) return BP_ERR_CORRUPT;
+    next = bp_u64_from_u32(BP_HEADER_SIZE);
+    for (i = 0; i < count; i++) {
+        bp_entry_t table, header;
+        bp_off_t resume;
+        bp_uint64 end;
+        int matches;
+
+        rc = read_table_entry(io, &table, version);
+        if (rc != BP_OK) return rc;
+        resume = io_tell(io);
+        if (resume < 0 || bp_u64_cmp(table.offset, next) != 0 ||
+            bp_u64_cmp(table.offset, table_off) >= 0) {
+            free(table.name); return BP_ERR_CORRUPT;
+        }
+        rc = io_seek(io, bp_u64_to_off(table.offset), 0);
+        if (rc != 0) { free(table.name); return BP_ERR_IO; }
+        rc = read_entry_header(io, &header);
+        if (rc != BP_OK) { free(table.name); return rc; }
+        matches = table.name_len == header.name_len &&
+                  memcmp(table.name, header.name, table.name_len) == 0 &&
+                  table.header_size == header.header_size &&
+                  bp_u64_cmp(table.original_size, header.original_size) == 0 &&
+                  bp_u64_cmp(table.compressed_size, header.compressed_size) == 0 &&
+                  table.checksum == header.checksum &&
+                  table.method == header.method &&
+                  table.entry_type == header.entry_type &&
+                  table.platform == header.platform &&
+                  bp_u64_cmp(table.mtime, header.mtime) == 0 &&
+                  table.flags == header.flags;
+        end = bp_u64_add(table.offset, bp_u64_from_u32(table.header_size));
+        if (bp_u64_cmp(end, table.offset) < 0) matches = 0;
+        next = bp_u64_add(end, table.compressed_size);
+        if (bp_u64_cmp(next, end) < 0 || bp_u64_cmp(next, table_off) > 0)
+            matches = 0;
+        free(header.name);
+        free(table.name);
+        if (!matches) return BP_ERR_CORRUPT;
+        if (io_seek(io, resume, 0) != 0) return BP_ERR_IO;
+    }
+    if (io_tell(io) < 0 ||
+        bp_u64_cmp(bp_off_to_u64(io_tell(io)),
+                   bp_u64_add(table_off, table_size)) != 0)
+        return BP_ERR_CORRUPT;
+    return bp_u64_cmp(next, table_off) == 0 ? BP_OK : BP_ERR_CORRUPT;
 }
 
 /* Populate method, checksum, checksum_type and header_size on `entry` by
@@ -1950,11 +2307,10 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
     return BP_OK;
 }
 
-int bp_archive_extract_all(bp_io_t *io,
-                           bp_extract_fn open_fn,
-                           bp_extract_done_fn done_fn,
-                           bp_progress_fn progress_fn,
-                           void *user_data)
+static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
+                                   bp_extract_done_fn done_fn,
+                                   bp_extract_done_status_fn status_fn,
+                                   bp_progress_fn progress_fn, void *user_data)
 {
     bp_uint32 file_count;
     bp_uint32 i;
@@ -1962,10 +2318,14 @@ int bp_archive_extract_all(bp_io_t *io,
     int rc;
     bp_uint64 archive_orig_total;
     bp_uint64 archive_orig_done;
+    int partial = 0;
 
     if (io == NULL || open_fn == NULL) return BP_ERR_INVALID_ARG;
 
     rc = read_header(io, &file_count, &version);
+    if (rc != BP_OK) return rc;
+
+    rc = verify_table_crc(io, version);
     if (rc != BP_OK) return rc;
 
     /* pre-scan file table for overall progress total */
@@ -1981,29 +2341,58 @@ int bp_archive_extract_all(bp_io_t *io,
         bp_entry_t entry;
         bp_io_t *out;
         bp_uint32 checksum;
+        int portable;
+        bp_metadata_sink_t metadata;
+        bp_portable_metadata_t parsed;
 
         rc = read_entry_header(io, &entry);
         if (rc != BP_OK) return rc;
 
-        out = open_fn(&entry, user_data);
+        portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
+        if (portable && (entry.original_size.hi != 0 ||
+                         entry.original_size.lo > BP_META_MAX_SIZE)) {
+            free(entry.name); return BP_ERR_CORRUPT;
+        }
+        if (portable) bp_metadata_sink_init(&metadata);
+        out = portable ? NULL : open_fn(&entry, user_data);
 
-        rc = extract_entry_data(io, &entry, out, progress_fn, user_data,
+        rc = extract_entry_data(io, &entry, portable ? &metadata.io : out, progress_fn, user_data,
                                 i, file_count,
                                 archive_orig_total, archive_orig_done,
                                 &checksum, version);
         if (rc != BP_OK) {
+            if (status_fn && out) (void)status_fn(&entry, out, rc, user_data);
             free(entry.name);
             return rc;
         }
 
         /* verify checksum */
         if (checksum != entry.checksum) {
-            if (done_fn && out) done_fn(&entry, out, user_data);
+            if (status_fn && out)
+                (void)status_fn(&entry, out, BP_ERR_CHECKSUM, user_data);
+            else if (done_fn && out) done_fn(&entry, out, user_data);
             free(entry.name);
             return BP_ERR_CHECKSUM;
         }
 
-        if (done_fn && out) {
+        if (portable) {
+            rc = bp_metadata_parse(metadata.data, metadata.length, &parsed);
+            if (rc == BP_ERR_CORRUPT) { free(entry.name); return rc; }
+            if (rc != BP_OK) partial = 1;
+            if (parsed.supported_version) out = open_fn(&entry, user_data);
+            if (out == NULL) partial = 1;
+            else if (io_write(out, metadata.data, metadata.length) != BP_OK) {
+                if (status_fn) (void)status_fn(&entry, out, BP_ERR_IO, user_data);
+                else if (done_fn) done_fn(&entry, out, user_data);
+                free(entry.name); return BP_ERR_IO;
+            }
+        }
+
+        if (status_fn && out) {
+            rc = status_fn(&entry, out, BP_OK, user_data);
+            if (rc == BP_ERR_PARTIAL) partial = 1;
+            else if (rc != BP_OK) { free(entry.name); return rc; }
+        } else if (done_fn && out) {
             done_fn(&entry, out, user_data);
         }
 
@@ -2011,7 +2400,24 @@ int bp_archive_extract_all(bp_io_t *io,
         free(entry.name);
     }
 
-    return BP_OK;
+    return partial ? BP_ERR_PARTIAL : BP_OK;
+}
+
+int bp_archive_extract_all(bp_io_t *io, bp_extract_fn open_fn,
+                           bp_extract_done_fn done_fn,
+                           bp_progress_fn progress_fn, void *user_data)
+{
+    return bp_archive_extract_impl(io, open_fn, done_fn, NULL,
+                                   progress_fn, user_data);
+}
+
+int bp_archive_extract_all_ex(bp_io_t *io, bp_extract_fn open_fn,
+                              bp_extract_done_status_fn done_fn,
+                              bp_progress_fn progress_fn, void *user_data)
+{
+    if (done_fn == NULL) return BP_ERR_INVALID_ARG;
+    return bp_archive_extract_impl(io, open_fn, NULL, done_fn,
+                                   progress_fn, user_data);
 }
 
 /* ---- test -------------------------------------------------------------- */
@@ -2047,6 +2453,9 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
         bp_entry_t entry;
         bp_uint32 checksum;
         int entry_rc;
+        int portable;
+        bp_metadata_sink_t metadata;
+        bp_portable_metadata_t parsed;
 
         rc = read_entry_header(io, &entry);
         if (rc != BP_OK) return rc;
@@ -2068,8 +2477,14 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
             }
         }
 
+        portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
+        if (portable && (entry.original_size.hi != 0 ||
+                         entry.original_size.lo > BP_META_MAX_SIZE)) {
+            free(entry.name); return BP_ERR_CORRUPT;
+        }
+        if (portable) bp_metadata_sink_init(&metadata);
         {
-            rc = extract_entry_data(io, &entry, NULL,
+            rc = extract_entry_data(io, &entry, portable ? &metadata.io : NULL,
                                     progress_fn, progress_data,
                                     i, file_count,
                                     archive_orig_total, archive_orig_done,
@@ -2082,6 +2497,11 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
         } else {
             entry_rc = BP_OK;
         }
+        if (entry_rc == BP_OK && portable) {
+            rc = bp_metadata_parse(metadata.data, metadata.length, &parsed);
+            if (rc == BP_ERR_CORRUPT) entry_rc = rc;
+            else if (rc != BP_OK) entry_rc = BP_ERR_PARTIAL;
+        }
 
         if (fn) {
             fn(&entry, entry_rc, user_data);
@@ -2089,7 +2509,7 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
 
         free(entry.name);
 
-        if (entry_rc != BP_OK && entry_rc != BP_ERR_CHECKSUM) {
+        if (entry_rc != BP_OK) {
             return entry_rc;
         }
 
@@ -2395,6 +2815,7 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
         ent->entry_type      = e->entry_type;
         ent->platform        = e->platform;
         ent->mtime           = e->mtime;
+        ent->flags           = e->flags;
         ent->offset          = bp_off_to_u64(dst_offset);
         ent->method          = e->method;
         ent->header_size     = e->header_size;

@@ -1173,7 +1173,7 @@ static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out, void *ud)
             ctx->extractedFileCount++;
         }
 
-        if (!bp_u64_is_zero(entry->mtime) && !path.empty()) {
+        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) && !path.empty()) {
             struct utimbuf ut;
             ut.actime = (time_t)bp_u64_to_ulong(entry->mtime);
             ut.modtime = (time_t)bp_u64_to_ulong(entry->mtime);

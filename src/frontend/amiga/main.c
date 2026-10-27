@@ -35,6 +35,7 @@
  */
 
 #include "../../core/archiver.h"
+#include "../../core/bp_time.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
@@ -242,6 +243,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_PARTIAL:           return "some attributes were not restored";
     default:                       return "unknown error";
     }
 }
@@ -571,9 +573,9 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_CREATOR_OS,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_CREATOR_OS,
                                 &meta_io, bp_u64_from_u32((bp_uint32)meta_len),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
@@ -757,6 +759,7 @@ typedef struct {
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    int         mtime_errors;
 } extract_ctx_t;
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
@@ -896,7 +899,6 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
         if (!ctx->dry_run) {
             char           path[BP_MAX_PATH];
             char           local_name[BP_MAX_PATH];
-            struct utimbuf ut;
 
             if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
                                  AMIGA_CP) != 0) {
@@ -908,9 +910,11 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
             else
                 strcpy(path, local_name);
 
-            ut.actime  = (time_t)entry->mtime.lo;
-            ut.modtime = (time_t)entry->mtime.lo;
-            utime(path, &ut);
+            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                bp_restore_mtime(path, entry->mtime) != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+                ctx->mtime_errors++;
+            }
         }
         free(out);
     }
@@ -1172,6 +1176,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
     fclose(fp);
+
+    if (rc == BP_OK && ctx.mtime_errors) rc = BP_ERR_PARTIAL;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));

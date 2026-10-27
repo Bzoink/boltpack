@@ -62,6 +62,7 @@
 #endif
 
 #include "../../core/archiver.h"
+#include "../../core/bp_time.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
@@ -629,10 +630,10 @@ static int add_mode_meta_entry(bp_archive_t *ar, const char *arcname,
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_MACOSX,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_MACOSX,
                                 &meta_io,
                                 bp_u64_from_u32(MACOS_MODE_META_SIZE),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 static int add_classic_meta_entry(bp_archive_t *ar, const char *arcname,
@@ -650,10 +651,10 @@ static int add_classic_meta_entry(bp_archive_t *ar, const char *arcname,
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_MACOS9,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_MACOS9,
                                 &meta_io,
                                 bp_u64_from_u32(MACOS_CLASSIC_META_SIZE),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 /* ---- recursive add ----------------------------------------------------- */
@@ -1156,16 +1157,17 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
     {
         FILE *fp = (FILE *)out->handle;
         char path[4096];
-        struct utimbuf ut;
 
         fclose(fp);
         if (ctx->out_dir)
             path_join(path, sizeof(path), ctx->out_dir, name);
         else
             snprintf(path, sizeof(path), "%s", name);
-        ut.actime  = (time_t)entry->mtime.lo;
-        ut.modtime = (time_t)entry->mtime.lo;
-        utime(path, &ut);
+        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+            bp_restore_mtime(path, entry->mtime) != BP_OK) {
+            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+            ctx->unsafe_count++;
+        }
         free(out);
     }
 }

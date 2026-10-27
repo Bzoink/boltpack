@@ -23,6 +23,7 @@
 
 #include "../../core/mini/archiver.h"
 #include "../mini_shared/mini_common.h"
+#include "../mini_shared/dos_time.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,9 @@
 /* ---- globals ----------------------------------------------------------- */
 
 static int g_verbose = 1;
+#ifdef __WATCOMC__
+static int g_time_partial = 0;
+#endif
 
 /* ---- platform helpers -------------------------------------------------- */
 
@@ -142,26 +146,37 @@ static int on_list(const bp_mini_entry_t *e, void *user_data)
 
 typedef struct {
     char dest[BP_MAX_PATH];
+    char current_path[BP_MAX_PATH];
+    int name_error;
 } extract_ctx_t;
 
 static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char path[BP_MAX_PATH];
+    char local_name[BP_MAX_PATH];
     static bp_io_t io;
 
-    if (!bp_mini_name_is_safe(e->name)) return NULL;
-    if (ctx->dest[0] && strlen(ctx->dest) + strlen(e->name) + 2 >= sizeof(path))
+    if (!bp_mini_name_is_safe(e->name) ||
+        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0 ||
+        !bp_mini_name_is_safe(local_name)) {
+        fprintf(stderr, PROG_NAME ": cannot represent archive name: %s\n", e->name);
+        ctx->name_error = 1;
         return NULL;
+    }
+    if (ctx->dest[0] && strlen(ctx->dest) + strlen(local_name) + 2 >= sizeof(path)) {
+        ctx->name_error = 1;
+        return NULL;
+    }
 
     if (e->entry_type == BP_TYPE_DIR) {
 #ifdef __WATCOMC__
-        join_sep(path, BP_MAX_PATH, ctx->dest, '\\', e->name);
+        join_sep(path, BP_MAX_PATH, ctx->dest, '\\', local_name);
 #else
         if (ctx->dest[0]) {
-            snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, e->name);
+            snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, local_name);
         } else {
-            snprintf(path, BP_MAX_PATH, "%s", e->name);
+            snprintf(path, BP_MAX_PATH, "%s", local_name);
         }
 #endif
         {
@@ -176,12 +191,12 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     }
 
 #ifdef __WATCOMC__
-    join_sep(path, BP_MAX_PATH, ctx->dest, '\\', e->name);
+    join_sep(path, BP_MAX_PATH, ctx->dest, '\\', local_name);
 #else
     if (ctx->dest[0]) {
-        snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, e->name);
+        snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, local_name);
     } else {
-        snprintf(path, BP_MAX_PATH, "%s", e->name);
+        snprintf(path, BP_MAX_PATH, "%s", local_name);
     }
 #endif
     {
@@ -204,7 +219,7 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 
 #ifdef __WATCOMC__
     {
-        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0);
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0);
         if (fd < 0) {
             bp_wstr(2, PROG_NAME ": cannot create ");
             bp_wstr(2, path); write(2, "\n", 1);
@@ -214,7 +229,13 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     }
 #else
     {
-        FILE *fp = fopen(path, "wb");
+        struct stat st;
+        FILE *fp;
+        if (stat(path, &st) == 0) {
+            fprintf(stderr, PROG_NAME ": file already exists: %s\n", path);
+            return NULL;
+        }
+        fp = fopen(path, "wb");
         if (fp == NULL) {
             fprintf(stderr, PROG_NAME ": cannot create %s\n", path);
             return NULL;
@@ -222,38 +243,54 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
         bp_io_from_file(&io, fp);
     }
 #endif
+    strcpy(ctx->current_path, path);
     return &io;
 }
 
-static void on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
-                            void *user_data)
+static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
+                           int status, void *user_data)
 {
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    int rc = BP_OK;
 #ifdef __WATCOMC__
     int fd;
     unsigned dos_date;
     unsigned dos_time;
-    (void)user_data;
-    if (out == NULL) return;
+    unsigned actual_date;
+    unsigned actual_time;
+    long tz_offset;
+    int time_result;
+    if (out == NULL) return BP_ERR_INVALID_ARG;
     fd = (int)(long)out->handle;
-    if (e->mtime.lo != 0 || e->mtime.hi != 0) {
-        bp_epoch_to_dos(e->mtime.lo, &dos_date, &dos_time);
-        _dos_setftime(fd, dos_date, dos_time);
+    if (status == BP_OK && (e->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+        time_result = bp_dos_timezone(&tz_offset) == 0 ?
+                      bp_dos_utc_to_local(e->mtime, tz_offset, &dos_date, &dos_time) : -1;
+        if (time_result < 0) {
+            bp_wstr(2, PROG_NAME ": cannot restore time (set BP_TZ_OFFSET): ");
+            bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+            rc = BP_ERR_PARTIAL;
+        } else if (_dos_setftime(fd, dos_date, dos_time) != 0) rc = BP_ERR_IO;
+        else if (_dos_getftime(fd, &actual_date, &actual_time) != 0 ||
+                 actual_date != dos_date || actual_time != dos_time) {
+            bp_wstr(2, PROG_NAME ": filesystem did not retain time: ");
+            bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+            rc = BP_ERR_PARTIAL;
+        }
+        if (rc == BP_OK && time_result > 0) {
+            bp_wstr(2, PROG_NAME ": time rounded to two seconds: ");
+            bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+            rc = BP_ERR_PARTIAL;
+        }
     }
-    close(fd);
+    if (close(fd) != 0) rc = BP_ERR_IO;
 #else
-    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-    char path[BP_MAX_PATH];
-    char *p;
-    if (out == NULL) return;
-    fclose((FILE *)out->handle);
-    if (ctx->dest[0]) {
-        snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, e->name);
-    } else {
-        snprintf(path, BP_MAX_PATH, "%s", e->name);
-    }
-    for (p = path; *p; p++) if (*p == '/') *p = '\\';
-    set_mtime(path, e->mtime);
+    if (out == NULL) return BP_ERR_INVALID_ARG;
+    if (fclose((FILE *)out->handle) != 0) rc = BP_ERR_IO;
+    if (status == BP_OK && (e->flags & BP_ENTRY_FLAG_MTIME_VALID))
+        set_mtime(ctx->current_path, e->mtime);
 #endif
+    if (status != BP_OK) (void)remove(ctx->current_path);
+    return rc;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -332,6 +369,8 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     prog_ctx_t prog;
     unsigned dos_date;
     unsigned dos_time;
+    long tz_offset;
+    bp_uint16 time_flags;
     int rc;
 
     fd = open(fs_path, O_RDONLY | O_BINARY);
@@ -344,12 +383,18 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     fsize.lo = (bp_uint32)(unsigned long)_filelength(fd);
     fsize.hi = 0;
 
-    if (_dos_getftime(fd, &dos_date, &dos_time) == 0) {
-        mtime.lo = bp_dos_to_epoch(dos_date, dos_time);
-    } else {
-        mtime.lo = 0;
+    time_flags = 0;
+    mtime.lo = 0; mtime.hi = 0;
+    if (bp_dos_timezone(&tz_offset) == 0 &&
+        _dos_getftime(fd, &dos_date, &dos_time) == 0 &&
+        bp_dos_local_to_utc(dos_date, dos_time, tz_offset, &mtime) == 0)
+        time_flags = BP_ENTRY_FLAG_MTIME_VALID;
+    else {
+        mtime.lo = 0; mtime.hi = 0;
+        g_time_partial = 1;
+        bp_wstr(2, PROG_NAME ": unknown file time (set BP_TZ_OFFSET): ");
+        bp_wstr(2, fs_path); write(2, "\n", 1);
     }
-    mtime.hi = 0;
 
     if (g_verbose && fsize.lo > 0) {
         write(1, "  a  ", 5); bp_wstr(1, arc_name);
@@ -366,8 +411,8 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     file_io.tell   = NULL;
     file_io.handle = &prog;
 
-    rc = bp_mini_archive_add_entry(ar, arc_name, BP_TYPE_DATA, platform,
-                                   &file_io, fsize, mtime);
+    rc = bp_mini_add_local_entry(ar, arc_name, BP_TYPE_DATA, platform,
+                                 &file_io, fsize, mtime, time_flags);
     close(fd);
 
     if (g_verbose) {
@@ -401,8 +446,8 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
     if (g_verbose) {
         write(1, "  a  ", 5); bp_wstr(1, arc_name); write(1, "/\n", 2);
     }
-    return bp_mini_archive_add_entry(ar, arc_name, BP_TYPE_DIR, platform,
-                                     NULL, z, z);
+    return bp_mini_add_local_entry(ar, arc_name, BP_TYPE_DIR, platform,
+                                   NULL, z, z, 0);
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
@@ -592,7 +637,11 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 #endif
         return 1;
     }
+#ifdef __WATCOMC__
+    return g_time_partial ? 1 : 0;
+#else
     return 0;
+#endif
 }
 
 /* ---- cmd_extract ------------------------------------------------------- */
@@ -630,9 +679,10 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_extract_all(&arc_io, on_extract_open,
+        rc = bp_mini_archive_extract_all_ex(&arc_io, on_extract_open,
                                          on_extract_done, &ctx);
     }
+    if (rc == BP_OK && ctx.name_error) rc = BP_ERR_PARTIAL;
 
 #ifdef __WATCOMC__
     close(fd);

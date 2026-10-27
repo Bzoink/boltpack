@@ -339,10 +339,10 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname, u32int mode)
     rctx.pos  = 0;
     bp_io_from_rbuf(&meta_io, &rctx);
 
-    return bp_archive_add_entry(ar, arcname, BP_TYPE_META, BP_OS_PLAN9,
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_PLAN9,
                                 &meta_io,
                                 bp_u64_from_u32(P9_META_PAYLOAD),
-                                bp_u64_from_u32(0));
+                                bp_u64_from_u32(0), 0);
 }
 
 /* ---- restore mode via dirwstat --------------------------------------- */
@@ -600,7 +600,8 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
         p9_io_t *fctx = (p9_io_t *)out;
         char     path[P9_MAX_PATH];
         close(fctx->fd);
-        if (!ctx->dry_run && entry->mtime.lo) {
+        if (!ctx->dry_run && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+            entry->mtime.hi == 0) {
             /* Restore mtime via dirwstat */
             Dir nd;
             nulldir(&nd);
