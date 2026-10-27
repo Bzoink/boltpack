@@ -61,6 +61,12 @@ OS/2 runtime is available here. A process interruption during the final copy
 can leave a partial destination. OS/2 pathname operations still cannot prevent
 a concurrent parent substitution. HPFS `.TYPE` extended attributes are not
 transferred. No Atari or OS/2 runtime round trip has been run.
+OS/2 append now backs up the archive header and file-table/footer tail before
+writing, refuses tails larger than 256 MiB, and restores the original bytes
+and file length after a reported add or finalize failure. This is rollback for
+handled failures; process interruption during in-place append remains
+unqualified. The Watcom OS/2 build uses 32-bit `bp_off_t`, so its addressable
+archive size remains below 2 GiB.
 DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
 timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
 with directory-relative `openat` calls and reject symlink components. Staged
