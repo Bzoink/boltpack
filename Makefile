@@ -1045,6 +1045,23 @@ x68k-host-test:
 	$(MAKE) CC=$(CC) all linuxmini
 	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
 
+# Build the Plan 9 frontend against host shims for profile CLI testing. The
+# Plan 9 native compiler and filesystem runtime are qualified separately.
+PLAN9_HOST_DIR = build/plan9-host
+PLAN9_HOST_BIN = $(PLAN9_HOST_DIR)/boltpack
+.PHONY: plan9-host-test
+plan9-host-test:
+	mkdir -p $(PLAN9_HOST_DIR)
+	$(CC) -D_DEFAULT_SOURCE -std=gnu89 -Wno-main -Wall -Wextra \
+	    -Wno-unused-function -O2 \
+	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -Itest/plan9_host -Isrc/core src/core/archiver.c src/core/compress.c \
+	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+	    src/frontend/plan9/main.c test/plan9_host/plan9_stubs.c src/core/boltlz.c \
+	    -o $(PLAN9_HOST_BIN)
+	$(MAKE) CC=$(CC) all linuxmini
+	python3 test/check_plan9_profile.py $(PLAN9_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
+
 
 
 # GNU Hurd (x86 / x86-64). Use a Hurd-targeting cross compiler, never the
@@ -1143,6 +1160,7 @@ test: modern unit-test
 	@echo "=== legacy CLI profile interoperability ==="
 	$(MAKE) CC=$(CC) ql-host-test
 	$(MAKE) CC=$(CC) x68k-host-test
+	$(MAKE) CC=$(CC) plan9-host-test
 	@echo "=== All test suites passed ==="
 
 fuzz: $(ASAN_TARGET)

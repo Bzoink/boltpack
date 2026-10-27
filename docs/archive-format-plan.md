@@ -653,7 +653,10 @@ codecs and verifies create/append output with X68000, full, and mini readers.
 The Human68k target compiler and runtime remain unavailable. RISC OS now
 exposes create/add profile selection; a host syntax check passes, but its
 target compiler and runtime are unavailable. QDOS target build and runtime
-qualification also remain unavailable. The Linux and Windows
+qualification also remain unavailable. The Plan 9 CLI now exposes create/add
+profile selection; its host-shim fixture verifies Stored and BoltLite output
+with Plan 9, full, and mini readers. Native Plan 9 build/runtime qualification
+remains unavailable. The Linux and Windows
 FLTK GUIs offer the profile for archive creation and network sending. Readers reject oversized
 declared archives before extraction. Both cores reject absolute, drive-prefixed,
 backslash, empty, `.` and `..` path components, and require primary directory
@@ -672,8 +675,8 @@ its compression sheet, and the Haiku BeAPI GUI now offers it in the Compression
 menu. The DLL profile wrapper cross-builds, but the .NET GUI
 has no managed build or Windows runtime qualification; the Cocoa GUI has no
 macOS target build or runtime qualification. Haiku's target cross-build and
-runtime qualification remain outstanding. Plan 9 and classic Mac frontends
-still lack a profile option. GUI profile code and target
+runtime qualification remain outstanding. Classic Mac frontends still lack a
+profile option. GUI profile code and target
 qualification remain incomplete.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
