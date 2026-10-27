@@ -2066,7 +2066,8 @@ This is a thin wrapper around `src/frontend/linux/main.c`. z/OS 3.1 with the Jun
 **Important notes:**
 
 - Archive files must be opened in binary mode (`"rb"` / `"wb"`) to prevent z/OS from performing automatic EBCDIC ↔ ASCII translation of archive bytes.
-- Filenames are tagged as `BP_CP_8859_1` (Latin-1) as an approximation. USS filenames are typically in the locale code page (often IBM-1047 / EBCDIC). Full EBCDIC codepage support is pending.
+- The shared POSIX frontend passes filename bytes through without codepage conversion. The documented command below does not select an ASCII execution mode, and the z/OS filename encoding has not been qualified. Do not assume that this frontend preserves Unicode names or interoperates with other platforms.
+- IBM's Enhanced ASCII mode has to be selected deliberately and its conversion applies only to the portable character subset; it is not general UTF-8 filename conversion. Any support claim needs a native build and USS round-trip test with an explicitly selected compiler/runtime mode. See IBM's [`-qascii` compiler option](https://www.ibm.com/docs/en/open-xl-c-cpp-zos/2.1.0?topic=options-qascii) and [Enhanced ASCII limitations](https://www.ibm.com/docs/en/zos/2.5.0?topic=pages-enhanced-ascii).
 - Cross-compilation from Linux is not practical without a licensed IBM toolchain. Build natively on a z/OS USS host.
 
 **Build (on a z/OS USS host):**
