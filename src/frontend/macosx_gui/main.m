@@ -228,6 +228,7 @@ static const char *cpu_name(int cpu)
 static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1;
 static int g_fluff_multithread  = 0;
+static int g_interchange_profile = 0;
 
 static const CGFloat s_default_col_widths[BP_GUI_COL_COUNT] = {
     240.0, 90.0, 90.0, 55.0, 70.0, 130.0
@@ -238,6 +239,7 @@ static const int s_method_default_level[] = { 1, 1, 1, 2 };
 static NSString * const kPrefsMethod      = @"CompressionMethod";
 static NSString * const kPrefsLevel       = @"CompressionLevel";
 static NSString * const kPrefsFluffMT     = @"FluffMultithread";
+static NSString * const kPrefsInterchange = @"InterchangeProfile1";
 static NSString * const kPrefsWindowFrame = @"WindowFrame";
 static NSString * const kPrefsColumnWidths = @"ColumnWidths";
 
@@ -284,10 +286,12 @@ static void load_compression_prefs(void)
     NSNumber *method = [defs objectForKey:kPrefsMethod];
     NSNumber *level = [defs objectForKey:kPrefsLevel];
     NSNumber *fluffMT = [defs objectForKey:kPrefsFluffMT];
+    NSNumber *interchange = [defs objectForKey:kPrefsInterchange];
 
     g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
+    g_interchange_profile = 0;
 
     if (method) {
         NSInteger v = [method integerValue];
@@ -305,6 +309,10 @@ static void load_compression_prefs(void)
         NSInteger v = [fluffMT integerValue];
         g_fluff_multithread = (v != 0) ? 1 : 0;
     }
+    if (interchange) {
+        NSInteger v = [interchange integerValue];
+        g_interchange_profile = (v != 0) ? 1 : 0;
+    }
 }
 
 static void save_compression_prefs(void)
@@ -313,6 +321,7 @@ static void save_compression_prefs(void)
     [defs setInteger:g_compression_method forKey:kPrefsMethod];
     [defs setInteger:g_compression_level forKey:kPrefsLevel];
     [defs setInteger:g_fluff_multithread forKey:kPrefsFluffMT];
+    [defs setInteger:g_interchange_profile forKey:kPrefsInterchange];
 }
 
 static void bp_begin_progress_window(NSWindow *parent, NSWindow *child)
@@ -2156,10 +2165,11 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     NSString *outPath = bp_save_panel_path(panel);
     if (!outPath) return;
 
-    bp_gui_dev_log("doCreateFromPaths: output=%s method=%s level=%d",
+    bp_gui_dev_log("doCreateFromPaths: output=%s method=%s level=%d profile=%d",
                    bp_gui_dev_path(outPath),
                    method_name(g_compression_method),
-                   g_compression_level);
+                   g_compression_level,
+                   g_interchange_profile);
 
     FILE *outFp = fopen([outPath fileSystemRepresentation], "wb");
     if (!outFp) {
@@ -2175,10 +2185,12 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     bp_archive_t ar;
     memset(&ar, 0, sizeof(ar));
 
-    int rc = bp_archive_create(&ar, &outIo,
-                               level_to_block_size(g_compression_method,
-                                                   g_compression_level),
-                               (bp_uint8)g_compression_method);
+    int rc = g_interchange_profile
+        ? bp_archive_create_profile(&ar, &outIo, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &outIo,
+                            level_to_block_size(g_compression_method,
+                                                g_compression_level),
+                            (bp_uint8)g_compression_method);
     if (rc != BP_OK) {
         bp_gui_dev_log("doCreateFromPaths: bp_archive_create failed rc=%d (%s)",
                        rc, bp_strerror_local(rc));
@@ -2186,17 +2198,21 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
         return;
     }
     /* Fast preset selects Fast; Normal and Best select Balanced. */
-    if (g_compression_method == BP_METHOD_BOLTLZ)
-        ar.method_level = (bp_uint8)(g_compression_level == 0 ? 1 : 2);
-    else
-        ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
+    if (!g_interchange_profile) {
+        if (g_compression_method == BP_METHOD_BOLTLZ)
+            ar.method_level = (bp_uint8)(g_compression_level == 0 ? 1 : 2);
+        else
+            ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
+    }
 
 #ifdef BOLTPACK_FAST_FLUFF
-    if (g_compression_method == BP_METHOD_FLUFF && g_fluff_multithread) {
+    if (!g_interchange_profile &&
+        g_compression_method == BP_METHOD_FLUFF && g_fluff_multithread) {
         int nthreads = fast_fluff_thread_count();
         if (nthreads > 1)
             bp_set_fast_fluff(&ar, nthreads);
-    } else if (g_compression_method == BP_METHOD_BOLTLZ) {
+    } else if (!g_interchange_profile &&
+               g_compression_method == BP_METHOD_BOLTLZ) {
         int nthreads = fast_fluff_thread_count();
         if (nthreads > 1)
             bp_set_fast_boltlz(&ar, nthreads);
@@ -2326,6 +2342,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
+    g_interchange_profile = 0;
 
     [self setFrame:NSMakeRect(0, 0, 720, 480) display:YES];
     [self center];
@@ -2337,24 +2354,25 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
 {
     NSAlert *alert = [[NSAlert alloc] init];
     [alert setMessageText:@"Compression Settings"];
-    [alert setInformativeText:@"Choose a compression method and level for the new archive."];
+    [alert setInformativeText:@"Choose a compression method and level, or select Interchange Profile 1 for mini-reader compatible output."];
     [alert addButtonWithTitle:@"Continue"];
     [alert addButtonWithTitle:@"Cancel"];
 
-    CGFloat viewHeight = 132.0;
-    CGFloat methodLabelY = 104.0;
-    CGFloat methodPopupY = 100.0;
-    CGFloat levelLabelY = 72.0;
-    CGFloat levelPopupY = 68.0;
-    CGFloat noteHeight = 52.0;
+    CGFloat viewHeight = 164.0;
+    CGFloat methodLabelY = 136.0;
+    CGFloat methodPopupY = 132.0;
+    CGFloat levelLabelY = 104.0;
+    CGFloat levelPopupY = 100.0;
+    CGFloat profileButtonY = 64.0;
+    CGFloat noteHeight = 56.0;
+    NSButton *profileButton;
 #ifdef BOLTPACK_FAST_FLUFF
     NSButton *fastFluffButton;
-    viewHeight = 160.0;
-    methodLabelY = 132.0;
-    methodPopupY = 128.0;
-    levelLabelY = 100.0;
-    levelPopupY = 96.0;
-    noteHeight = 56.0;
+    viewHeight = 192.0;
+    methodLabelY = 164.0;
+    methodPopupY = 160.0;
+    levelLabelY = 132.0;
+    levelPopupY = 128.0;
 #endif
 
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 320, viewHeight)];
@@ -2396,11 +2414,17 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     [[noteLabel cell] setLineBreakMode:NSLineBreakByWordWrapping];
 
 #ifdef BOLTPACK_FAST_FLUFF
-    fastFluffButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 64, 310, 22)];
+    fastFluffButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 94, 310, 22)];
     [fastFluffButton setButtonType:NSSwitchButton];
     [fastFluffButton setTitle:@"Use multi-threaded Fluff (faster, slightly larger archives)"];
     [fastFluffButton setState:g_fluff_multithread ? NSOnState : NSOffState];
 #endif
+
+    profileButton = [[NSButton alloc]
+        initWithFrame:NSMakeRect(0, profileButtonY, 310, 22)];
+    [profileButton setButtonType:NSSwitchButton];
+    [profileButton setTitle:@"Interchange Profile 1 (mini-reader compatible)"];
+    [profileButton setState:g_interchange_profile ? NSOnState : NSOffState];
 
     [view addSubview:methodLabel];
     [view addSubview:methodPopup];
@@ -2409,6 +2433,7 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
 #ifdef BOLTPACK_FAST_FLUFF
     [view addSubview:fastFluffButton];
 #endif
+    [view addSubview:profileButton];
     [view addSubview:noteLabel];
     [alert setAccessoryView:view];
 
@@ -2419,6 +2444,11 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
 
     g_compression_method = (int)[methodPopup indexOfSelectedItem];
     g_compression_level = (int)[levelPopup indexOfSelectedItem];
+    g_interchange_profile = ([profileButton state] == NSOnState) ? 1 : 0;
+    if (g_interchange_profile) {
+        g_compression_method = BP_METHOD_BOLTLITE;
+        g_compression_level = 1;
+    }
     if (g_compression_method < BP_METHOD_STORED ||
         g_compression_method > BP_METHOD_FLUFF)
         g_compression_method = BP_METHOD_BOLTLZ;
@@ -2428,10 +2458,11 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     g_fluff_multithread = ([fastFluffButton state] == NSOnState) ? 1 : 0;
 #endif
 
-    bp_gui_dev_log("showCompressionDialog: method=%s level=%d fast=%d",
+    bp_gui_dev_log("showCompressionDialog: method=%s level=%d fast=%d profile=%d",
                    method_name(g_compression_method),
                    g_compression_level,
-                   g_fluff_multithread);
+                   g_fluff_multithread,
+                   g_interchange_profile);
 
     [self saveGUISettings];
     return YES;
@@ -2691,10 +2722,10 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
     [a setMessageText:@"Reset GUI settings to defaults?"];
 #ifdef BOLTPACK_FAST_FLUFF
     [a setInformativeText:
-        @"This restores the default compression mode,\nFluff threading, window size and position, and file-list columns."];
+        @"This restores the default compression mode, Interchange Profile 1,\nFluff threading, window size and position, and file-list columns."];
 #else
     [a setInformativeText:
-        @"This restores the default compression mode,\nwindow size and position, and file-list columns."];
+        @"This restores the default compression mode, Interchange Profile 1,\nwindow size and position, and file-list columns."];
 #endif
     [a addButtonWithTitle:@"Reset"];
     [a addButtonWithTitle:@"Cancel"];

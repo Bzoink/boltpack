@@ -76,6 +76,12 @@ BP_EXPORT int bp_dll_archive_create(bp_archive_t *ar, bp_io_t *io,
     return bp_archive_create(ar, io, block_size, method);
 }
 
+BP_EXPORT int bp_dll_archive_create_profile(bp_archive_t *ar, bp_io_t *io,
+    int profile)
+{
+    return bp_archive_create_profile(ar, io, profile);
+}
+
 BP_EXPORT bp_archive_t *bp_dll_archive_alloc(void)
 {
     return (bp_archive_t *)calloc(1, sizeof(bp_archive_t));

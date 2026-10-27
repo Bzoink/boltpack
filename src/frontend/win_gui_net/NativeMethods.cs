@@ -159,6 +159,10 @@ namespace BoltPack
             uint blockSize, byte method);
 
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int bp_dll_archive_create_profile(IntPtr archive,
+            IntPtr io, int profile);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr bp_dll_archive_alloc();
 
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
@@ -223,6 +227,7 @@ namespace BoltPack
         public const int BP_ERR_CORRUPT = -6;
         public const int BP_ERR_PARTIAL = -16;
         public const int BP_ERR_ABORTED = -13;
+        public const int BP_PROFILE_INTERCHANGE_1 = 1;
         public const byte BP_TYPE_DATA = 0;
         public const byte BP_TYPE_RSRC = 1;
         public const byte BP_TYPE_META = 2;
