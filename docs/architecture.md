@@ -510,7 +510,10 @@ Same as DOS: store RHSA attribute bits. Programs run based on extension, not per
 
 ### File Name Encoding
 
-The archive stores all file names as **UTF-8**. The archiver core passes raw UTF-8 bytes to the frontend — it never interprets or converts them. Each frontend handles conversion to and from the native encoding.
+The archive stores all file names as **UTF-8**. The core validates archive
+names as canonical relative paths, then passes their UTF-8 bytes to the
+frontend. Each frontend handles conversion to and from the native encoding
+and checks whether the target filesystem can represent the projected path.
 
 #### Archiving (native → UTF-8)
 
@@ -520,38 +523,44 @@ Each frontend converts native file names to UTF-8 when adding entries. A small s
 - **Non-ASCII** bytes are looked up in a codepage-to-Unicode table (e.g., CP437 `0x82` → U+00E9 `é` → UTF-8 `0xC3 0xA9`)
 - **MacRoman**, **Latin-1**, **Atari ST charset** each need one 128-entry table (128 bytes of ROM)
 
-The conversion table per codepage is ~128–256 bytes. A frontend only needs its own codepage table.
+The conversion table per codepage is ~128–256 bytes. A frontend only needs its
+own codepage table. Conversion failures are reported; a frontend must not put
+native bytes into an archive while claiming they are UTF-8.
 
 #### Extracting (UTF-8 → native)
 
-The frontend converts UTF-8 names to the native encoding using a best-effort, lossy approach:
-
-1. **Direct mapping** — if the Unicode codepoint exists in the target encoding, use it (`é` → CP437 `0x82`, MacRoman `0x8E`, Latin-1 `0xE9`)
-2. **Transliteration** — if no direct mapping, simplify (`ä` → `a`, `ñ` → `n`, `ø` → `o`). A small static table covers common accented Latin characters
-3. **Replacement** — unmappable characters (CJK, Cyrillic, Arabic on Western codepage) become `_`
-4. **Truncation** — trim to the target filesystem limit (8.3 on DOS/TOS, 31 bytes on Mac OS, 107 on Amiga, 255 on modern systems)
-5. **Collision resolution** — if two different UTF-8 names map to the same native name, append `~1`, `~2`, etc.
-6. **Report changes** — when a name is modified, print a message: `"résumé.pdf" → "RESUME~1.PDF"`
-
-The implementation should stay small. The reverse table (Unicode → codepage) can be derived from the forward table at build time, or a small hand-written table covering the 128 non-ASCII entries suffices. The transliteration table is ~50 entries for common accented characters. Total data per codepage: **under 512 bytes**.
+The frontend converts each UTF-8 path to the destination's actual filename
+encoding and filesystem rules. A conversion that cannot represent the name,
+exceeds a component limit, or collides with another projected name is refused
+before output is changed. The default behavior does not transliterate,
+substitute characters, truncate components, or invent collision suffixes.
+Any frontend that offers a lossy mapping must make that choice explicit, show
+the original and projected names, and check collisions before writing. The
+per-frontend capabilities, bounds, and known gaps are tracked in the
+[interoperability matrix](interoperability-matrix.md).
 
 #### Roundtrip on the same system
 
-Archiving on DOS and extracting on DOS is lossless: CP437 → UTF-8 → CP437 maps back to the original bytes. This holds for any system where the same codepage is used at both ends.
+When every character maps in both directions and both systems use the same
+codepage, CP437 → UTF-8 → CP437 maps back to the original bytes. This does not
+guarantee a filesystem round trip: case folding, normalization, reserved
+names, component limits, and collisions are destination-specific and may
+require a reported refusal.
 
 #### 8.3 filename generation
 
-DOS and Atari TOS are limited to 8.3 uppercase names. The frontend:
-
-- Uppercases the (already converted) name
-- Strips characters illegal in 8.3 (spaces, most punctuation)
-- Splits at the last `.` into base (max 8) and extension (max 3)
-- Truncates each part
-- Resolves collisions with `~N` suffix (base becomes max 6 + `~N`)
+Eight-dot-three filesystems cannot represent every archive path. The adapter
+must apply its documented target policy and refuse names that would truncate,
+collide, or otherwise map ambiguously. For example, CP/M-86 accepts only a
+flat uppercase ASCII 8.3 projection and refuses lossy projections. See the
+interoperability matrix for the Atari, DOS, and other adapter policies.
 
 #### What the archiver core does
 
-Nothing. The core stores and retrieves raw UTF-8 bytes. All encoding logic lives in the frontend. This keeps the core simple and encoding-agnostic.
+The core stores UTF-8 bytes and validates archive names as canonical relative
+paths. It does not convert names to a host codepage or decide whether a target
+filesystem can represent them; those checks belong to the frontend before it
+creates or replaces files.
 
 ## Directory Structure
 
