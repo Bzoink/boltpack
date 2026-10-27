@@ -689,6 +689,27 @@ OS 9 GUI source now offers a create-time choice for the profile; its legacy
 CodeWarrior/MPW build and Mac OS 9 runtime remain unqualified. GUI target
 qualification and the remaining unimplemented frontends are tracked in the
 matrix.
+Both Mac OS 9 extraction frontends now perform strict MacRoman projection and
+a bounded preflight for HFS case collisions, file/directory prefixes, and
+existing destination conflicts before creating output. The index is capped at
+1,024 primary paths and 32 KiB of path storage; unsupported mappings and
+larger indexes are refused before extraction. Regular files are written to
+unique sibling stages, verified before publication, and never overwrite an
+existing destination. Failed data streams and opened resource-fork streams
+remove the current stage; a resource fork that cannot be opened is reported
+partial while verified data can still be published. A process interruption can
+leave an orphan `BP####.TMP` stage while keeping the final destination
+unpublished. Native Mac resource forks
+and the legacy 10-byte Finder type/creator/
+flags record are restored. Mac OS 9 dates are converted to/from the archive's
+Unix epoch when representable by its 32-bit File Manager fields; valid
+directory dates are queued and restored deepest first. Foreign metadata,
+portable FAT attributes, symlinks, unrepresentable times, and queue overflow
+report partial. The pathname preflight and rename sequence cannot exclude
+concurrent directory or destination changes. PowerPC source syntax passes
+with Retro68's PowerPC compiler; the 68k source syntax check also passes with
+existing Toolbox signedness/const warnings. Neither target has a qualified
+application/resource build or runtime round trip here.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
@@ -715,6 +736,17 @@ header name, both readers verify that record, and both writers reject a 65,494-
 byte name. Separate fixtures verify full and mini readers reject versions 1–5.
 These checks do not replace the remaining corruption, metadata, and
 target-round-trip cases in the table.
+
+The full-core extraction callback contract now treats a NULL stream for a
+non-directory entry as a skipped extraction: it still consumes and verifies
+the payload, returns `BP_ERR_PARTIAL`, and does not deliver resource forks or
+metadata for that skipped subject. Directory callbacks continue to report
+creation failures through frontend state because they do not use streams.
+Three archive-format unit checks cover skipped primary data, portable metadata,
+resource forks, and native metadata. `make unit-test` passes, and the focused
+archive-format suite reports 259 passed, 0 failed. This narrows the core
+behavior but does not replace frontend-specific verification of directory and
+dry-run outcomes.
 
 Golden expectations must not be generated solely by the same writer under
 test. On capable destinations require exact bytes/names/attributes. On limited

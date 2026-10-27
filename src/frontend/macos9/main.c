@@ -24,10 +24,14 @@
 #include <Resources.h>
 #include <ToolUtils.h>
 #include <TextUtils.h>
+#include <ControlDefinitions.h>
 #include <Controls.h>
 #include <Appearance.h>
 #include <Drag.h>
 #include <AppleEvents.h>
+#include <AEDataModel.h>
+#include <Devices.h>
+#include <StandardFile.h>
 #include <Files.h>
 #include <Folders.h>
 #include <Gestalt.h>
@@ -210,15 +214,17 @@ static int      ProgressCallback(const bp_progress_t *p, void *user_data);
 
 /* Extraction callbacks */
 static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data);
-static void     ExtractDone(const bp_entry_t *entry, bp_io_t *out,
-                    void *user_data);
+static int      ExtractDoneStatus(const bp_entry_t *entry, bp_io_t *out,
+                    int status, void *user_data);
 
 /* Text encoding */
 static void     MacRomanToUTF8(const unsigned char *src, char *dst,
                     long maxDst);
 static void     UTF8ToMacRoman(const char *src, unsigned char *dst,
                     long maxDst);
-static void     ArchivePathToMac(const char *src, Str255 dst);
+static int      UTF8ToMacRomanStrict(const char *src, unsigned char *dst,
+                    long maxDst);
+static int      ArchivePathToMac(const char *src, Str255 dst);
 
 /* Path helpers */
 static void     FSSpecToParentDir(const FSSpec *spec, short *vRefNum,
@@ -413,29 +419,113 @@ static void UTF8ToMacRoman(const char *src, unsigned char *dst, long maxDst)
     dst[di] = '\0';
 }
 
+/* Map one UTF-8 path component to MacRoman without substitution or
+ * truncation. Refusing lossy mappings prevents distinct archive names from
+ * silently collapsing onto the same HFS name. */
+static int UTF8ToMacRomanStrict(const char *src, unsigned char *dst,
+                                long maxDst)
+{
+    long i = 0, di = 0;
+
+    if (src == nil || dst == nil || maxDst < 1) return 0;
+    while (src[i] != '\0') {
+        unsigned char c = (unsigned char)src[i];
+        unsigned long u;
+        long consumed;
+        int j;
+
+        if (c < 0x80) {
+            u = c;
+            consumed = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            unsigned char c1 = (unsigned char)src[i + 1];
+            if (c1 == 0 || (c1 & 0xC0) != 0x80) return 0;
+            u = ((unsigned long)(c & 0x1F) << 6) | (c1 & 0x3F);
+            consumed = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            unsigned char c1 = (unsigned char)src[i + 1];
+            unsigned char c2;
+            if (c1 == 0 || (c1 & 0xC0) != 0x80) return 0;
+            c2 = (unsigned char)src[i + 2];
+            if (c2 == 0 || (c2 & 0xC0) != 0x80) return 0;
+            if ((c == 0xE0 && c1 < 0xA0) ||
+                (c == 0xED && c1 >= 0xA0)) return 0;
+            u = ((unsigned long)(c & 0x0F) << 12) |
+                ((unsigned long)(c1 & 0x3F) << 6) | (c2 & 0x3F);
+            consumed = 3;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            unsigned char c1 = (unsigned char)src[i + 1];
+            unsigned char c2, c3;
+            if (c1 == 0 || (c1 & 0xC0) != 0x80) return 0;
+            c2 = (unsigned char)src[i + 2];
+            if (c2 == 0 || (c2 & 0xC0) != 0x80) return 0;
+            c3 = (unsigned char)src[i + 3];
+            if (c3 == 0 || (c3 & 0xC0) != 0x80) return 0;
+            if ((c == 0xF0 && c1 < 0x90) ||
+                (c == 0xF4 && c1 > 0x8F)) return 0;
+            /* Valid supplementary characters have no MacRoman mapping. */
+            return 0;
+        } else {
+            return 0;
+        }
+
+        if (u == '/' || u == ':' || u < 0x20 || u == 0x7F) return 0;
+        if (u < 0x80) {
+            if (di >= maxDst - 1) return 0;
+            dst[di++] = (unsigned char)u;
+        } else {
+            for (j = 0; j < 128; j++)
+                if (kMacRomanToUnicode[j] == u) break;
+            if (j == 128 || di >= maxDst - 1) return 0;
+            dst[di++] = (unsigned char)(0x80 + j);
+        }
+        i += consumed;
+    }
+    dst[di] = '\0';
+    return 1;
+}
+
 /*
  * Convert a UTF-8 archive path (using '/') to a Mac Pascal string
  * (using ':') suitable for use with File Manager calls.
  */
-static void ArchivePathToMac(const char *src, Str255 dst)
+static int ArchivePathToMac(const char *src, Str255 dst)
 {
-    unsigned char buf[256];
-    long i, len;
+    char segment[256];
+    unsigned char macSegment[256];
+    const char *p = src;
+    long outLen = 0;
 
-    UTF8ToMacRoman(src, buf, 255);
-    len = (long)strlen((char *)buf);
+    if (src == nil || dst == nil) return 0;
+    while (*p != '\0') {
+        const char *slash = strchr(p, '/');
+        long len = slash != nil ? (long)(slash - p) : (long)strlen(p);
+        long macLen;
 
-    /* replace '/' with ':' */
-    for (i = 0; i < len; i++) {
-        if (buf[i] == '/') buf[i] = ':';
+        if (len <= 0 || len > 255) return 0;
+        memcpy(segment, p, len);
+        segment[len] = '\0';
+        if (!UTF8ToMacRomanStrict(segment, macSegment,
+                                  (long)sizeof(macSegment))) return 0;
+        macLen = (long)strlen((char *)macSegment);
+        if (macLen <= 0 || macLen > 31 ||
+            (macLen == 1 && macSegment[0] == '.') ||
+            (macLen == 2 && macSegment[0] == '.' && macSegment[1] == '.'))
+            return 0;
+        if (outLen != 0) {
+            if (outLen >= 255) return 0;
+            dst[++outLen] = ':';
+        }
+        if (outLen + macLen > 255) return 0;
+        memcpy(dst + 1 + outLen, macSegment, macLen);
+        outLen += macLen;
+        if (slash == nil) break;
+        p = slash + 1;
+        if (*p == '\0') break; /* directory trailing slash */
     }
-
-    /* strip trailing ':' */
-    if (len > 0 && buf[len - 1] == ':') len--;
-
-    if (len > 255) len = 255;
-    dst[0] = (unsigned char)len;
-    memcpy(dst + 1, buf, len);
+    if (outLen == 0) return 0;
+    dst[0] = (unsigned char)outLen;
+    return 1;
 }
 
 static void ConcatArchivePath(char *buf, long bufSize, const char *prefix,
@@ -859,7 +949,15 @@ static int AskOutputFolder(short *vRefNum, long *dirID)
 
     err = AEGetNthDesc(&reply.selection, 1, typeFSS, nil, &desc);
     if (err == noErr) {
-        AEGetDescData(&desc, &folderSpec, sizeof(FSSpec));
+        if (desc.dataHandle == nil ||
+            GetHandleSize(desc.dataHandle) < (Size)sizeof(FSSpec)) {
+            AEDisposeDesc(&desc);
+            NavDisposeReply(&reply);
+            return 0;
+        }
+        HLock(desc.dataHandle);
+        memcpy(&folderSpec, *desc.dataHandle, sizeof(FSSpec));
+        HUnlock(desc.dataHandle);
         AEDisposeDesc(&desc);
         *vRefNum = folderSpec.vRefNum;
         *dirID = folderSpec.parID;
@@ -869,7 +967,7 @@ static int AskOutputFolder(short *vRefNum, long *dirID)
             memset(&cpb, 0, sizeof(cpb));
             cpb.dirInfo.ioNamePtr = folderSpec.name;
             cpb.dirInfo.ioVRefNum = folderSpec.vRefNum;
-            cpb.dirInfo.ioDirID = folderSpec.parID;
+            cpb.dirInfo.ioDrDirID = folderSpec.parID;
             if (PBGetCatInfoSync(&cpb) == noErr) {
                 *dirID = cpb.dirInfo.ioDrDirID;
             }
@@ -959,10 +1057,459 @@ static int AskArchiveName(const char *suggestion, char *outName, long maxLen)
 /* ==== Extraction ======================================================== */
 
 typedef struct {
+    FSSpec          spec;
+    bp_uint64       mtime;
+    bp_uint16       flags;
+    unsigned short  depth;
+} mac_dir_restore_t;
+
+#define kMacExtractIndexCount 1024
+#define kMacExtractIndexBytes 32768
+typedef struct {
+    unsigned short offsets[kMacExtractIndexCount];
+    unsigned char types[kMacExtractIndexCount];
+    unsigned short count;
+    unsigned long used;
+    int error;
+    short rootVRefNum;
+    long rootDirID;
+    char names[kMacExtractIndexBytes];
+} mac_extract_index_t;
+
+typedef struct {
     progress_ctx_t  prog;
     short           outVRefNum;
     long            outDirID;
+    FSSpec          lastDataSpec;
+    FSSpec          lastDataFinalSpec;
+    char            lastDataName[256];
+    unsigned long   stageCounter;
+    int             lastDataCreated;
+    int             lastDataVerified;
+    int             lastDataFinalized;
+    bp_uint64       lastDataMTime;
+    bp_uint16       lastDataFlags;
+    mac_dir_restore_t *directories;
+    unsigned short  directoryCount;
+    mac_extract_index_t *nameIndex;
+    unsigned char   metaBytes[10];
+    long            metaPos;
+    bp_io_t         metaIO;
+    int             partial;
 } extract_user_t;
+
+#define kMacToUnixEpochOffset 2082844800UL
+#define kMacDirectoryQueueCount 256
+
+static bp_uint16 MacDateToArchive(unsigned long macDate, bp_uint64 *mtime)
+{
+    if (macDate < kMacToUnixEpochOffset) {
+        *mtime = bp_u64_from_u32(0);
+        return 0;
+    }
+    *mtime = bp_u64_from_u32((bp_uint32)(macDate - kMacToUnixEpochOffset));
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
+static int MacRestoreFileDate(const FSSpec *spec, bp_uint64 mtime,
+                             bp_uint16 flags)
+{
+    CInfoPBRec cpb;
+    bp_uint32 macDate;
+    OSErr err;
+
+    if (!(flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+    if (mtime.hi != 0 || mtime.lo > 0xFFFFFFFFUL - kMacToUnixEpochOffset)
+        return BP_ERR_PARTIAL;
+    macDate = mtime.lo + kMacToUnixEpochOffset;
+    memset(&cpb, 0, sizeof(cpb));
+    cpb.hFileInfo.ioNamePtr = (StringPtr)spec->name;
+    cpb.hFileInfo.ioVRefNum = spec->vRefNum;
+    cpb.hFileInfo.ioDirID = spec->parID;
+    err = PBGetCatInfoSync(&cpb);
+    if (err != noErr) return BP_ERR_PARTIAL;
+    cpb.hFileInfo.ioFlMdDat = macDate;
+    return PBSetCatInfoSync(&cpb) == noErr ? BP_OK : BP_ERR_PARTIAL;
+}
+
+static int MacRestoreDirectoryDate(const FSSpec *spec, bp_uint64 mtime,
+                                   bp_uint16 flags)
+{
+    CInfoPBRec cpb;
+    bp_uint32 macDate;
+    OSErr err;
+
+    if (!(flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+    if (mtime.hi != 0 || mtime.lo > 0xFFFFFFFFUL - kMacToUnixEpochOffset)
+        return BP_ERR_PARTIAL;
+    macDate = mtime.lo + kMacToUnixEpochOffset;
+    memset(&cpb, 0, sizeof(cpb));
+    cpb.dirInfo.ioNamePtr = (StringPtr)spec->name;
+    cpb.dirInfo.ioVRefNum = spec->vRefNum;
+    cpb.dirInfo.ioDrDirID = spec->parID;
+    err = PBGetCatInfoSync(&cpb);
+    if (err != noErr) return BP_ERR_PARTIAL;
+    cpb.dirInfo.ioDrMdDat = macDate;
+    return PBSetCatInfoSync(&cpb) == noErr ? BP_OK : BP_ERR_PARTIAL;
+}
+
+static int MacQueueDirectoryTime(extract_user_t *eu,
+                                 const bp_entry_t *entry,
+                                 const FSSpec *spec)
+{
+    const char *p;
+    unsigned short depth = 0;
+
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+    if (eu->directories == nil ||
+        eu->directoryCount >= kMacDirectoryQueueCount)
+        return BP_ERR_PARTIAL;
+    for (p = entry->name; *p != '\0'; p++)
+        if (*p == '/') depth++;
+    eu->directories[eu->directoryCount].spec = *spec;
+    eu->directories[eu->directoryCount].mtime = entry->mtime;
+    eu->directories[eu->directoryCount].flags = entry->flags;
+    eu->directories[eu->directoryCount].depth = depth;
+    eu->directoryCount++;
+    return BP_OK;
+}
+
+static int MacRestoreDirectoryTimes(extract_user_t *eu)
+{
+    unsigned short i, j;
+    int result = BP_OK;
+
+    if (eu->directories == nil)
+        return eu->directoryCount ? BP_ERR_PARTIAL : BP_OK;
+    for (i = 0; i < eu->directoryCount; i++) {
+        for (j = (unsigned short)(i + 1); j < eu->directoryCount; j++) {
+            if (eu->directories[j].depth > eu->directories[i].depth) {
+                mac_dir_restore_t tmp = eu->directories[i];
+                eu->directories[i] = eu->directories[j];
+                eu->directories[j] = tmp;
+            }
+        }
+        if (MacRestoreDirectoryDate(&eu->directories[i].spec,
+                                    eu->directories[i].mtime,
+                                    eu->directories[i].flags) != BP_OK)
+            result = BP_ERR_PARTIAL;
+    }
+    if (result != BP_OK) eu->partial = 1;
+    return result;
+}
+
+static int MacStageNameReserved(extract_user_t *eu, const char *archiveName,
+                                const char *stageName)
+{
+    char projected[256];
+    const char *slash = strrchr(archiveName, '/');
+    long parentLen = slash != nil ? (long)(slash - archiveName + 1) : 0;
+    long stageLen = (long)strlen(stageName);
+    Str255 key;
+    const char *name;
+    long len;
+    unsigned short i;
+
+    if (parentLen + stageLen >= (long)sizeof(projected)) return 1;
+    memcpy(projected, archiveName, parentLen);
+    memcpy(projected + parentLen, stageName, stageLen + 1);
+    if (!ArchivePathToMac(projected, key)) return 1;
+    UpperString(key, true);
+    name = (const char *)(key + 1);
+    len = key[0];
+    if (eu->nameIndex == nil) return 1;
+    for (i = 0; i < eu->nameIndex->count; i++) {
+        const char *other = eu->nameIndex->names +
+                            eu->nameIndex->offsets[i];
+        long otherLen = (long)strlen(other);
+        if ((len == otherLen && memcmp(name, other, len) == 0) ||
+            (len < otherLen && memcmp(name, other, len) == 0 &&
+             other[len] == ':') ||
+            (otherLen < len && memcmp(other, name, otherLen) == 0 &&
+             name[otherLen] == ':')) return 1;
+    }
+    return 0;
+}
+
+static OSErr MacCreateStagingFile(extract_user_t *eu,
+                                  const FSSpec *finalSpec,
+                                  FSSpec *stageSpec,
+                                  const char *archiveName)
+{
+    unsigned long attempt;
+
+    for (attempt = 0; attempt < 10000; attempt++) {
+        char nameBuf[11];
+        Str255 stageName;
+        unsigned long number = eu->stageCounter++ % 10000UL;
+        long nameLen = 10;
+        OSErr err;
+
+        nameBuf[0] = 'B'; nameBuf[1] = 'P';
+        nameBuf[2] = (char)('0' + (number / 1000UL) % 10UL);
+        nameBuf[3] = (char)('0' + (number / 100UL) % 10UL);
+        nameBuf[4] = (char)('0' + (number / 10UL) % 10UL);
+        nameBuf[5] = (char)('0' + number % 10UL);
+        nameBuf[6] = '.'; nameBuf[7] = 'T'; nameBuf[8] = 'M';
+        nameBuf[9] = 'P'; nameBuf[10] = '\0';
+        if (MacStageNameReserved(eu, archiveName, nameBuf)) continue;
+        stageName[0] = (unsigned char)nameLen;
+        memcpy(stageName + 1, nameBuf, nameLen);
+        err = FSMakeFSSpec(finalSpec->vRefNum, finalSpec->parID,
+                           stageName, stageSpec);
+        if (err == noErr) continue;
+        if (err != fnfErr) return err;
+        err = FSpCreate(stageSpec, kCreatorCode, '????', 0);
+        if (err == dupFNErr) continue;
+        return err;
+    }
+    return dupFNErr;
+}
+
+static int MacFinalizePendingFile(extract_user_t *eu)
+{
+    int result = BP_OK;
+    FSSpec existing;
+    OSErr err;
+
+    if (!eu->lastDataVerified || eu->lastDataFinalized) return BP_OK;
+    if (MacRestoreFileDate(&eu->lastDataSpec, eu->lastDataMTime,
+                           eu->lastDataFlags) != BP_OK)
+        result = BP_ERR_PARTIAL;
+    err = FSMakeFSSpec(eu->lastDataFinalSpec.vRefNum,
+                       eu->lastDataFinalSpec.parID,
+                       eu->lastDataFinalSpec.name, &existing);
+    if (err != fnfErr) {
+        (void)FSpDelete(&eu->lastDataSpec);
+        eu->lastDataCreated = 0;
+        eu->partial = 1;
+        eu->lastDataFinalized = 1;
+        return BP_ERR_PARTIAL;
+    }
+    err = FSpRename(&eu->lastDataSpec, eu->lastDataFinalSpec.name);
+    if (err != noErr) {
+        (void)FSpDelete(&eu->lastDataSpec);
+        eu->lastDataCreated = 0;
+        result = BP_ERR_PARTIAL;
+    } else {
+        eu->lastDataCreated = 0;
+    }
+    if (result != BP_OK) eu->partial = 1;
+    eu->lastDataFinalized = 1;
+    return result;
+}
+
+static long MacExtractMetaWrite(void *handle, const void *buf,
+                                bp_uint32 count)
+{
+    extract_user_t *eu = (extract_user_t *)handle;
+    if (count > sizeof(eu->metaBytes) - eu->metaPos) return -1;
+    memcpy(eu->metaBytes + eu->metaPos, buf, count);
+    eu->metaPos += (long)count;
+    return (long)count;
+}
+
+static int MacApplyFinderInfo(extract_user_t *eu)
+{
+    FInfo finfo;
+
+    if (eu->metaPos != 10 || !eu->lastDataVerified) return BP_ERR_PARTIAL;
+    if (FSpGetFInfo(&eu->lastDataSpec, &finfo) != noErr)
+        return BP_ERR_PARTIAL;
+    finfo.fdType = ((unsigned long)eu->metaBytes[0] << 24) |
+                   ((unsigned long)eu->metaBytes[1] << 16) |
+                   ((unsigned long)eu->metaBytes[2] << 8) |
+                   (unsigned long)eu->metaBytes[3];
+    finfo.fdCreator = ((unsigned long)eu->metaBytes[4] << 24) |
+                      ((unsigned long)eu->metaBytes[5] << 16) |
+                      ((unsigned long)eu->metaBytes[6] << 8) |
+                      (unsigned long)eu->metaBytes[7];
+    finfo.fdFlags = (short)(((unsigned short)eu->metaBytes[8] << 8) |
+                            (unsigned short)eu->metaBytes[9]);
+    return FSpSetFInfo(&eu->lastDataSpec, &finfo) == noErr
+               ? BP_OK : BP_ERR_PARTIAL;
+}
+
+static OSErr MacComponentName(const char *utf8Name, long utf8Length,
+                              Str255 macName)
+{
+    char segment[256];
+    unsigned char macBuf[256];
+    long macLen;
+
+    if (utf8Length <= 0 || utf8Length > 255) return paramErr;
+    memcpy(segment, utf8Name, utf8Length);
+    segment[utf8Length] = '\0';
+    if (!UTF8ToMacRomanStrict(segment, macBuf, (long)sizeof(macBuf)))
+        return paramErr;
+    macLen = (long)strlen((char *)macBuf);
+    if (macLen <= 0 || macLen > 31) return paramErr;
+    macName[0] = (unsigned char)macLen;
+    memcpy(macName + 1, macBuf, macLen);
+    return noErr;
+}
+
+static OSErr MacLookupDirectory(short vRefNum, long parentDirID,
+                                const char *utf8Name, long utf8Length,
+                                long *childDirID)
+{
+    Str255 macName;
+    CInfoPBRec cpb;
+    OSErr err;
+
+    err = MacComponentName(utf8Name, utf8Length, macName);
+    if (err != noErr) return err;
+    memset(&cpb, 0, sizeof(cpb));
+    cpb.dirInfo.ioNamePtr = macName;
+    cpb.dirInfo.ioVRefNum = vRefNum;
+    cpb.dirInfo.ioDrDirID = parentDirID;
+    err = PBGetCatInfoSync(&cpb);
+    if (err != noErr) return err;
+    if (!(cpb.dirInfo.ioFlAttrib & 0x10)) return dupFNErr;
+    *childDirID = cpb.dirInfo.ioDrDirID;
+    return noErr;
+}
+
+static int MacCheckExistingPath(mac_extract_index_t *index,
+                                const bp_entry_t *entry)
+{
+    const char *p = entry->name;
+    long dirID = index->rootDirID;
+
+    while (*p != '\0') {
+        const char *slash = strchr(p, '/');
+        long len = slash != nil ? (long)(slash - p) : (long)strlen(p);
+        int terminal = slash == nil ||
+                       (entry->entry_type == BP_TYPE_DIR &&
+                        slash[1] == '\0');
+        OSErr err;
+
+        if (len <= 0 || len > 255) return BP_ERR_PARTIAL;
+        if (terminal && entry->entry_type != BP_TYPE_DIR) {
+            Str255 name;
+            FSSpec spec;
+            err = MacComponentName(p, len, name);
+            if (err != noErr) return BP_ERR_PARTIAL;
+            err = FSMakeFSSpec(index->rootVRefNum, dirID, name, &spec);
+            if (err == noErr) return BP_ERR_PARTIAL;
+            return err == fnfErr ? BP_OK : BP_ERR_PARTIAL;
+        }
+
+        {
+            long childDirID;
+            err = MacLookupDirectory(index->rootVRefNum, dirID, p, len,
+                                     &childDirID);
+            if (err == fnfErr) return BP_OK;
+            if (err != noErr) return BP_ERR_PARTIAL;
+            dirID = childDirID;
+        }
+        if (terminal) return BP_OK;
+        p = slash + 1;
+    }
+    return BP_ERR_PARTIAL;
+}
+
+static int MacExtractPreflight(const bp_entry_t *entry, void *user_data)
+{
+    mac_extract_index_t *index = (mac_extract_index_t *)user_data;
+    Str255 key;
+    const char *name;
+    long len;
+    unsigned short i;
+
+    if (entry->entry_type != BP_TYPE_DATA &&
+        entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!ArchivePathToMac(entry->name, key)) {
+        index->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    if (MacCheckExistingPath(index, entry) != BP_OK) {
+        index->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    UpperString(key, true);
+    name = (const char *)(key + 1);
+    len = key[0];
+    for (i = 0; i < index->count; i++) {
+        const char *oldName = index->names + index->offsets[i];
+        long oldLen = (long)strlen(oldName);
+
+        if ((oldLen == len && memcmp(oldName, name, len) == 0) ||
+            (oldLen < len &&
+             memcmp(oldName, name, oldLen) == 0 && name[oldLen] == ':' &&
+             index->types[i] != BP_TYPE_DIR) ||
+            (len < oldLen &&
+             memcmp(name, oldName, len) == 0 && oldName[len] == ':' &&
+             entry->entry_type != BP_TYPE_DIR)) {
+            index->error = BP_ERR_PARTIAL;
+            return 1;
+        }
+    }
+    if (index->count >= kMacExtractIndexCount ||
+        index->used + (unsigned long)len + 1UL > kMacExtractIndexBytes) {
+        index->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    index->offsets[index->count] = (unsigned short)index->used;
+    index->types[index->count] = entry->entry_type;
+    memcpy(index->names + index->used, name, len);
+    index->names[index->used + len] = '\0';
+    index->used += (unsigned long)len + 1UL;
+    index->count++;
+    return 0;
+}
+
+static OSErr MacEnsureDirectory(short vRefNum, long parentDirID,
+                                const char *utf8Name, long utf8Length,
+                                long *childDirID)
+{
+    Str255 macName;
+    OSErr err;
+
+    err = MacLookupDirectory(vRefNum, parentDirID, utf8Name, utf8Length,
+                             childDirID);
+    if (err == noErr) return noErr;
+    if (err != fnfErr) return err;
+    err = MacComponentName(utf8Name, utf8Length, macName);
+    if (err != noErr) return err;
+    return DirCreate(vRefNum, parentDirID, macName, childDirID);
+}
+
+static OSErr MacCreateArchiveDirectory(extract_user_t *eu,
+                                       const char *archivePath,
+                                       FSSpec *directorySpec)
+{
+    const char *p = archivePath;
+    short vRefNum = eu->outVRefNum;
+    long dirID = eu->outDirID;
+    long finalParentDirID = eu->outDirID;
+    Str255 finalName;
+    int haveFinal = 0;
+
+    while (*p != '\0') {
+        const char *slash = strchr(p, '/');
+        long len = slash != nil ? (long)(slash - p) : (long)strlen(p);
+        long childDirID;
+        OSErr err;
+
+        if (len <= 0) return paramErr;
+        if (slash == nil || slash[1] == '\0') {
+            err = MacComponentName(p, len, finalName);
+            if (err != noErr) return err;
+            finalParentDirID = dirID;
+            haveFinal = 1;
+        }
+        err = MacEnsureDirectory(vRefNum, dirID, p, len, &childDirID);
+        if (err != noErr) return err;
+        dirID = childDirID;
+        if (slash == nil) break;
+        p = slash + 1;
+        if (*p == '\0') break;
+    }
+    if (!haveFinal) return paramErr;
+    return FSMakeFSSpec(vRefNum, finalParentDirID, finalName, directorySpec);
+}
 
 static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
 {
@@ -975,21 +1522,53 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
     OSErr err;
     const char *lastSlash;
     char nameOnly[256];
-    long i, nlen;
+    long nlen;
 
     if (entry->entry_type == BP_TYPE_DIR) {
-        /* create directory */
-        long createdDirID;
-        ArchivePathToMac(entry->name, macName);
-        /* TODO: create nested directories from the archive path */
-        DirCreate(eu->outVRefNum, eu->outDirID, macName, &createdDirID);
+        FSSpec directorySpec;
+        (void)MacFinalizePendingFile(eu);
+        eu->lastDataVerified = 0;
+        eu->lastDataCreated = 0;
+        eu->lastDataName[0] = '\0';
+        err = MacCreateArchiveDirectory(eu, entry->name, &directorySpec);
+        if (err != noErr) eu->partial = 1;
+        else if (MacQueueDirectoryTime(eu, entry, &directorySpec) != BP_OK)
+            eu->partial = 1;
         return nil;
     }
 
-    if (entry->entry_type == BP_TYPE_META) {
-        /* metadata entries will be applied in ExtractDone;
-         * we still need to receive the data so use a temp buffer approach.
-         * For now, skip — Finder info restoration is done post-extraction. */
+    if (entry->entry_type == BP_TYPE_DATA) {
+        (void)MacFinalizePendingFile(eu);
+        eu->lastDataVerified = 0;
+        eu->lastDataCreated = 0;
+        eu->lastDataFinalized = 0;
+        eu->lastDataName[0] = '\0';
+        if (strlen(entry->name) >= sizeof(eu->lastDataName)) {
+            eu->partial = 1;
+            return nil;
+        }
+    } else if (entry->entry_type == BP_TYPE_RSRC) {
+        if (!eu->lastDataVerified ||
+            strcmp(eu->lastDataName, entry->name) != 0) {
+            eu->partial = 1;
+            return nil;
+        }
+        outSpec = eu->lastDataSpec;
+        goto open_fork;
+    } else if (entry->entry_type == BP_TYPE_META &&
+               entry->platform == BP_OS_MACOS9 &&
+               entry->original_size.hi == 0 &&
+               entry->original_size.lo == 10 && eu->lastDataVerified) {
+        eu->metaPos = 0;
+        eu->metaIO.read = nil;
+        eu->metaIO.write = MacExtractMetaWrite;
+        eu->metaIO.seek = nil;
+        eu->metaIO.tell = nil;
+        eu->metaIO.handle = eu;
+        return &eu->metaIO;
+    } else {
+        /* Foreign metadata and links need target-specific handling. */
+        eu->partial = 1;
         return nil;
     }
 
@@ -1001,16 +1580,19 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
         lastSlash = entry->name;
     }
     nlen = (long)strlen(lastSlash);
-    if (nlen > 255) nlen = 255;
+    if (nlen > 255) { eu->partial = 1; return nil; }
     memcpy(nameOnly, lastSlash, nlen);
     nameOnly[nlen] = '\0';
 
     /* convert to Pascal string */
     {
         unsigned char macBuf[256];
-        UTF8ToMacRoman(nameOnly, macBuf, 255);
+        if (!UTF8ToMacRomanStrict(nameOnly, macBuf, 256)) {
+            eu->partial = 1;
+            return nil;
+        }
         nlen = (long)strlen((char *)macBuf);
-        if (nlen > 63) nlen = 63; /* HFS name limit */
+        if (nlen <= 0 || nlen > 31) { eu->partial = 1; return nil; }
         macName[0] = (unsigned char)nlen;
         memcpy(macName + 1, macBuf, nlen);
     }
@@ -1025,79 +1607,122 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
 
         /* walk the path, creating directories as needed */
         while ((seg = strchr(p, '/')) != nil) {
-            Str255 dirName;
             long nlen2;
             long createdDirID2;
-            char segBuf[256];
-            unsigned char macBuf2[256];
-            CInfoPBRec cpb2;
-
             nlen2 = (long)(seg - p);
-            if (nlen2 > 255) nlen2 = 255;
-            if (nlen2 == 0) { p = seg + 1; continue; }
-            memcpy(segBuf, p, nlen2);
-            segBuf[nlen2] = '\0';
-
-            UTF8ToMacRoman(segBuf, macBuf2, 255);
-            nlen2 = (long)strlen((char *)macBuf2);
-            if (nlen2 > 31) nlen2 = 31;
-            dirName[0] = (unsigned char)nlen2;
-            memcpy(dirName + 1, macBuf2, nlen2);
-
-            /* check if directory exists */
-            memset(&cpb2, 0, sizeof(cpb2));
-            cpb2.dirInfo.ioNamePtr = dirName;
-            cpb2.dirInfo.ioVRefNum = parentVRef;
-            cpb2.dirInfo.ioDirID = parentDirID;
-            if (PBGetCatInfoSync(&cpb2) == noErr &&
-                (cpb2.dirInfo.ioFlAttrib & 0x10)) {
-                parentDirID = cpb2.dirInfo.ioDrDirID;
-            } else {
-                DirCreate(parentVRef, parentDirID, dirName, &createdDirID2);
-                parentDirID = createdDirID2;
+            if (nlen2 == 0 || nlen2 > 255) {
+                eu->partial = 1;
+                return nil;
             }
+            err = MacEnsureDirectory(parentVRef, parentDirID, p, nlen2,
+                                     &createdDirID2);
+            if (err != noErr) { eu->partial = 1; return nil; }
+            parentDirID = createdDirID2;
             p = seg + 1;
         }
 
         err = FSMakeFSSpec(parentVRef, parentDirID, macName, &outSpec);
-        if (err != noErr && err != fnfErr) return nil;
+        if (err == noErr) {
+            /* Never truncate or replace an existing destination. */
+            eu->partial = 1;
+            return nil;
+        }
+    if (err != fnfErr) { eu->partial = 1; return nil; }
     }
 
-    /* create file if it doesn't exist */
-    FSpCreate(&outSpec, kCreatorCode, '????', 0);
+    eu->lastDataFinalSpec = outSpec;
+    err = MacCreateStagingFile(eu, &eu->lastDataFinalSpec, &outSpec,
+                               entry->name);
+    if (err != noErr) { eu->partial = 1; return nil; }
+    eu->lastDataSpec = outSpec;
+    strcpy(eu->lastDataName, entry->name);
+    eu->lastDataCreated = 1;
 
     /* open the appropriate fork */
+open_fork:
     if (entry->entry_type == BP_TYPE_RSRC) {
         err = FSpOpenRF(&outSpec, fsWrPerm, &refNum);
     } else {
         err = FSpOpenDF(&outSpec, fsWrPerm, &refNum);
     }
-    if (err != noErr) return nil;
+    if (err != noErr) {
+        eu->partial = 1;
+        if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
+            (void)FSpDelete(&outSpec);
+        return nil;
+    }
+    err = SetEOF(refNum, 0);
+    if (err != noErr) {
+        (void)FSClose(refNum);
+        eu->partial = 1;
+        if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
+            (void)FSpDelete(&outSpec);
+        return nil;
+    }
 
     mf = (mac_file_t *)malloc(sizeof(mac_file_t));
-    if (mf == nil) { FSClose(refNum); return nil; }
+    if (mf == nil) {
+        FSClose(refNum);
+        eu->partial = 1;
+        if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
+            (void)FSpDelete(&outSpec);
+        return nil;
+    }
 
     io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (io == nil) { FSClose(refNum); free(mf); return nil; }
+    if (io == nil) {
+        FSClose(refNum); free(mf); eu->partial = 1;
+        if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
+            (void)FSpDelete(&outSpec);
+        return nil;
+    }
 
     MacIOFromRefNum(io, mf, refNum);
     return io;
 }
 
-static void ExtractDone(const bp_entry_t *entry, bp_io_t *out,
-                        void *user_data)
+static int ExtractDoneStatus(const bp_entry_t *entry, bp_io_t *out,
+                            int status, void *user_data)
 {
+    extract_user_t *eu = (extract_user_t *)user_data;
     mac_file_t *mf;
+    OSErr err;
 
-    (void)entry;
-    (void)user_data;
+    if (out == nil) return status;
 
-    if (out == nil) return;
+    if (entry->entry_type == BP_TYPE_META && out == &eu->metaIO) {
+        if (status != BP_OK) return status;
+        status = MacApplyFinderInfo(eu);
+        if (status != BP_OK) eu->partial = 1;
+        return status;
+    }
 
     mf = (mac_file_t *)out->handle;
-    FSClose(mf->refNum);
+    err = FSClose(mf->refNum);
     free(mf);
     free(out);
+    if (err != noErr && status == BP_OK) status = BP_ERR_IO;
+
+    if (entry->entry_type == BP_TYPE_DATA &&
+        strcmp(eu->lastDataName, entry->name) == 0) {
+        if (status == BP_OK) {
+            eu->lastDataVerified = 1;
+            eu->lastDataMTime = entry->mtime;
+            eu->lastDataFlags = entry->flags;
+        } else if (eu->lastDataCreated) {
+            (void)FSpDelete(&eu->lastDataSpec);
+            eu->lastDataCreated = 0;
+            eu->lastDataName[0] = '\0';
+        }
+    } else if (entry->entry_type == BP_TYPE_RSRC && status != BP_OK &&
+               eu->lastDataCreated &&
+               strcmp(eu->lastDataName, entry->name) == 0) {
+        (void)FSpDelete(&eu->lastDataSpec);
+        eu->lastDataCreated = 0;
+        eu->lastDataVerified = 0;
+        eu->lastDataName[0] = '\0';
+    }
+    return status;
 }
 
 /* ==== Unpack Operation ================================================== */
@@ -1106,6 +1731,7 @@ static int DoUnpack(FSSpec *archives, long count)
 {
     long i;
     int rc;
+    int overall = BP_OK;
 
     rc = bp_compress_init();
     if (rc != BP_OK) {
@@ -1118,40 +1744,82 @@ static int DoUnpack(FSSpec *archives, long count)
         mac_file_t mf;
         bp_io_t aio;
         extract_user_t eu;
+        mac_extract_index_t *index;
         OSErr err;
 
         err = FSpOpenDF(&archives[i], fsRdPerm, &refNum);
         if (err != noErr) {
             ShowErrorStr("Cannot open archive file.");
+            if (overall == BP_OK) overall = BP_ERR_IO;
             continue;
         }
         MacIOFromRefNum(&aio, &mf, refNum);
 
-        /* determine output location */
+        memset(&eu, 0, sizeof(eu));
         eu.outVRefNum = archives[i].vRefNum;
         eu.outDirID = archives[i].parID;
-
         if (gPrefs.ask_extract_location && gHasNavServices) {
             if (!AskOutputFolder(&eu.outVRefNum, &eu.outDirID)) {
                 FSClose(refNum);
-                continue; /* user cancelled folder selection */
+                continue;
             }
         }
 
+        eu.directories = (mac_dir_restore_t *)malloc(
+            sizeof(mac_dir_restore_t) * kMacDirectoryQueueCount);
+        if (eu.directories == nil) eu.partial = 1;
+
+        index = (mac_extract_index_t *)malloc(sizeof(mac_extract_index_t));
+        if (index == nil) {
+            ShowError(BP_ERR_NOMEM);
+            free(eu.directories);
+            FSClose(refNum);
+            if (overall == BP_OK) overall = BP_ERR_NOMEM;
+            continue;
+        }
+        memset(index, 0, sizeof(*index));
+        index->rootVRefNum = eu.outVRefNum;
+        index->rootDirID = eu.outDirID;
+        rc = bp_archive_list(&aio, MacExtractPreflight, index);
+        if (rc != BP_OK) {
+            if (index->error != BP_OK) rc = index->error;
+            free(index);
+            free(eu.directories);
+            FSClose(refNum);
+            if (rc == BP_ERR_PARTIAL)
+                ShowErrorStr("Archive names or destinations cannot be represented safely.");
+            else
+                ShowError(rc);
+            if (overall == BP_OK) overall = rc;
+            continue;
+        }
+        eu.nameIndex = index;
+
         ShowProgressDialog(&eu.prog);
 
-        rc = bp_archive_extract_all(&aio, ExtractOpen, ExtractDone,
-                                    ProgressCallback, &eu);
+        rc = bp_archive_extract_all_ex(&aio, ExtractOpen, ExtractDoneStatus,
+                                       ProgressCallback, &eu);
+        if (MacFinalizePendingFile(&eu) != BP_OK && rc == BP_OK)
+            rc = BP_ERR_PARTIAL;
+        if (MacRestoreDirectoryTimes(&eu) != BP_OK && rc == BP_OK)
+            rc = BP_ERR_PARTIAL;
+        if (eu.partial && rc == BP_OK) rc = BP_ERR_PARTIAL;
 
         HideProgressDialog(&eu.prog);
+        free(index);
+        free(eu.directories);
         FSClose(refNum);
 
-        if (rc != BP_OK && rc != BP_ERR_ABORTED) {
-            ShowError(rc);
+        if (rc != BP_OK) {
+            if (rc == BP_ERR_PARTIAL)
+                ShowErrorStr("Some files or attributes could not be restored.");
+            else if (rc != BP_ERR_ABORTED)
+                ShowError(rc);
+            if (overall == BP_OK) overall = rc;
         }
     }
 
-    return BP_OK;
+    return overall;
 }
 
 /* ==== Pack: Directory Recursion ========================================= */
@@ -1169,6 +1837,7 @@ static int AddFileToArchive(bp_archive_t *ar, short vRefNum, long dirID,
     int rc;
     FInfo finfo;
     OSErr err;
+    bp_uint16 mtimeFlags;
 
     /* get file info: sizes and Finder info */
     memset(&cpb, 0, sizeof(cpb));
@@ -1179,7 +1848,7 @@ static int AddFileToArchive(bp_archive_t *ar, short vRefNum, long dirID,
 
     dataSize = cpb.hFileInfo.ioFlLgLen;
     rsrcSize = cpb.hFileInfo.ioFlRLgLen;
-    mtime = bp_u64_from_u32(cpb.hFileInfo.ioFlMdDat);
+    mtimeFlags = MacDateToArchive(cpb.hFileInfo.ioFlMdDat, &mtime);
 
     FSMakeFSSpec(vRefNum, dirID, fileName, &fileSpec);
 
@@ -1189,14 +1858,16 @@ static int AddFileToArchive(bp_archive_t *ar, short vRefNum, long dirID,
         if (err != noErr) return BP_ERR_IO;
         MacIOFromRefNum(&fio, &mf, refNum);
 
-        rc = bp_archive_add_entry(ar, arcName, BP_TYPE_DATA, BP_OS_MACOS9,
-                                  &fio, (bp_uint32)dataSize, mtime);
+        rc = bp_archive_add_entry_ex(ar, arcName, BP_TYPE_DATA, BP_OS_MACOS9,
+                                    &fio, bp_u64_from_u32((bp_uint32)dataSize),
+                                    mtime, mtimeFlags);
         FSClose(refNum);
         if (rc != BP_OK) return rc;
     } else {
         /* zero-length data fork — still add an entry */
-        rc = bp_archive_add_entry(ar, arcName, BP_TYPE_DATA, BP_OS_MACOS9,
-                                  nil, 0, mtime);
+        rc = bp_archive_add_entry_ex(ar, arcName, BP_TYPE_DATA, BP_OS_MACOS9,
+                                     nil, bp_u64_from_u32(0), mtime,
+                                     mtimeFlags);
         if (rc != BP_OK) return rc;
     }
 
@@ -1209,8 +1880,9 @@ static int AddFileToArchive(bp_archive_t *ar, short vRefNum, long dirID,
         if (err != noErr) return BP_ERR_IO;
         MacIOFromRefNum(&fio, &mf, refNum);
 
-        rc = bp_archive_add_entry(ar, arcName, BP_TYPE_RSRC, BP_OS_MACOS9,
-                                  &fio, (bp_uint32)rsrcSize, mtime);
+        rc = bp_archive_add_entry_ex(ar, arcName, BP_TYPE_RSRC, BP_OS_MACOS9,
+                                     &fio, bp_u64_from_u32((bp_uint32)rsrcSize),
+                                     mtime, mtimeFlags);
         FSClose(refNum);
         if (rc != BP_OK) return rc;
     }
@@ -1252,8 +1924,10 @@ static int AddFileToArchive(bp_archive_t *ar, short vRefNum, long dirID,
                 tmpIO.tell = MacTmpTell;
                 tmpIO.handle = tmpFile;
 
-                rc = bp_archive_add_entry(ar, arcName, BP_TYPE_META,
-                                          BP_OS_MACOS9, &tmpIO, 10, mtime);
+                rc = bp_archive_add_entry_ex(ar, arcName, BP_TYPE_META,
+                                             BP_OS_MACOS9, &tmpIO,
+                                             bp_u64_from_u32(10), mtime,
+                                             mtimeFlags);
             }
             fclose(tmpFile);
             if (rc != BP_OK) return rc;
@@ -1294,6 +1968,8 @@ static int AddDirectoryToArchive(bp_archive_t *ar, short vRefNum, long dirID,
         char utf8Name[512];
         char childArc[kMaxPath];
         int isDir;
+        bp_uint64 archiveMTime;
+        bp_uint16 archiveMTimeFlags;
 
         memset(&cpb, 0, sizeof(cpb));
         itemName[0] = 0;
@@ -1327,9 +2003,12 @@ static int AddDirectoryToArchive(bp_archive_t *ar, short vRefNum, long dirID,
                 }
             }
 
-            rc = bp_archive_add_entry(ar, childArc, BP_TYPE_DIR,
-                                      BP_OS_MACOS9, nil, 0,
-                                      bp_u64_from_u32(cpb.dirInfo.ioFlMdDat));
+            archiveMTimeFlags = MacDateToArchive(cpb.dirInfo.ioDrMdDat,
+                                                 &archiveMTime);
+            rc = bp_archive_add_entry_ex(ar, childArc, BP_TYPE_DIR,
+                                         BP_OS_MACOS9, nil,
+                                         bp_u64_from_u32(0), archiveMTime,
+                                         archiveMTimeFlags);
             if (rc != BP_OK) return rc;
 
             rc = AddDirectoryToArchive(ar, vRefNum, childDirID, childArc);
@@ -1364,7 +2043,7 @@ static int AddFSSpecToArchive(bp_archive_t *ar, const FSSpec *spec,
         memset(&cpb, 0, sizeof(cpb));
         cpb.dirInfo.ioNamePtr = name;
         cpb.dirInfo.ioVRefNum = spec->vRefNum;
-        cpb.dirInfo.ioDirID = spec->parID;
+        cpb.dirInfo.ioDrDirID = spec->parID;
         if (PBGetCatInfoSync(&cpb) != noErr) return BP_ERR_IO;
         theDirID = cpb.dirInfo.ioDrDirID;
 
@@ -1382,8 +2061,16 @@ static int AddFSSpecToArchive(bp_archive_t *ar, const FSSpec *spec,
             }
         }
 
-        rc = bp_archive_add_entry(ar, dirArc, BP_TYPE_DIR, BP_OS_MACOS9,
-                                  nil, 0, bp_u64_from_u32(cpb.dirInfo.ioFlMdDat));
+        {
+            bp_uint64 archiveMTime;
+            bp_uint16 archiveMTimeFlags;
+            archiveMTimeFlags = MacDateToArchive(cpb.dirInfo.ioDrMdDat,
+                                                 &archiveMTime);
+            rc = bp_archive_add_entry_ex(ar, dirArc, BP_TYPE_DIR,
+                                         BP_OS_MACOS9, nil,
+                                         bp_u64_from_u32(0), archiveMTime,
+                                         archiveMTimeFlags);
+        }
         if (rc != BP_OK) return rc;
 
         return AddDirectoryToArchive(ar, spec->vRefNum, theDirID, dirArc);
@@ -1646,14 +2333,14 @@ static pascal OSErr DragTrackingHandler(DragTrackingMessage message,
             Rect portRect;
             GetWindowPortBounds(window, &portRect);
             RectRgn(hiliteRgn, &portRect);
-            SetPort(GetWindowPort(window));
+            SetPort((GrafPtr)GetWindowPort(window));
             ShowDragHilite(drag, hiliteRgn, true);
             DisposeRgn(hiliteRgn);
         }
         break;
 
     case kDragTrackingLeaveWindow:
-        SetPort(GetWindowPort(window));
+        SetPort((GrafPtr)GetWindowPort(window));
         HideDragHilite(drag);
         break;
     }
@@ -1795,7 +2482,7 @@ static void DrawDropTarget(WindowPtr win)
     short winW;
 
     GetPort(&oldPort);
-    SetPort(GetWindowPort(win));
+    SetPort((GrafPtr)GetWindowPort(win));
 
     GetWindowPortBounds(win, &portRect);
     EraseRect(&portRect);
@@ -1874,7 +2561,7 @@ static void HandleMouseDown(EventRecord *evt)
     case inDrag:
         if (win != nil) {
             Rect bounds;
-            GetRegionBounds(GetGrayRgn(), &bounds);
+            bounds = (**GetGrayRgn()).rgnBBox;
             DragWindow(win, evt->where, &bounds);
         }
         break;
@@ -1891,7 +2578,7 @@ static void HandleMouseDown(EventRecord *evt)
         } else if (win == gMainWindow) {
             ControlHandle hitCtl = nil;
             Point localPt = evt->where;
-            SetPort(GetWindowPort(gMainWindow));
+            SetPort((GrafPtr)GetWindowPort(gMainWindow));
             GlobalToLocal(&localPt);
             if (FindControl(localPt, gMainWindow, &hitCtl) != 0
                     && hitCtl != nil) {
@@ -1986,15 +2673,10 @@ static void EventLoop(void)
 
 static void CheckNavServices(void)
 {
-    long version;
-
     gHasNavServices = false;
-    if (Gestalt(gestaltNavigationServicesVersion, &version) == noErr) {
-        /* require Navigation Services 1.1 or later (OS 9.1+) */
-        if (version >= 0x01100000) {
-            gHasNavServices = true;
-        }
-    }
+    if (NavServicesAvailable() && NavServicesCanRun() &&
+        NavLibraryVersion() >= 0x01100000UL)
+        gHasNavServices = true;
 }
 
 /* ==== Initialization ==================================================== */
@@ -2029,12 +2711,12 @@ static void OpenMainWindow(void)
     gRadioExpand = NewControl(gMainWindow, &kRectRadioExpand,
                               "\pExpand", true,
                               (gMode == kModeExpand) ? 1 : 0,
-                              0, 1, radioButtonProc, 0L);
+                              0, 1, radioButProc, 0L);
 
     gRadioCompress = NewControl(gMainWindow, &kRectRadioCompress,
                                 "\pCompress", true,
                                 (gMode == kModeCompress) ? 1 : 0,
-                                0, 1, radioButtonProc, 0L);
+                                0, 1, radioButProc, 0L);
 
     gAskDestCheck = NewControl(gMainWindow, &kRectAskDest,
                                "\pAsk for destination", true,

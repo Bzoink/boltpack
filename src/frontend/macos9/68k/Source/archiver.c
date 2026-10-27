@@ -2583,6 +2583,7 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
     bp_uint64 archive_orig_total;
     bp_uint64 archive_orig_done;
     int partial = 0;
+    int subject_extracted = 0;
     bp_uint8 subject_type = 0xFF;
 
     if (io == NULL || open_fn == NULL) return BP_ERR_INVALID_ARG;
@@ -2613,7 +2614,13 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
         rc = read_entry_header(io, &entry);
         if (rc != BP_OK) return rc;
         if (entry.entry_type == BP_TYPE_DATA || entry.entry_type == BP_TYPE_DIR ||
-            entry.entry_type == BP_TYPE_SYMLINK) subject_type = entry.entry_type;
+            entry.entry_type == BP_TYPE_SYMLINK) {
+            subject_type = entry.entry_type;
+            /* Directories have no data stream in this API; their callback
+             * reports creation failures through frontend state. For stream
+             * subjects, NULL means that extraction was skipped. */
+            subject_extracted = entry.entry_type == BP_TYPE_DIR;
+        }
 
         portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
         if (portable && (entry.original_size.hi != 0 ||
@@ -2621,7 +2628,20 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
             free(entry.name); return BP_ERR_CORRUPT;
         }
         if (portable) bp_metadata_sink_init(&metadata);
-        out = portable ? NULL : open_fn(&entry, user_data);
+        if (portable) {
+            out = NULL;
+        } else if ((entry.entry_type == BP_TYPE_RSRC ||
+                    entry.entry_type == BP_TYPE_META) && !subject_extracted) {
+            /* Supplementary data belongs to the preceding primary subject.
+             * Do not deliver it to a frontend when that subject was skipped. */
+            out = NULL;
+            partial = 1;
+        } else {
+            out = open_fn(&entry, user_data);
+        }
+        if (entry.entry_type == BP_TYPE_DATA ||
+            entry.entry_type == BP_TYPE_SYMLINK)
+            subject_extracted = out != NULL;
 
         rc = extract_entry_data(io, &entry, portable ? &metadata.io : out, progress_fn, user_data,
                                 i, file_count,
@@ -2649,13 +2669,20 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
                 free(entry.name); return BP_ERR_CORRUPT;
             }
             if (rc != BP_OK) partial = 1;
-            if (parsed.supported_version) out = open_fn(&entry, user_data);
+            if (parsed.supported_version && subject_extracted)
+                out = open_fn(&entry, user_data);
+            else if (parsed.supported_version)
+                partial = 1;
             if (out == NULL) partial = 1;
             else if (io_write(out, metadata.data, metadata.length) != BP_OK) {
                 if (status_fn) (void)status_fn(&entry, out, BP_ERR_IO, user_data);
                 else if (done_fn) done_fn(&entry, out, user_data);
                 free(entry.name); return BP_ERR_IO;
             }
+        } else if (out == NULL && entry.entry_type != BP_TYPE_DIR) {
+            /* A NULL stream skips this non-directory entry. Continue reading
+             * and checksumming it, but never report a complete extraction. */
+            partial = 1;
         }
 
         if (status_fn && out) {
