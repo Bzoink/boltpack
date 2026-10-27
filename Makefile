@@ -142,7 +142,7 @@ define check_cc
 	    { printf '  SKIP  %s (%s not usable)\n' '$(2)' '$(firstword $(1))'; exit 0; }
 endef
 
-.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools linux-i386 dos-host-test dos-djgpp hurd-host-test
+.PHONY: all clean debug profile modern modern-debug modern-profile install-debug-tools linux-i386 dos-host-test dos-djgpp
 
 # Version stamp: every object that bakes BP_VERSION_MAJOR/MINOR in via
 # BP_VER_DEFS (or MINI_BP_VER_DEFS) must depend on this file so that editing
@@ -168,21 +168,44 @@ dos-host-test:
 	python3 test/check_dos_profile.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 
-# Compile the GNU Hurd wrapper against the host POSIX libc with Linux-only
-# feature branches disabled. This exercises the directory-relative POSIX
-# implementation, but is not a substitute for a GNU Hurd target build/runtime.
-HURD_HOST_DIR = build/hurd-host
-HURD_HOST_BIN = $(HURD_HOST_DIR)/boltpack
-hurd-host-test:
-	mkdir -p $(HURD_HOST_DIR)
+# Build selected POSIX wrappers against the host libc with Linux-only feature
+# branches disabled, then exercise directory-relative extraction. These host
+# shims do not replace target-system builds or runtime checks.
+POSIX_DIRFD_HOST_DIR = build/posix-dirfd-host
+POSIX_DIRFD_FRONTENDS = hurd solaris illumos
+POSIX_DIRFD_HOST_BINS = $(foreach frontend,$(POSIX_DIRFD_FRONTENDS),$(POSIX_DIRFD_HOST_DIR)/$(frontend)/boltpack)
+
+$(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/linux/main.c \
+	    src/frontend/posix/extract_paths.h \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+	mkdir -p $(@D)
 	$(CC) -U__linux__ -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c \
-	    src/frontend/hurd/main.c $(BOLTLZDIR)/boltlz.c \
-	    -o $(HURD_HOST_BIN)
-	python3 test/check_extract_race.py --boltpack $(HURD_HOST_BIN)
+	    src/frontend/$*/main.c $(BOLTLZDIR)/boltlz.c -o $@
+
+.PHONY: posix-dirfd-host-test hurd-host-test solaris-host-test illumos-host-test
+posix-dirfd-host-test: $(POSIX_DIRFD_HOST_BINS)
+	@set -e; for frontend in $(POSIX_DIRFD_FRONTENDS); do \
+	    binary="$(POSIX_DIRFD_HOST_DIR)/$$frontend/boltpack"; \
+	    python3 test/check_extract_race.py --boltpack "$$binary"; \
+	    python3 test/check_symlink_atomic.py --boltpack "$$binary" --cc "$(CC)"; \
+	done
+
+hurd-host-test: $(POSIX_DIRFD_HOST_DIR)/hurd/boltpack
+	python3 test/check_extract_race.py --boltpack $<
+	python3 test/check_symlink_atomic.py --boltpack $< --cc "$(CC)"
+
+solaris-host-test: $(POSIX_DIRFD_HOST_DIR)/solaris/boltpack
+	python3 test/check_extract_race.py --boltpack $<
+	python3 test/check_symlink_atomic.py --boltpack $< --cc "$(CC)"
+
+illumos-host-test: $(POSIX_DIRFD_HOST_DIR)/illumos/boltpack
+	python3 test/check_extract_race.py --boltpack $<
+	python3 test/check_symlink_atomic.py --boltpack $< --cc "$(CC)"
 
 # Full DOS command-line build using the DJGPP cross-toolchain.
 # DJGPP hides its POSIX/DOS declarations when GCC sets __STRICT_ANSI__;
@@ -1201,7 +1224,7 @@ dos16-interoperability-test: modern dos16 unit-test-dos16
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp hurd-host-test
+test: modern unit-test dos-djgpp posix-dirfd-host-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== symlink timestamp and publication ==="

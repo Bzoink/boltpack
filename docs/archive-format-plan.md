@@ -160,16 +160,17 @@ invalid DOS characters, and overlong output roots; it does not qualify Win16
 or OS/2-16 runtimes. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
 POSIX wrapper, resolve archive-controlled directories with directory-relative
-`openat` calls and reject symlink components. The GNU Hurd wrapper now opts
-into the POSIX.1-2008 implementation explicitly;
-`make hurd-host-test` compiles that
-wrapper with Linux feature branches disabled and exercises parent substitution,
-concurrent destination creation, write failure, and close failure on the host
-libc. This is host-shim evidence, not a GNU Hurd target build or runtime test.
-Staged files and final commits use the same open parent handle. Deterministic
-tests cover the full Linux, Linux mini, and Hurd-wrapper implementations'
-parent substitution, concurrent destination creation, write failure, and close
-failure; failed stages are
+`openat` calls and reject symlink components. GNU Hurd, Solaris 11, and illumos
+wrappers now select this implementation explicitly. The
+`posix-dirfd-host-test` make target compiles these three wrappers with Linux
+feature branches disabled and tests parent substitution, concurrent
+destination creation, write failure, close failure, and staged symlink
+timestamp/publication on host libc. These are host-shim checks, not target
+builds or runtime tests. Staged files and final commits use the same open
+parent handle. Full Linux and Linux mini tests cover parent substitution,
+concurrent destination creation, write failure, and close failure; the host
+shims exercise the same POSIX implementation in Hurd, Solaris, and illumos
+configurations. Failed stages are
 removed without publishing output, and forced replacement preserves the
 existing file when close fails. Other frontends still need equivalent
 protection. A process
