@@ -75,7 +75,9 @@
 #define kMethodBoltLite         2
 #define kMethodBoltLZ          3
 #define kMethodFluff        4
-#define kMethodCancel       5
+#define kMethodProfile      5
+#define kMethodCancel       6
+#define kMethodProfileResult (-2)
 
 /* New progress dialog items */
 #define kProgOverallLabel   6
@@ -1174,7 +1176,7 @@ static int IsDirectory(const FSSpec *spec)
 
 /* ==== Compression Method Dialog ========================================= */
 
-/* Returns BP_METHOD_* (0-3) on success, or -1 if cancelled. */
+/* Returns BP_METHOD_* (0-3), kMethodProfileResult, or -1 if cancelled. */
 static int AskCompressionMethod(void)
 {
     DialogPtr dlg;
@@ -1198,6 +1200,10 @@ static int AskCompressionMethod(void)
                 continue;
             }
             result = BP_METHOD_FLUFF;
+            break;
+        }
+        if (item == kMethodProfile) {
+            result = kMethodProfileResult;
             break;
         }
         if (item == kMethodCancel) { result = -1;               break; }
@@ -1933,6 +1939,7 @@ static int DoPack(FSSpec *items, long count)
     progress_ctx_t prog;
     bp_uint32 blockSize;
     int method;
+    int interchangeProfile;
     int rc;
     long i;
     OSErr err;
@@ -1951,10 +1958,12 @@ static int DoPack(FSSpec *items, long count)
 
     /* choose compression method — always prompt */
     method = AskCompressionMethod();
-    if (method < 0) {
+    if (method == -1) {
         LogWrite("DoPack: method cancelled");
         return BP_ERR_ABORTED;
     }
+    interchangeProfile = (method == kMethodProfileResult);
+    if (interchangeProfile) method = BP_METHOD_BOLTLITE;
     if ((bp_uint8)method == BP_METHOD_FLUFF) {
         if (!EnsureFluffMemoryAvailable("DoPack: fluff blocked largest=")) {
             return BP_ERR_NOMEM;
@@ -2068,8 +2077,14 @@ static int DoPack(FSSpec *items, long count)
         }
     }
 
-    blockSize = ChooseBlockSize();
-    rc = bp_archive_create(&ar, &aio, blockSize, (bp_uint8)method);
+    if (interchangeProfile) {
+        blockSize = BP_BLOCK_16K;
+        rc = bp_archive_create_profile(&ar, &aio,
+                                       BP_PROFILE_INTERCHANGE_1);
+    } else {
+        blockSize = ChooseBlockSize();
+        rc = bp_archive_create(&ar, &aio, blockSize, (bp_uint8)method);
+    }
     {
         char ebuf[32];
         long epos = 0;

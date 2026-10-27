@@ -811,12 +811,18 @@ MPW command sequence alongside the CodeWarrior settings.
 
 The Retro68 68k port is a separate target under
 `src/frontend/macos9/68k/Source/main.c` with its own resources and packaging
-flow.
+flow. Its compression dialog offers Interchange Profile 1, which selects
+BoltLite with 16 KiB blocks and the profile's mini-compatible entry-count,
+entry-size, and serialized-size limits. The separate PowerPC frontend in
+`src/frontend/macos9/main.c` still selects BoltLZ directly and has no profile
+control.
 
-For the 68k port, include the shared `src/core` archive/compression headers
-directly rather than maintaining forked local copies. A stale local header/type
-copy caused 68k ABI drift and showed up as false `BP_ERR_IO` failures when the
-GUI tried to add directory entries during archive creation.
+The Retro68 build compiles the shared `src/core` implementation. The portable
+68k source kit also carries local copies of the core headers and sources; keep
+them synchronized with `src/core`. A stale local header/type copy caused 68k
+ABI drift and showed up as false `BP_ERR_IO` failures when the GUI tried to
+add directory entries during archive creation. The checked-in archive sources,
+headers, and fixed-width type definitions are byte-for-byte synchronized.
 
 **Project contents:**
 
@@ -940,7 +946,7 @@ The `handle` field points to a struct containing the file's `short refNum`.
 
 ### User Interface Model
 
-The Mac OS 9 frontend is event-driven, modeled after StuffIt Expander.
+The PowerPC Mac OS 9 frontend is event-driven, modeled after StuffIt Expander.
 
 **Primary interaction — drag and drop:**
 
@@ -1071,9 +1077,10 @@ The iMac G3 has at least 32 MB RAM. The application requests a 2 MB preferred he
 
 Block size auto-detection: query available memory with `FreeMem()` or `TempFreeMem()` and select the largest block size that fits comfortably (leaving at least 512 KB free for Toolbox, dialogs, and Drag Manager).
 
-### macOS 9: Compression Method Selection
+### PowerPC Mac OS 9: Compression Method Selection
 
-Unlike CLI frontends that expose command-line flags (`-F`, `-0`, `-1`), the Mac OS 9 GUI uses a simple function call:
+Unlike CLI frontends that expose command-line flags (`-F`, `-0`, `-1`), the
+PowerPC Mac OS 9 GUI currently uses a simple function call:
 
 ```c
 static bp_uint8 ChooseCompressionMethod(void)
@@ -1089,9 +1096,10 @@ This architecture allows future extension to show a dialog menu enabling users t
 - **boltlz** (method 2): Fast, small blocks only (current default)
 - **Stored** (method 0): No compression (for pre-compressed data)
 
-The underlying archiver already supports all four methods. The Mac OS 9 GUI
-currently hard-codes boltlz and would need a dialog or menu control to expose
-the broader choice.
+The underlying archiver already supports all four methods. The PowerPC Mac OS 9
+GUI currently hard-codes boltlz and would need a dialog or menu control to
+expose the broader choice. The separate Retro68 68k source kit has a method
+dialog and an Interchange Profile 1 option; see the build notes above.
 
 ### Preferences
 

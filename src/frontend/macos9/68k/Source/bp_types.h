@@ -236,6 +236,15 @@ typedef struct {
 /* Default block size */
 #define BP_BLOCK_DEFAULT  BP_BLOCK_32K
 
+/* Named writer profiles.  The interchange profile matches the mini-reader
+ * resource limits documented in specification-1.0.md section 9.4. */
+#define BP_PROFILE_NONE            0
+#define BP_PROFILE_INTERCHANGE_1   1
+#define BP_PROFILE1_MAX_BLOCK      BP_BLOCK_32K
+#define BP_PROFILE1_MAX_ENTRIES    65535UL
+#define BP_PROFILE1_MAX_ARCHIVE    2147483647UL
+#define BP_PROFILE1_MAX_FILE       0xFFFFFFFFUL
+
 /* --- Error codes -------------------------------------------------------- */
 
 #define BP_OK                      0
@@ -435,6 +444,7 @@ static bp_uint64 bp_read_le64(const bp_uint8 *p)
 #ifdef BP_MINI
 #  define BP_MINI_MAX_ENTRIES    65535U
 #  define BP_MINI_MAX_BLOCK_SIZE 32768U
+#  define BP_MINI_MAX_ARCHIVE_SIZE 2147483647UL
 #endif
 
 #endif /* BP_TYPES_H */
