@@ -125,6 +125,18 @@ are unavailable here. Path-based checks retain a parent-substitution race, and
 interruption between backup and publication can leave the original at its
 recovery name.
 
+The Amiga GadTools GUI now uses status-aware extraction with sibling staging,
+bounded case-folded name and file/directory-prefix preflight, checked existing
+directory components, and deferred directory time/protection restoration. It
+captures and restores native protection/comment metadata for files; GUI archive
+creation does not add directory entries, so it has no directory metadata to
+capture. Latin-1-unrepresentable names, resource forks, symlinks, foreign
+metadata, and portable FAT envelopes are skipped with a partial result. Source
+times outside the host's nonnegative representable range are recorded as
+unknown. The GUI cross-build passes, but its path-based checks retain a
+parent-substitution race and no Amiga runtime or emulator round trip is
+available.
+
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
 reject orphaned or duplicate portable envelopes and verify the subject type.
