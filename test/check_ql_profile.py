@@ -43,6 +43,14 @@ def require_ok(result, label):
     )
 
 
+def check_dry_run(binary, archive, cwd):
+    output = pathlib.Path(cwd) / (pathlib.Path(binary).stem + "-dry-run-output")
+    assert not output.exists()
+    result = run(binary, "x", "-n", "-o", str(output), str(archive), cwd=cwd)
+    require_ok(result, f"{pathlib.Path(binary).name} dry-run verification")
+    assert not output.exists(), f"dry-run created {output}"
+
+
 def main():
     ql, full, mini = (pathlib.Path(arg).resolve() for arg in sys.argv[1:4])
     with tempfile.TemporaryDirectory(prefix="bp_ql_profile_") as temp:
@@ -54,6 +62,7 @@ def main():
                      "first.bin", cwd=root)
         require_ok(result, "QL profile create")
         assert entry_properties(root / "profile.blt")["first.bin"] == (1, 16384)
+        check_dry_run(ql, "profile.blt", root)
         for reader in (ql, full, mini):
             require_ok(run(reader, "t", "profile.blt", cwd=root),
                        f"profile create integrity with {reader.name}")
