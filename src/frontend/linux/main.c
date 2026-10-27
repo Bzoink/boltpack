@@ -195,8 +195,8 @@ static void set_tmp_dir_from_archive(const char *archive_name)
     if (archive_name == NULL) return;
 
     slash = strrchr(archive_name, '/');
-    if (slash != NULL && slash > archive_name) {
-        dlen = (size_t)(slash - archive_name);
+    if (slash != NULL) {
+        dlen = slash == archive_name ? 1U : (size_t)(slash - archive_name);
         if (dlen < sizeof(g_tmp_dir)) {
             memcpy(g_tmp_dir, archive_name, dlen);
             g_tmp_dir[dlen] = '\0';
@@ -2851,8 +2851,15 @@ static int cmd_delete(int argc, char **argv)
     int del_count;
     FILE *src_fp, *dst_fp;
     bp_io_t src_io, dst_io;
-    char tmp_name[4096];
+    char tmp_name[4096 + 64];
     bp_uint32 deleted = 0;
+    struct stat original_stat, opened_stat, current_stat;
+    void (*old_sigint)(int);
+    void (*old_sigterm)(int);
+    int handlers_set = 0;
+    int tmp_fd = -1;
+    int result = 1;
+    int n;
     int rc;
 
     if (argc < 2) {
@@ -2863,20 +2870,61 @@ static int cmd_delete(int argc, char **argv)
     archive_name = argv[0];
     del_names = (const char **)&argv[1];
     del_count = argc - 1;
+    tmp_name[0] = '\0';
+    set_tmp_dir_from_archive(archive_name);
+
+    if (lstat(archive_name, &original_stat) != 0 ||
+        !S_ISREG(original_stat.st_mode)) {
+        fprintf(stderr, "boltpack: archive must be a regular, non-symlink file: %s\n",
+                archive_name);
+        return 1;
+    }
 
     src_fp = fopen(archive_name, "rb");
     if (src_fp == NULL) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
         return 1;
     }
-
-    snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
-    if (dst_fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
+    if (fstat(fileno(src_fp), &opened_stat) != 0 ||
+        !S_ISREG(opened_stat.st_mode) ||
+        opened_stat.st_dev != original_stat.st_dev ||
+        opened_stat.st_ino != original_stat.st_ino ||
+        opened_stat.st_size != original_stat.st_size ||
+        opened_stat.st_mtime != original_stat.st_mtime) {
+        fprintf(stderr, "boltpack: archive changed while opening: %s\n",
+                archive_name);
         fclose(src_fp);
         return 1;
     }
+
+    n = snprintf(tmp_name, sizeof(tmp_name), "%s/bpdel_XXXXXX",
+                 g_tmp_dir[0] ? g_tmp_dir : ".");
+    if (n <= 0 || (size_t)n >= sizeof(tmp_name)) {
+        fprintf(stderr, "boltpack: archive path too long\n");
+        fclose(src_fp);
+        return 1;
+    }
+    tmp_fd = mkstemp(tmp_name);
+    if (tmp_fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temporary archive: %s\n",
+                strerror(errno));
+        fclose(src_fp);
+        return 1;
+    }
+    dst_fp = fdopen(tmp_fd, "w+b");
+    if (dst_fp == NULL) {
+        fprintf(stderr, "boltpack: cannot open temporary archive stream\n");
+        close(tmp_fd);
+        unlink(tmp_name);
+        fclose(src_fp);
+        return 1;
+    }
+    tmp_fd = -1;
+
+    memcpy(g_tmp_archive, tmp_name, strlen(tmp_name) + 1);
+    old_sigint = signal(SIGINT, sig_cleanup_handler);
+    old_sigterm = signal(SIGTERM, sig_cleanup_handler);
+    handlers_set = 1;
 
     bp_io_from_file(&src_io, src_fp);
     bp_io_from_file(&dst_io, dst_fp);
@@ -2884,31 +2932,73 @@ static int cmd_delete(int argc, char **argv)
     rc = bp_archive_delete(&src_io, &dst_io, del_names, (bp_uint32)del_count,
                            &deleted);
 
-    fclose(src_fp);
-    fclose(dst_fp);
-
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp_name);
-        return 1;
+        goto delete_cleanup;
     }
 
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
-        remove(tmp_name);
-        return 1;
+        goto delete_cleanup;
     }
 
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
-        return 1;
+    if (fflush(dst_fp) != 0 ||
+        fchmod(fileno(dst_fp), original_stat.st_mode & 0777) != 0 ||
+        fsync(fileno(dst_fp)) != 0) {
+        fprintf(stderr, "boltpack: cannot finalize temporary archive: %s\n",
+                strerror(errno));
+        goto delete_cleanup;
+    }
+    if (fclose(dst_fp) != 0) {
+        dst_fp = NULL;
+        fprintf(stderr, "boltpack: cannot close temporary archive: %s\n",
+                strerror(errno));
+        goto delete_cleanup;
+    }
+    dst_fp = NULL;
+    if (fclose(src_fp) != 0) {
+        src_fp = NULL;
+        fprintf(stderr, "boltpack: cannot close source archive: %s\n",
+                strerror(errno));
+        goto delete_cleanup;
+    }
+    src_fp = NULL;
+
+    if (lstat(archive_name, &current_stat) != 0 ||
+        !S_ISREG(current_stat.st_mode) ||
+        current_stat.st_dev != original_stat.st_dev ||
+        current_stat.st_ino != original_stat.st_ino ||
+        current_stat.st_size != original_stat.st_size ||
+        current_stat.st_mtime != original_stat.st_mtime) {
+        fprintf(stderr, "boltpack: archive changed during delete: %s\n",
+                archive_name);
+        goto delete_cleanup;
     }
 
-    if (g_verbosity < VERB_SILENT) {
+    if (rename(tmp_name, archive_name) != 0) {
+        fprintf(stderr, "boltpack: cannot publish deleted archive: %s\n",
+                strerror(errno));
+        goto delete_cleanup;
+    }
+    g_tmp_archive[0] = '\0';
+    result = 0;
+
+delete_cleanup:
+    if (dst_fp != NULL) fclose(dst_fp);
+    if (src_fp != NULL) fclose(src_fp);
+    if (tmp_fd >= 0) close(tmp_fd);
+    if (result != 0 && tmp_name[0] != '\0') unlink(tmp_name);
+    g_tmp_archive[0] = '\0';
+    if (handlers_set) {
+        signal(SIGINT, old_sigint);
+        signal(SIGTERM, old_sigterm);
+    }
+
+    if (result == 0 && g_verbosity < VERB_SILENT) {
         printf("%lu entr%s deleted\n",
                (unsigned long)deleted, deleted == 1 ? "y" : "ies");
     }
-    return 0;
+    return result;
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
