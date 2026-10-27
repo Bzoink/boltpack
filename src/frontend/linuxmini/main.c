@@ -779,6 +779,7 @@ static void usage(void)
           "  -m0                            store, no compression\n"
           "  -m1                            BoltLite compression\n"
           "  -m2                            boltlz compression (default)\n"
+          "  --interchange-profile-1        create Interchange Profile 1 archives\n"
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   stored (0), BoltLite (1), boltlz (2)\n"
@@ -796,6 +797,9 @@ int main(int argc, char **argv)
     const char *arc_path;
     bp_uint32 block_size = BP_BLOCK_32K;
     bp_uint8  method     = BP_METHOD_BOLTLZ;
+    int profile = 0;
+    int block_size_explicit = 0;
+    int method_explicit = 0;
 
     if (argc < 3) {
         usage();
@@ -806,23 +810,38 @@ int main(int argc, char **argv)
         if (argv[i][0] == '-') {
             if (strcmp(argv[i], "-q") == 0) {
                 g_verbose = 0;
+            } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
+                profile = 1;
             } else if (strcmp(argv[i], "-b8k") == 0) {
-                block_size = 8192U;
+                block_size = 8192U; block_size_explicit = 1;
             } else if (strcmp(argv[i], "-b16k") == 0) {
-                block_size = 16384U;
+                block_size = 16384U; block_size_explicit = 1;
             } else if (strcmp(argv[i], "-b32k") == 0) {
-                block_size = 32768U;
+                block_size = 32768U; block_size_explicit = 1;
             } else if (strcmp(argv[i], "-m0") == 0) {
-                method = BP_METHOD_STORED;
+                method = BP_METHOD_STORED; method_explicit = 1;
             } else if (strcmp(argv[i], "-m1") == 0) {
-                method = BP_METHOD_BOLTLITE;
+                method = BP_METHOD_BOLTLITE; method_explicit = 1;
             } else if (strcmp(argv[i], "-m2") == 0) {
-                method = BP_METHOD_BOLTLZ;
+                method = BP_METHOD_BOLTLZ; method_explicit = 1;
             }
         }
     }
 
     cmd      = argv[1][0];
+    if (profile) {
+        if (cmd != 'c') {
+            fprintf(stderr, PROG_NAME ": --interchange-profile-1 applies to create only\n");
+            return 1;
+        }
+        if (method_explicit && method != BP_METHOD_STORED &&
+            method != BP_METHOD_BOLTLITE) {
+            fprintf(stderr, PROG_NAME ": Interchange Profile 1 supports only Stored and BoltLite\n");
+            return 1;
+        }
+        if (!method_explicit) method = BP_METHOD_BOLTLITE;
+        if (!block_size_explicit) block_size = 16384U;
+    }
     arc_path = NULL;
     files_start = argc;
     for (i = 2; i < argc; i++) {
