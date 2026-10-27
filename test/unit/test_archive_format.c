@@ -441,6 +441,7 @@ typedef struct {
     bp_io_t io;
     unsigned char bytes[8];
     int done_status;
+    int progress_count;
 } GoldenExtractState;
 
 static bp_io_t *golden_extract_open(const bp_entry_t *entry, void *user_data)
@@ -458,6 +459,15 @@ static int golden_extract_done(const bp_entry_t *entry, bp_io_t *out,
     (void)out;
     state->done_status = status;
     return BP_OK;
+}
+
+static int golden_extract_abort_progress(const bp_progress_t *progress,
+                                         void *user_data)
+{
+    GoldenExtractState *state = (GoldenExtractState *)user_data;
+    (void)progress;
+    state->progress_count++;
+    return 1;
 }
 
 static void test_format6_single_blob_golden_archive(void)
@@ -528,6 +538,18 @@ static void test_format6_single_blob_golden_archive(void)
     UNIT_CHECK(rc == BP_OK && extracted.done_status == BP_OK &&
                extracted.output.size == 1 && extracted.bytes[0] == 'A',
                "full extraction decompresses the unframed BoltLite blob");
+
+    extracted.output.pos = 0;
+    extracted.output.size = 0;
+    extracted.done_status = 99;
+    extracted.progress_count = 0;
+    rc = bp_archive_extract_all_ex(&io, golden_extract_open,
+                                   golden_extract_done,
+                                   golden_extract_abort_progress, &extracted);
+    UNIT_CHECK(rc == BP_ERR_ABORTED && extracted.progress_count == 1 &&
+               extracted.done_status == BP_ERR_ABORTED &&
+               extracted.output.size == 1,
+               "progress cancellation reaches completion as an uncommittable error");
 }
 
 /* ======================================================================== */

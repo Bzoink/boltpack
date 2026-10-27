@@ -59,7 +59,7 @@ listed as implemented remains unqualified; do not infer it from the core format.
   option. There is no Windows runtime in this environment, so option behavior,
   profile round trips, and reparse-point race checks remain unqualified.
 - On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
-  including 255 archive-format checks and 151 CLI integration checks. The
+  including 256 archive-format checks and 151 CLI integration checks. The
   archive checks include independently laid-out blocked and single-blob
   archives through both cores, and explicit rejection of versions 1–5 by full
   and mini info/test readers.
@@ -74,7 +74,9 @@ listed as implemented remains unqualified; do not infer it from the core format.
   restrictions.
 - After the CP/M-86 and 16-bit projected-name bound checks were added,
   `make CC=gcc mini-test` rebuilt the C89 mini targets and
-  `make CC=gcc unit-test` passed all 255 archive-format checks.
+  `make CC=gcc unit-test` passed all 256 archive-format checks. The full-core
+  cancellation fixture verifies `BP_ERR_ABORTED` reaches the completion
+  callback so the written stage cannot be committed.
   `make CC=gcc cpm86-host-test` passed the CP/M-86 create/list/extract and
   refusal fixtures.
 - `make mini-all unit-test-dos16` rebuilt the DOS16, Win16, and OS/2-16 mini
