@@ -85,6 +85,9 @@ index is capped at 1,024 primary entries and 32 KiB of path keys; larger
 archives return partial after that bound. This targets the original GEMDOS
 profile, whose filename rules are documented in the [Atari ST GEM Programming
 manual](https://www.bitsavers.org/pdf/atari/ST/Atari_ST_GEM_Programming_1986/GEM_0042.pdf).
+The `atari-path-test` C89 host fixture covers 8.3 projection, invalid names,
+the 125-byte path boundary, case-folded aliases, and both collision-index
+bounds; it does not replace Atari runtime testing.
 The Windows CLI has cross-build evidence but still needs Windows
 runtime tests. The full Atari CLI now writes native and portable FAT metadata,
 defers directory time and attribute restoration, and stages extracted files
