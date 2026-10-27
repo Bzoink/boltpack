@@ -54,16 +54,36 @@ int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
                             bp_uint64 mtime, bp_uint16 flags)
 {
     unsigned long n;
+    unsigned int utf8_capacity;
     char *utf8;
     int rc;
     if (name == NULL) return BP_ERR_INVALID_ARG;
     n = (unsigned long)strlen(name);
-    if (n > 10922UL) return BP_ERR_NAME_TOO_LONG;
-    utf8 = (char *)malloc((size_t)(n * 3UL + 1UL));
+    if (n > (entry_type == BP_TYPE_DIR ? 10921UL : 10922UL))
+        return BP_ERR_NAME_TOO_LONG;
+    utf8_capacity = (unsigned int)(n * 3UL +
+                                  (entry_type == BP_TYPE_DIR ? 2UL : 1UL));
+    utf8 = (char *)malloc((size_t)utf8_capacity);
     if (utf8 == NULL) return BP_ERR_NOMEM;
-    if (bp_mini_local_to_utf8(name, utf8, (unsigned int)(n * 3UL + 1UL)) != 0)
+    if (bp_mini_local_to_utf8(name, utf8, utf8_capacity) != 0)
         rc = BP_ERR_INVALID_ARG;
-    else
+    else {
+        if (entry_type == BP_TYPE_DIR) {
+            size_t utf8_len = strlen(utf8);
+            if (utf8_len == 0) {
+                rc = BP_ERR_INVALID_ARG;
+            } else {
+                if (utf8[utf8_len - 1] != '/') {
+                    utf8[utf8_len++] = '/';
+                    utf8[utf8_len] = '\0';
+                }
+                rc = BP_OK;
+            }
+        } else {
+            rc = BP_OK;
+        }
+    }
+    if (rc == BP_OK)
         rc = bp_mini_archive_add_entry_ex(ar, utf8, entry_type, platform,
                                           file_io, file_size, mtime, flags);
     free(utf8);
@@ -90,15 +110,34 @@ int bp_mini_add_fat_metadata(bp_mini_archive_t *ar, const char *name,
 {
     bp_mini_meta_source_t source;
     bp_io_t io;
+    const char *subject_name = name;
+    char *owned_subject_name = NULL;
+    size_t name_len;
     int rc = bp_metadata_fat_encode(source.bytes, sizeof(source.bytes),
                                     subject_type, valid, value);
     if (rc != BP_OK) return rc;
+    if (name == NULL) return BP_ERR_INVALID_ARG;
+    name_len = strlen(name);
+    if (subject_type == BP_TYPE_DIR && name_len == 0)
+        return BP_ERR_INVALID_ARG;
+    if (subject_type == BP_TYPE_DIR && name[name_len - 1] != '/') {
+        if (name_len > 10921UL) return BP_ERR_NAME_TOO_LONG;
+        owned_subject_name = (char *)malloc(name_len + 2);
+        if (owned_subject_name == NULL) return BP_ERR_NOMEM;
+        memcpy(owned_subject_name, name, name_len);
+        owned_subject_name[name_len] = '/';
+        owned_subject_name[name_len + 1] = '\0';
+        subject_name = owned_subject_name;
+    }
     source.pos = 0;
     io.read = bp_mini_meta_read; io.write = NULL; io.seek = NULL; io.tell = NULL;
     io.handle = &source;
-    return bp_mini_add_local_entry(ar, name, BP_TYPE_META, BP_META_PORTABLE, &io,
-                                   bp_u64_from_u32(BP_META_FAT_SIZE),
-                                   bp_u64_from_u32(0), 0);
+    rc = bp_mini_add_local_entry(ar, subject_name, BP_TYPE_META,
+                                 BP_META_PORTABLE, &io,
+                                 bp_u64_from_u32(BP_META_FAT_SIZE),
+                                 bp_u64_from_u32(0), 0);
+    free(owned_subject_name);
+    return rc;
 }
 
 /* A small bound limits heap use on constrained systems. Longer paths are

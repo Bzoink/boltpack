@@ -360,25 +360,43 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
                          bp_uint8 platform, const struct stat *st)
 {
     bp_uint64 z;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    size_t name_len;
+    char *canonical_name;
+    int rc;
     z.lo = 0; z.hi = 0;
 
+    name_len = strlen(arc_name);
+    if (name_len == 0) return BP_ERR_INVALID_ARG;
+    if (name_len >= BP_MAX_PATH ||
+        (arc_name[name_len - 1] != '/' && name_len + 1 >= BP_MAX_PATH))
+        return BP_ERR_NAME_TOO_LONG;
+    canonical_name = (char *)malloc(name_len + 2);
+    if (canonical_name == NULL) return BP_ERR_NOMEM;
+    memcpy(canonical_name, arc_name, name_len);
+    if (canonical_name[name_len - 1] != '/')
+        canonical_name[name_len++] = '/';
+    canonical_name[name_len] = '\0';
+
     if (g_verbose) {
-        printf("  a  %s/\n", arc_name);
+        printf("  a  %s\n", canonical_name);
     }
 
-    {
-        bp_uint16 flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st->st_mode & BP_ENTRY_FLAG_MODE_MASK);
-        bp_uint64 mtime = z;
-        if (st->st_mtime >= 0) {
-            mtime = bp_off_to_u64((bp_off_t)st->st_mtime);
-            flags |= BP_ENTRY_FLAG_MTIME_VALID;
-        } else {
-            fprintf(stderr, PROG_NAME ": pre-1970 directory timestamp not representable: %s\n", arc_name);
-            g_create_partial = 1;
-        }
-        return bp_mini_archive_add_entry_ex(ar, arc_name, BP_TYPE_DIR, platform,
-                                             NULL, z, mtime, flags);
+    flags = BP_ENTRY_FLAG_MODE_VALID |
+            (bp_uint16)(st->st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    mtime = z;
+    if (st->st_mtime >= 0) {
+        mtime = bp_off_to_u64((bp_off_t)st->st_mtime);
+        flags |= BP_ENTRY_FLAG_MTIME_VALID;
+    } else {
+        fprintf(stderr, PROG_NAME ": pre-1970 directory timestamp not representable: %s\n", arc_name);
+        g_create_partial = 1;
     }
+    rc = bp_mini_archive_add_entry_ex(ar, canonical_name, BP_TYPE_DIR,
+                                      platform, NULL, z, mtime, flags);
+    free(canonical_name);
+    return rc;
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
