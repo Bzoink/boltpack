@@ -2355,7 +2355,7 @@ unit-build-dos16:
 	@echo "  OK    $(UNIT_DOS16_CODEPAGE_EXE)"
 
 unit-test-dos16: unit-build-dos16
-	rm -f $(UNIT_DOS16_BDIR)/RESULT.TXT
+	rm -f $(UNIT_DOS16_BDIR)/RESULT.TXT $(UNIT_DOS16_BDIR)/CODEPAGE.TXT
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy dosbox \
 	    -c "mount c $(abspath $(UNIT_DOS16_BDIR))" \
 	    -c "c:" \
