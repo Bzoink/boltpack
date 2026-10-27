@@ -107,6 +107,24 @@ cannot. Both adapters have cross-compile evidence but still need runtime
 verification. Their path-based APIs cannot prevent concurrent parent
 substitution.
 
+The shared Amiga-family CLI now uses status-aware extraction, verifies and
+closes regular-file stages before publishing, and keeps an existing file under
+a recovery name during forced replacement. It refuses non-regular targets and
+existing symlink path components, rejects AmigaDOS volume separators in
+projected names, and preflights case-folded path collisions and file/directory
+prefix conflicts before output changes. The name index is capped at 1,024
+primary entries and 32 KiB of keys; archives exceeding the bound are refused.
+Matching Amiga protection/comment metadata applies only after its exact
+subject succeeds. Directory times and protection are deferred until children
+finish. Negative or host-unrepresentable source times are warned about and
+stored as unknown, while epoch zero stays valid. Malformed native Amiga metadata is rejected; foreign native metadata,
+portable FAT envelopes, symlinks, and resource forks return partial. The m68k
+cross-build passes cleanly, but no Amiga runtime or emulator round trip is
+available. AmigaOS 4, MorphOS, and AROS use this source but their cross-toolchains
+are unavailable here. Path-based checks retain a parent-substitution race, and
+interruption between backup and publication can leave the original at its
+recovery name.
+
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
 reject orphaned or duplicate portable envelopes and verify the subject type.
@@ -297,6 +315,13 @@ work includes broader target tests, Unicode normalization and non-Windows
 collision checks, and checking every source filename API against its configured
 codepage.
 
+The Amiga-family CLI converts to its configured Latin-1 filename API, rejects
+volume/device separators after conversion, and preflights case-folded path
+collisions plus file/directory prefix conflicts. Its 1,024-entry/32-KiB bound
+fails before extraction creates output. The comparison folds ASCII and the
+Latin-1 uppercase letter ranges; target filesystem comparison behavior still
+needs runtime qualification.
+
 Select the source codepage from the actual filename API and active environment.
 DOS-style Win16/OS2-16 paths require the appropriate OEM/local codepage, not an
 assumed CP1252. Provide an explicit override and documented build default when
@@ -391,6 +416,15 @@ pass; plugin-host runtime tests and concurrent parent-swap coverage remain
 unavailable. The path-based component checks still have a race with concurrent
 parent substitution. The legacy WCX `ReadHeader` API refuses entries larger
 than `INT_MAX`; `ReadHeaderEx` carries 64-bit sizes.
+
+The Amiga-family CLI stages regular files beside their destinations and
+publishes only after checksum verification and successful close. Forced
+replacement uses a recovery rename, with rollback on reported publication
+failure. It checks existing parents with `lstat`, refuses symlinks and
+non-regular output targets, and defers matching Amiga protection/comment
+metadata and directory times until the subject succeeds and children finish.
+Only the m68k frontend has a cross-build result here; Amiga-family runtime
+behavior, crash recovery, and the pathname parent-swap race remain unqualified.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level
