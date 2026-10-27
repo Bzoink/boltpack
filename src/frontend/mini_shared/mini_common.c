@@ -48,6 +48,149 @@ int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size)
     return rc;
 }
 
+int bp_mini_projected_index_init(bp_mini_projected_index_t *index)
+{
+    size_t meta_size;
+    unsigned char *meta;
+    if (index == NULL) return BP_ERR_INVALID_ARG;
+    memset(index, 0, sizeof(*index));
+    meta_size = (size_t)BP_MINI_PROJECTED_INDEX_MAX *
+                (sizeof(unsigned short) * 2U + sizeof(unsigned char));
+    index->allocation = (char *)malloc(meta_size + BP_MINI_PROJECTED_INDEX_BYTES);
+    if (index->allocation == NULL) return BP_ERR_NOMEM;
+    meta = (unsigned char *)index->allocation;
+    index->exact_offset = (unsigned short *)meta;
+    meta += sizeof(unsigned short) * BP_MINI_PROJECTED_INDEX_MAX;
+    index->folded_offset = (unsigned short *)meta;
+    meta += sizeof(unsigned short) * BP_MINI_PROJECTED_INDEX_MAX;
+    index->is_directory = meta;
+    meta += sizeof(unsigned char) * BP_MINI_PROJECTED_INDEX_MAX;
+    index->storage = (char *)meta;
+    return BP_OK;
+}
+
+void bp_mini_projected_index_free(bp_mini_projected_index_t *index)
+{
+    if (index == NULL) return;
+    free(index->allocation);
+    memset(index, 0, sizeof(*index));
+}
+
+static int mini_projected_index_add_key(bp_mini_projected_index_t *index,
+                                        const char *exact,
+                                        const char *folded,
+                                        int is_directory)
+{
+    size_t length = strlen(exact);
+    unsigned i;
+    unsigned needed;
+    if (length != strlen(folded)) return BP_ERR_INVALID_ARG;
+    for (i = 0; i < index->count; i++) {
+        const char *old_exact = index->storage + index->exact_offset[i];
+        const char *old_folded = index->storage + index->folded_offset[i];
+        if (strcmp(old_folded, folded) == 0) {
+            if (strcmp(old_exact, exact) != 0 ||
+                index->is_directory[i] != (unsigned char)(is_directory != 0) ||
+                !is_directory)
+                return BP_ERR_PARTIAL;
+            return BP_OK;
+        }
+    }
+    if (index->count >= BP_MINI_PROJECTED_INDEX_MAX)
+        return BP_ERR_PARTIAL;
+    needed = (unsigned)(length + 1U) * 2U;
+    if (needed > BP_MINI_PROJECTED_INDEX_BYTES - index->used)
+        return BP_ERR_PARTIAL;
+    index->exact_offset[index->count] = (unsigned short)index->used;
+    memcpy(index->storage + index->used, exact, length + 1U);
+    index->used += (unsigned)(length + 1U);
+    index->folded_offset[index->count] = (unsigned short)index->used;
+    memcpy(index->storage + index->used, folded, length + 1U);
+    index->used += (unsigned)(length + 1U);
+    index->is_directory[index->count] = (unsigned char)(is_directory != 0);
+    index->count++;
+    return BP_OK;
+}
+
+int bp_mini_projected_index_add(bp_mini_projected_index_t *index,
+                                const char *local_path, int is_directory)
+{
+    char exact[260];
+    char folded[260];
+    size_t length, i;
+    unsigned saved_count, saved_used;
+    int rc = BP_OK;
+    if (index == NULL || index->storage == NULL || local_path == NULL)
+        return BP_ERR_INVALID_ARG;
+    length = strlen(local_path);
+    if (length == 0 || length >= sizeof(exact)) return BP_ERR_NAME_TOO_LONG;
+    memcpy(exact, local_path, length + 1U);
+    for (i = 0; i < length; i++) if (exact[i] == '/') exact[i] = '\\';
+    while (length != 0 && exact[length - 1U] == '\\') length--;
+    if (length == 0) return BP_ERR_INVALID_ARG;
+    exact[length] = '\0';
+    saved_count = index->count;
+    saved_used = index->used;
+
+    for (i = 0; i <= length; i++) {
+        int final_component = i == length;
+        if (!final_component && exact[i] != '\\') continue;
+        if (i == 0 || exact[i - 1U] == '\\') {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
+        {
+            char saved = exact[i];
+            exact[i] = '\0';
+            rc = bp_local_casefold(exact, folded, (int)sizeof(folded),
+                                   BP_MINI_CODEPAGE);
+            if (rc == 0)
+                rc = mini_projected_index_add_key(index, exact, folded,
+                                                   !final_component || is_directory);
+            exact[i] = saved;
+        }
+        if (rc != BP_OK) break;
+    }
+    if (rc != BP_OK) {
+        index->count = saved_count;
+        index->used = saved_used;
+        return rc == BP_CP_UNREPRESENTABLE ? BP_ERR_PARTIAL : rc;
+    }
+    return BP_OK;
+}
+
+int bp_mini_projected_name_preflight(const bp_mini_entry_t *entry,
+                                     void *user_data)
+{
+    bp_mini_projected_preflight_t *preflight =
+        (bp_mini_projected_preflight_t *)user_data;
+    char local_name[260];
+    int rc;
+    if (entry == NULL || preflight == NULL || preflight->index == NULL) {
+        if (preflight != NULL) preflight->result = BP_ERR_INVALID_ARG;
+        return 1;
+    }
+    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+        return 0;
+    if (!bp_mini_name_is_safe(entry->name) ||
+        bp_mini_utf8_to_local(entry->name, local_name, sizeof(local_name)) != 0) {
+        fprintf(stderr, "bpmini: destination cannot represent archive name: %s\n",
+                entry->name);
+        preflight->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    rc = bp_mini_projected_index_add(preflight->index, local_name,
+                                     entry->entry_type == BP_TYPE_DIR);
+    if (rc != BP_OK) {
+        fprintf(stderr,
+                "bpmini: projected name collision or preflight limit: %s\n",
+                entry->name);
+        preflight->result = rc == BP_ERR_NOMEM ? rc : BP_ERR_PARTIAL;
+        return 1;
+    }
+    return 0;
+}
+
 int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
                             bp_uint8 entry_type, bp_uint8 platform,
                             bp_io_t *file_io, bp_uint64 file_size,

@@ -28,6 +28,13 @@ def main():
         os.utime(root / "SRC" / "SUB", (951786000, 951786000))
         os.utime(root / "SRC", (951786000, 951786000))
         (root / "TREEOUT").mkdir()
+        (root / "CASE" / "Dir").mkdir(parents=True)
+        (root / "CASE" / "dir").mkdir()
+        (root / "CASE" / "Dir" / "ONE.TXT").write_bytes(b"upper tree\n")
+        (root / "CASE" / "dir" / "TWO.TXT").write_bytes(b"lower tree\n")
+        (root / "CASEOUT").mkdir()
+        subprocess.run([str(LINUX), "c", "CASE.BLT", "CASE"], cwd=root,
+                       capture_output=True, check=True)
         env = os.environ.copy()
         env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", TZ="UTC")
         commands = [
@@ -100,15 +107,20 @@ def main():
         broken_commands = [
             f"mount c {directory}", "c:",
             "bpmini x BROKEN.BLT BADOUT > BROKEN.TXT",
-            "if errorlevel 1 echo FAIL > BROKEN.BAD", "exit",
+            "if errorlevel 1 echo FAIL > BROKEN.BAD",
+            "bpmini x CASE.BLT CASEOUT > CASE.TXT",
+            "if errorlevel 1 echo FAIL > CASE.BAD", "exit",
         ]
+        (root / "BAD.BAT").write_text("\r\n".join(broken_commands[2:]) + "\r\n")
         subprocess.run(["dosbox", "-c", broken_commands[0], "-c", broken_commands[1],
-                        "-c", broken_commands[2], "-c", broken_commands[3],
-                        "-c", broken_commands[4]], env=env, stdout=subprocess.PIPE,
+                        "-c", "BAD.BAT", "-c", "exit"], env=env, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=30, check=True)
         assert marked("BROKEN.BAD"), "corrupt DOS extraction was reported as success"
         assert not (root / "BADOUT" / "INPUT.TXT").exists(), \
             "failed DOS16 extraction left a partial destination"
+        assert marked("CASE.BAD"), "case-folded DOS destination collision was not reported"
+        assert not (root / "CASEOUT" / "CASE").exists(), \
+            "case-folded DOS directory collision modified the destination before refusal"
         print("DOS16/DOSBox to Linux interoperability checks passed")
 
 

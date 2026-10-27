@@ -345,6 +345,17 @@ default is CP437 for DOS16 and Win16, CP850 for OS/2-16, UTF-8 for Linux mini,
 and ASCII for CP/M-86; `BP_MINI_CODEPAGE` can select another supported encoding
 at build time.
 
+Before DOS16, Win16, or OS/2-16 extraction creates output, it scans the full
+archive name table and checks the converted local paths for case-folded
+collisions, including parent-directory aliases and file/directory conflicts.
+The preflight uses ASCII folding on every codepage and the mapped Latin letter
+pairs for CP437 and CP850. For other configured codepages, non-ASCII names are
+refused because a complete target case map is unavailable. The bounded index
+holds at most 128 distinct projected path prefixes and 4 KiB of exact/folded
+keys; exceeding either limit refuses extraction before filesystem changes.
+DOSBox verifies the DOS16 refusal path for a Linux-created archive containing
+case-only directory aliases. Win16 and OS/2-16 still need runtime qualification.
+
 Linux mini records POSIX mode bits and modification times for regular files
 and directories. It restores directory metadata after its children, using a
 queue limited to 1,024 directories. Set-ID bits and pre-1970 source timestamps
