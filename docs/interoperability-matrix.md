@@ -71,7 +71,7 @@ listed as implemented remains unqualified; do not infer it from the core format.
   option. There is no Windows runtime in this environment, so option behavior,
   profile round trips, and reparse-point race checks remain unqualified.
 - On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
-  including 263 archive-format checks and 154 CLI integration checks. The
+  including 263 archive-format checks and 160 CLI integration checks. The
   archive checks include independently laid-out blocked and single-blob
   archives through both cores, and explicit rejection of versions 1–5 by full
   and mini info/test readers. The standard target also runs `check_symlink_atomic.py`,
