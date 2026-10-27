@@ -678,6 +678,14 @@ A 1 MB ST typically has ~600 KB free and gets 256 KB blocks. A stock 512 KB ST g
 ### Atari: Path Handling
 
 Drive prefixes (`C:\`, `C:`) are stripped when computing archive entry names. Backslashes are normalised to forward slashes.
+Create, add, and delete operate on exclusive sibling staging files. Add copies
+existing entries into a new staged archive before appending; the original is
+replaced only after successful finalization and close. Publication keeps a
+recovery copy while replacing an existing archive. Archive targets must be
+writable regular files; symbolic links and directories are refused. A crash
+while writing leaves the old archive intact but may leave a stage file. A
+crash between the two publication renames may leave the old archive at its
+recovery name.
 
 ```text
 C:\WORK\MYPROJ   →   WORK/MYPROJ
@@ -700,6 +708,7 @@ MYFILE.TXT       →   MYFILE.TXT
 | Option    | Description                                                                             |
 | --------- | --------------------------------------------------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `Malloc(-1)`) |
+| `--interchange-profile-1` | Enforce mini-compatible limits for create/add (BoltLite by default, 16 KiB blocks) |
 | `-0`      | Store only (no compression)                                                             |
 | `-F`      | Use fluff LZ77 + FSE/tANS compression                                                      |
 | `-1`      | Use BoltLite compression                                                                    |
