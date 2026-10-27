@@ -838,9 +838,10 @@ After CP437/CP850 filename conversion fixtures were added,
 `make CC=gcc unit-test` passed again with 30 codepage checks, including exact
 CP437 `café.txt` round trips and configured mini CP437/CP850 filename
 conversion. `make mini-all` cross-built DOS16, Win16, and OS/2-16 after fixing
-their local-name validation order. `make unit-test-dos16` now runs the
-Watcom-built CP437 conversion fixture under DOSBox as well as its compression
-tests. The DOSBox transfer fixture passes for its ASCII names. Accented-name
+their local-name validation order. `make unit-test-dos16` now runs Watcom-built
+CP437 and CP850 conversion fixtures under DOSBox, with CP850 selected by the
+mini codepage override, as well as its compression tests. The DOSBox transfer
+fixture passes for its ASCII names. Accented-name
 filesystem behavior remains unqualified: extraction to DOSBox's host-mounted
 drive did not materialize the file, and a standalone Watcom `open()` probe for
 CP437 byte 0x82 also failed on a DOSBox FAT12 image while ASCII creation
