@@ -40,6 +40,11 @@ listed as implemented remains unqualified; do not infer it from the core format.
 - The mini writer and reader enforce the serialized-size limit, including file
   table and footer overhead. Host tests exercise write overflow, finalization
   overhead, and oversized header rejection.
+- A fixed 170-byte format-6 archive, laid out from the normative field tables
+  without calling either archive writer, is listed and integrity-tested by
+  the full core and mini core. The fixture covers a Stored block, unknown
+  timestamp, matching inline/table fields, and independently fixed payload,
+  block, table, and header CRC-32 values.
 - The full writer API and Linux and Windows CLIs can opt into Interchange
   Profile 1. The Linux and Windows FLTK GUIs offer it for creation/network
   sending; the Atari GEM and native Win32 GUIs offer it for creation. The full
@@ -50,11 +55,14 @@ listed as implemented remains unqualified; do not infer it from the core format.
   option. There is no Windows runtime in this environment, so option behavior,
   profile round trips, and reparse-point race checks remain unqualified.
 - On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
-  including 191 archive-format checks and 131 CLI integration checks. The run
-  exercised profile create, append, incompatible-option refusal, and
-  byte-preserving refusal of an extended-codec archive. `make linux-gui` also
-  built successfully. A Linux CLI fixture with a valid portable FAT record
-  returned partial while restoring the directory's Unix mode and epoch time.
+  including 191 archive-format checks and 131 CLI integration checks. A later
+  focused rebuild and run of `build/unit-test/test_archive_format` passed all
+  197 checks, including the independent golden archive through both cores.
+  The full run exercised profile create, append, incompatible-option refusal,
+  and byte-preserving refusal of an extended-codec archive. `make linux-gui`
+  also built successfully. A Linux CLI fixture with a valid portable FAT
+  record returned partial while restoring the directory's Unix mode and epoch
+  time.
 - GUI interaction was not runtime-tested: Xvfb starts but this environment
   cannot open its display. Atari, OS/2, and Windows evidence remains
   cross-build-only; target runtime checks are still outstanding.
