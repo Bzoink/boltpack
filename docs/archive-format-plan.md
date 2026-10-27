@@ -57,6 +57,11 @@ including CP850 case aliases, hidden/system name flags, read-only file and
 directory restoration, and injected write/close failures, but does not
 validate DOS APIs. Its archive-edit fixtures also check byte-for-byte
 preservation and cleanup after write, close, and publication failures.
+The full DOS CLI also exposes `--interchange-profile-1` for create/add; its
+host fixture checks BoltLite and Stored 16 KiB output, profile append,
+incompatible-option refusal, and byte-preserving refusal of a nonconforming
+archive. The DOS-produced profile archives pass both the full reader and the
+Linux mini reader under QEMU.
 `make dos-djgpp` is the actual cross-build target, but it skips here because
 the DJGPP compiler is unavailable; no DOS runtime fixture is available either.
 The full DOS CLI's path-based publication has no protection against a
@@ -644,7 +649,7 @@ and full readers. The full writer now offers
 checks codecs, block and per-entry sizes, physical entry count, and projected
 archive size during create, append, packed-entry commit, and archive copy.
 Profile append validates existing inline headers against the table before
-changing the archive. The Linux, Windows, Atari, OS/2, and macOS CLIs expose
+changing the archive. The Linux, Windows, DOS, Atari, OS/2, and macOS CLIs expose
 this as `--interchange-profile-1` for create and add. The QL CLI now exposes
 the profile for create and add; its host-built fixture checks both codecs and
 verifies create/append output with QL, full, and mini readers. The X68000 CLI

@@ -165,6 +165,8 @@ dos-host-test:
 	$(MAKE) FRONTEND=linux CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 all
 	python3 test/check_dos_frontend_host.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
+	python3 test/check_dos_profile.py \
+	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 
 # Full DOS command-line build using the DJGPP cross-toolchain.
 DOS_CC ?= i586-pc-msdosdjgpp-gcc
