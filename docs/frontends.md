@@ -486,7 +486,7 @@ Regular files are written to an exclusive sibling staging file. The destination 
 
 ### AmigaOS: Platform Metadata
 
-AmigaOS is the primary platform that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_CREATOR_OS` is written immediately following it, carrying the file's protection bits and comment. The same shared frontend source is used by AmigaOS 4.x, MorphOS, and AROS wrappers, so each records its own platform identifier.
+The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_CREATOR_OS` is written immediately following it, carrying the subject's protection bits and comment. The same shared CLI source is used by AmigaOS 4.x, MorphOS, and AROS wrappers, so each records its own platform identifier. The GadTools GUI captures protection bits and comments for files, but its archive creation currently emits file entries only and does not capture directory metadata.
 
 **Metadata payload layout:**
 
@@ -2410,6 +2410,20 @@ Libraries opened at startup: `GadToolsBase`, `AslBase`, `WorkbenchBase`
 
 Cross-compiled with `m68k-amigaos-gcc -noixemul`. The `-pedantic` flag is
 omitted because AmigaOS NDK headers use K&R-style declarations.
+
+Extraction uses the status-aware core API and sibling staging for regular
+files. Before writing, the GUI checks projected Latin-1 names for case-folded
+collisions and file/directory-prefix conflicts (up to 1,024 entries and 32 KiB
+of keys), rejects Amiga volume separators, and checks existing directory
+components for symlinks. File and directory modification times are restored
+when representable; directory timestamps and native protection are deferred
+until children finish. Matching Amiga protection/comment records are restored
+only for successfully extracted subjects. Unsupported symlinks, resource
+forks, foreign native metadata, and portable FAT envelopes are reported as a
+partial extraction. Names outside Latin-1 cannot be extracted by this GUI.
+These pathname checks cannot prevent a concurrent parent rename. The GUI
+cross-build is verified, but no Amiga runtime or emulator round trip is
+available.
 
 ---
 

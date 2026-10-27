@@ -528,8 +528,8 @@ static int amiga_get_meta(const char *fs_path, unsigned long *prot,
 static int amiga_apply_meta(const char *fs_path, unsigned long prot,
                             const char *comment)
 {
-    if (!SetProtection((STRPTR)fs_path, (LONG)prot)) return -1;
     if (!SetComment((STRPTR)fs_path, (STRPTR)comment)) return -1;
+    if (!SetProtection((STRPTR)fs_path, (LONG)prot)) return -1;
     return 0;
 }
 

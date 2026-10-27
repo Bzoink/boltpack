@@ -27,6 +27,7 @@
  */
 
 #include "../../core/archiver.h"
+#include "../../core/bp_time.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
@@ -43,6 +44,7 @@
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <exec/ports.h>
+#include <dos/dos.h>
 #include <intuition/intuition.h>
 #include <intuition/gadgetclass.h>
 #include <libraries/gadtools.h>
@@ -67,6 +69,8 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <errno.h>
+#include <unistd.h>
 
 /* ====================================================================== */
 /*  Constants                                                             */
@@ -1479,87 +1483,574 @@ static void do_info(void)
 
 /* ---- Extract ---- */
 
-static void makedirs(const char *path)
-{
-    char tmp[BP_MAX_PATH];
-    char *p;
-    strncpy(tmp, path, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, 0755);
-}
+#define GUI_NAME_INDEX_MAX       1024U
+#define GUI_NAME_INDEX_BYTES_MAX 32768UL
+#define GUI_DIR_QUEUE_MAX        256U
+#define GUI_DIR_QUEUE_BYTES_MAX  32768UL
+
+typedef struct {
+    bp_io_t io;
+    int fd;
+    char target[BP_MAX_PATH];
+    char temporary[BP_MAX_PATH];
+    int target_existed;
+    struct stat target_snapshot;
+} gui_staged_output_t;
+
+typedef struct {
+    bp_io_t io;
+    bp_uint32 length;
+    bp_uint32 position;
+    unsigned char data[84];
+} gui_meta_output_t;
+
+typedef struct gui_dir_restore {
+    struct gui_dir_restore *next;
+    char *path;
+    size_t path_len;
+    bp_uint64 mtime;
+    int mtime_valid;
+    int native_seen;
+    unsigned long protection;
+    char comment[80];
+} gui_dir_restore_t;
+
+typedef struct {
+    char *key;
+    int is_directory;
+} gui_name_key_t;
+
+typedef struct {
+    const char *dest;
+    gui_name_key_t names[GUI_NAME_INDEX_MAX];
+    unsigned int count;
+    unsigned long bytes;
+    const char *error;
+} gui_name_index_t;
 
 struct amiga_extract_ctx {
     char dest[BP_MAX_PATH];
     amiga_progress_ui_t progress;
+    int partial;
+    int invalid_entry;
+    int subject_ok;
+    char subject_name[BP_MAX_PATH];
+    gui_dir_restore_t *subject_directory;
+    unsigned long file_count;
+    unsigned long dir_count;
+    gui_dir_restore_t *directories;
+    unsigned int directory_count;
+    unsigned long directory_path_bytes;
 };
+
+static unsigned char gui_fold_byte(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z') return (unsigned char)(c + ('a' - 'A'));
+    if ((c >= 0xC0 && c <= 0xD6) || (c >= 0xD8 && c <= 0xDE))
+        return (unsigned char)(c + 0x20);
+    return c;
+}
+
+static void gui_fold_name(char *name)
+{
+    unsigned char *p = (unsigned char *)name;
+    while (*p) { *p = gui_fold_byte(*p); p++; }
+}
+
+static int gui_local_name_safe(const char *name)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    while (*p) {
+        if (*p == ':') return 0;
+        p++;
+    }
+    return 1;
+}
+
+static int gui_build_path(const char *dest, const char *local_name,
+                          char *path, size_t cap)
+{
+    size_t dlen = strlen(dest), nlen = strlen(local_name), sep = 1, len;
+    if (dlen != 0 && (dest[dlen - 1] == '/' || dest[dlen - 1] == ':'))
+        sep = 0;
+    if (dlen + sep + nlen + 1 > cap) return -1;
+    memcpy(path, dest, dlen);
+    if (sep) path[dlen++] = '/';
+    memcpy(path + dlen, local_name, nlen + 1);
+    len = strlen(path);
+    while (len > 0 && path[len - 1] == '/') path[--len] = '\0';
+    return 0;
+}
+
+static int gui_path_prefix(const char *prefix, const char *path)
+{
+    size_t n = strlen(prefix);
+    return strncmp(prefix, path, n) == 0 && path[n] == '/';
+}
+
+static int gui_preflight_name(const bp_entry_t *entry, void *ud)
+{
+    gui_name_index_t *index = (gui_name_index_t *)ud;
+    char local[BP_MAX_PATH], full[BP_MAX_PATH];
+    size_t len;
+    unsigned int i;
+    int is_dir;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), BP_CP_8859_1) != 0 ||
+        !gui_local_name_safe(local) ||
+        gui_build_path(index->dest, local, full, sizeof(full)) != 0)
+        return 0; /* extraction will report the unrepresentable or unsafe name */
+    len = strlen(local);
+    while (len && local[len - 1] == '/') local[--len] = '\0';
+    if (len == 0) return 0;
+    gui_fold_name(local);
+    is_dir = entry->entry_type == BP_TYPE_DIR;
+    for (i = 0; i < index->count; i++) {
+        const char *old = index->names[i].key;
+        if (strcmp(old, local) == 0 ||
+            (!index->names[i].is_directory && gui_path_prefix(old, local)) ||
+            (!is_dir && gui_path_prefix(local, old))) {
+            index->error = "Archive names collide on this Amiga destination";
+            return 1;
+        }
+    }
+    if (index->count >= GUI_NAME_INDEX_MAX ||
+        index->bytes + (unsigned long)len + 1UL > GUI_NAME_INDEX_BYTES_MAX) {
+        index->error = "Archive exceeds the Amiga name preflight limit";
+        return 1;
+    }
+    index->names[index->count].key = (char *)malloc(len + 1);
+    if (index->names[index->count].key == NULL) {
+        index->error = "Not enough memory for Amiga name checks";
+        return 1;
+    }
+    memcpy(index->names[index->count].key, local, len + 1);
+    index->names[index->count].is_directory = is_dir;
+    index->count++;
+    index->bytes += (unsigned long)len + 1UL;
+    return 0;
+}
+
+static void gui_name_index_clear(gui_name_index_t *index)
+{
+    unsigned int i;
+    for (i = 0; i < index->count; i++) free(index->names[i].key);
+    index->count = 0;
+    index->bytes = 0;
+}
+
+static int gui_check_dir(const char *path, int create)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        if (errno != ENOENT || !create) return -1;
+        if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
+        if (lstat(path, &st) != 0) return -1;
+    }
+    return S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode) ? 0 : -1;
+}
+
+static int gui_makedirs_checked(const char *path)
+{
+    char tmp[BP_MAX_PATH];
+    char *p;
+    size_t len;
+    if (strlen(path) >= sizeof(tmp)) return -1;
+    strcpy(tmp, path);
+    len = strlen(tmp);
+    while (len && tmp[len - 1] == '/') tmp[--len] = '\0';
+    if (!len) return 0;
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (*tmp && strcmp(tmp, "/") != 0 &&
+                !(p > tmp && p[-1] == ':') && gui_check_dir(tmp, 1) != 0) {
+                *p = '/';
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    if (tmp[len - 1] == ':') return 0;
+    return gui_check_dir(tmp, 1);
+}
+
+static int gui_make_parents(const char *path)
+{
+    char parent[BP_MAX_PATH];
+    char *slash;
+    if (strlen(path) >= sizeof(parent)) return -1;
+    strcpy(parent, path);
+    slash = strrchr(parent, '/');
+    if (slash == NULL || slash == parent) return 0;
+    *slash = '\0';
+    return gui_makedirs_checked(parent);
+}
+
+static int gui_make_temp_name(const char *target, const char *leaf,
+                              char *out, size_t cap)
+{
+    const char *slash = strrchr(target, '/');
+    const char *colon = strchr(target, ':');
+    size_t prefix = 0;
+    if (colon && (!slash || colon > slash)) prefix = (size_t)(colon - target) + 1;
+    else if (slash) prefix = (size_t)(slash - target) + 1;
+    if (prefix + strlen(leaf) + 1 > cap) return -1;
+    memcpy(out, target, prefix);
+    strcpy(out + prefix, leaf);
+    return 0;
+}
+
+static int gui_same_file(const struct stat *a, const struct stat *b)
+{
+    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
+           a->st_ctime == b->st_ctime;
+}
+
+static long gui_stage_write(void *handle, const void *data, bp_uint32 count)
+{
+    gui_staged_output_t *stage = (gui_staged_output_t *)handle;
+    const unsigned char *p = (const unsigned char *)data;
+    bp_uint32 done = 0;
+    while (done < count) {
+        long n = (long)write(stage->fd, p + done, (size_t)(count - done));
+        if (n <= 0) return -1;
+        done += (bp_uint32)n;
+    }
+    return (long)done;
+}
+
+static long gui_meta_buffer_write(void *handle, const void *data,
+                                  bp_uint32 count)
+{
+    gui_meta_output_t *meta = (gui_meta_output_t *)handle;
+    if (count > sizeof(meta->data) - meta->position) return -1;
+    memcpy(meta->data + meta->position, data, (size_t)count);
+    meta->position += count;
+    if (meta->position > meta->length) meta->length = meta->position;
+    return (long)count;
+}
+
+static int gui_decode_native_meta(const unsigned char *data, bp_uint32 len,
+                                  unsigned long *protection, char *comment)
+{
+    unsigned int comment_len;
+    if (len < 5) return -1;
+    comment_len = data[4];
+    if (comment_len > 79 || len != 5U + comment_len) return -1;
+    *protection = (unsigned long)data[0] |
+                  ((unsigned long)data[1] << 8) |
+                  ((unsigned long)data[2] << 16) |
+                  ((unsigned long)data[3] << 24);
+    if (comment_len) memcpy(comment, data + 5, comment_len);
+    comment[comment_len] = '\0';
+    return 0;
+}
+
+static int gui_apply_native_meta(const char *path, unsigned long protection,
+                                 const char *comment)
+{
+    if (!SetComment((STRPTR)path, (STRPTR)comment)) return -1;
+    if (!SetProtection((STRPTR)path, (LONG)protection)) return -1;
+    return 0;
+}
+
+static int gui_set_default_mode(const char *path)
+{
+    mode_t mask = umask(0);
+    (void)umask(mask);
+    return chmod(path, (mode_t)(0666 & ~mask));
+}
+
+static void gui_discard_stage(gui_staged_output_t *stage)
+{
+    if (stage->fd >= 0) { (void)close(stage->fd); stage->fd = -1; }
+    if (stage->temporary[0]) {
+        (void)unlink(stage->temporary);
+        stage->temporary[0] = '\0';
+    }
+}
+
+static int gui_commit_stage(gui_staged_output_t *stage)
+{
+    struct stat current, backup_st;
+    char backup[BP_MAX_PATH];
+    int fd, backup_moved = 0;
+    if (lstat(stage->target, &current) == 0) {
+        if (!stage->target_existed || !gui_same_file(&stage->target_snapshot, &current))
+            return BP_ERR_PARTIAL;
+    } else if (errno != ENOENT || stage->target_existed) return BP_ERR_IO;
+    if (stage->target_existed) {
+        if (gui_make_temp_name(stage->target, "BRXXXXXX", backup,
+                               sizeof(backup)) != 0) return BP_ERR_NAME_TOO_LONG;
+        fd = mkstemp(backup);
+        if (fd < 0) return BP_ERR_IO;
+        if (close(fd) != 0 || unlink(backup) != 0) {
+            (void)unlink(backup);
+            return BP_ERR_IO;
+        }
+        if (!Rename((STRPTR)stage->target, (STRPTR)backup)) return BP_ERR_IO;
+        backup_moved = 1;
+        if (lstat(backup, &backup_st) != 0 ||
+            !gui_same_file(&stage->target_snapshot, &backup_st)) {
+            if (!Rename((STRPTR)backup, (STRPTR)stage->target))
+                log_message("Changed destination remains at recovery path: %s", backup);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    if (!Rename((STRPTR)stage->temporary, (STRPTR)stage->target)) {
+        if (backup_moved && !Rename((STRPTR)backup, (STRPTR)stage->target))
+            log_message("Original file remains at recovery path: %s", backup);
+        return BP_ERR_IO;
+    }
+    stage->temporary[0] = '\0';
+    if (backup_moved && !DeleteFile((STRPTR)backup)) {
+        log_message("Cannot remove replaced-file backup: %s", backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static gui_dir_restore_t *gui_queue_dir(struct amiga_extract_ctx *ctx,
+                                        const char *path,
+                                        const bp_entry_t *entry)
+{
+    gui_dir_restore_t *node;
+    size_t len = strlen(path);
+    if (ctx->directory_count >= GUI_DIR_QUEUE_MAX ||
+        ctx->directory_path_bytes + (unsigned long)len + 1UL >
+            GUI_DIR_QUEUE_BYTES_MAX) return NULL;
+    node = (gui_dir_restore_t *)calloc(1, sizeof(*node));
+    if (!node) return NULL;
+    node->path = (char *)malloc(len + 1);
+    if (!node->path) { free(node); return NULL; }
+    memcpy(node->path, path, len + 1);
+    node->path_len = len;
+    node->mtime = entry->mtime;
+    node->mtime_valid = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0;
+    node->next = ctx->directories;
+    ctx->directories = node;
+    ctx->directory_count++;
+    ctx->directory_path_bytes += (unsigned long)len + 1UL;
+    return node;
+}
+
+static int gui_path_depth(const char *path)
+{
+    int depth = 0;
+    while (*path) if (*path++ == '/') depth++;
+    return depth;
+}
+
+static void gui_finalize_dirs(struct amiga_extract_ctx *ctx)
+{
+    while (ctx->directories) {
+        gui_dir_restore_t **best = &ctx->directories, **link;
+        gui_dir_restore_t *node;
+        int best_depth = -1;
+        for (link = &ctx->directories; *link; link = &(*link)->next) {
+            int depth = gui_path_depth((*link)->path);
+            if (depth > best_depth) { best_depth = depth; best = link; }
+        }
+        node = *best;
+        *best = node->next;
+        if (node->mtime_valid && bp_restore_mtime(node->path, node->mtime) != BP_OK) {
+            log_message("Cannot restore directory time: %s", node->path);
+            ctx->partial = 1;
+        }
+        if (node->native_seen &&
+            gui_apply_native_meta(node->path, node->protection,
+                                  node->comment) != 0) {
+            log_message("Cannot restore Amiga directory metadata: %s", node->path);
+            ctx->partial = 1;
+        }
+        free(node->path);
+        free(node);
+    }
+    ctx->directory_count = 0;
+    ctx->directory_path_bytes = 0;
+}
 
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
 {
     struct amiga_extract_ctx *ctx = (struct amiga_extract_ctx *)ud;
-    char full[BP_MAX_PATH];
-    char *sl;
-    FILE *fp;
-    bp_io_t *out;
-
-    if (!entry->name) return NULL;
-    if (entry->entry_type == BP_TYPE_RSRC ||
-        entry->entry_type == BP_TYPE_META)
-        return NULL;
-
-    if (strlen(ctx->dest) + 1 + strlen(entry->name) >= sizeof(full))
-        return NULL;
-
-    {
-        size_t dest_len;
-        size_t name_len;
-
-        dest_len = strlen(ctx->dest);
-        name_len = strlen(entry->name);
-        memcpy(full, ctx->dest, dest_len);
-        full[dest_len] = '/';
-        memcpy(full + dest_len + 1, entry->name, name_len + 1);
+    char local[BP_MAX_PATH], full[BP_MAX_PATH];
+    struct stat st;
+    gui_staged_output_t *stage;
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->subject_ok = 0;
+        ctx->subject_directory = NULL;
+        ctx->subject_name[0] = '\0';
     }
-
-    /* Path traversal check */
-    if (strstr(full, "/../") != NULL) return NULL;
-
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), BP_CP_8859_1) != 0 ||
+        !gui_local_name_safe(local) ||
+        gui_build_path(ctx->dest, local, full, sizeof(full)) != 0) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_META) {
+        gui_meta_output_t *meta;
+        bp_uint32 size = bp_u64_to_u32(entry->original_size);
+        if (entry->platform != BP_CREATOR_OS) {
+            ctx->partial = 1;
+            return NULL;
+        }
+        if (entry->original_size.hi != 0 || size < 5 || size > 84) {
+            ctx->invalid_entry = 1;
+            return NULL;
+        }
+        meta = (gui_meta_output_t *)calloc(1, sizeof(*meta));
+        if (!meta) { ctx->partial = 1; return NULL; }
+        meta->io.read = NULL;
+        meta->io.write = gui_meta_buffer_write;
+        meta->io.seek = NULL;
+        meta->io.tell = NULL;
+        meta->io.handle = meta;
+        return &meta->io;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->partial = 1;
+        log_message("Skipped unsupported symlink: %s", entry->name);
+        return NULL;
+    }
     if (entry->entry_type == BP_TYPE_DIR) {
-        makedirs(full);
+        gui_dir_restore_t *dir;
+        if (!bp_u64_is_zero(entry->original_size) ||
+            !bp_u64_is_zero(entry->compressed_size) || entry->checksum != 0) {
+            ctx->invalid_entry = 1;
+            return NULL;
+        }
+        if (strlen(entry->name) >= sizeof(ctx->subject_name) ||
+            gui_makedirs_checked(full) != 0 || lstat(full, &st) != 0 ||
+            !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+            ctx->partial = 1;
+            return NULL;
+        }
+        dir = gui_queue_dir(ctx, full, entry);
+        if (!dir) { ctx->partial = 1; return NULL; }
+        strcpy(ctx->subject_name, entry->name);
+        ctx->subject_ok = 1;
+        ctx->subject_directory = dir;
+        ctx->dir_count++;
         return NULL;
     }
-
-    sl = strrchr(full, '/');
-    if (sl) {
-        char dir[BP_MAX_PATH];
-        memcpy(dir, full, (size_t)(sl - full));
-        dir[sl - full] = '\0';
-        makedirs(dir);
+    if (entry->entry_type != BP_TYPE_DATA ||
+        strlen(entry->name) >= sizeof(ctx->subject_name)) {
+        ctx->partial = 1;
+        return NULL;
     }
-
-    fp = fopen(full, "wb");
-    if (!fp) return NULL;
-
-    out = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!out) { fclose(fp); return NULL; }
-    *out = make_io(fp);
-    return out;
+    strcpy(ctx->subject_name, entry->name);
+    if (gui_make_parents(full) != 0) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    stage = (gui_staged_output_t *)calloc(1, sizeof(*stage));
+    if (!stage) { ctx->partial = 1; return NULL; }
+    stage->fd = -1;
+    strcpy(stage->target, full);
+    if (lstat(full, &st) == 0) {
+        if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+            free(stage); ctx->partial = 1; return NULL;
+        }
+        stage->target_existed = 1;
+        stage->target_snapshot = st;
+    } else if (errno != ENOENT) {
+        free(stage); ctx->partial = 1; return NULL;
+    }
+    if (gui_make_temp_name(full, "BPXXXXXX", stage->temporary,
+                           sizeof(stage->temporary)) != 0 ||
+        (stage->fd = mkstemp(stage->temporary)) < 0) {
+        free(stage); ctx->partial = 1; return NULL;
+    }
+    stage->io.read = NULL;
+    stage->io.write = gui_stage_write;
+    stage->io.seek = NULL;
+    stage->io.tell = NULL;
+    stage->io.handle = stage;
+    return &stage->io;
 }
 
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out,
-                             void *ud)
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *ud)
 {
-    (void)entry; (void)ud;
-    if (out) {
-        if (out->handle) fclose((FILE *)out->handle);
-        free(out);
+    struct amiga_extract_ctx *ctx = (struct amiga_extract_ctx *)ud;
+    gui_staged_output_t *stage;
+    int close_rc;
+    int rc;
+    if (entry->entry_type == BP_TYPE_META) {
+        gui_meta_output_t *meta = (gui_meta_output_t *)out->handle;
+        unsigned long protection;
+        char comment[80];
+        int rc = BP_OK;
+        if (status == BP_OK &&
+            gui_decode_native_meta(meta->data, meta->length,
+                                   &protection, comment) != 0) {
+            free(meta);
+            return BP_ERR_CORRUPT;
+        }
+        if (status == BP_OK && ctx->subject_ok &&
+            strcmp(ctx->subject_name, entry->name) == 0) {
+            if (ctx->subject_directory != NULL) {
+                ctx->subject_directory->native_seen = 1;
+                ctx->subject_directory->protection = protection;
+                strcpy(ctx->subject_directory->comment, comment);
+            } else {
+                char local[BP_MAX_PATH], full[BP_MAX_PATH];
+                if (bp_utf8_to_local(entry->name, local, sizeof(local),
+                                     BP_CP_8859_1) != 0 ||
+                    !gui_local_name_safe(local) ||
+                    gui_build_path(ctx->dest, local, full, sizeof(full)) != 0 ||
+                    gui_apply_native_meta(full, protection, comment) != 0)
+                    rc = BP_ERR_PARTIAL;
+            }
+        } else if (status == BP_OK) rc = BP_ERR_PARTIAL;
+        free(meta);
+        if (rc == BP_ERR_PARTIAL) ctx->partial = 1;
+        return rc;
     }
+    stage = (gui_staged_output_t *)out->handle;
+    close_rc = close(stage->fd);
+    stage->fd = -1;
+    if (close_rc != 0) {
+        gui_discard_stage(stage);
+        free(stage);
+        ctx->subject_ok = 0;
+        ctx->partial = 1;
+        return status == BP_OK ? BP_ERR_IO : BP_OK;
+    }
+    if (status != BP_OK) {
+        gui_discard_stage(stage);
+        free(stage);
+        ctx->subject_ok = 0;
+        return BP_OK;
+    }
+    if (gui_set_default_mode(stage->temporary) != 0) ctx->partial = 1;
+    if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        if (bp_restore_mtime(stage->temporary, entry->mtime) != BP_OK)
+            ctx->partial = 1;
+    }
+    rc = gui_commit_stage(stage);
+    if (rc != BP_OK) {
+        gui_discard_stage(stage);
+        free(stage);
+        ctx->subject_ok = 0;
+        ctx->partial = 1;
+        return rc == BP_ERR_IO ? BP_ERR_PARTIAL : rc;
+    }
+    ctx->subject_ok = 1;
+    ctx->file_count++;
+    free(stage);
+    return BP_OK;
 }
 
 static int extract_progress_cb(const bp_progress_t *p, void *ud)
@@ -1572,10 +2063,12 @@ static void do_extract(void)
 {
     struct FileRequester *freq;
     struct amiga_extract_ctx ctx;
+    gui_name_index_t *name_index;
     bp_io_t io;
     int rc;
     unsigned long total_files;
     char init_dir[BP_MAX_PATH];
+    struct stat dest_stat;
 
     if (!archive_fp) {
         show_requester("BoltPack", "No archive is open");
@@ -1606,10 +2099,44 @@ static void do_extract(void)
     }
 
     {
+        memset(&ctx, 0, sizeof(ctx));
         strncpy(ctx.dest, (const char *)freq->fr_Drawer,
             sizeof(ctx.dest) - 1);
         ctx.dest[sizeof(ctx.dest) - 1] = '\0';
         FreeAslRequest(freq);
+
+        if (lstat(ctx.dest, &dest_stat) != 0 ||
+            !S_ISDIR(dest_stat.st_mode) || S_ISLNK(dest_stat.st_mode)) {
+            show_requester("Error", "Destination must be a real directory");
+            return;
+        }
+
+        name_index = (gui_name_index_t *)calloc(1, sizeof(*name_index));
+        if (name_index == NULL) {
+            show_requester("Error", "Not enough memory to check archive names");
+            return;
+        }
+        name_index->dest = ctx.dest;
+        if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+            free(name_index);
+            show_requester("Error", "Cannot seek in archive");
+            return;
+        }
+        io = make_io(archive_fp);
+        rc = bp_archive_list(&io, gui_preflight_name, name_index);
+        if (rc != BP_OK) {
+            show_requester("Error", name_index->error ? name_index->error :
+                           "Cannot validate archive names");
+            gui_name_index_clear(name_index);
+            free(name_index);
+            return;
+        }
+        gui_name_index_clear(name_index);
+        free(name_index);
+        if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+            show_requester("Error", "Cannot rewind archive after name checks");
+            return;
+        }
 
         total_files = (unsigned long)(archive_info.entry_count - archive_info.dir_count);
         start_progress_ui(&ctx.progress, "Extracting archive", NULL,
@@ -1619,20 +2146,27 @@ static void do_extract(void)
         log_memory_snapshot("before extract");
         SetPointer(win, NULL, 0, 0, 0, 0); /* busy pointer */
 
-        fseek(archive_fp, 0L, SEEK_SET);
         io = make_io(archive_fp);
 
-        rc = bp_archive_extract_all(&io,
+        rc = bp_archive_extract_all_ex(&io,
             extract_open_cb, extract_done_cb,
             extract_progress_cb, (void *)&ctx);
+        gui_finalize_dirs(&ctx);
+        if (ctx.invalid_entry && (rc == BP_OK || rc == BP_ERR_PARTIAL))
+            rc = BP_ERR_CORRUPT;
+        else if (rc == BP_OK && ctx.partial)
+            rc = BP_ERR_PARTIAL;
 
         ClearPointer(win);
         stop_progress_ui(&ctx.progress);
         log_message("Extract complete: rc=%d (%s)", rc, bp_strerror(rc));
         log_memory_snapshot("after extract");
 
-        if (rc != BP_OK && rc != BP_ERR_ABORTED)
-            show_requester("Error", "Extraction error");
+        if (rc == BP_ERR_PARTIAL)
+            show_requester("Partial extraction",
+                           "Some entries or attributes were not restored");
+        else if (rc != BP_OK && rc != BP_ERR_ABORTED)
+            show_requester("Error", bp_strerror(rc));
         refresh_window_title();
     }
 }
@@ -1701,6 +2235,109 @@ static double gathered_total_bytes(void)
     return total;
 }
 
+typedef struct {
+    const unsigned char *data;
+    bp_uint32 length;
+    bp_uint32 position;
+} gui_meta_reader_t;
+
+static long gui_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    gui_meta_reader_t *reader = (gui_meta_reader_t *)handle;
+    bp_uint32 available = reader->length - reader->position;
+    if (count > available) count = available;
+    if (count == 0) return 0;
+    memcpy(buffer, reader->data + reader->position, (size_t)count);
+    reader->position += count;
+    return (long)count;
+}
+
+static long gui_meta_write(void *handle, const void *buffer, bp_uint32 count)
+{
+    (void)handle; (void)buffer; (void)count;
+    return -1;
+}
+
+static int gui_meta_seek(void *handle, bp_off_t offset, int origin)
+{
+    gui_meta_reader_t *reader = (gui_meta_reader_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)reader->position + (long)offset;
+    else if (origin == SEEK_END) position = (long)reader->length + (long)offset;
+    else return -1;
+    if (position < 0 || (bp_uint32)position > reader->length) return -1;
+    reader->position = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t gui_meta_tell(void *handle)
+{
+    return (bp_off_t)((gui_meta_reader_t *)handle)->position;
+}
+
+static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
+{
+    unsigned long seconds;
+    *mtime = bp_u64_from_u32(0);
+    if (source < (time_t)0) return 0;
+    seconds = (unsigned long)source;
+    if ((time_t)seconds != source) return 0;
+    *mtime = bp_u64_from_ulong(seconds);
+    return 1;
+}
+
+/* Append Amiga protection bits and comment after a successfully added file. */
+static int gui_add_native_metadata(bp_archive_t *ar, const char *arcname,
+                                   const char *path, int *captured)
+{
+    BPTR lock;
+    struct FileInfoBlock *fib;
+    unsigned char payload[84];
+    int comment_len, i;
+    gui_meta_reader_t reader;
+    bp_io_t io;
+    int rc;
+
+    *captured = 0;
+    lock = Lock((STRPTR)path, ACCESS_READ);
+    if (!lock) return BP_OK;
+    fib = (struct FileInfoBlock *)AllocVec(sizeof(*fib), MEMF_ANY | MEMF_CLEAR);
+    if (!fib) { UnLock(lock); return BP_OK; }
+    if (!Examine(lock, fib)) {
+        FreeVec(fib);
+        UnLock(lock);
+        return BP_OK;
+    }
+    payload[0] = (unsigned char)((ULONG)fib->fib_Protection & 0xFF);
+    payload[1] = (unsigned char)(((ULONG)fib->fib_Protection >> 8) & 0xFF);
+    payload[2] = (unsigned char)(((ULONG)fib->fib_Protection >> 16) & 0xFF);
+    payload[3] = (unsigned char)(((ULONG)fib->fib_Protection >> 24) & 0xFF);
+    comment_len = 0;
+    while (comment_len < 79 && fib->fib_Comment[comment_len] != '\0') {
+        payload[5 + comment_len] = (unsigned char)fib->fib_Comment[comment_len];
+        comment_len++;
+    }
+    payload[4] = (unsigned char)comment_len;
+    for (i = comment_len; i < 79; i++) payload[5 + i] = 0;
+    FreeVec(fib);
+    UnLock(lock);
+
+    reader.data = payload;
+    reader.length = (bp_uint32)(5 + comment_len);
+    reader.position = 0;
+    io.read = gui_meta_read;
+    io.write = gui_meta_write;
+    io.seek = gui_meta_seek;
+    io.tell = gui_meta_tell;
+    io.handle = &reader;
+    rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_CREATOR_OS,
+                                 &io, bp_u64_from_u32(reader.length),
+                                 bp_u64_from_u32(0), 0);
+    if (rc == BP_OK) *captured = 1;
+    return rc;
+}
+
 static void do_create_from_paths(const char **paths, int path_count)
 {
     struct FileRequester *freq;
@@ -1713,6 +2350,7 @@ static void do_create_from_paths(const char **paths, int path_count)
     bp_archive_t ar;
     struct stat out_st;
     int gather_rc;
+    int preservation_partial;
     int rc, i;
 
     log_message("Create requested for %d selected path(s)", path_count);
@@ -1843,6 +2481,7 @@ static void do_create_from_paths(const char **paths, int path_count)
         free_gather_files();
         return;
     }
+    preservation_partial = 0;
     ar.progress_fn = update_progress_ui;
     ar.progress_data = &progress;
 
@@ -1850,6 +2489,8 @@ static void do_create_from_paths(const char **paths, int path_count)
         char *rel;
         struct stat st;
         bp_uint64 fsize, mtime;
+        bp_uint16 mtime_flags;
+        int metadata_captured;
         FILE *fp;
         bp_io_t fio;
 
@@ -1865,7 +2506,13 @@ static void do_create_from_paths(const char **paths, int path_count)
             continue;
         }
         fsize = bp_off_to_u64((bp_off_t)st.st_size);
-        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+        mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
+                    ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+        if (mtime_flags == 0 && st.st_mtime != (time_t)0) {
+            log_message("Source time not representable; storing unknown: %s",
+                        gather_files[i]);
+            preservation_partial = 1;
+        }
 
         log_message("Create add %d/%d: source='%s' rel='%s' size=%llu",
                     i + 1,
@@ -1883,10 +2530,19 @@ static void do_create_from_paths(const char **paths, int path_count)
         }
         fio = make_io(fp);
 
-        rc = bp_archive_add_entry(&ar, rel,
-            BP_TYPE_DATA, BP_CREATOR_OS,
-            &fio, fsize, mtime);
+        rc = bp_archive_add_entry_ex(&ar, rel,
+            BP_TYPE_DATA, BP_CREATOR_OS, &fio, fsize, mtime, mtime_flags);
         fclose(fp);
+
+        if (rc == BP_OK) {
+            rc = gui_add_native_metadata(&ar, rel, gather_files[i],
+                                         &metadata_captured);
+            if (rc == BP_OK && !metadata_captured) {
+                log_message("Could not read Amiga metadata for '%s'",
+                            gather_files[i]);
+                preservation_partial = 1;
+            }
+        }
 
         log_message("Create result %d/%d: rc=%d (%s)",
                     i + 1, gather_count, rc, bp_strerror(rc));
@@ -1925,6 +2581,10 @@ static void do_create_from_paths(const char **paths, int path_count)
     } else {
         log_message("Create complete: '%s' size unknown", out_path);
     }
+
+    if (preservation_partial)
+        show_requester("Partial preservation",
+                       "Archive created, but some source metadata could not be saved");
 
     /* Open the newly created archive */
     do_open(out_path);
