@@ -319,9 +319,20 @@ reports modes, links, resource forks, unsupported metadata, and lossy restores
 as partial. Its collision preflight is bounded at 65,535 selected primary
 entries and 65,535 projected path nodes; exceeding either bound refuses before
 output changes. Win32 and Win64 cross-builds pass; Windows runtime tests,
-parent-swap race coverage, and names outside the active ACP remain unqualified. DLL/.NET
-and Total Commander paths have separate lifecycle requirements. The Total
-Commander WCX now rejects invalid, reserved, unrepresentable, and colliding
+parent-swap race coverage, and names outside the active ACP remain unqualified.
+The .NET GUI now uses strict UTF-8 archive-name decoding and Unicode file APIs,
+collision and reserved-name preflight, path-based reparse checks, exclusive
+sibling staging with checksum-verified publication, portable FAT and valid
+timestamp restoration, and deferred directory metadata. It stages new archives
+before replacement and writes portable FAT metadata when creating them.
+Symlinks, resource forks, POSIX modes, unsupported metadata, and
+unrepresentable source times are reported as partial. The DLL provides
+status-aware extraction, correctly sized archive-context allocation, Unicode
+file opening, exclusive temporary creation, and checked close. Win32 and Win64
+DLL cross-builds pass, but this environment has no .NET compiler or Windows
+runtime; the managed project is not yet compile- or runtime-qualified.
+Path-based reparse checks retain a concurrent parent-substitution race. The
+Total Commander WCX now rejects invalid, reserved, unrepresentable, and colliding
 Windows paths before listing, with a 65,535-primary-entry bound. It verifies
 archive data for the WCX test operation, stages selected regular files beside
 their destinations, and publishes only after checksum verification and close.
@@ -336,8 +347,7 @@ modes, unsupported metadata, and lossy restores return a WCX creation error
 pass; plugin-host runtime tests and concurrent parent-swap coverage remain
 unavailable. The path-based component checks still have a race with concurrent
 parent substitution. The legacy WCX `ReadHeader` API refuses entries larger
-than `INT_MAX`; `ReadHeaderEx` carries 64-bit sizes. DLL/.NET still needs
-equivalent lifecycle review.
+than `INT_MAX`; `ReadHeaderEx` carries 64-bit sizes.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level

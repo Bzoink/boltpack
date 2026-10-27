@@ -64,7 +64,9 @@ namespace BoltPack
             "With an archive open, use Archive > Extract Files.\r\n" +
             "Select a destination folder and the files will be\r\n" +
             "extracted. A progress window shows the current file\r\n" +
-            "and overall progress.\r\n" +
+            "and overall progress. A warning reports files or\r\n" +
+            "attributes that Windows cannot preserve. Existing files\r\n" +
+            "are replaced only after each new file passes its checksum.\r\n" +
             "\r\n" +
             "Creating an Archive\r\n" +
             "--------------------\r\n" +
