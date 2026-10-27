@@ -6,6 +6,7 @@ Build with `make dos16` and `make CC=gcc modern` first.
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 
@@ -81,6 +82,33 @@ def main():
         output = root / "LINUX" / "INPUT.TXT"
         assert output.read_bytes() == b"DOS format six\n", "Linux bytes differ"
         assert int(output.stat().st_mtime) == 951782400, "UTC offset was not applied"
+
+        # Flip an encoded byte without updating the block CRC. The mini reader
+        # must remove the newly created file after the callback closes it.
+        broken = bytearray((root / "TEST.BLT").read_bytes())
+        entry_header_size = struct.unpack_from("<H", broken, 32)[0]
+        name_len = struct.unpack_from("<H", broken, 34)[0]
+        data_offset = 32 + entry_header_size
+        assert entry_header_size == 42 + name_len
+        assert struct.unpack_from("<I", broken, data_offset)[0] > 0
+        payload_offset = data_offset + 12
+        table_offset = struct.unpack_from("<Q", broken, len(broken) - 20)[0]
+        assert payload_offset < table_offset
+        broken[payload_offset] ^= 0x80
+        (root / "BROKEN.BLT").write_bytes(broken)
+        (root / "BADOUT").mkdir()
+        broken_commands = [
+            f"mount c {directory}", "c:",
+            "bpmini x BROKEN.BLT BADOUT > BROKEN.TXT",
+            "if errorlevel 1 echo FAIL > BROKEN.BAD", "exit",
+        ]
+        subprocess.run(["dosbox", "-c", broken_commands[0], "-c", broken_commands[1],
+                        "-c", broken_commands[2], "-c", broken_commands[3],
+                        "-c", broken_commands[4]], env=env, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=30, check=True)
+        assert marked("BROKEN.BAD"), "corrupt DOS extraction was reported as success"
+        assert not (root / "BADOUT" / "INPUT.TXT").exists(), \
+            "failed DOS16 extraction left a partial destination"
         print("DOS16/DOSBox to Linux interoperability checks passed")
 
 

@@ -97,9 +97,10 @@ DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
 timestamp conversion; other DOS-derived frontends still need review. Their
 mini extraction callbacks now remove output after a data or close failure.
 DOS16 and Win16 close the verified output before reopening it to restore a
-timestamp; OS/2-16 applies timestamps only after close succeeds. The 16-bit
-targets cross-build, while only the DOS16 core unit program has DOSBox runtime
-evidence, not a filesystem extraction round trip. The Linux
+timestamp; OS/2-16 applies timestamps only after close succeeds. All three
+16-bit targets cross-build. DOSBox validates DOS16 nested-directory and
+portable-metadata transfer, timezone conversion, and cleanup after a corrupt
+block; it does not qualify Win16 or OS/2-16 runtimes. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
 shared POSIX wrapper, resolve archive-controlled directories with directory-
 relative `openat` calls and reject symlink components. Staged files and final
