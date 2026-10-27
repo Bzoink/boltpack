@@ -751,11 +751,16 @@ creation failures through frontend state because they do not use streams.
 the core validates its bytes and checksums without invoking completion or
 writing output. Two archive-format unit checks cover skipped primary data,
 portable metadata, resource forks, and native metadata; another verifies the
-discard-stream contract. Archive-edit tests carry resource forks and both
-native and portable metadata through copy, append, integrity verification,
-and complete-group deletion while checking primary timestamp and mode flags.
-`make CC=gcc test` passes with 263 archive-format and
-154 CLI integration checks, including dry-run archive verification. It also
+discard-stream contract. A Linux CLI fixture round-trips timestamps at
+2,147,483,647, 2,147,483,648, and 4,294,967,295 seconds, covering both sides
+of the signed 2038 boundary and the unsigned 32-bit seconds boundary.
+All six checks in the timestamp fixture passed independently. The latest
+complete `make CC=gcc test` run passed with 263 archive-format and 154 CLI
+integration checks. Archive-edit tests carry resource forks and both native
+and portable metadata through copy, append, integrity verification, and
+complete-group deletion while checking primary timestamp and mode flags. The
+timestamp fixture adds six CLI checks. The standard target also runs dry-run
+archive verification. It also
 runs `check_symlink_atomic.py`: Linux stages symlinks beside their final paths,
 applies valid mtimes with no-follow operations, and publishes only after
 timestamp success. It verifies no-clobber behavior; failure injection confirms
