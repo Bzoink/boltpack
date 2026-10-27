@@ -828,8 +828,10 @@ The Retro68 68k port is a separate target under
 flow. Its compression dialog offers Interchange Profile 1, which selects
 BoltLite with 16 KiB blocks and the profile's mini-compatible entry-count,
 entry-size, and serialized-size limits. The separate PowerPC frontend in
-`src/frontend/macos9/main.c` still selects BoltLZ directly and has no profile
-control.
+`src/frontend/macos9/main.c` asks whether each new archive should use the
+default format or Interchange Profile 1. The profile uses BoltLite with 16 KiB
+blocks and mini-compatible entry-count, entry-size, and serialized-size
+limits; the default path remains BoltLZ.
 
 The Retro68 build compiles the shared `src/core` implementation. The portable
 68k source kit also carries local copies of the core headers and sources; keep
@@ -1111,9 +1113,10 @@ This architecture allows future extension to show a dialog menu enabling users t
 - **Stored** (method 0): No compression (for pre-compressed data)
 
 The underlying archiver already supports all four methods. The PowerPC Mac OS 9
-GUI currently hard-codes boltlz and would need a dialog or menu control to
-expose the broader choice. The separate Retro68 68k source kit has a method
-dialog and an Interchange Profile 1 option; see the build notes above.
+GUI still uses boltlz for its default format; its separate create-time dialog
+offers Interchange Profile 1, which selects BoltLite. The Retro68 68k source
+kit has a method dialog and an Interchange Profile 1 option; see the build
+notes above.
 
 ### Preferences
 

@@ -67,6 +67,7 @@
 #define rDlgName        130
 #define rDlgPrefs       131
 #define rDlgAbout       132
+#define rDlgProfile     133
 #define rAlrtError      128
 
 /* Logo */
@@ -109,6 +110,11 @@
 #define kPrefsCheck     1
 #define kPrefsOK        2
 #define kPrefsCancel    3
+
+/* Archive profile dialog items */
+#define kProfileDefault 1
+#define kProfileInterchange 2
+#define kProfileCancel  3
 
 /* String list IDs */
 #define rErrStrings     128
@@ -172,6 +178,7 @@ static void     HandleActivate(EventRecord *evt);
 
 static void     DoAbout(void);
 static void     DoPreferences(void);
+static int      AskInterchangeProfile(void);
 static void     ShowError(int bpErr);
 static void     ShowErrorStr(const char *msg);
 
@@ -472,12 +479,39 @@ static bp_uint32 ChooseBlockSize(void)
 }
 
 /* ---- ChooseCompressionMethod ------------------------------------------
- * Returns compression method for archive creation.
- * Currently defaults to boltlz; fluff can be enabled via menu in future.
+ * The PowerPC GUI keeps boltlz as its standard-format default.
  */
 static bp_uint8 ChooseCompressionMethod(void)
 {
     return BP_METHOD_BOLTLZ;  /* Default: boltlz */
+}
+
+/* Ask whether a new archive should use the cross-platform profile.
+ * Returns 1 for Interchange Profile 1, 0 for the existing default, or -1
+ * when the user cancels. */
+static int AskInterchangeProfile(void)
+{
+    DialogPtr dlg;
+    short item;
+    int result;
+
+    dlg = GetNewDialog(rDlgProfile, nil, (WindowPtr)-1);
+    if (dlg == nil) return -1;
+
+    SetDialogDefaultItem(dlg, kProfileDefault);
+    SetDialogCancelItem(dlg, kProfileCancel);
+    ShowWindow(GetDialogWindow(dlg));
+
+    result = -1;
+    for (;;) {
+        ModalDialog(nil, &item);
+        if (item == kProfileDefault) { result = 0; break; }
+        if (item == kProfileInterchange) { result = 1; break; }
+        if (item == kProfileCancel) break;
+    }
+
+    DisposeDialog(dlg);
+    return result;
 }
 
 /* ==== Error Display ===================================================== */
@@ -1383,7 +1417,7 @@ static int DoPack(FSSpec *items, long count)
     bp_archive_t ar;
     progress_ctx_t prog;
     bp_uint32 blockSize;
-    int rc;
+    int rc, interchangeProfile;
     long i;
     OSErr err;
 
@@ -1392,6 +1426,9 @@ static int DoPack(FSSpec *items, long count)
         ShowError(rc);
         return rc;
     }
+
+    interchangeProfile = AskInterchangeProfile();
+    if (interchangeProfile < 0) return BP_ERR_ABORTED;
 
     /* determine archive name */
     if (count == 1) {
@@ -1447,8 +1484,15 @@ static int DoPack(FSSpec *items, long count)
 
     MacIOFromRefNum(&aio, &mf, refNum);
 
-    blockSize = ChooseBlockSize();
-    rc = bp_archive_create(&ar, &aio, blockSize, ChooseCompressionMethod());
+    if (interchangeProfile) {
+        blockSize = BP_BLOCK_16K;
+        rc = bp_archive_create_profile(&ar, &aio,
+                                       BP_PROFILE_INTERCHANGE_1);
+    } else {
+        blockSize = ChooseBlockSize();
+        rc = bp_archive_create(&ar, &aio, blockSize,
+                               ChooseCompressionMethod());
+    }
     if (rc != BP_OK) {
         FSClose(refNum);
         ShowError(rc);
