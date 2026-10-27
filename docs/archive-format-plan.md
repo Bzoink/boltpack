@@ -139,19 +139,25 @@ replacement race. Watcom cross-build evidence passes, but OS/2 runtime and
 interruption tests remain unavailable. The 32-bit Watcom build's addressable
 archive size remains below 2 GiB.
 DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
-timestamp conversion; other DOS-derived frontends still need review. Their
-mini extraction callbacks now remove output after a data or close failure.
+timestamp conversion. DOS16 now refuses archive and output-root names outside
+its 8.3 filesystem profile; Win16 and OS/2-16 still need target-specific
+destination-name review. Mini extraction callbacks remove output after a data
+or close failure.
 DOS16 and Win16 close the verified output before reopening it to restore a
 timestamp; OS/2-16 applies timestamps only after close succeeds. All three
 16-bit targets cross-build. Extraction now preflights the complete archive
 name table on all three targets, rejecting projected case aliases, parent
-directory conflicts, and file/directory conflicts before creating output. It
-uses ASCII folds plus CP437/CP850 letter maps, and refuses non-ASCII names on
+directory conflicts, and file/directory conflicts before creating output.
+DOS16 additionally requires archive and output-root components to fit a
+conservative 8.3 profile and refuses device names and invalid DOS filename
+characters. The shared preflight uses ASCII folds plus CP437/CP850 letter maps,
+and refuses non-ASCII names on
 other configured codepages. The index is bounded to 128 distinct projected
 path prefixes and 4 KiB of key storage. DOSBox validates DOS16 nested-directory
 and portable-metadata transfer, timezone conversion, cleanup after a corrupt
-block, and pre-output refusal of case-only directory aliases; it does not
-qualify Win16 or OS/2-16 runtimes. The Linux
+block, and pre-output refusal of case-only directory aliases, long names,
+invalid DOS characters, and overlong output roots; it does not qualify Win16
+or OS/2-16 runtimes. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
 shared POSIX wrapper, resolve archive-controlled directories with directory-
 relative `openat` calls and reject symlink components. Staged files and final

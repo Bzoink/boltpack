@@ -816,6 +816,92 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 
 /* ---- cmd_extract ------------------------------------------------------- */
 
+static int dos16_component_is_83(const char *component, size_t length)
+{
+    size_t stem = 0, ext = 0, i;
+    char upper[5];
+    if (length == 0 || component[length - 1U] == '.' ||
+        component[length - 1U] == ' ') return 0;
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem == 0 || stem > 8U) return 0;
+    if (stem < length) {
+        if (stem + 1U == length) return 0;
+        ext = length - stem - 1U;
+        if (ext > 3U || memchr(component + stem + 1U, '.', ext) != NULL)
+            return 0;
+    }
+    for (i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)component[i];
+        if (ch == '.') continue;
+        if (ch >= 0x80U) continue;
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') || strchr("$%'-_@~`!(){}^#&", ch)))
+            return 0;
+    }
+    if (stem <= 4U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char ch = (unsigned char)component[i];
+            upper[i] = (char)(ch >= 'a' && ch <= 'z' ? ch - 'a' + 'A' : ch);
+        }
+        upper[stem] = '\0';
+        if (strcmp(upper, "CON") == 0 || strcmp(upper, "PRN") == 0 ||
+            strcmp(upper, "AUX") == 0 || strcmp(upper, "NUL") == 0 ||
+            (stem == 4U && upper[3] >= '1' && upper[3] <= '9' &&
+             (memcmp(upper, "COM", 3) == 0 || memcmp(upper, "LPT", 3) == 0)))
+            return 0;
+    }
+    return 1;
+}
+
+static int dos16_path_is_83(const char *path, bp_uint8 entry_type)
+{
+    const char *p = path;
+    const char *start;
+    const char *end;
+    size_t length;
+    if (path == NULL || *path == '\0') return 1;
+    length = strlen(path);
+    if (entry_type == BP_TYPE_DIR && length != 0 &&
+        (path[length - 1U] == '/' || path[length - 1U] == '\\'))
+        length--;
+    end = path + length;
+    if (((p[0] >= 'A' && p[0] <= 'Z') ||
+         (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':') p += 2;
+    while (p < end && (*p == '/' || *p == '\\')) p++;
+    if (p >= end) return 1;
+    start = p;
+    for (p = start; ; p++) {
+        size_t component_length;
+        if (p == end || *p == '/' || *p == '\\') {
+            component_length = (size_t)(p - start);
+            if (component_length != 0 &&
+                !((component_length == 1U && start[0] == '.') ||
+                  (component_length == 2U && start[0] == '.' && start[1] == '.')) &&
+                !dos16_component_is_83(start, component_length)) return 0;
+            if (p == end) break;
+            start = p + 1;
+        }
+    }
+    return 1;
+}
+
+static int dos16_projected_name_preflight(const bp_mini_entry_t *entry,
+                                          void *user_data)
+{
+    bp_mini_projected_preflight_t *preflight =
+        (bp_mini_projected_preflight_t *)user_data;
+    char local_name[BP_MAX_PATH];
+    if (entry != NULL && entry->entry_type != BP_TYPE_META &&
+        entry->entry_type != BP_TYPE_RSRC &&
+        bp_mini_name_is_safe(entry->name) &&
+        bp_mini_utf8_to_local(entry->name, local_name, sizeof(local_name)) == 0 &&
+        !dos16_path_is_83(local_name, entry->entry_type)) {
+        preflight->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    return bp_mini_projected_name_preflight(entry, user_data);
+}
+
 static int cmd_extract(const char *arc_path, const char *dest)
 {
 #ifdef __WATCOMC__
@@ -848,14 +934,25 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     memset(&ctx, 0, sizeof(ctx));
     if (dest) {
-        strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
+        if (strlen(dest) >= sizeof(ctx.dest) ||
+            !dos16_path_is_83(dest, BP_TYPE_DIR)) {
+#ifdef __WATCOMC__
+            close(fd);
+            bp_wstr(2, PROG_NAME ": destination path is not representable\n");
+#else
+            fclose(fp);
+            fprintf(stderr, PROG_NAME ": destination path is not representable\n");
+#endif
+            return 1;
+        }
+        strcpy(ctx.dest, dest);
     }
 
     preflight.index = &name_index;
     preflight.result = BP_OK;
     rc = bp_mini_projected_index_init(&name_index);
     if (rc == BP_OK) {
-        rc = bp_mini_archive_list(&arc_io, bp_mini_projected_name_preflight,
+        rc = bp_mini_archive_list(&arc_io, dos16_projected_name_preflight,
                                   &preflight);
         if (rc == BP_OK && preflight.result != BP_OK) rc = preflight.result;
     }
