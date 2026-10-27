@@ -169,10 +169,13 @@ dos-host-test:
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 
 # Full DOS command-line build using the DJGPP cross-toolchain.
-DOS_CC ?= i586-pc-msdosdjgpp-gcc
+# DJGPP hides its POSIX/DOS declarations when GCC sets __STRICT_ANSI__;
+# keep ANSI language mode but expose those declarations to the frontend.
+DOS_CC ?= $(or $(wildcard /opt/djgpp/cross/bin/i586-pc-msdosdjgpp-gcc),i586-pc-msdosdjgpp-gcc)
 dos-djgpp:
 	$(call check_cc,$(DOS_CC),full DOS DJGPP)
 	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    CFLAGS='$(CFLAGS) -U__STRICT_ANSI__' \
 	    BUILDDIR=build/dos-djgpp TARGET=build/dos-djgpp/boltpack.exe all
 
 # 32-bit Linux CLI. Keep its artifacts separate from the native Linux build so
@@ -1180,7 +1183,9 @@ linuxmini-interoperability-test: modern linuxmini
 dos16-interoperability-test: modern dos16 unit-test-dos16
 	python3 test/check_dos16_interop.py
 
-test: modern unit-test
+# Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
+# coverage remains in the separate DOSBox interoperability target.
+test: modern unit-test dos-djgpp
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== symlink timestamp and publication ==="

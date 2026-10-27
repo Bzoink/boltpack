@@ -62,8 +62,13 @@ host fixture checks BoltLite and Stored 16 KiB output, profile append,
 incompatible-option refusal, and byte-preserving refusal of a nonconforming
 archive. The DOS-produced profile archives pass both the full reader and the
 Linux mini reader under QEMU.
-`make dos-djgpp` is the actual cross-build target, but it skips here because
-the DJGPP compiler is unavailable; no DOS runtime fixture is available either.
+`make CC=gcc dos-djgpp` now detects the installed DJGPP compiler and cross-builds
+the full DOS CLI. Its headers hide POSIX/DOS declarations under
+`__STRICT_ANSI__`; the target keeps ANSI language mode and undefines that
+header gate. The installed DOSBox lacks a DPMI host, so the DJGPP executable
+stops before `main` with a missing-DPMI error. The separate DOS16/DOSBox
+transfer fixture passes but does not qualify DJGPP filesystem APIs or FAT
+attribute behavior.
 The full DOS CLI's path-based publication has no protection against a
 concurrent parent-directory change. Generated short-name aliases on systems
 without long filename support are not modeled by its preflight. The Windows CLI
@@ -767,9 +772,10 @@ applies valid mtimes with no-follow operations, and publishes only after
 timestamp success. It verifies no-clobber behavior; failure injection confirms
 an existing link is preserved and the stage removed if time restoration fails.
 The suite also runs the QL, X68000, Plan 9, and macOS POSIX host profile
-fixtures, plus the full DOS lifecycle and CP/M-86 projection fixtures. These
-host checks do not replace target-specific verification of directory and
-dry-run outcomes.
+fixtures, plus the full DOS lifecycle and CP/M-86 projection fixtures. With
+DJGPP installed, the standard target also cross-builds the full DOS frontend.
+These host checks do not replace target-specific verification of directory
+and dry-run outcomes.
 Where the emulator tools are installed,
 `make CC=gcc linuxmini-interoperability-test` runs Linux mini under QEMU-i386
 and checks both Linux extractors' path-race and write/close failure handling;
