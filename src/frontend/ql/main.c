@@ -87,6 +87,7 @@ typedef struct {
 #define VERB_SILENT   2
 
 static int g_verbosity = VERB_DEFAULT;
+static int g_interchange_profile = 0;
 
 /* ======================================================================
  * bp_io_t  adapters  --  backed by FILE *
@@ -196,10 +197,12 @@ static void format_size64(bp_uint64 b, char *buf, size_t sz)
 
 static void ql_strcpy_trunc(char *dst, size_t dstsz, const char *src)
 {
+    size_t i;
     if (dstsz == 0) return;
     if (!src) { dst[0] = '\0'; return; }
-    strncpy(dst, src, dstsz - 1);
-    dst[dstsz - 1] = '\0';
+    for (i = 0; i + 1 < dstsz && src[i] != '\0'; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
 }
 
 static void ql_strcat_trunc(char *dst, size_t dstsz, const char *src)
@@ -633,6 +636,7 @@ static void usage(void)
         "Options:\n"
         "  -b SIZE   block size: 8k 16k 32k 64k 256k\n"
         "  -0        store only    -F fluff   -q quiet   -qq silent\n"
+        "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output path for extraction\n"
         "  -f        force overwrite    -n dry run\n"
         "\nNote: device prefixes (win1_, mdv1_ etc.) are stripped from archive names.\n",
@@ -750,13 +754,17 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     fp = fopen(argv[0], "w+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
     bp_io_from_file(&aio, fp);
-    rc = bp_archive_create(&ar, &aio, block_size, method);
+    rc = g_interchange_profile
+        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (g_interchange_profile && method == BP_METHOD_STORED)
+        ar.method = BP_METHOD_STORED;
     for (i = 1; i < argc; i++) {
         /* Strip device prefix for archive name */
         const char *arcname = ql_strip_device(argv[i]);
         /* Convert QDOS path separators '_' to '/' in archive name */
-        char arcbuf[BP_MAX_PATH]; int j;
+        char arcbuf[BP_MAX_PATH];
         strncpy(arcbuf, arcname, sizeof(arcbuf) - 1); arcbuf[sizeof(arcbuf)-1]='\0';
         /* Only convert '_' that are directory separators (those that are
          * in subdirectory positions -- we leave filename '_' alone).
@@ -788,6 +796,15 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
     bp_io_from_file(&aio, fp);
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (g_interchange_profile) {
+        rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); return 1;
+        }
+        if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
+    }
     for (i = 1; i < argc; i++) {
         const char *arcname = ql_strip_device(argv[i]);
         rc = add_path(&ar, argv[i], arcname);
@@ -882,6 +899,7 @@ int main(int argc, char **argv)
     bp_uint8   method     = BP_METHOD_BOLTLZ;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
+    int        codec_given = 0;
 
     if (argc < 3) { usage(); return 1; }
     if (strlen(argv[1]) != 1) {
@@ -894,8 +912,10 @@ int main(int argc, char **argv)
             if (++i >= argc) { fprintf(stderr, "boltpack: -b needs arg\n"); return 1; }
             block_size = parse_block_size(argv[i++]);
             if (!block_size) { fprintf(stderr, "boltpack: invalid block size\n"); return 1; }
-        } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; i++; }
-        else if (!strcmp(argv[i], "-F"))  { method = BP_METHOD_FLUFF;  i++; }
+        } else if (!strcmp(argv[i], "--interchange-profile-1")) {
+            g_interchange_profile = 1; i++;
+        } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; codec_given = 1; i++; }
+        else if (!strcmp(argv[i], "-F"))  { method = BP_METHOD_FLUFF; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-qq")) { g_verbosity = VERB_SILENT; i++; }
         else if (!strcmp(argv[i], "-q"))  { g_verbosity = VERB_QUIET;  i++; }
         else if (!strcmp(argv[i], "-o")) {
@@ -904,6 +924,19 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "-f")) { force = 1; i++; }
         else if (!strcmp(argv[i], "-n"))   { dry_run = 1; i++; }
         else { fprintf(stderr, "boltpack: unknown option: %s\n", argv[i]); usage(); return 1; }
+    }
+
+    if (g_interchange_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_STORED &&
+             method != BP_METHOD_BOLTLITE)) {
+            fprintf(stderr,
+                    "boltpack: Interchange Profile 1 requires create/add, Stored or BoltLite, and 16 KiB blocks\n");
+            return 1;
+        }
+        block_size = BP_BLOCK_16K;
+        if (!codec_given) method = BP_METHOD_BOLTLITE;
     }
 
     if (method == BP_METHOD_FLUFF && block_size == 0) {
