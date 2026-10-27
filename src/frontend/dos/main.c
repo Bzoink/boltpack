@@ -835,6 +835,11 @@ static int dos_component_supported(const char *component, size_t length)
     char upper[5];
     if (length == 0 || component[length - 1] == '.' ||
         component[length - 1] == ' ') return 0;
+    for (i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)component[i];
+        if (ch < 0x20U || ch == '\\' || strchr("\"*:<>?|", ch) != NULL)
+            return 0;
+    }
     for (i = 0; i < length; i++)
         if (component[i] == ' ' && (i + 1U == length || component[i + 1U] == '.'))
             return 0;

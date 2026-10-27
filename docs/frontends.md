@@ -401,8 +401,9 @@ same-directory 8.3-style stages opened with `O_CREAT|O_EXCL`; the frontend
 checks the core's checksum status and the file descriptor close before
 publishing. Forced replacement moves an existing regular file to a recovery
 name and restores it if publication fails. A CP850 projected-path preflight
-rejects case aliases and file/directory-prefix conflicts before creating the
-output tree. With DJGPP, creation writes portable FAT metadata and extraction
+rejects control characters, DOS-forbidden filename punctuation, device names,
+case aliases, and file/directory-prefix conflicts before creating the output
+tree. With DJGPP, creation writes portable FAT metadata and extraction
 restores known FAT flags, deferring directory flags until children finish.
 Directory timestamp restoration is not supported on plain DOS and is reported
 as partial. The host test build simulates FAT flags and does not validate the
