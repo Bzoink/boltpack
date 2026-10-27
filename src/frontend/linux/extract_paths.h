@@ -1,13 +1,19 @@
-/* Linux directory-relative extraction helpers. */
-#ifndef BP_LINUX_EXTRACT_PATHS_H
-#define BP_LINUX_EXTRACT_PATHS_H
+/* POSIX directory-relative extraction helpers. */
+#ifndef BP_DIRFD_EXTRACT_PATHS_H
+#define BP_DIRFD_EXTRACT_PATHS_H
 
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/syscall.h>
+#endif
 #include <unistd.h>
+
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
 
 /* Walk archive-controlled components relative to an already-open root.
  * Never follow a symlink, including when a concurrent process replaces one. */

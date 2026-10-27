@@ -11,6 +11,11 @@
 #define _GNU_SOURCE
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
+#define BP_USE_DIRFD_EXTRACTION 1
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#define _XOPEN_SOURCE 700
+#define _POSIX_C_SOURCE 200809L
+#define BP_USE_DIRFD_EXTRACTION 1
 #else
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 200112L
@@ -414,7 +419,7 @@ typedef struct {
     bp_io_t io; /* first member: callbacks return &io */
     char *temporary;
     char *destination;
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     int parent_fd;
 #endif
 } bp_extract_output_t;
@@ -1533,12 +1538,12 @@ typedef struct {
     int         open_error;
     bp_restore_dir_t *dirs;
     int         slash_warned;  /* printed the leading-'/' warning once */
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     int         root_fd;
 #endif
 } extract_ctx_t;
 
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
 #include "extract_paths.h"
 
 static int restore_file_metadata_fd(int fd, const char *name, bp_uint16 flags,
@@ -1623,7 +1628,7 @@ static int finish_directories(extract_ctx_t *ctx, int apply)
         bp_restore_dir_t *node = ctx->dirs;
         ctx->dirs = node->next;
         if (apply) {
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
             int fd = extract_open_directory(ctx->root_fd, node->path, 0);
             int r = fd < 0 ? BP_ERR_IO :
                     restore_file_metadata_fd(fd, node->path, node->flags, node->mtime, ctx);
@@ -1657,7 +1662,7 @@ static const char *extract_entry_name(const bp_entry_t *entry,
     return name;
 }
 
-#ifndef __linux__
+#ifndef BP_USE_DIRFD_EXTRACTION
 /* Reject existing symlinks in archive-controlled directory components.
  * This prevents traversal through a pre-existing link, but is not a defense
  * against another process replacing a directory between this check and use. */
@@ -1919,7 +1924,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     return rc;
 }
 
-#else /* __linux__: use directory-relative operations for extraction */
+#else /* BP_USE_DIRFD_EXTRACTION: use directory-relative operations */
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
@@ -2094,7 +2099,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     free(output->temporary); free(output->destination); free(output);
     return rc;
 }
-#endif /* __linux__ */
+#endif /* BP_USE_DIRFD_EXTRACTION */
 
 #ifdef BOLTPACK_NET
 /*
@@ -2110,7 +2115,7 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     ctx.root_fd = -1;
     if (out_dir != NULL && mkdirs(out_dir) != 0) return BP_ERR_IO;
     ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -2124,7 +2129,7 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
               ctx.open_error == BP_OK);
     if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     close(ctx.root_fd);
 #endif
     return rc;
@@ -2578,7 +2583,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = dry_run;
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     ctx.root_fd = -1;
     if (!dry_run) {
         ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -2604,7 +2609,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
               ctx.open_error == BP_OK);
     if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
-#ifdef __linux__
+#ifdef BP_USE_DIRFD_EXTRACTION
     if (ctx.root_fd >= 0) close(ctx.root_fd);
 #endif
 
