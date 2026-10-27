@@ -70,6 +70,9 @@ typedef struct {
     bp_uint32       block_size;
     bp_uint8        method;        /* BP_METHOD_*; BoltLZ is the default codec */
     bp_uint8        method_level;  /* BoltLZ: 1=Fast, 0/2-9=Balanced; other codecs: 0=default */
+    bp_uint8        profile;       /* BP_PROFILE_*; writer-side constraints */
+    bp_uint8        append_mode;   /* internal: loaded with bp_archive_open_append */
+    bp_uint64       profile_table_bytes; /* cached table record bytes */
     bp_uint8        creator_os;
     bp_uint8        creator_cpu;
     bp_progress_fn  progress_fn;
@@ -117,6 +120,14 @@ typedef struct {
  * BP_METHOD_FLUFF, or BP_METHOD_ZSTD when enabled. */
 int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
                       bp_uint32 block_size, bp_uint8 method);
+
+/* Constrain subsequent writes to a named profile.  Interchange Profile 1
+ * selects BoltLite and 16 KiB blocks, enforces all §9.4 limits, and verifies
+ * pre-existing entries when called after bp_archive_open_append().  Call
+ * before adding, packing, or copying any new entries. */
+int bp_archive_use_profile(bp_archive_t *ar, bp_uint8 profile);
+int bp_archive_create_profile(bp_archive_t *ar, bp_io_t *io,
+                              bp_uint8 profile);
 
 /* Add a file entry to the archive.
  * name: UTF-8 path, entry_type: BP_TYPE_*, platform: BP_OS_*,
