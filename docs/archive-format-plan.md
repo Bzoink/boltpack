@@ -800,23 +800,26 @@ through copy, append, integrity verification, and complete-group deletion
 while checking primary timestamp and mode flags. On 2026-10-27,
 `make CC=gcc test` passed with 265 archive-format and 160 CLI integration
 checks, including the timestamp boundaries above and dry-run archive
-verification. It also runs the Hurd wrapper host-shim race checks and
-`check_symlink_atomic.py`: Linux stages symlinks
+verification. It also runs the eight-wrapper POSIX dirfd host-shim race suite
+(Hurd, Solaris, illumos, FreeBSD, NetBSD, OpenBSD, AIX 7.3 selection, and
+z/OS 3.1 selection) and `check_symlink_atomic.py`: Linux stages symlinks
 beside their final paths,
 applies valid mtimes with no-follow operations, and publishes only after
 timestamp success. It verifies no-clobber behavior; failure injection confirms
 an existing link is preserved and the stage removed if time restoration fails.
-The suite also runs the QL, X68000, Plan 9, and macOS POSIX host profile
-fixtures, plus the full DOS lifecycle and CP/M-86 projection fixtures. With
-DJGPP installed, the standard target also cross-builds the full DOS frontend.
-These host checks do not replace target-specific verification of directory
-and dry-run outcomes.
-Where the emulator tools are installed,
-`make CC=gcc linuxmini-interoperability-test` runs Linux mini under QEMU-i386
-and checks both Linux extractors' path-race and write/close failure handling;
-`make CC=gcc dos16-interoperability-test` runs DOS16 core and transfer fixtures
-under DOSBox. Neither target implies runtime qualification for Win16, OS/2-16,
-or other platforms.
+The suite also runs the QL, X68000, and Plan 9 host profile fixtures, the macOS
+POSIX host lifecycle checks, the full DOS lifecycle/profile fixtures, and the
+CP/M-86 projection checks. With DJGPP installed, the standard target also
+cross-builds the full DOS frontend. Host shims exercise shared implementation
+branches; they do not qualify native AIX/z/OS APIs, target filesystem
+semantics, or the Windows/Atari/OS/2/macOS application runtimes. Those target
+round trips remain as listed in the interoperability matrix.
+On 2026-10-27, `make CC=gcc linuxmini-interoperability-test` passed under
+QEMU-i386, including Linux full/mini parent-substitution, concurrent
+destination-creation, write/close-failure, and metadata/profile checks.
+`make CC=gcc dos16-interoperability-test` passed its 20-check DOS16 core suite
+and DOS16-to-Linux transfer fixtures under DOSBox. Neither emulator target
+qualifies Win16, OS/2-16, or other platform runtimes.
 
 Golden expectations must not be generated solely by the same writer under
 test. On capable destinations require exact bytes/names/attributes. On limited
