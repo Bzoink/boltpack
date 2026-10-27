@@ -313,6 +313,7 @@ int rename(const char *old_path, const char *new_path)
         if created.returncode != 0:
             return
         os.chmod(archive, 0o640)
+        original_stat = os.stat(archive)
         with open(archive, "rb") as stream:
             original_bytes = stream.read()
 
@@ -355,6 +356,108 @@ int rename(const char *old_path, const char *new_path)
               "successful delete publishes a valid replacement archive")
         check(os.stat(archive).st_mode & 0o777 == 0o640,
               "delete replacement retains archive permission bits")
+        replaced_stat = os.stat(archive)
+        check((replaced_stat.st_uid, replaced_stat.st_gid) ==
+              (original_stat.st_uid, original_stat.st_gid),
+              "delete replacement retains archive owner and group")
+
+
+def test_append_publication_failure() -> None:
+    section("Append: failed publication preserves original archive")
+
+    interposer = r'''#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int rename(const char *old_path, const char *new_path)
+{
+    const char *target = getenv("BP_TEST_RENAME_TARGET");
+    const char *marker = getenv("BP_TEST_RENAME_MARKER");
+    int fd;
+    (void)old_path;
+    if (target == NULL || strcmp(target, new_path) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    if (marker != NULL) {
+        fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) close(fd);
+    }
+    errno = EIO;
+    return -1;
+}
+'''
+
+    with tempfile.TemporaryDirectory(prefix="bp_append_publish_") as tmp:
+        source = os.path.join(tmp, "src")
+        archive = os.path.join(tmp, "archive.bolt")
+        marker = os.path.join(tmp, "rename-called")
+        interposer_c = os.path.join(tmp, "fail_rename.c")
+        interposer_so = os.path.join(tmp, "fail_rename.so")
+        os.makedirs(source)
+        make_file(os.path.join(source, "original.txt"), 128, "text", 94)
+        make_file(os.path.join(source, "added.txt"), 256, "text", 95)
+
+        created = run_bp("c", "archive.bolt", "src/original.txt", cwd=tmp)
+        check(created.returncode == 0,
+              "append publication fixture archive created")
+        if created.returncode != 0:
+            return
+        os.chmod(archive, 0o640)
+        original_stat = os.stat(archive)
+        with open(archive, "rb") as stream:
+            original_bytes = stream.read()
+
+        with open(interposer_c, "w", encoding="utf-8") as stream:
+            stream.write(interposer)
+        compiler = shutil.which("cc")
+        if compiler is None:
+            check(False, "C compiler available for rename-failure injection")
+            return
+        built = subprocess.run(
+            [compiler, "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+             interposer_c, "-o", interposer_so],
+            capture_output=True,
+        )
+        check(built.returncode == 0,
+              "append rename-failure interposer compiled")
+        if built.returncode != 0:
+            return
+
+        env = os.environ.copy()
+        prior_preload = env.get("LD_PRELOAD")
+        env["LD_PRELOAD"] = interposer_so + (":" + prior_preload if prior_preload else "")
+        env["BP_TEST_RENAME_TARGET"] = archive
+        env["BP_TEST_RENAME_MARKER"] = marker
+        failed = subprocess.run(
+            [BP, "a", archive, "src/added.txt"],
+            cwd=tmp, env=env, capture_output=True,
+        )
+        if failed.returncode == 0 or not os.path.exists(marker):
+            _log("append failure injection did not reach publication: " +
+                 failed.stderr.decode("utf-8", errors="replace"))
+        with open(archive, "rb") as stream:
+            after_failure = stream.read()
+        check(os.path.exists(marker), "append reached the injected rename failure")
+        check(failed.returncode != 0 and after_failure == original_bytes,
+              "failed atomic publication preserves original archive bytes")
+        check(not any(name.startswith("bpadd_") for name in os.listdir(tmp)),
+              "failed append removes its staged archive")
+
+        completed = run_bp("a", archive, "src/added.txt", cwd=tmp)
+        listed = run_bp("l", archive, cwd=tmp)
+        tested = run_bp("t", archive, cwd=tmp)
+        check(completed.returncode == 0 and listed.returncode == 0 and
+              tested.returncode == 0 and b"added.txt" in listed.stdout,
+              "successful append atomically publishes a valid replacement")
+        check(os.stat(archive).st_mode & 0o777 == 0o640,
+              "append replacement retains archive permission bits")
+        replaced_stat = os.stat(archive)
+        check((replaced_stat.st_uid, replaced_stat.st_gid) ==
+              (original_stat.st_uid, original_stat.st_gid),
+              "append replacement retains archive owner and group")
 
 
 def test_empty_archive() -> None:
@@ -942,6 +1045,7 @@ def main() -> int:
         test_roundtrip_per_method,
         test_operations,
         test_delete_publication_failure,
+        test_append_publication_failure,
         test_empty_archive,
         test_empty_file,
         test_utf8_filenames,
