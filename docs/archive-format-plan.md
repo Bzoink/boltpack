@@ -137,6 +137,23 @@ unknown. The GUI cross-build passes, but its path-based checks retain a
 parent-substitution race and no Amiga runtime or emulator round trip is
 available.
 
+The Atari GEM GUI now applies the full Atari CLI's 8.3 ASCII projection,
+case-folded collision and file/directory-prefix preflight (bounded at 1,024
+names and 32 KiB), and 125-byte GEMDOS path limit before extraction. It checks
+existing directory components for symlinks, stages regular files beside their
+targets, verifies checksums and close before publication, and uses recovery
+renames for replacement. It restores representable times, native TOS
+attributes, and portable FAT fallback; directory metadata is deferred until
+children finish. GUI archive creation now stages the complete archive,
+preserves the replaced archive's non-read-only TOS attributes, converts source
+names strictly to UTF-8, preflights 8.3 projected collisions within the same
+1,024-name/32-KiB bound, records directories including empty ones, and writes
+native plus portable FAT metadata for files and directories. Unsupported source links,
+unrepresentable names, resource forks, foreign metadata, and POSIX modes are
+reported or refused. Both GUI and CLI pass Atari cross-builds with warnings
+treated as errors. No Hatari emulator is installed for runtime round trips;
+the GUI's pathname checks retain a concurrent parent-substitution race.
+
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
 reject orphaned or duplicate portable envelopes and verify the subject type.
