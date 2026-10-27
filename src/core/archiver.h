@@ -223,7 +223,10 @@ int bp_archive_list(bp_io_t *io, bp_list_fn fn, void *user_data);
 /* --- Extraction --------------------------------------------------------- */
 
 /* Callback: the frontend returns a bp_io_t to write to, or NULL to skip.
- * The frontend is responsible for creating directories as needed. */
+ * Skipping a non-directory entry makes extraction return BP_ERR_PARTIAL after
+ * the skipped payload has still been checked. Directory callbacks create the
+ * directory and report failures through frontend state because no stream is
+ * used. The frontend is responsible for creating parent directories. */
 typedef bp_io_t *(*bp_extract_fn)(const bp_entry_t *entry, void *user_data);
 
 /* Called after each entry is fully extracted (so frontend can close file). */

@@ -1133,6 +1133,7 @@ typedef struct {
     int count;
     int done_status;
     int report_partial;
+    int skip_data;
     int metadata_count;
     int directory_count;
     int directory_result;
@@ -1800,8 +1801,8 @@ static void test_portable_metadata(void)
 static bp_io_t *full_metadata_test_open(const bp_entry_t *entry, void *user_data)
 {
     MiniInteropState *s = (MiniInteropState *)user_data;
-    (void)entry;
     s->count++;
+    if (s->skip_data && entry->entry_type == BP_TYPE_DATA) return NULL;
     return &s->io;
 }
 
@@ -1822,6 +1823,8 @@ static void test_portable_metadata_archive(void)
     StringSrc input;
     MiniInteropState state;
     bp_uint8 bytes[BP_META_FAT_SIZE], output[256];
+    bp_uint8 native_meta[10] = { 0 };
+    bp_uint8 resource_data[4] = { 1, 2, 3, 4 };
     int malformed, rc;
     UNIT_SECTION("Portable metadata archive validation");
     mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
@@ -1917,6 +1920,15 @@ static void test_portable_metadata_archive(void)
                                             full_metadata_test_done, NULL, &state);
             UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 2,
                        "full extraction continues after incomplete metadata");
+
+            memset(&state, 0, sizeof(state));
+            state.output.buf = output; state.output.cap = sizeof(output);
+            state.io = make_mem_io(&state.output);
+            state.skip_data = 1;
+            rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                            full_metadata_test_done, NULL, &state);
+            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 1,
+                       "skipped subject is partial and its portable metadata is not applied");
         }
         memset(&state, 0, sizeof(state));
         state.output.buf = output; state.output.cap = sizeof(output);
@@ -1978,6 +1990,39 @@ static void test_portable_metadata_archive(void)
                        "deletion removes both subject and its metadata");
             free(copied.buf); free(deleted_mem.buf);
         }
+    }
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry(&ar, "GROUPED", BP_TYPE_DATA,
+                                  BP_OS_LINUX, &source,
+                                  bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    source = make_string_io(&input, resource_data, sizeof(resource_data));
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&ar, "GROUPED", BP_TYPE_RSRC,
+                                     BP_OS_MACOS9, &source,
+                                     bp_u64_from_u32(sizeof(resource_data)),
+                                     bp_u64_from_u32(0), 0);
+    source = make_string_io(&input, native_meta, sizeof(native_meta));
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&ar, "GROUPED", BP_TYPE_META,
+                                     BP_OS_MACOS9, &source,
+                                     bp_u64_from_u32(sizeof(native_meta)),
+                                     bp_u64_from_u32(0), 0);
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "native metadata group fixture written");
+    if (rc == BP_OK) {
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        state.skip_data = 1;
+        rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                        full_metadata_test_done, NULL, &state);
+        UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 1,
+                   "resource forks and native metadata are not delivered for a skipped subject");
     }
     free(mem.buf);
 }
