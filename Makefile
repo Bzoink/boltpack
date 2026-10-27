@@ -584,9 +584,16 @@ amiga68k:
 ATARI_CC       = m68k-atari-mint-gcc
 ATARI_CFLAGS   = -ansi -Wall -Wextra -Wno-unused-function -O2
 ATARI_BUILDDIR = build/atari
+ATARI_PATH_TEST_BIN = build/atari-path-test/test_atari_path
 
-.PHONY: atari atari-cli
+.PHONY: atari atari-cli atari-path-test
 atari: atari-cli atari-gui
+
+atari-path-test:
+	mkdir -p build/atari-path-test
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Isrc/core \
+	    test/unit/test_atari_path.c -o $(ATARI_PATH_TEST_BIN)
+	$(ATARI_PATH_TEST_BIN)
 
 atari-cli:
 	mkdir -p $(ATARI_BUILDDIR)
@@ -1224,7 +1231,7 @@ dos16-interoperability-test: modern dos16 unit-test-dos16
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp posix-dirfd-host-test
+test: modern unit-test dos-djgpp posix-dirfd-host-test atari-path-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== symlink timestamp and publication ==="
