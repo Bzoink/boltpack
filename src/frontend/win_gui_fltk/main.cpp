@@ -1138,6 +1138,7 @@ static int mkdirs_for_file(const char *path)
 static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1; /* 0=fast, 1=normal (default), 2=best */
 static int g_fluff_multithread  = 0;
+static int g_interchange_profile = 0;
 
 #ifdef BOLTPACK_NET
 /* Create dialog action: Save to disk, or Send over the network. */
@@ -1290,6 +1291,8 @@ static void load_prefs()
                 g_compression_level = v;
         } else if (sscanf(line, "fluff_mt=%d", &v) == 1) {
             g_fluff_multithread = v ? 1 : 0;
+        } else if (sscanf(line, "interchange_profile=%d", &v) == 1) {
+            g_interchange_profile = v ? 1 : 0;
         } else if (sscanf(line, "col_widths=%d,%d,%d,%d,%d,%d",
                           &w0, &w1, &w2, &w3, &w4, &w5) == NUM_COLS) {
             g_persisted_col_widths[0] = w0;
@@ -1325,8 +1328,10 @@ static void save_prefs()
     if (slash) { *slash = '\0'; mkdirs(dir); }
     FILE *f = fopen(path, "w");
     if (!f) return;
-        fprintf(f, "method=%d\nlevel=%d\nfluff_mt=%d\n",
-            g_compression_method, g_compression_level, g_fluff_multithread);
+    fprintf(f, "method=%d\nlevel=%d\nfluff_mt=%d\n"
+               "interchange_profile=%d\n",
+            g_compression_method, g_compression_level, g_fluff_multithread,
+            g_interchange_profile);
     if (g_have_persisted_col_widths) {
         fprintf(f, "col_widths=%d,%d,%d,%d,%d,%d\n",
                 g_persisted_col_widths[0], g_persisted_col_widths[1],
@@ -1470,6 +1475,11 @@ struct CompDlgState {
     int             action;     /* CREATE_CANCEL / CREATE_SAVE / CREATE_SEND */
     int             method;
     int             level;
+    int             interchange_profile;
+    int             n_methods;
+    int             method_ids[5];
+    Fl_Round_Button *method_btns[5];
+    Fl_Check_Button *interchange_btn;
 #ifdef BOLTPACK_FAST_FLUFF
     int             fast_fluff;
 #endif
@@ -1509,7 +1519,15 @@ static void cdlg_update_level_labels(CompDlgState *s)
     int m = (s->method >= 0 && s->method <= 4) ? s->method : 2;
     int i;
 
-    if (s->method == BP_METHOD_STORED) {
+    for (i = 0; i < s->n_methods; i++) {
+        s->method_btns[i]->value(s->method_ids[i] == s->method ? 1 : 0);
+        if (s->interchange_profile)
+            s->method_btns[i]->deactivate();
+        else
+            s->method_btns[i]->activate();
+    }
+
+    if (s->interchange_profile || s->method == BP_METHOD_STORED) {
         s->level_sep->hide();
         s->level_title->hide();
         s->level_grp->hide();
@@ -1524,7 +1542,7 @@ static void cdlg_update_level_labels(CompDlgState *s)
         }
     }
 #ifdef BOLTPACK_FAST_FLUFF
-    if (s->method == BP_METHOD_FLUFF) {
+    if (!s->interchange_profile && s->method == BP_METHOD_FLUFF) {
         s->fast_fluff_btn->value(s->fast_fluff ? 1 : 0);
         s->fast_fluff_btn->show();
     } else {
@@ -1532,6 +1550,17 @@ static void cdlg_update_level_labels(CompDlgState *s)
     }
 #endif
     s->win->redraw();
+}
+
+static void cdlg_interchange_cb(Fl_Widget *w, void *data)
+{
+    CompDlgState *s = (CompDlgState *)data;
+    s->interchange_profile = ((Fl_Check_Button *)w)->value() ? 1 : 0;
+    if (s->interchange_profile) {
+        s->method = BP_METHOD_BOLTLITE;
+        s->level = 1;
+    }
+    cdlg_update_level_labels(s);
 }
 
 static void cdlg_method_cb(Fl_Widget *w, void *data)
@@ -1594,15 +1623,18 @@ static void cdlg_cancel_cb(Fl_Widget *, void *data)
 /* Returns the chosen action (CREATE_*); updates compression settings. */
 static int show_compression_dialog()
 {
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    int W = 460, H = 350;
-#elif defined(BOLTPACK_FAST_FLUFF)
-    int W = 460, H = 326;
-#elif defined(BOLTPACK_ZSTD)
-    int W = 460, H = 314;
+#ifdef BOLTPACK_ZSTD
+    int n_methods_for_height = 5;
 #else
-    int W = 460, H = 290;
+    int n_methods_for_height = 4;
 #endif
+    int W = 460;
+    int ff_y_for_height = (32 + n_methods_for_height * 24 + 6) + 6 + 8 + 20 + 80;
+    int profile_y = ff_y_for_height;
+#ifdef BOLTPACK_FAST_FLUFF
+    profile_y += 24;
+#endif
+    int H = profile_y + 72;
     int cx = g_main_window ? g_main_window->x() + (g_main_window->w() - W) / 2 : 200;
     int cy = g_main_window ? g_main_window->y() + (g_main_window->h() - H) / 2 : 200;
 
@@ -1610,6 +1642,12 @@ static int show_compression_dialog()
     s.action = CREATE_CANCEL;
     s.method = g_compression_method;
     s.level  = g_compression_level;
+    s.interchange_profile = g_interchange_profile;
+    if (s.interchange_profile) {
+        s.method = BP_METHOD_BOLTLITE;
+        s.level = 1;
+    }
+    s.n_methods = 0;
 #ifdef BOLTPACK_FAST_FLUFF
     s.fast_fluff = g_fluff_multithread;
 #endif
@@ -1638,6 +1676,11 @@ static int show_compression_dialog()
 #endif
     };
     int n_methods = (int)(sizeof(method_ids) / sizeof(method_ids[0]));
+    s.n_methods = n_methods;
+    for (int i = 0; i < n_methods; i++) {
+        s.method_ids[i] = method_ids[i];
+        s.method_btns[i] = NULL;
+    }
     int mgrp_h    = n_methods * 24 + 6;
     int sep_y     = 32 + mgrp_h + 6;
     int ttl_y     = sep_y + 8;
@@ -1650,6 +1693,7 @@ static int show_compression_dialog()
                                                   method_lbl[i]);
         rb->type(FL_RADIO_BUTTON);
         rb->callback(cdlg_method_cb, &s);
+        s.method_btns[i] = rb;
         if (method_ids[i] == s.method)
             rb->value(1);
     }
@@ -1680,6 +1724,11 @@ static int show_compression_dialog()
 #else
     (void)ff_y;
 #endif
+
+    s.interchange_btn = new Fl_Check_Button(18, profile_y, W - 28, 22,
+        "Interchange Profile 1 (BoltLite, 16 KB; mini-reader compatible)");
+    s.interchange_btn->callback(cdlg_interchange_cb, &s);
+    s.interchange_btn->value(s.interchange_profile ? 1 : 0);
 
     /* apply initial labels / visibility based on current method */
     cdlg_update_level_labels(&s);
@@ -1715,6 +1764,7 @@ static int show_compression_dialog()
     if (action != CREATE_CANCEL) {
         g_compression_method = s.method;
         g_compression_level  = s.level;
+        g_interchange_profile = s.interchange_profile;
 #ifdef BOLTPACK_FAST_FLUFF
         g_fluff_multithread  = s.fast_fluff;
 #endif
@@ -3021,9 +3071,11 @@ static void init_create_progress(ProgressCtx *ctx)
 struct CreateWork {
     std::vector<std::string> input_files;
     std::string              out_path;
+    FILE                    *output_fp;
     ProgressCtx             *pctx;
     int                      method;
     int                      level;
+    bool                     use_interchange_profile;
     bool                     use_fast_fluff;
     int                      result;
 };
@@ -3099,8 +3151,149 @@ static std::string suggested_archive_name(const std::vector<std::string> &input_
     return suggested;
 }
 
+struct WindowsTargetSnapshot {
+    bool exists;
+    BY_HANDLE_FILE_INFORMATION info;
+};
+
+static bool read_windows_target_snapshot(const std::string &path,
+                                         WindowsTargetSnapshot *snapshot)
+{
+    DWORD attributes = GetFileAttributesA(path.c_str());
+    HANDLE handle;
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            snapshot->exists = false;
+            memset(&snapshot->info, 0, sizeof(snapshot->info));
+            return true;
+        }
+        return false;
+    }
+    if ((attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    handle = CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    if (!GetFileInformationByHandle(handle, &snapshot->info)) {
+        CloseHandle(handle);
+        return false;
+    }
+    CloseHandle(handle);
+    if ((snapshot->info.dwFileAttributes &
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    snapshot->exists = true;
+    return true;
+}
+
+static bool same_windows_target(const BY_HANDLE_FILE_INFORMATION *a,
+                                const BY_HANDLE_FILE_INFORMATION *b)
+{
+    return a->dwVolumeSerialNumber == b->dwVolumeSerialNumber &&
+           a->nFileIndexHigh == b->nFileIndexHigh &&
+           a->nFileIndexLow == b->nFileIndexLow &&
+           a->nFileSizeHigh == b->nFileSizeHigh &&
+           a->nFileSizeLow == b->nFileSizeLow &&
+           a->ftLastWriteTime.dwHighDateTime == b->ftLastWriteTime.dwHighDateTime &&
+           a->ftLastWriteTime.dwLowDateTime == b->ftLastWriteTime.dwLowDateTime &&
+           a->dwFileAttributes == b->dwFileAttributes;
+}
+
+static volatile LONG g_create_temp_counter = 0;
+
+static int open_windows_archive_stage(const std::string &target,
+                                      std::string *temporary, FILE **file)
+{
+    std::string directory = target;
+    size_t slash = directory.find_last_of("\\/");
+    int attempt;
+    if (slash == std::string::npos)
+        directory = ".\\";
+    else
+        directory.resize(slash + 1);
+
+    for (attempt = 0; attempt < 256; ++attempt) {
+        char suffix[64];
+        LONG serial = InterlockedIncrement(&g_create_temp_counter);
+        HANDLE handle;
+        int fd;
+        FILE *fp;
+        snprintf(suffix, sizeof(suffix), ".boltpack-create-%08lx.tmp",
+                 (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
+        *temporary = directory + suffix;
+        handle = CreateFileA(temporary->c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                             NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return BP_ERR_IO;
+        }
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
+        if (fd < 0) {
+            CloseHandle(handle);
+            DeleteFileA(temporary->c_str());
+            return BP_ERR_IO;
+        }
+        fp = _fdopen(fd, "w+b");
+        if (fp == NULL) {
+            _close(fd);
+            DeleteFileA(temporary->c_str());
+            return BP_ERR_IO;
+        }
+        *file = fp;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static bool publish_windows_archive_stage(const std::string &temporary,
+                                         const std::string &target,
+                                         const WindowsTargetSnapshot *expected,
+                                         std::string *backup,
+                                         int *result)
+{
+    WindowsTargetSnapshot current;
+    *result = 0;
+    if (!read_windows_target_snapshot(target, &current)) return false;
+    if (expected->exists) {
+        if (!current.exists || !same_windows_target(&current.info, &expected->info)) {
+            SetLastError(ERROR_FILE_INVALID);
+            return false;
+        }
+        *backup = temporary + ".previous";
+        if (GetFileAttributesA(backup->c_str()) != INVALID_FILE_ATTRIBUTES) {
+            SetLastError(ERROR_FILE_EXISTS);
+            return false;
+        }
+        if (!ReplaceFileA(target.c_str(), temporary.c_str(), backup->c_str(),
+                          0, NULL, NULL)) {
+            DWORD error = GetLastError();
+            if (GetFileAttributesA(backup->c_str()) != INVALID_FILE_ATTRIBUTES) {
+                *result = 2; /* retain stage and backup for recovery */
+                SetLastError(error);
+            }
+            return false;
+        }
+        if (!DeleteFileA(backup->c_str()))
+            *result = 1; /* archive is published; old archive remains as backup */
+        return true;
+    }
+    if (current.exists) {
+        SetLastError(ERROR_FILE_EXISTS);
+        return false;
+    }
+    return MoveFileExA(temporary.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+}
+
 static bool choose_output_archive_path(const std::vector<std::string> &input_files,
-                                       std::string &out_path)
+                                       std::string &out_path,
+                                       WindowsTargetSnapshot *target_snapshot)
 {
     Fl_Native_File_Chooser save_chooser;
     std::string preset = suggested_archive_name(input_files);
@@ -3135,7 +3328,11 @@ static bool choose_output_archive_path(const std::vector<std::string> &input_fil
          out_path.substr(out_path.size() - 4) != ".blt"))
         out_path += ".bolt";
 
-    if (access(out_path.c_str(), 0) == 0) {
+    if (!read_windows_target_snapshot(out_path, target_snapshot)) {
+        fl_alert("The selected destination cannot be inspected or is not a regular file.");
+        return false;
+    }
+    if (target_snapshot->exists) {
         int choice = fl_choice("File already exists:\n%s\n\nOverwrite?",
                                "Cancel", "Overwrite", NULL, out_path.c_str());
         if (choice != 1)
@@ -3151,12 +3348,19 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
     ProgressCtx *pctx;
     CreateWork work;
     std::string out_path;
+    std::string temporary;
+    FILE *stage_fp = NULL;
+    WindowsTargetSnapshot target_snapshot;
 
     if (input_files.empty())
         return;
 
-    if (!choose_output_archive_path(input_files, out_path))
+    if (!choose_output_archive_path(input_files, out_path, &target_snapshot))
         return;
+    if (open_windows_archive_stage(out_path, &temporary, &stage_fp) != BP_OK) {
+        fl_alert("Could not create a staging file beside the selected destination.");
+        return;
+    }
 
     pctx = create_progress_window("Creating archive...");
 
@@ -3171,10 +3375,12 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
     init_create_progress(pctx);
 
     work.input_files = input_files;
-    work.out_path    = out_path;
+    work.out_path    = temporary;
+    work.output_fp   = stage_fp;
     work.pctx        = pctx;
     work.method      = method;
     work.level       = level;
+    work.use_interchange_profile = (g_interchange_profile != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
     work.result      = BP_OK;
 
@@ -3193,20 +3399,42 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
         destroy_progress_window(pctx);
 
         if (was_cancelled || rc == BP_ERR_ABORTED) {
-            unlink(out_path.c_str());
+            DeleteFileA(temporary.c_str());
             fl_message("Archive creation cancelled.");
         } else if (rc != BP_OK) {
-            unlink(out_path.c_str());
+            DeleteFileA(temporary.c_str());
             fl_alert("Error creating archive:\n%s", bp_strerror(rc));
         } else {
-            do_open_archive(out_path.c_str());
+            std::string backup;
+            int publish_state = 0;
+            if (publish_windows_archive_stage(temporary, out_path,
+                                              &target_snapshot, &backup,
+                                              &publish_state)) {
+                do_open_archive(out_path.c_str());
+                if (publish_state == 1)
+                    fl_message("Archive saved. The previous archive remains at:\n%s",
+                               backup.c_str());
+            } else {
+                DWORD error = GetLastError();
+                if (publish_state == 2) {
+                    fl_alert("Replacement did not finish cleanly (Windows error %lu). "
+                             "Keep both recovery files:\n%s\n%s",
+                             (unsigned long)error, temporary.c_str(), backup.c_str());
+                } else {
+                    DeleteFileA(temporary.c_str());
+                    fl_alert("Could not publish the completed archive (Windows error %lu).",
+                             (unsigned long)error);
+                }
+            }
         }
     }
 }
 
 static void create_worker(CreateWork *w)
 {
-    FILE *fp = fopen(w->out_path.c_str(), "w+b");
+    FILE *fp = w->output_fp;
+    w->output_fp = NULL;
+    if (!fp) fp = fopen(w->out_path.c_str(), "w+b");
     if (!fp) { w->result = BP_ERR_IO; w->pctx->finished.store(true); return; }
 
     bp_io_t io;
@@ -3215,16 +3443,21 @@ static void create_worker(CreateWork *w)
     bp_archive_t ar;
     memset(&ar, 0, sizeof(ar));
 
-    int rc = bp_archive_create(&ar, &io, level_to_block_size(w->method, w->level),
-                               (bp_uint8)w->method);
+    int method = w->use_interchange_profile ? BP_METHOD_BOLTLITE : w->method;
+    int rc;
+    if (w->use_interchange_profile)
+        rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
+    else
+        rc = bp_archive_create(&ar, &io, level_to_block_size(method, w->level),
+                               (bp_uint8)method);
 
     /* Set progress callback and level AFTER bp_archive_create — it memsets the struct */
-    if (w->method == BP_METHOD_BOLTLZ)
+    if (!w->use_interchange_profile && method == BP_METHOD_BOLTLZ)
         ar.method_level = (bp_uint8)(w->level == 0 ? 1 : 2);
-    else if (w->method == BP_METHOD_FLUFF)
+    else if (!w->use_interchange_profile && method == BP_METHOD_FLUFF)
         ar.method_level = (bp_uint8)fluff_gui_level(w->level);
 #ifdef BOLTPACK_ZSTD
-    else if (w->method == BP_METHOD_ZSTD)
+    else if (!w->use_interchange_profile && method == BP_METHOD_ZSTD)
         ar.method_level = (bp_uint8)zstd_gui_level(w->level);
 #endif
     ar.progress_fn   = progress_cb;
@@ -3232,11 +3465,11 @@ static void create_worker(CreateWork *w)
 
     if (rc == BP_OK) {
 #ifdef BOLTPACK_FAST_FLUFF
-        if (w->method == BP_METHOD_FLUFF && w->use_fast_fluff) {
+        if (method == BP_METHOD_FLUFF && w->use_fast_fluff) {
             int nthreads = fast_fluff_thread_count();
             if (nthreads > 1)
                 bp_set_fast_fluff(&ar, nthreads);
-        } else if (w->method == BP_METHOD_BOLTLZ) {
+        } else if (method == BP_METHOD_BOLTLZ) {
             int nthreads = fast_fluff_thread_count();
             if (nthreads > 1)
                 bp_set_fast_boltlz(&ar, nthreads);
@@ -3256,7 +3489,12 @@ static void create_worker(CreateWork *w)
             rc = bp_archive_finalize(&ar);
     }
     bp_archive_close(&ar);
-    fclose(fp);
+    if (rc == BP_OK && fflush(fp) != 0)
+        rc = BP_ERR_IO;
+    if (rc == BP_OK && _commit(_fileno(fp)) != 0)
+        rc = BP_ERR_IO;
+    if (fclose(fp) != 0 && rc == BP_OK)
+        rc = BP_ERR_IO;
     w->result = rc;
     w->pctx->finished.store(true);
 }
@@ -3560,9 +3798,11 @@ static void create_and_send(const std::vector<std::string> &input_files)
     CreateWork work;
     work.input_files = input_files;
     work.out_path    = out_path;
+    work.output_fp   = NULL;
     work.pctx        = pctx;
     work.method      = g_compression_method;
     work.level       = g_compression_level;
+    work.use_interchange_profile = (g_interchange_profile != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
     work.result      = BP_OK;
 
@@ -4207,7 +4447,8 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
 {
     int choice = fl_choice("Reset GUI settings to defaults?\n"
                            "This restores the default compression mode,\n"
-                           "Fluff threading, window size and position,\n"
+                           "compression profile, Fluff threading,\n"
+                           "window size and position,\n"
                            "and file-list columns.",
                            "Cancel", "Reset", NULL);
     if (choice != 1) return;
@@ -4215,6 +4456,7 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
     g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
+    g_interchange_profile = 0;
 
     g_have_persisted_col_widths = false;
     memset(g_persisted_col_widths, 0, sizeof(g_persisted_col_widths));

@@ -536,7 +536,8 @@ OS/2 CLI also exposes create/add profile selection; its Watcom cross-build
 passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
-Other full frontends have not yet exposed a user-selectable profile option.
+The Windows FLTK GUI also offers the profile for archive creation and network
+sending. Other full frontends have not yet exposed a user-selectable profile option.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
