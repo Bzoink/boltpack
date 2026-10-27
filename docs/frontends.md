@@ -1081,6 +1081,7 @@ arm64-apple-macosx11-clang -ansi -pedantic -Wall -Wextra -O2 \
     -I src/core  \
     src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/macosx/main.c src/core/boltlz.c \
+    -framework CoreFoundation \
     -o boltpack
 ```
 
@@ -1188,19 +1189,53 @@ POSIX `opendir()` / `readdir()` / `stat()` — identical to the Linux frontend. 
 
 ### macOS: Platform Metadata
 
-The macOS frontend can produce up to three supplementary entries per file, in this order after the data entry:
+The macOS CLI can produce up to three supplementary entries after a file or
+directory entry, in this order:
 
 | Entry type                             | Condition               | Content                                                                           |
 | -------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
-| `BP_TYPE_RSRC`                         | Resource fork non-empty | Resource fork bytes (read via `XATTR_RESOURCEFORK_NAME` xattr)                    |
+| `BP_TYPE_RSRC`                         | Resource fork non-empty and at most 16 MiB | Resource fork bytes (read via `XATTR_RESOURCEFORK_NAME` xattr) |
 | `BP_TYPE_META` (`BP_OS_MACOSX = 0x03`) | Every data/dir entry    | 2-byte Unix permissions (low 9 bits of `mode_t`)                                  |
 | `BP_TYPE_META` (`BP_OS_MACOS9 = 0x02`) | Finder info present     | 18-byte Classic Mac info: Type (4), Creator (4), flags (2), crdate (4), mdate (4) |
 
 On extraction:
 
 - `BP_TYPE_RSRC` → restored via `setxattr(path, XATTR_RESOURCEFORK_NAME, ...)`
-- `BP_TYPE_META` (`BP_OS_MACOSX`) → `chmod()` restores Unix permissions
+- `BP_TYPE_META` (`BP_OS_MACOSX`) → `chmod()` restores Unix permissions after
+  resource forks and Finder info; directory permissions are deferred until
+  children finish
 - `BP_TYPE_META` (`BP_OS_MACOS9`) → `setxattr(path, "com.apple.FinderInfo", ...)` restores 32-byte Finder info block
+- Format-6 valid mtimes restore to files and symlinks; directory mtimes are
+  deferred until extraction ends
+- Archive creation stores checked 64-bit UTC mtimes, including epoch zero;
+  negative or host-unrepresentable source times are encoded as unknown with a
+  warning
+- Classic Mac creation/modification dates in the 18-byte Finder record are
+  not restored and cause a partial-preservation result. Portable FAT flags do
+  not have a macOS mapping and are also reported as partial.
+- Resource forks larger than 16 MiB or unavailable through the source xattr API
+  are warned about and omitted; destination filesystems that reject resource
+  fork xattrs return a partial-preservation result.
+
+Regular files are written to exclusive sibling temporary files and published
+only after the core verifies the checksum and the stream closes. Symlinks are
+buffered, checked against the extraction root, staged beside the destination,
+and then published. Existing path components are checked with `lstat()` to
+reject symlinks and non-directories. Because these are pathname checks rather
+than directory-relative operations, a concurrent process can still replace a
+checked parent between validation and use. Extraction preflights projected
+names before creating the output root: canonical Unicode-equivalent and
+case-insensitive collisions, file/directory prefix conflicts, paths beyond
+`PATH_MAX`, and components beyond `NAME_MAX` are refused. The 65,535-entry
+preflight bound and conservative case folding also apply on case-sensitive
+volumes. Unsupported or unrepresentable metadata produces a partial result.
+
+Create, append, and delete write to an exclusive sibling archive stage and
+replace the target with a same-filesystem rename after finalization and close.
+Append and delete reject non-regular archive targets and detect a replaced or
+changed target before publication. Existing permission bits are copied to the
+replacement archive; ownership, ACLs, and extended attributes are not copied.
+The macOS CLI still needs a macOS target build and runtime round trip.
 
 ### macOS: Text Encoding
 
@@ -2403,7 +2438,7 @@ To port BoltPack to a new platform:
 7. Archive platform-specific metadata as `BP_TYPE_META` entries with the appropriate `BP_OS_*` platform tag
 8. Call `bp_compress_init()` once at startup
 9. Use `bp_archive_create` / `bp_archive_add_entry` / `bp_archive_finalize` for packing
-10. Use `bp_archive_extract_all` for unpacking
+10. Use `bp_archive_extract_all_ex` for checksum-aware unpacking and cleanup
 
 The core API is pure C89 and compiles on any platform with a C89 compiler. No porting of the core is needed.
 

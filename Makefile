@@ -600,6 +600,7 @@ macosx:
 	    src/frontend/macosx/main.c \
 	    src/frontend/linux/bp_net.c \
 	    $(BOLTLZDIR)/boltlz.c \
+	    -framework CoreFoundation \
 	    -o $(MACOSX_BUILDDIR)/boltpack
 
 # Haiku / BeOS (x86_64)

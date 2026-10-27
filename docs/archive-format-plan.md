@@ -108,6 +108,23 @@ precedence, and other archive-edit cases remain outstanding. The mini
 extractor checks all table and inline entry headers before opening an output
 file.
 
+The macOS CLI now stages create, append, and delete operations in exclusive
+sibling files and publishes them by same-filesystem rename. Add/delete reject
+non-regular targets and refuse publication if the archive path's identity,
+size, or second-resolution timestamps changed during the operation. The staged
+replacement retains permission bits, but not archive ownership, ACLs, or
+extended attributes. Extraction now uses the status-aware core callback,
+stages regular files and symlinks until checksum verification, checks
+path-based parent components, and preflights up to 65,535 physical entries for
+case/Unicode collisions and file/directory prefix conflicts. It restores
+resource forks, Finder info, Unix modes, and valid mtimes where supported;
+directory modes and times are deferred. Classic Finder creation/modification
+dates and portable FAT flags are reported as partial because this frontend
+does not restore them. Negative or host-unrepresentable source mtimes are
+encoded as unknown and warned about; epoch zero remains valid. Its path checks retain a concurrent
+parent-substitution race, and the macOS target build and runtime round trip
+remain unverified in this environment.
+
 BoltPack is not widely used, so earlier archive versions need not be supported.
 Use that freedom to define a clear new contract. Basic transfer correctness is
 the first deliverable; richer metadata remains a separate, optional phase.
