@@ -202,6 +202,17 @@ encoded as unknown and warned about; epoch zero remains valid. Its path checks r
 parent-substitution race, and the macOS target build and runtime round trip
 remain unverified in this environment.
 
+The macOS Cocoa GUI extraction path now checks existing path components for
+symlinks and non-directories, writes regular files to exclusive sibling stages,
+and publishes only after checksum verification and successful flush, mode
+setup, and close. A failed extraction leaves an existing destination file
+untouched. It restores only format-6 timestamps marked valid, including epoch
+zero, preserves the extracted file's access time, and defers explicit directory
+times until children finish. Symlinks, resource forks, and native sidecar
+metadata are skipped with a partial result. The Cocoa path still uses pathname
+checks, so concurrent parent substitution remains possible; case and Unicode
+normalization collision preflight and target runtime validation are open.
+
 BoltPack is not widely used, so earlier archive versions need not be supported.
 Use that freedom to define a clear new contract. Basic transfer correctness is
 the first deliverable; richer metadata remains a separate, optional phase.

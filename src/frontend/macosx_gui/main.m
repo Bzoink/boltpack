@@ -18,6 +18,8 @@
 #include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,6 +30,7 @@
 #include "fluff.h"
 #include "boltlite.h"
 #include "help_text.h"
+#include "bp_time.h"
 
 #ifndef BP_LEGACY_COCOA
 #define BP_LEGACY_COCOA 0
@@ -118,6 +121,7 @@ static const char *bp_strerror_local(int code)
     case BP_ERR_COMPRESS:           return "compression failed";
     case BP_ERR_DECOMPRESS:         return "decompression failed";
     case BP_ERR_ABORTED:            return "operation aborted";
+    case BP_ERR_PARTIAL:             return "some files or attributes were not restored";
     case BP_ERR_NOT_FOUND:          return "entry not found";
     case BP_ERR_INVALID_ARG:        return "invalid argument";
     default:                        return "unknown error";
@@ -765,12 +769,27 @@ static const char *bp_gui_dev_path(NSString *path)
 /* ====================================================================== */
 
 typedef struct {
+    bp_io_t           io;             /* MUST be first */
+    char              path[4096];
+    char              temporary[4096];
+} cocoa_extract_output;
+
+typedef struct {
+    char      *path;
+    bp_uint64  mtime;
+    int        mtime_valid;
+} cocoa_dir_restore;
+
+typedef struct {
     const char      *dest;
     BPProgressPanel *panel;
     BP_UNSAFE_UNRETAINED NSArray *selected_names;
     BP_UNSAFE_UNRETAINED NSMutableSet *flat_output_paths;
-    BP_UNSAFE_UNRETAINED NSMutableDictionary *resolved_output_paths;
     int               extract_flat;
+    int               open_error;
+    unsigned long     partial_count;
+    cocoa_dir_restore *directories;
+    unsigned long     directory_count;
     double            selected_total_bytes;
     double            selected_done_bytes;
     unsigned long     selected_file_total;
@@ -783,20 +802,147 @@ enum {
     COCOA_EXTRACT_FLAT = 1
 };
 
-static void cocoa_makedirs(const char *path)
+static int cocoa_safe_makedirs(const char *path)
 {
     char tmp[4096];
     char *p;
-    strncpy(tmp, path, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
+    size_t n;
+
+    if (path == NULL) { errno = EINVAL; return -1; }
+    n = strlen(path);
+    if (n == 0 || n >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, path, n + 1);
+    for (p = tmp + (tmp[0] == '/' ? 1 : 0); ; p++) {
+        if (*p == '/' || *p == '\0') {
+            char saved = *p;
+            struct stat st;
+            if (p != tmp && p[-1] != '/') {
+                *p = '\0';
+                if (lstat(tmp, &st) == 0) {
+                    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+                        errno = ENOTDIR;
+                        return -1;
+                    }
+                } else if (errno == ENOENT) {
+                    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+                        return -1;
+                    if (lstat(tmp, &st) != 0 || !S_ISDIR(st.st_mode) ||
+                        S_ISLNK(st.st_mode)) {
+                        errno = ENOTDIR;
+                        return -1;
+                    }
+                } else {
+                    return -1;
+                }
+                *p = saved;
+            }
+            if (saved == '\0') break;
         }
     }
-    mkdir(tmp, 0755);
+    return 0;
+}
+
+static int cocoa_safe_parent(const char *path)
+{
+    char parent[4096];
+    char *slash;
+    size_t n;
+    if (path == NULL) { errno = EINVAL; return -1; }
+    n = strlen(path);
+    if (n >= sizeof(parent)) { errno = ENAMETOOLONG; return -1; }
+    memcpy(parent, path, n + 1);
+    slash = strrchr(parent, '/');
+    if (slash == NULL) return 0;
+    if (slash == parent) slash[1] = '\0';
+    else *slash = '\0';
+    return cocoa_safe_makedirs(parent);
+}
+
+static int cocoa_make_extract_stage(const char *path,
+                                    char *temporary, size_t cap)
+{
+    const char *slash;
+    int n;
+    if (path == NULL || temporary == NULL) { errno = EINVAL; return -1; }
+    slash = strrchr(path, '/');
+    if (slash == NULL)
+        n = snprintf(temporary, cap, ".boltpack-XXXXXX");
+    else if (slash == path)
+        n = snprintf(temporary, cap, "/.boltpack-XXXXXX");
+    else
+        n = snprintf(temporary, cap, "%.*s/.boltpack-XXXXXX",
+                     (int)(slash - path), path);
+    if (n < 0 || (size_t)n >= cap) { errno = ENAMETOOLONG; return -1; }
+    return mkstemp(temporary);
+}
+
+static int cocoa_queue_directory(cocoa_extract_ctx *ctx, const char *path,
+                                 const bp_entry_t *entry)
+{
+    cocoa_dir_restore *items;
+    cocoa_dir_restore *item;
+    size_t n;
+    if (ctx->directory_count >= 256) {
+        ctx->partial_count++;
+        return BP_ERR_PARTIAL;
+    }
+    items = (cocoa_dir_restore *)realloc(ctx->directories,
+        (size_t)(ctx->directory_count + 1) * sizeof(*items));
+    if (items == NULL) return BP_ERR_NOMEM;
+    ctx->directories = items;
+    item = &ctx->directories[ctx->directory_count];
+    n = strlen(path);
+    item->path = (char *)malloc(n + 1);
+    if (item->path == NULL) return BP_ERR_NOMEM;
+    memcpy(item->path, path, n + 1);
+    item->mtime = entry->mtime;
+    item->mtime_valid = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0;
+    ctx->directory_count++;
+    return BP_OK;
+}
+
+static void cocoa_finish_directories(cocoa_extract_ctx *ctx)
+{
+    unsigned long done;
+    for (done = 0; done < ctx->directory_count; done++) {
+        unsigned long i, best = done;
+        size_t best_len = strlen(ctx->directories[best].path);
+        for (i = done + 1; i < ctx->directory_count; i++) {
+            size_t len = strlen(ctx->directories[i].path);
+            if (len > best_len) { best = i; best_len = len; }
+        }
+        if (best != done) {
+            cocoa_dir_restore swap = ctx->directories[done];
+            ctx->directories[done] = ctx->directories[best];
+            ctx->directories[best] = swap;
+        }
+        if (ctx->directories[done].mtime_valid &&
+            bp_restore_mtime(ctx->directories[done].path,
+                             ctx->directories[done].mtime) != BP_OK)
+            ctx->partial_count++;
+    }
+}
+
+static void cocoa_destroy_extract_ctx(cocoa_extract_ctx *ctx)
+{
+    unsigned long i;
+    for (i = 0; i < ctx->directory_count; i++)
+        free(ctx->directories[i].path);
+    free(ctx->directories);
+    ctx->directories = NULL;
+    ctx->directory_count = 0;
+}
+
+static int cocoa_finish_extract(cocoa_extract_ctx *ctx, int rc)
+{
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) &&
+        ctx->open_error != BP_OK)
+        rc = ctx->open_error;
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL)
+        cocoa_finish_directories(ctx);
+    if (rc == BP_OK && ctx->partial_count != 0)
+        rc = BP_ERR_PARTIAL;
+    return rc;
 }
 
 static int cocoa_name_matches_filters(const char *entry_name, NSArray *filters)
@@ -819,9 +965,7 @@ static int cocoa_name_matches_filters(const char *entry_name, NSArray *filters)
 
 static int cocoa_entry_writes_file(int entry_type)
 {
-    return entry_type != BP_TYPE_DIR &&
-           entry_type != BP_TYPE_RSRC &&
-           entry_type != BP_TYPE_META;
+    return entry_type == BP_TYPE_DATA;
 }
 
 static int cocoa_selection_needs_extract_mode_choice(NSArray *names)
@@ -850,7 +994,7 @@ static const char *cocoa_basename(const char *path)
 static int cocoa_path_exists(const char *path)
 {
     struct stat st;
-    return path != NULL && stat(path, &st) == 0;
+    return path != NULL && lstat(path, &st) == 0;
 }
 
 static void cocoa_split_flat_name(const char *name,
@@ -916,8 +1060,11 @@ static int cocoa_make_flat_output_path(cocoa_extract_ctx *ctx,
                      stem, suffix, ext);
         }
 
-        snprintf(fullpath, fullpath_size, "%s/%s", ctx->dest, candidate);
-        fullpath[fullpath_size - 1] = '\0';
+        {
+            int n = snprintf(fullpath, fullpath_size, "%s/%s",
+                             ctx->dest, candidate);
+            if (n < 0 || (size_t)n >= fullpath_size) return 0;
+        }
 
         candidate_path = [NSString stringWithUTF8String:fullpath];
         if (candidate_path == nil) return 0;
@@ -966,116 +1113,156 @@ static bp_io_t *cocoa_extract_open(const bp_entry_t *entry, void *ud)
     cocoa_extract_ctx *ctx = (cocoa_extract_ctx *)ud;
     char fullpath[4096];
     NSString *resolved_path;
-    char *sl;
     FILE *fp;
-    bp_io_t *out;
+    cocoa_extract_output *output;
+    int fd;
 
     if (!entry->name) return NULL;
     if (entry->entry_type == BP_TYPE_RSRC ||
-        entry->entry_type == BP_TYPE_META)
+        entry->entry_type == BP_TYPE_META) {
+        if (cocoa_name_matches_filters(entry->name, ctx->selected_names))
+            ctx->partial_count++;
         return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_SYMLINK) {
+        if (cocoa_name_matches_filters(entry->name, ctx->selected_names))
+            ctx->partial_count++;
+        return NULL;
+    }
+    if (entry->entry_type != BP_TYPE_DATA &&
+        entry->entry_type != BP_TYPE_DIR) {
+        if (cocoa_name_matches_filters(entry->name, ctx->selected_names))
+            ctx->partial_count++;
+        return NULL;
+    }
     if (!cocoa_name_matches_filters(entry->name, ctx->selected_names))
         return NULL;
 
     if (ctx->extract_flat) {
         if (entry->entry_type == BP_TYPE_DIR) return NULL;
         if (!cocoa_make_flat_output_path(ctx, entry->name,
-                                         fullpath, sizeof(fullpath)))
+                                         fullpath, sizeof(fullpath))) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
             return NULL;
+        }
     } else {
-        snprintf(fullpath, sizeof(fullpath), "%s/%s",
-                 ctx->dest, entry->name);
+        int n = snprintf(fullpath, sizeof(fullpath), "%s/%s",
+                         ctx->dest, entry->name);
+        if (n < 0 || (size_t)n >= sizeof(fullpath)) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
     }
-
-    /* Path traversal guard */
-    if (strstr(fullpath, "/../") != NULL) return NULL;
 
     if (entry->entry_type == BP_TYPE_DIR) {
         if (ctx->selected_names && [ctx->selected_names count] > 0)
             return NULL;
-        cocoa_makedirs(fullpath);
+        if (cocoa_safe_makedirs(fullpath) != 0) {
+            ctx->open_error = BP_ERR_IO;
+            return NULL;
+        }
+        {
+            int queue_rc = cocoa_queue_directory(ctx, fullpath, entry);
+            if (queue_rc != BP_OK) ctx->open_error = queue_rc;
+        }
         return NULL;
     }
 
-    sl = strrchr(fullpath, '/');
-    if (sl) {
-        char dir[4096];
-        size_t len = (size_t)(sl - fullpath);
-        if (len >= sizeof(dir)) return NULL;
-        memcpy(dir, fullpath, len);
-        dir[len] = '\0';
-        cocoa_makedirs(dir);
+    if (cocoa_safe_parent(fullpath) != 0) {
+        ctx->open_error = BP_ERR_IO;
+        return NULL;
     }
 
-    fp = fopen(fullpath, "wb");
-    if (!fp) return NULL;
-    out = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!out) { fclose(fp); return NULL; }
-    *out = make_io(fp);
+    output = (cocoa_extract_output *)calloc(1, sizeof(*output));
+    if (output == NULL) {
+        ctx->open_error = BP_ERR_NOMEM;
+        return NULL;
+    }
+    if (strlen(fullpath) >= sizeof(output->path)) {
+        free(output);
+        ctx->open_error = BP_ERR_NAME_TOO_LONG;
+        return NULL;
+    }
+    strcpy(output->path, fullpath);
+    fd = cocoa_make_extract_stage(fullpath, output->temporary,
+                                  sizeof(output->temporary));
+    if (fd < 0) {
+        free(output);
+        ctx->open_error = BP_ERR_IO;
+        return NULL;
+    }
+    fp = fdopen(fd, "wb");
+    if (fp == NULL) {
+        close(fd);
+        unlink(output->temporary);
+        free(output);
+        ctx->open_error = BP_ERR_IO;
+        return NULL;
+    }
+    output->io = make_io(fp);
 
     resolved_path = [NSString stringWithUTF8String:fullpath];
     if (resolved_path != nil) {
         if (ctx->extract_flat && ctx->flat_output_paths) {
             [ctx->flat_output_paths addObject:resolved_path];
         }
-        if (ctx->resolved_output_paths) {
-            NSValue *key = [NSValue valueWithPointer:out->handle];
-            [ctx->resolved_output_paths setObject:resolved_path forKey:key];
-        }
     }
 
-    return out;
+    return &output->io;
 }
 
-static void cocoa_extract_done(const bp_entry_t *entry, bp_io_t *out,
-                                void *ud)
+static int cocoa_extract_done(const bp_entry_t *entry, bp_io_t *out,
+                              int status, void *ud)
 {
     cocoa_extract_ctx *ctx = (cocoa_extract_ctx *)ud;
-    NSValue *key = nil;
-    NSString *resolved_path = nil;
-    char fallback_path[4096];
-    const char *mtime_path = NULL;
+    cocoa_extract_output *output;
+    FILE *fp;
+    int rc = BP_OK;
+    mode_t mask;
 
-    if (ctx && out && entry && cocoa_entry_writes_file(entry->entry_type)) {
+    if (out == NULL) return BP_OK;
+    output = (cocoa_extract_output *)out;
+    fp = (FILE *)out->handle;
+    if (status != BP_OK) {
+        if (fp != NULL) (void)fclose(fp);
+        if (output->temporary[0] != '\0') (void)unlink(output->temporary);
+        free(output);
+        return BP_OK;
+    }
+
+    if (fp == NULL || fflush(fp) != 0) rc = BP_ERR_IO;
+    if (rc == BP_OK) {
+        mask = umask(0);
+        (void)umask(mask);
+        if (fchmod(fileno(fp), (mode_t)(0666 & ~mask)) != 0)
+            rc = BP_ERR_IO;
+    }
+    if (fp != NULL && fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    output->io.handle = NULL;
+
+    if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        bp_restore_mtime(output->temporary, entry->mtime) != BP_OK)
+        rc = BP_ERR_PARTIAL;
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+        if (rename(output->temporary, output->path) != 0) {
+            (void)unlink(output->temporary);
+            rc = BP_ERR_IO;
+        }
+    } else {
+        (void)unlink(output->temporary);
+    }
+
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
         ctx->extracted_file_count++;
         if (ctx->selected_names &&
             cocoa_name_matches_filters(entry->name, ctx->selected_names)) {
             ctx->selected_done_bytes += u64_to_double(entry->original_size);
             ctx->selected_files_done++;
         }
+        if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
     }
-
-    if (ctx && out && ctx->resolved_output_paths) {
-        key = [NSValue valueWithPointer:out->handle];
-        resolved_path = [ctx->resolved_output_paths objectForKey:key];
-    }
-
-    if (out) {
-        if (out->handle) fclose((FILE *)out->handle);
-
-        if (resolved_path != nil) {
-            mtime_path = [resolved_path fileSystemRepresentation];
-        } else if (ctx && !ctx->extract_flat && ctx->dest && entry && entry->name) {
-            snprintf(fallback_path, sizeof(fallback_path), "%s/%s",
-                     ctx->dest, entry->name);
-            fallback_path[sizeof(fallback_path) - 1] = '\0';
-            mtime_path = fallback_path;
-        }
-
-        if (entry && mtime_path != NULL && !bp_u64_is_zero(entry->mtime)) {
-            struct utimbuf ut;
-            time_t secs = (time_t)bp_u64_to_ulong(entry->mtime);
-            ut.actime  = secs;
-            ut.modtime = secs;
-            utime(mtime_path, &ut);
-        }
-
-        if (ctx && key && ctx->resolved_output_paths) {
-            [ctx->resolved_output_paths removeObjectForKey:key];
-        }
-
-        free(out);
-    }
+    free(output);
+    return rc;
 }
 
 static int cocoa_extract_progress(const bp_progress_t *p, void *ud)
@@ -1691,17 +1878,22 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
     ctx.panel = prog;
     ctx.selected_names = nil;
     ctx.flat_output_paths = nil;
-    ctx.resolved_output_paths = [NSMutableDictionary dictionary];
     ctx.extract_flat = COCOA_EXTRACT_WITH_PATHS;
+    ctx.open_error = BP_OK;
+    ctx.partial_count = 0;
+    ctx.directories = NULL;
+    ctx.directory_count = 0;
     ctx.selected_total_bytes = 0.0;
     ctx.selected_done_bytes = 0.0;
     ctx.selected_file_total = 0;
     ctx.selected_files_done = 0;
     ctx.extracted_file_count = 0;
 
-    int rc = bp_archive_extract_all(&io,
+    int rc = bp_archive_extract_all_ex(&io,
         cocoa_extract_open, cocoa_extract_done,
         cocoa_extract_progress, &ctx);
+    rc = cocoa_finish_extract(&ctx, rc);
+    cocoa_destroy_extract_ctx(&ctx);
 
     bp_end_progress_window(self, prog);
 
@@ -1710,6 +1902,15 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
                        ctx.extracted_file_count);
         NSAlert *a = [[NSAlert alloc] init];
         [a setMessageText:@"Extraction cancelled"];
+        [a runModal];
+    } else if (rc == BP_ERR_PARTIAL) {
+        bp_gui_dev_log("doExtract: partial files=%lu items=%lu",
+                       ctx.extracted_file_count, ctx.partial_count);
+        NSAlert *a = [[NSAlert alloc] init];
+        [a setMessageText:@"Extraction partially complete"];
+        [a setInformativeText:[NSString stringWithFormat:
+            @"%u files were extracted. %u items or attributes could not be restored.",
+            (unsigned)ctx.extracted_file_count, (unsigned)ctx.partial_count]];
         [a runModal];
     } else if (rc != BP_OK) {
         bp_gui_dev_log("doExtract: failed rc=%d (%s)",
@@ -1800,17 +2001,22 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
     ctx.panel = prog;
     ctx.selected_names = selectedNames;
     ctx.flat_output_paths = [NSMutableSet set];
-    ctx.resolved_output_paths = [NSMutableDictionary dictionary];
     ctx.extract_flat = extract_mode;
+    ctx.open_error = BP_OK;
+    ctx.partial_count = 0;
+    ctx.directories = NULL;
+    ctx.directory_count = 0;
     ctx.selected_total_bytes = selectedBytes;
     ctx.selected_done_bytes = 0.0;
     ctx.selected_file_total = selectedFiles;
     ctx.selected_files_done = 0;
     ctx.extracted_file_count = 0;
 
-    int rc = bp_archive_extract_all(&io,
+    int rc = bp_archive_extract_all_ex(&io,
         cocoa_extract_open, cocoa_extract_done,
         cocoa_extract_progress, &ctx);
+    rc = cocoa_finish_extract(&ctx, rc);
+    cocoa_destroy_extract_ctx(&ctx);
 
     bp_end_progress_window(self, prog);
 
@@ -1819,6 +2025,15 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
                        ctx.extracted_file_count);
         NSAlert *a = [[NSAlert alloc] init];
         [a setMessageText:@"Extraction cancelled"];
+        [a runModal];
+    } else if (rc == BP_ERR_PARTIAL) {
+        bp_gui_dev_log("doExtractSelected: partial files=%lu items=%lu",
+                       ctx.extracted_file_count, ctx.partial_count);
+        NSAlert *a = [[NSAlert alloc] init];
+        [a setMessageText:@"Extraction partially complete"];
+        [a setInformativeText:[NSString stringWithFormat:
+            @"%u selected files were extracted. %u items or attributes could not be restored.",
+            (unsigned)ctx.extracted_file_count, (unsigned)ctx.partial_count]];
         [a runModal];
     } else if (rc != BP_OK) {
         bp_gui_dev_log("doExtractSelected: failed rc=%d (%s)",
