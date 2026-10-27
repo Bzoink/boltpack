@@ -81,11 +81,18 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
 #include <utime.h>
 #include <fcntl.h>
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+/* Some C library headers hide this POSIX declaration under strict C89 mode. */
+extern int mkstemp(char *template_path);
 
 /* ---- macOS metadata sizes --------------------------------------------- */
 
@@ -152,6 +159,58 @@ static void bp_io_from_file(bp_io_t *io, FILE *fp)
     io->seek   = file_seek;
     io->tell   = file_tell;
     io->handle = fp;
+}
+
+/* Create an exclusive temporary archive beside target so rename stays on the
+ * same filesystem.  mkstemp starts at mode 0600; callers restore the archive's
+ * previous mode, or the normal create mode filtered by the process umask. */
+static int make_archive_stage(const char *target, char *stage, size_t cap)
+{
+    static const char suffix[] = ".bp_tmp.XXXXXX";
+    size_t n = strlen(target);
+    if (n + sizeof(suffix) > cap) { errno = ENAMETOOLONG; return -1; }
+    memcpy(stage, target, n);
+    memcpy(stage + n, suffix, sizeof(suffix));
+    return mkstemp(stage);
+}
+
+static int archive_mode_for_stage(const char *target, mode_t *mode,
+                                  struct stat *snapshot, int must_exist)
+{
+    if (lstat(target, snapshot) == 0) {
+        if (!S_ISREG(snapshot->st_mode)) { errno = EINVAL; return -1; }
+        *mode = snapshot->st_mode & 07777;
+        return 0;
+    }
+    if (errno != ENOENT || must_exist) return -1;
+    {
+        mode_t mask = umask(0);
+        (void)umask(mask);
+        *mode = (mode_t)(0666 & ~mask);
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    return 0;
+}
+
+static int archive_target_unchanged(const char *target,
+                                    const struct stat *snapshot)
+{
+    struct stat now;
+    if (lstat(target, &now) != 0) return 0;
+    return S_ISREG(now.st_mode) && now.st_dev == snapshot->st_dev &&
+           now.st_ino == snapshot->st_ino && now.st_size == snapshot->st_size &&
+           now.st_mtime == snapshot->st_mtime &&
+           now.st_ctime == snapshot->st_ctime;
+}
+
+static int copy_archive_stream(FILE *src, FILE *dst)
+{
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) != 0) {
+        if (fwrite(buf, 1, n, dst) != n) return -1;
+    }
+    return ferror(src) ? -1 : 0;
 }
 
 /* ---- read-only memory buffer I/O (for metadata payloads) -------------- */
@@ -339,6 +398,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_PARTIAL:           return "partial preservation";
     default:                       return "unknown error";
     }
 }
@@ -414,13 +474,18 @@ static int ends_with_slash(const char *s)
     return len > 0 && s[len - 1] == '/';
 }
 
-static void path_join(char *buf, size_t bufsize, const char *dir,
-                      const char *name)
+static int path_join(char *buf, size_t bufsize, const char *dir,
+                     const char *name)
 {
-    if (ends_with_slash(dir))
-        snprintf(buf, bufsize, "%s%s", dir, name);
-    else
-        snprintf(buf, bufsize, "%s/%s", dir, name);
+    size_t dlen = strlen(dir);
+    size_t nlen = strlen(name);
+    int slash = !ends_with_slash(dir);
+    if (dlen + (size_t)slash + nlen + 1 > bufsize)
+        return BP_ERR_NAME_TOO_LONG;
+    memcpy(buf, dir, dlen);
+    if (slash) buf[dlen++] = '/';
+    memcpy(buf + dlen, name, nlen + 1);
+    return BP_OK;
 }
 
 static const char *clean_path(const char *path)
@@ -584,13 +649,13 @@ static int macos_decode_classic_meta(const unsigned char *buf, int len,
 /*
  * macos_has_meaningful_finder_info: return non-zero if the raw 32-byte
  * FinderInfo xattr contains non-trivial data worth preserving (non-zero
- * type code OR non-zero creator code).
+ * type, creator, or Finder flags).
  */
 static int macos_has_meaningful_finder_info(const unsigned char *fi_raw)
 {
     int i;
-    /* Type code is [0..3], Creator code is [4..7] */
-    for (i = 0; i < 8; i++) {
+    /* Type code [0..3], creator [4..7], and flags [8..9]. */
+    for (i = 0; i < 10; i++) {
         if (fi_raw[i] != 0) return 1;
     }
     return 0;
@@ -598,9 +663,19 @@ static int macos_has_meaningful_finder_info(const unsigned char *fi_raw)
 
 static bp_uint32 macos_unix_to_mac_time(time_t unix_time)
 {
-    if (unix_time < (time_t)0)
+    unsigned long seconds;
+    if (unix_time < (time_t)0) {
+        fprintf(stderr,
+                "boltpack: warning: pre-1970 Classic Mac date cannot be stored\n");
         return 0;
-    return (bp_uint32)((unsigned long)unix_time + MAC_EPOCH_DELTA);
+    }
+    seconds = (unsigned long)unix_time;
+    if (seconds > 0xFFFFFFFFUL - MAC_EPOCH_DELTA) {
+        fprintf(stderr,
+                "boltpack: warning: Classic Mac date is outside its 32-bit range\n");
+        return 0;
+    }
+    return (bp_uint32)(seconds + MAC_EPOCH_DELTA);
 }
 
 static bp_uint32 macos_stat_creation_time(const struct stat *st)
@@ -612,6 +687,26 @@ static bp_uint32 macos_stat_creation_time(const struct stat *st)
 #else
     return macos_unix_to_mac_time(st->st_mtime);
 #endif
+}
+
+/* Format 6 stores unsigned UTC seconds. Negative and host-unrepresentable
+ * values are encoded as unknown rather than narrowed or wrapped. */
+static bp_uint64 macos_archive_mtime(time_t value, bp_uint16 *flags)
+{
+    bp_off_t seconds;
+    if (value < (time_t)0) {
+        fprintf(stderr,
+                "boltpack: warning: pre-1970 modification time cannot be stored\n");
+        return bp_u64_from_u32(0);
+    }
+    seconds = (bp_off_t)value;
+    if (seconds < 0 || (time_t)seconds != value) {
+        fprintf(stderr,
+                "boltpack: warning: modification time is outside the archive range\n");
+        return bp_u64_from_u32(0);
+    }
+    *flags |= BP_ENTRY_FLAG_MTIME_VALID;
+    return bp_off_to_u64(seconds);
 }
 
 /* ---- add meta / rsrc entries after a data entry ----------------------- */
@@ -679,8 +774,10 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
-        path_join(child_arc,  sizeof(child_arc),  arc_prefix, ent->d_name);
+        rc = path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
+        if (rc == BP_OK)
+            rc = path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name);
+        if (rc != BP_OK) { closedir(d); return rc; }
         rc = add_path(ar, child_path, child_arc);
         if (rc != BP_OK) { closedir(d); return rc; }
     }
@@ -691,6 +788,8 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct stat st;
+    bp_uint16 flags;
+    bp_uint64 mtime;
     int rc;
 
     if (lstat(path, &st) != 0) {
@@ -708,9 +807,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", dir_arc);
 
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        flags = 0;
+        mtime = macos_archive_mtime(st.st_mtime, &flags);
+        rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
+                                     NULL, bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
 
         /* Store Unix mode for directories too */
@@ -737,10 +837,11 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             fflush(stdout);
         }
 
-        rc = bp_archive_add_entry(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
-                                  &fio, file_size,
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
-        fclose(fp);
+        flags = 0;
+        mtime = macos_archive_mtime(st.st_mtime, &flags);
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
+                                     &fio, file_size, mtime, flags);
+        if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
@@ -772,34 +873,48 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                                        NULL, 0, 0, XATTR_NOFOLLOW);
             if (rsrc_sz > 0 && rsrc_sz <= MACOS_RSRC_MAX) {
                 unsigned char *rsrc_buf = (unsigned char *)malloc((size_t)rsrc_sz);
-                if (rsrc_buf) {
-                    ssize_t got = getxattr(path, XATTR_RESOURCEFORK_NAME,
-                                          rsrc_buf, (size_t)rsrc_sz,
-                                          0, XATTR_NOFOLLOW);
-                    if (got == rsrc_sz) {
-                        bp_io_t    rsrc_io;
-                        rbuf_ctx_t rctx;
-                        rctx.buf  = rsrc_buf;
-                        rctx.size = (bp_uint32)rsrc_sz;
-                        rctx.pos  = 0;
-                        bp_io_from_rbuf(&rsrc_io, &rctx);
-                        rc = bp_archive_add_entry(ar, arcname,
-                                BP_TYPE_RSRC, BP_CREATOR_OS,
-                                &rsrc_io,
-                                bp_u64_from_u32((bp_uint32)rsrc_sz),
-                                bp_u64_from_u32((bp_uint32)st.st_mtime));
-                        if (rc != BP_OK) {
-                            free(rsrc_buf);
-                            return rc;
-                        }
-                        if (g_verbosity == VERB_DEFAULT) {
-                            char sizebuf[32];
-                            format_size((bp_uint32)rsrc_sz, sizebuf, sizeof(sizebuf));
-                            printf("   rsrc fork: %s  %s\n", arcname, sizebuf);
-                        }
-                    }
+                ssize_t got;
+                if (rsrc_buf == NULL) return BP_ERR_NOMEM;
+                got = getxattr(path, XATTR_RESOURCEFORK_NAME,
+                               rsrc_buf, (size_t)rsrc_sz,
+                               0, XATTR_NOFOLLOW);
+                if (got != rsrc_sz) {
                     free(rsrc_buf);
+                    fprintf(stderr,
+                            "boltpack: cannot read resource fork completely: %s\n",
+                            path);
+                    return BP_ERR_IO;
                 }
+                {
+                    bp_io_t rsrc_io;
+                    rbuf_ctx_t rctx;
+                    rctx.buf = rsrc_buf;
+                    rctx.size = (bp_uint32)rsrc_sz;
+                    rctx.pos = 0;
+                    bp_io_from_rbuf(&rsrc_io, &rctx);
+                    rc = bp_archive_add_entry_ex(ar, arcname,
+                            BP_TYPE_RSRC, BP_CREATOR_OS, &rsrc_io,
+                            bp_u64_from_u32((bp_uint32)rsrc_sz),
+                            bp_u64_from_u32(0), 0);
+                    if (rc != BP_OK) {
+                        free(rsrc_buf);
+                        return rc;
+                    }
+                }
+                if (g_verbosity == VERB_DEFAULT) {
+                    char sizebuf[32];
+                    format_size((bp_uint32)rsrc_sz, sizebuf, sizeof(sizebuf));
+                    printf("   rsrc fork: %s  %s\n", arcname, sizebuf);
+                }
+                free(rsrc_buf);
+            } else if (rsrc_sz > MACOS_RSRC_MAX) {
+                fprintf(stderr,
+                        "boltpack: warning: resource fork exceeds %u-byte capture limit: %s\n",
+                        (unsigned int)MACOS_RSRC_MAX, path);
+            } else if (rsrc_sz < 0 && errno != ENOATTR && errno != ENOTSUP) {
+                fprintf(stderr,
+                        "boltpack: warning: cannot inspect resource fork for %s\n",
+                        path);
             }
         }
 #endif /* __APPLE__ */
@@ -823,6 +938,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                 rc = add_classic_meta_entry(ar, arcname, fi_raw,
                                             crdate_mac, mdate_mac);
                 if (rc != BP_OK) return rc;
+            } else if (fi_sz < 0 && errno != ENOATTR && errno != ENOTSUP) {
+                fprintf(stderr,
+                        "boltpack: warning: cannot inspect Finder info for %s\n",
+                        path);
+            } else if (fi_sz > 0 && fi_sz != APPLE_FINDERINFO_SIZE) {
+                fprintf(stderr,
+                        "boltpack: warning: unsupported Finder info size for %s\n",
+                        path);
             }
         }
 #endif /* __APPLE__ */
@@ -850,11 +973,13 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s -> %s\n", arcname, target);
 
-        rc = bp_archive_add_entry(ar, arcname, BP_TYPE_SYMLINK, BP_CREATOR_OS,
-                                  &dummy_io,
-                                  bp_u64_from_u32((bp_uint32)tlen),
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
-        fclose(tmp);
+        flags = 0;
+        mtime = macos_archive_mtime(st.st_mtime, &flags);
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_SYMLINK,
+                                     BP_CREATOR_OS, &dummy_io,
+                                     bp_u64_from_u32((bp_uint32)tlen),
+                                     mtime, flags);
+        if (fclose(tmp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         if (rc != BP_OK)
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
@@ -905,14 +1030,460 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 /* ---- extract callbacks ------------------------------------------------- */
 
 typedef struct {
+    char       *path;
+    bp_uint16   mode;
+    int         mode_valid;
+    bp_uint64   mtime;
+    int         mtime_valid;
+} mac_dir_restore_t;
+
+typedef struct {
+    bp_io_t     io;               /* MUST be first */
+    char        path[4096];
+    char        temporary[4096];
+    int         staged;
+} mac_extract_output_t;
+
+typedef struct {
     const char *out_dir;
     int         force;
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
     bp_uint32   unsafe_count;  /* entries skipped for unsafe names/targets */
+    bp_uint32   partial_count;
+    int         open_error;
+    bp_uint8    subject_type;
+    int         subject_succeeded;
+    char        subject_name[4096];
+    int         pending_file_mode_valid;
+    bp_uint16   pending_file_mode;
+    char        pending_file_path[4096];
+    mac_dir_restore_t *directories;
+    bp_uint32   directory_count;
     int         slash_warned;  /* printed the leading-'/' warning once */
 } extract_ctx_t;
+
+#define MACOS_DIR_QUEUE_MAX 256
+#define MACOS_NAME_PREFLIGHT_MAX 65535
+
+typedef struct {
+    char *key;
+    bp_uint8 type;
+} mac_name_key_t;
+
+typedef struct {
+    mac_name_key_t *items;
+    bp_uint32 count;
+    bp_uint32 physical_count;
+    int error;
+    const char *out_dir;
+} mac_name_preflight_t;
+
+static int extract_ctx_init(extract_ctx_t *ctx)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->directories = (mac_dir_restore_t *)calloc(
+        MACOS_DIR_QUEUE_MAX, sizeof(mac_dir_restore_t));
+    return ctx->directories != NULL ? BP_OK : BP_ERR_NOMEM;
+}
+
+static int extract_path_join(char *path, size_t cap, const char *dir,
+                             const char *name)
+{
+    size_t dlen = strlen(dir);
+    size_t nlen = strlen(name);
+    int slash = dlen != 0 && dir[dlen - 1] != '/';
+    if (dlen + (size_t)slash + nlen + 1 > cap) return BP_ERR_NAME_TOO_LONG;
+    memcpy(path, dir, dlen);
+    if (slash) path[dlen++] = '/';
+    memcpy(path + dlen, name, nlen + 1);
+    return BP_OK;
+}
+
+/* macOS's default volumes ignore case and canonical Unicode differences.
+ * Normalize and fold the archive path before collision checks; this is
+ * deliberately conservative on case-sensitive volumes too. */
+static char *extract_name_key(const char *name)
+{
+#ifdef __APPLE__
+    CFStringRef source;
+    CFMutableStringRef folded;
+    CFIndex length, max_bytes;
+    char *key;
+    source = CFStringCreateWithCString(kCFAllocatorDefault, name,
+                                       kCFStringEncodingUTF8);
+    if (source == NULL) return NULL;
+    folded = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, source);
+    CFRelease(source);
+    if (folded == NULL) return NULL;
+    CFStringNormalize(folded, kCFStringNormalizationFormD);
+    CFStringFold(folded, kCFCompareCaseInsensitive, NULL);
+    CFStringNormalize(folded, kCFStringNormalizationFormD);
+    length = CFStringGetLength(folded);
+    max_bytes = CFStringGetMaximumSizeForEncoding(length,
+                                                   kCFStringEncodingUTF8);
+    if (max_bytes < 0 || max_bytes > 16384) {
+        CFRelease(folded);
+        return NULL;
+    }
+    key = (char *)malloc((size_t)max_bytes + 1);
+    if (key == NULL || !CFStringGetCString(folded, key, max_bytes + 1,
+                                           kCFStringEncodingUTF8)) {
+        free(key);
+        CFRelease(folded);
+        return NULL;
+    }
+    CFRelease(folded);
+    return key;
+#else
+    char *key = (char *)malloc(strlen(name) + 1);
+    size_t i;
+    if (key == NULL) return NULL;
+    strcpy(key, name);
+    for (i = 0; key[i] != '\0'; i++)
+        if (key[i] >= 'A' && key[i] <= 'Z')
+            key[i] = (char)(key[i] - 'A' + 'a');
+    return key;
+#endif
+}
+
+static int mac_name_key_compare(const void *left, const void *right)
+{
+    const mac_name_key_t *a = (const mac_name_key_t *)left;
+    const mac_name_key_t *b = (const mac_name_key_t *)right;
+    return strcmp(a->key, b->key);
+}
+
+static int mac_name_key_find(const mac_name_key_t *items, bp_uint32 count,
+                             const char *key)
+{
+    bp_uint32 lo = 0, hi = count;
+    while (lo < hi) {
+        bp_uint32 mid = lo + (hi - lo) / 2;
+        int cmp = strcmp(items[mid].key, key);
+        if (cmp == 0) return (int)mid;
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return -1;
+}
+
+static int mac_name_preflight_cb(const bp_entry_t *entry, void *user_data)
+{
+    mac_name_preflight_t *pre = (mac_name_preflight_t *)user_data;
+    const char *name;
+    size_t n, component = 0;
+    char full_path[4096];
+    char *key;
+    mac_name_key_t *item;
+
+    pre->physical_count++;
+    if (pre->physical_count > MACOS_NAME_PREFLIGHT_MAX) {
+        pre->error = BP_ERR_OVERFLOW;
+        return 1;
+    }
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    name = entry->name;
+    while (*name == '/') name++;
+    if (!bp_name_is_safe(name)) { pre->error = BP_ERR_INVALID_ARG; return 1; }
+    n = strlen(name);
+    if (n == 0 || n >= sizeof(full_path)) {
+        pre->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+    if (pre->out_dir != NULL) {
+        if (extract_path_join(full_path, sizeof(full_path), pre->out_dir,
+                              name) != BP_OK) {
+            pre->error = BP_ERR_NAME_TOO_LONG;
+            return 1;
+        }
+    } else strcpy(full_path, name);
+#ifdef PATH_MAX
+    if (strlen(full_path) >= PATH_MAX) {
+        pre->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+#endif
+    {
+        size_t i;
+        for (i = 0; i <= n; i++) {
+            if (name[i] == '/' || name[i] == '\0') {
+#ifdef NAME_MAX
+                if (component > NAME_MAX) {
+                    pre->error = BP_ERR_NAME_TOO_LONG;
+                    return 1;
+                }
+#endif
+                component = 0;
+            } else component++;
+        }
+    }
+    if (pre->count >= MACOS_NAME_PREFLIGHT_MAX) {
+        pre->error = BP_ERR_OVERFLOW;
+        return 1;
+    }
+    key = extract_name_key(name);
+    if (key == NULL) { pre->error = BP_ERR_NOMEM; return 1; }
+    if (entry->entry_type == BP_TYPE_DIR) {
+        size_t key_len = strlen(key);
+        if (key_len != 0 && key[key_len - 1] == '/') key[key_len - 1] = '\0';
+    }
+    item = &pre->items[pre->count++];
+    item->key = key;
+    item->type = entry->entry_type;
+    return 0;
+}
+
+static int extract_preflight(bp_io_t *aio, const char *out_dir)
+{
+    mac_name_preflight_t pre;
+    bp_uint32 i;
+    int rc;
+    memset(&pre, 0, sizeof(pre));
+    pre.out_dir = out_dir;
+    pre.items = (mac_name_key_t *)calloc(MACOS_NAME_PREFLIGHT_MAX,
+                                         sizeof(mac_name_key_t));
+    if (pre.items == NULL) return BP_ERR_NOMEM;
+    rc = bp_archive_list(aio, mac_name_preflight_cb, &pre);
+    if (pre.error != 0) rc = pre.error;
+    if (rc == BP_OK) {
+        qsort(pre.items, pre.count, sizeof(mac_name_key_t),
+              mac_name_key_compare);
+        for (i = 1; i < pre.count; i++) {
+            if (strcmp(pre.items[i - 1].key, pre.items[i].key) == 0) {
+                fprintf(stderr,
+                        "boltpack: destination name collision after case/Unicode mapping\n");
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+        for (i = 0; rc == BP_OK && i < pre.count; i++) {
+            char prefix[4096];
+            char *slash;
+            size_t n = strlen(pre.items[i].key);
+            if (n >= sizeof(prefix)) { rc = BP_ERR_NAME_TOO_LONG; break; }
+            strcpy(prefix, pre.items[i].key);
+            for (slash = strchr(prefix, '/'); slash != NULL;
+                 slash = strchr(slash + 1, '/')) {
+                int parent;
+                *slash = '\0';
+                parent = mac_name_key_find(pre.items, pre.count, prefix);
+                *slash = '/';
+                if (parent >= 0 && pre.items[parent].type != BP_TYPE_DIR) {
+                    fprintf(stderr,
+                            "boltpack: file/directory path conflict after macOS name mapping\n");
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+            }
+        }
+    }
+    for (i = 0; i < pre.count; i++) free(pre.items[i].key);
+    free(pre.items);
+    if (aio->seek(aio->handle, 0, SEEK_SET) != 0 && rc == BP_OK)
+        rc = BP_ERR_IO;
+    return rc;
+}
+
+/* Path-based equivalent of openat(O_NOFOLLOW): reject every existing
+ * symlink/non-directory component before creating or using the path. */
+static int extract_safe_mkdirs(const char *path)
+{
+    char *copy;
+    char *p;
+    struct stat st;
+    copy = (char *)malloc(strlen(path) + 1);
+    if (copy == NULL) return -1;
+    strcpy(copy, path);
+    for (p = copy + (copy[0] == '/' ? 1 : 0); ; p++) {
+        if (*p == '/' || *p == '\0') {
+            char saved = *p;
+            if (p != copy && p[-1] != '/') {
+                *p = '\0';
+                if (lstat(copy, &st) == 0) {
+                    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+                        free(copy);
+                        return -1;
+                    }
+                } else if (errno == ENOENT) {
+                    if (mkdir(copy, 0755) != 0 && errno != EEXIST) {
+                        free(copy);
+                        return -1;
+                    }
+                    if (lstat(copy, &st) != 0 || !S_ISDIR(st.st_mode) ||
+                        S_ISLNK(st.st_mode)) {
+                        free(copy);
+                        return -1;
+                    }
+                } else {
+                    free(copy);
+                    return -1;
+                }
+                *p = saved;
+            }
+            if (saved == '\0') break;
+        }
+    }
+    free(copy);
+    return 0;
+}
+
+static int extract_safe_parent(const char *path)
+{
+    char *copy;
+    char *slash;
+    int rc = 0;
+    copy = (char *)malloc(strlen(path) + 1);
+    if (copy == NULL) return -1;
+    strcpy(copy, path);
+    slash = strrchr(copy, '/');
+    if (slash != NULL) {
+        if (slash == copy) slash[1] = '\0';
+        else *slash = '\0';
+        rc = extract_safe_mkdirs(copy);
+    }
+    free(copy);
+    return rc;
+}
+
+static int extract_make_stage(const char *path, char *temporary, size_t cap)
+{
+    const char *slash = strrchr(path, '/');
+    int n;
+    if (slash == NULL) n = snprintf(temporary, cap, ".boltpack-XXXXXX");
+    else if (slash == path)
+        n = snprintf(temporary, cap, "/.boltpack-XXXXXX");
+    else
+        n = snprintf(temporary, cap, "%.*s/.boltpack-XXXXXX",
+                     (int)(slash - path), path);
+    if (n < 0 || (size_t)n >= cap) { errno = ENAMETOOLONG; return -1; }
+    return mkstemp(temporary);
+}
+
+static int extract_restore_link_mtime(const char *path, bp_uint64 value)
+{
+#ifdef __APPLE__
+    struct stat st;
+    struct timeval times[2];
+    time_t t;
+    int rc = bp_mtime_to_time_t(value, &t);
+    if (rc != BP_OK) return rc;
+    if (lstat(path, &st) != 0) return BP_ERR_IO;
+    times[0].tv_sec = st.st_atime;
+    times[0].tv_usec = 0;
+    times[1].tv_sec = t;
+    times[1].tv_usec = 0;
+    return lutimes(path, times) == 0 ? BP_OK : BP_ERR_IO;
+#else
+    (void)path;
+    (void)value;
+    return BP_ERR_PARTIAL;
+#endif
+}
+
+static int extract_publish_symlink(mac_extract_output_t *output,
+                                   const char *target, int force,
+                                   const bp_entry_t *entry,
+                                   extract_ctx_t *ctx)
+{
+    int fd, rc = BP_OK;
+    fd = extract_make_stage(output->path, output->temporary,
+                            sizeof(output->temporary));
+    if (fd < 0) return BP_ERR_IO;
+    if (close(fd) != 0 || unlink(output->temporary) != 0 ||
+        symlink(target, output->temporary) != 0)
+        return BP_ERR_IO;
+    if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        if (extract_restore_link_mtime(output->temporary, entry->mtime) != BP_OK) {
+            ctx->partial_count++;
+            rc = BP_ERR_PARTIAL;
+        }
+    }
+    if (force) {
+        if (rename(output->temporary, output->path) != 0) rc = BP_ERR_IO;
+    } else if (link(output->temporary, output->path) != 0 ||
+               unlink(output->temporary) != 0) {
+        rc = BP_ERR_IO;
+    }
+    return rc;
+}
+
+static int extract_queue_directory(extract_ctx_t *ctx, const char *path,
+                                   const bp_entry_t *entry)
+{
+    mac_dir_restore_t *d;
+    if (ctx->directory_count >= MACOS_DIR_QUEUE_MAX) {
+        ctx->partial_count++;
+        return BP_ERR_PARTIAL;
+    }
+    d = &ctx->directories[ctx->directory_count];
+    d->path = (char *)malloc(strlen(path) + 1);
+    if (d->path == NULL) return BP_ERR_NOMEM;
+    strcpy(d->path, path);
+    d->mtime = entry->mtime;
+    d->mtime_valid = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0;
+    ctx->directory_count++;
+    return BP_OK;
+}
+
+static mac_dir_restore_t *extract_find_directory(extract_ctx_t *ctx,
+                                                  const char *path)
+{
+    bp_uint32 i;
+    for (i = 0; i < ctx->directory_count; i++)
+        if (strcmp(ctx->directories[i].path, path) == 0)
+            return &ctx->directories[i];
+    return NULL;
+}
+
+static void extract_finish_directories(extract_ctx_t *ctx)
+{
+    bp_uint32 done;
+    for (done = 0; done < ctx->directory_count; done++) {
+        bp_uint32 i, best = done;
+        size_t best_len = strlen(ctx->directories[best].path);
+        for (i = done + 1; i < ctx->directory_count; i++) {
+            size_t len = strlen(ctx->directories[i].path);
+            if (len > best_len) { best = i; best_len = len; }
+        }
+        if (best != done) {
+            mac_dir_restore_t swap = ctx->directories[done];
+            ctx->directories[done] = ctx->directories[best];
+            ctx->directories[best] = swap;
+        }
+        if (ctx->directories[done].mode_valid &&
+            chmod(ctx->directories[done].path,
+                  (mode_t)(ctx->directories[done].mode & 0777)) != 0)
+            ctx->partial_count++;
+        if (ctx->directories[done].mtime_valid &&
+            bp_restore_mtime(ctx->directories[done].path,
+                             ctx->directories[done].mtime) != BP_OK)
+            ctx->partial_count++;
+    }
+}
+
+static void extract_finish_file_mode(extract_ctx_t *ctx)
+{
+    if (ctx->pending_file_mode_valid) {
+        if (chmod(ctx->pending_file_path,
+                  (mode_t)(ctx->pending_file_mode & 0777)) != 0)
+            ctx->partial_count++;
+        ctx->pending_file_mode_valid = 0;
+    }
+}
+
+static void extract_ctx_destroy(extract_ctx_t *ctx)
+{
+    bp_uint32 i;
+    if (ctx->directories != NULL) {
+        for (i = 0; i < ctx->directory_count; i++)
+            free(ctx->directories[i].path);
+        free(ctx->directories);
+        ctx->directories = NULL;
+    }
+}
 
 /* Strip leading '/' from an entry name (tar-style), warning once. */
 static const char *extract_entry_name(const bp_entry_t *entry,
@@ -931,14 +1502,13 @@ static const char *extract_entry_name(const bp_entry_t *entry,
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
-    extract_ctx_t   *ctx = (extract_ctx_t *)user_data;
-    char             path[4096];
-    FILE            *fp;
-    bp_io_t         *io;
-    meta_extract_t  *mex;
-    rsrc_extract_t  *rex;
-    bp_uint32        meta_sz;
-    const char      *name;
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    char path[4096];
+    FILE *fp;
+    mac_extract_output_t *output;
+    meta_extract_t *mex;
+    rsrc_extract_t *rex;
+    const char *name;
 
     /* A hostile archive must not choose where we write: refuse ".."
      * components, backslashes, and drive letters outright. */
@@ -947,34 +1517,72 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         fprintf(stderr, "boltpack: skipping entry with unsafe name: %s\n",
                 entry->name);
         ctx->unsafe_count++;
+        ctx->partial_count++;
         return NULL;
     }
 
-    if (ctx->out_dir)
-        path_join(path, sizeof(path), ctx->out_dir, name);
-    else
-        snprintf(path, sizeof(path), "%s", name);
+    if (entry->entry_type == BP_TYPE_DATA ||
+        entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        size_t n = strlen(name);
+        extract_finish_file_mode(ctx);
+        if (n >= sizeof(ctx->subject_name)) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
+        memcpy(ctx->subject_name, name, n + 1);
+        ctx->subject_type = entry->entry_type;
+        ctx->subject_succeeded = 0;
+    }
+
+    if (ctx->out_dir) {
+        if (extract_path_join(path, sizeof(path), ctx->out_dir, name) != BP_OK) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
+    } else {
+        if (strlen(name) >= sizeof(path)) {
+            ctx->open_error = BP_ERR_NAME_TOO_LONG;
+            return NULL;
+        }
+        strcpy(path, name);
+    }
 
     /* --- Directory ---------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", entry->name);
-        if (!ctx->dry_run) mkdirs(path);
+        if (!ctx->dry_run) {
+            int r;
+            if (extract_safe_mkdirs(path) != 0) {
+                ctx->open_error = BP_ERR_IO;
+                return NULL;
+            }
+            r = extract_queue_directory(ctx, path, entry);
+            if (r == BP_ERR_NOMEM) ctx->open_error = r;
+            else if (r == BP_OK) ctx->subject_succeeded = 1;
+        }
         return NULL;
     }
 
     /* --- Metadata ----------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_META) {
         if (entry->platform != BP_OS_MACOSX &&
-            entry->platform != BP_OS_MACOS9)
+            entry->platform != BP_OS_MACOS9) {
+            if (!ctx->dry_run) ctx->partial_count++;
             return NULL;
+        }
 
-        meta_sz = bp_u64_to_u32(entry->original_size);
-        if (meta_sz == 0 || meta_sz > META_EXTRACT_BUF) return NULL;
+        if (entry->original_size.hi != 0 || entry->original_size.lo == 0 ||
+            entry->original_size.lo > META_EXTRACT_BUF) {
+            if (!ctx->dry_run) ctx->partial_count++;
+            return NULL;
+        }
+        if (ctx->dry_run) return NULL;
 
         mex = (meta_extract_t *)malloc(sizeof(meta_extract_t));
-        if (!mex) return NULL;
+        if (!mex) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
 
         mex->wctx.buf = mex->buf;
         mex->wctx.cap = sizeof(mex->buf);
@@ -995,14 +1603,18 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
         if (ctx->dry_run) return NULL;
 
-        rsrc_sz = bp_u64_to_u32(entry->original_size);
-        if (rsrc_sz == 0 || rsrc_sz > MACOS_RSRC_MAX) return NULL;
+        if (entry->original_size.hi != 0 || entry->original_size.lo == 0 ||
+            entry->original_size.lo > MACOS_RSRC_MAX) {
+            ctx->partial_count++;
+            return NULL;
+        }
+        rsrc_sz = entry->original_size.lo;
 
         rex = (rsrc_extract_t *)malloc(sizeof(rsrc_extract_t));
-        if (!rex) return NULL;
+        if (!rex) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
 
         rex->buf = (unsigned char *)malloc(rsrc_sz);
-        if (!rex->buf) { free(rex); return NULL; }
+        if (!rex->buf) { free(rex); ctx->open_error = BP_ERR_NOMEM; return NULL; }
         rex->cap = rsrc_sz;
         rex->len = 0;
         rex->pos = 0;
@@ -1021,12 +1633,27 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s\n", entry->name);
         if (ctx->dry_run) return NULL;
+        if (!ctx->force) {
+            struct stat st_buf;
+            if (lstat(path, &st_buf) == 0) {
+                ctx->partial_count++;
+                return NULL;
+            }
+            if (errno != ENOENT) { ctx->open_error = BP_ERR_IO; return NULL; }
+        }
+        if (extract_safe_parent(path) != 0) {
+            ctx->open_error = BP_ERR_IO;
+            return NULL;
+        }
         fp = tmpfile();
-        if (fp == NULL) return NULL;
-        io = (bp_io_t *)malloc(sizeof(bp_io_t));
-        if (io == NULL) { fclose(fp); return NULL; }
-        bp_io_from_file(io, fp);
-        return io;
+        if (fp == NULL) { ctx->open_error = BP_ERR_IO; return NULL; }
+        output = (mac_extract_output_t *)calloc(1, sizeof(*output));
+        if (output == NULL) {
+            fclose(fp); ctx->open_error = BP_ERR_NOMEM; return NULL;
+        }
+        strcpy(output->path, path);
+        bp_io_from_file(&output->io, fp);
+        return &output->io;
     }
 
     /* --- Regular file ------------------------------------------------- */
@@ -1037,139 +1664,259 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     if (!ctx->force) {
         struct stat st_buf;
-        if (stat(path, &st_buf) == 0) {
+        if (lstat(path, &st_buf) == 0) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
+            ctx->partial_count++;
+            return NULL;
+        } else if (errno != ENOENT) {
+            ctx->open_error = BP_ERR_IO;
             return NULL;
         }
     }
-    mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", path);
+    if (extract_safe_parent(path) != 0) {
+        fprintf(stderr, "boltpack: unsafe or inaccessible parent: %s\n", path);
+        ctx->open_error = BP_ERR_IO;
         return NULL;
     }
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (io == NULL) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    output = (mac_extract_output_t *)calloc(1, sizeof(*output));
+    if (output == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+    strcpy(output->path, path);
+    {
+        int fd = extract_make_stage(path, output->temporary,
+                                    sizeof(output->temporary));
+        if (fd < 0) {
+            free(output); ctx->open_error = BP_ERR_IO; return NULL;
+        }
+        fp = fdopen(fd, "wb");
+        if (fp == NULL) {
+            close(fd); unlink(output->temporary); free(output);
+            ctx->open_error = BP_ERR_IO; return NULL;
+        }
+    }
+    output->staged = 1;
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     const char *name = extract_entry_name(entry, ctx);
+    int rc = BP_OK;
+
+    if (status != BP_OK) {
+        if (entry->entry_type == BP_TYPE_META) free((meta_extract_t *)out);
+        else if (entry->entry_type == BP_TYPE_RSRC) {
+            rsrc_extract_t *rex = (rsrc_extract_t *)out;
+            free(rex->buf);
+            free(rex);
+        } else {
+            mac_extract_output_t *output = (mac_extract_output_t *)out;
+            fclose((FILE *)out->handle);
+            if (output->staged) unlink(output->temporary);
+            free(output);
+        }
+        ctx->subject_succeeded = 0;
+        return BP_OK;
+    }
 
     /* --- macOS / Classic Mac metadata --------------------------------- */
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
+        char path[4096];
 
-        if (!ctx->dry_run) {
-            char path[4096];
-            if (ctx->out_dir)
-                path_join(path, sizeof(path), ctx->out_dir, name);
-            else
-                snprintf(path, sizeof(path), "%s", name);
-
-            if (entry->platform == BP_OS_MACOSX) {
-                /* Unix-family 2-byte mode */
-                bp_uint16 mode = macos_decode_mode_meta(mex->wctx.buf,
-                                                        (int)mex->wctx.len);
-                if (mode != 0)
-                    chmod(path, (mode_t)(mode & 0x1FF));
-
-            } else if (entry->platform == BP_OS_MACOS9) {
-                /* Classic Mac 18-byte meta → Finder info xattr */
-#ifdef __APPLE__
-                unsigned char fi_out[APPLE_FINDERINFO_SIZE];
-                if (macos_decode_classic_meta(mex->wctx.buf,
-                                              (int)mex->wctx.len,
-                                              fi_out) == 0) {
-                    setxattr(path, APPLE_FINDERINFO_XATTR,
-                             fi_out, APPLE_FINDERINFO_SIZE,
-                             0, XATTR_NOFOLLOW);
-                }
-#endif /* __APPLE__ */
-            }
+        if (!ctx->subject_succeeded || strcmp(name, ctx->subject_name) != 0) {
+            ctx->partial_count++;
+            free(mex);
+            return BP_ERR_PARTIAL;
         }
+        if (ctx->out_dir) rc = extract_path_join(path, sizeof(path), ctx->out_dir, name);
+        else if (strlen(name) < sizeof(path)) strcpy(path, name);
+        else rc = BP_ERR_NAME_TOO_LONG;
+        if (rc != BP_OK) {
+            ctx->partial_count++;
+            free(mex);
+            return BP_ERR_PARTIAL;
+        }
+
+        if (entry->platform == BP_OS_MACOSX) {
+            bp_uint16 mode;
+            if (mex->wctx.len != MACOS_MODE_META_SIZE) rc = BP_ERR_CORRUPT;
+            else {
+                mode = macos_decode_mode_meta(mex->wctx.buf,
+                                              (int)mex->wctx.len);
+                if (ctx->subject_type == BP_TYPE_DIR) {
+                    mac_dir_restore_t *d = extract_find_directory(ctx, path);
+                    if (d == NULL) rc = BP_ERR_PARTIAL;
+                    else { d->mode = mode; d->mode_valid = 1; }
+                } else if (ctx->subject_type == BP_TYPE_DATA) {
+                    strcpy(ctx->pending_file_path, path);
+                    ctx->pending_file_mode = mode;
+                    ctx->pending_file_mode_valid = 1;
+                } else {
+                    rc = BP_ERR_PARTIAL;
+                }
+            }
+        } else if (entry->platform == BP_OS_MACOS9) {
+            /* Classic Mac 18-byte meta -> Finder info xattr. */
+#ifdef __APPLE__
+            unsigned char fi_out[APPLE_FINDERINFO_SIZE];
+            if (macos_decode_classic_meta(mex->wctx.buf,
+                                          (int)mex->wctx.len,
+                                          fi_out) != 0 ||
+                setxattr(path, APPLE_FINDERINFO_XATTR, fi_out,
+                         APPLE_FINDERINFO_SIZE, 0, XATTR_NOFOLLOW) != 0)
+                rc = BP_ERR_PARTIAL;
+            else rc = BP_ERR_PARTIAL; /* Classic dates are not restored. */
+#else
+            rc = BP_ERR_PARTIAL;
+#endif /* __APPLE__ */
+        }
+        if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
         free(mex);
-        return;
+        return rc;
     }
 
     /* --- Resource fork ------------------------------------------------ */
     if (entry->entry_type == BP_TYPE_RSRC) {
         rsrc_extract_t *rex = (rsrc_extract_t *)out;
 
-        if (!ctx->dry_run && rex->len > 0) {
-            char path[4096];
-            if (ctx->out_dir)
-                path_join(path, sizeof(path), ctx->out_dir, name);
-            else
-                snprintf(path, sizeof(path), "%s", name);
+        char path[4096];
+        if (!ctx->subject_succeeded || strcmp(name, ctx->subject_name) != 0) {
+            rc = BP_ERR_PARTIAL;
+        } else if (ctx->out_dir) {
+            rc = extract_path_join(path, sizeof(path), ctx->out_dir, name);
+        } else if (strlen(name) < sizeof(path)) {
+            strcpy(path, name);
+            rc = BP_OK;
+        } else rc = BP_ERR_NAME_TOO_LONG;
+        if (rc == BP_OK && rex->len > 0) {
 #ifdef __APPLE__
-            setxattr(path, XATTR_RESOURCEFORK_NAME,
-                     rex->buf, (size_t)rex->len, 0, XATTR_NOFOLLOW);
+            if (setxattr(path, XATTR_RESOURCEFORK_NAME, rex->buf,
+                         (size_t)rex->len, 0, XATTR_NOFOLLOW) != 0)
+                rc = BP_ERR_PARTIAL;
+#else
+            rc = BP_ERR_PARTIAL;
 #endif /* __APPLE__ */
         }
         free(rex->buf);
         free(rex);
-        return;
+        if (rc == BP_ERR_PARTIAL || rc == BP_ERR_NAME_TOO_LONG)
+            ctx->partial_count++;
+        return rc == BP_OK ? BP_OK : BP_ERR_PARTIAL;
     }
 
     /* --- Symlink ------------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_SYMLINK) {
         FILE *fp = (FILE *)out->handle;
+        mac_extract_output_t *output = (mac_extract_output_t *)out;
         char  target[4096];
-        char  path[4096];
         long  len;
 
-        fseek(fp, 0, SEEK_END);
-        len = ftell(fp);
+        len = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
         if (len > 0 && len < (long)sizeof(target)) {
             rewind(fp);
             if (fread(target, 1, (size_t)len, fp) == (size_t)len) {
-                target[len] = '\0';
-                /* Refuse targets that point outside the extraction root:
-                 * a hostile archive could otherwise plant a link and write
-                 * through it with a later entry. */
-                if (!bp_symlink_target_is_safe(name, target)) {
-                    fprintf(stderr,
-                            "boltpack: skipping symlink with unsafe target: "
-                            "%s -> %s\n", entry->name, target);
-                    ctx->unsafe_count++;
+                if (memchr(target, '\0', (size_t)len) != NULL) {
+                    rc = BP_ERR_CORRUPT;
                 } else {
-                    if (ctx->out_dir)
-                        path_join(path, sizeof(path), ctx->out_dir, name);
-                    else
-                        snprintf(path, sizeof(path), "%s", name);
-                    mkdirs_for_file(path);
-                    symlink(target, path);
+                    target[len] = '\0';
+                    /* Refuse targets that point outside the extraction root. */
+                    if (!bp_symlink_target_is_safe(name, target)) {
+                        fprintf(stderr,
+                                "boltpack: skipping symlink with unsafe target: "
+                                "%s -> %s\n", entry->name, target);
+                        ctx->unsafe_count++;
+                        ctx->partial_count++;
+                        rc = BP_ERR_PARTIAL;
+                    } else {
+                        if (fclose(fp) != 0) rc = BP_ERR_IO;
+                        fp = NULL;
+                        if (rc == BP_OK)
+                            rc = extract_publish_symlink(output, target,
+                                                         ctx->force, entry, ctx);
+                    }
                 }
-            }
-        }
-        fclose(fp);
-        free(out);
-        return;
+            } else rc = BP_ERR_IO;
+        } else rc = BP_ERR_CORRUPT;
+        if (fp != NULL && fclose(fp) != 0 &&
+            (rc == BP_OK || rc == BP_ERR_PARTIAL)) rc = BP_ERR_IO;
+        if (rc == BP_OK || rc == BP_ERR_PARTIAL)
+            ctx->subject_succeeded = 1;
+        if (output->temporary[0] != '\0' &&
+            (rc == BP_ERR_IO || rc == BP_ERR_CORRUPT)) unlink(output->temporary);
+        free(output);
+        return rc;
     }
 
     /* --- Regular file: close, set mtime ------------------------------- */
     {
         FILE *fp = (FILE *)out->handle;
-        char path[4096];
+        mac_extract_output_t *output = (mac_extract_output_t *)out;
+        mode_t mask;
 
-        fclose(fp);
-        if (ctx->out_dir)
-            path_join(path, sizeof(path), ctx->out_dir, name);
-        else
-            snprintf(path, sizeof(path), "%s", name);
+        if (fflush(fp) != 0) rc = BP_ERR_IO;
+        mask = umask(0);
+        (void)umask(mask);
+        if (fchmod(fileno(fp), (mode_t)(0666 & ~mask)) != 0 &&
+            (rc == BP_OK || rc == BP_ERR_PARTIAL))
+            rc = BP_ERR_IO;
+        if (fclose(fp) != 0 &&
+            (rc == BP_OK || rc == BP_ERR_PARTIAL)) rc = BP_ERR_IO;
         if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-            bp_restore_mtime(path, entry->mtime) != BP_OK) {
-            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
-            ctx->unsafe_count++;
+            bp_restore_mtime(output->temporary, entry->mtime) != BP_OK) {
+            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n",
+                    output->path);
+            ctx->partial_count++;
+            if (rc == BP_OK) rc = BP_ERR_PARTIAL;
         }
-        free(out);
+        if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+            int commit_rc = 0;
+            if (ctx->force) commit_rc = rename(output->temporary, output->path);
+            else {
+                commit_rc = link(output->temporary, output->path);
+                if (commit_rc == 0 && unlink(output->temporary) != 0)
+                    commit_rc = -1;
+            }
+            if (commit_rc != 0) {
+                fprintf(stderr, "boltpack: cannot publish extracted file: %s\n",
+                        output->path);
+                unlink(output->temporary);
+                rc = BP_ERR_IO;
+            } else {
+                ctx->subject_succeeded = 1;
+            }
+        } else {
+            unlink(output->temporary);
+        }
+        free(output);
     }
+    return rc;
+}
+
+static int extract_run(bp_io_t *aio, extract_ctx_t *ctx,
+                       bp_progress_fn progress_fn)
+{
+    int rc;
+    rc = extract_preflight(aio, ctx->out_dir);
+    if (rc != BP_OK) return rc;
+    if (ctx->out_dir != NULL && !ctx->dry_run &&
+        extract_safe_mkdirs(ctx->out_dir) != 0)
+        return BP_ERR_IO;
+    rc = bp_archive_extract_all_ex(aio, extract_open, extract_done,
+                                   progress_fn, ctx);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx->open_error != BP_OK)
+        rc = ctx->open_error;
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+        extract_finish_file_mode(ctx);
+        extract_finish_directories(ctx);
+    }
+    if (rc == BP_OK && ctx->partial_count != 0) rc = BP_ERR_PARTIAL;
+    if (rc == BP_ERR_PARTIAL && ctx->partial_count == 0)
+        ctx->partial_count = 1;
+    return rc;
 }
 
 #ifdef BOLTPACK_NET
@@ -1177,10 +1924,17 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
 int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
-    memset(&ctx, 0, sizeof(ctx));
+    int rc;
+    if (extract_ctx_init(&ctx) != BP_OK) return BP_ERR_NOMEM;
     ctx.out_dir = out_dir;
     ctx.force = force;
-    return bp_archive_extract_all(aio, extract_open, extract_done, NULL, &ctx);
+    if (out_dir != NULL && extract_safe_mkdirs(out_dir) != 0) {
+        extract_ctx_destroy(&ctx);
+        return BP_ERR_IO;
+    }
+    rc = extract_run(aio, &ctx, NULL);
+    extract_ctx_destroy(&ctx);
+    return rc;
 }
 #endif
 
@@ -1361,8 +2115,11 @@ static int cmd_delete(int argc, char **argv)
     FILE *src_fp, *dst_fp;
     bp_io_t src_io, dst_io;
     char tmp_name[4096];
+    struct stat snapshot, opened;
+    mode_t stage_mode;
+    int stage_fd;
     bp_uint32 deleted = 0;
-    int rc;
+    int rc, close_rc;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: delete requires archive name and file(s)\n");
@@ -1372,16 +2129,30 @@ static int cmd_delete(int argc, char **argv)
     del_names    = (const char **)&argv[1];
     del_count    = argc - 1;
 
-    src_fp = fopen(archive_name, "rb");
-    if (!src_fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+    if (archive_mode_for_stage(archive_name, &stage_mode, &snapshot, 1) != 0) {
+        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+                archive_name);
         return 1;
     }
-    snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
-    if (!dst_fp) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
+    src_fp = fopen(archive_name, "rb");
+    if (!src_fp || fstat(fileno(src_fp), &opened) != 0 ||
+        opened.st_dev != snapshot.st_dev || opened.st_ino != snapshot.st_ino) {
+        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        if (src_fp) fclose(src_fp);
+        return 1;
+    }
+    stage_fd = make_archive_stage(archive_name, tmp_name, sizeof(tmp_name));
+    if (stage_fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temp file beside archive\n");
         fclose(src_fp);
+        return 1;
+    }
+    dst_fp = fdopen(stage_fd, "w+b");
+    if (!dst_fp) {
+        close(stage_fd);
+        unlink(tmp_name);
+        fclose(src_fp);
+        fprintf(stderr, "boltpack: cannot open temp file stream\n");
         return 1;
     }
 
@@ -1389,21 +2160,39 @@ static int cmd_delete(int argc, char **argv)
     bp_io_from_file(&dst_io, dst_fp);
     rc = bp_archive_delete(&src_io, &dst_io, del_names, (bp_uint32)del_count,
                            &deleted);
-    fclose(src_fp);
-    fclose(dst_fp);
+    close_rc = fclose(src_fp) == 0 ? BP_OK : BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
+        fclose(dst_fp);
+        remove(tmp_name);
+        return 1;
+    }
+    if (close_rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot close source archive\n");
+        fclose(dst_fp);
         remove(tmp_name);
         return 1;
     }
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
+        fclose(dst_fp);
         remove(tmp_name);
         return 1;
     }
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
+    close_rc = BP_OK;
+    if (fchmod(fileno(dst_fp), stage_mode) != 0) close_rc = BP_ERR_IO;
+    if (fflush(dst_fp) != 0) close_rc = BP_ERR_IO;
+    if (fclose(dst_fp) != 0) close_rc = BP_ERR_IO;
+    if (close_rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot finish temporary archive\n");
+        remove(tmp_name);
+        return 1;
+    }
+    if (!archive_target_unchanged(archive_name, &snapshot) ||
+        rename(tmp_name, archive_name) != 0) {
         fprintf(stderr, "boltpack: cannot replace archive\n");
+        remove(tmp_name);
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
@@ -1418,10 +2207,14 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
                    int level)
 {
     const char *archive_name;
-    FILE *fp;
+    FILE *src_fp, *fp;
     bp_io_t io;
     bp_archive_t ar;
-    int rc, i;
+    char tmp_name[4096];
+    struct stat snapshot, opened;
+    mode_t stage_mode;
+    int stage_fd;
+    int rc, i, ar_open;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -1429,15 +2222,46 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     }
     archive_name = argv[0];
 
+    if (archive_mode_for_stage(archive_name, &stage_mode, &snapshot, 1) != 0) {
+        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+                archive_name);
+        return 1;
+    }
+
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
         return 1;
     }
-    fp = fopen(archive_name, "r+b");
-    if (!fp) {
+    src_fp = fopen(archive_name, "rb");
+    if (!src_fp || fstat(fileno(src_fp), &opened) != 0 ||
+        opened.st_dev != snapshot.st_dev || opened.st_ino != snapshot.st_ino) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        if (src_fp) fclose(src_fp);
+        return 1;
+    }
+    stage_fd = make_archive_stage(archive_name, tmp_name, sizeof(tmp_name));
+    if (stage_fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temp file beside archive\n");
+        fclose(src_fp);
+        return 1;
+    }
+    fp = fdopen(stage_fd, "w+b");
+    if (!fp) {
+        close(stage_fd);
+        unlink(tmp_name);
+        fclose(src_fp);
+        fprintf(stderr, "boltpack: cannot open temp file stream\n");
+        return 1;
+    }
+    rc = copy_archive_stream(src_fp, fp);
+    if (fclose(src_fp) != 0) rc = BP_ERR_IO;
+    if (fflush(fp) != 0 || fseeko(fp, 0, SEEK_SET) != 0) rc = BP_ERR_IO;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot copy archive to temporary file\n");
+        fclose(fp);
+        unlink(tmp_name);
         return 1;
     }
     bp_io_from_file(&io, fp);
@@ -1445,8 +2269,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         fclose(fp);
+        unlink(tmp_name);
         return 1;
     }
+    ar_open = 1;
     if (level > 0) ar.method_level = (bp_uint8)level;
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
     for (i = 1; i < argc; i++) {
@@ -1456,20 +2282,41 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp);
-            return 1;
+            goto add_failed;
         }
     }
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        ar_open = 0;
+        goto add_failed;
+    }
+    ar_open = 0;
+    rc = BP_OK;
+    if (fchmod(fileno(fp), stage_mode) != 0) rc = BP_ERR_IO;
+    if (fflush(fp) != 0) rc = BP_ERR_IO;
+    if (fclose(fp) != 0) rc = BP_ERR_IO;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot finish temporary archive\n");
+        unlink(tmp_name);
+        return 1;
+    }
+    if (!archive_target_unchanged(archive_name, &snapshot) ||
+        rename(tmp_name, archive_name) != 0) {
+        fprintf(stderr, "boltpack: cannot replace archive\n");
+        unlink(tmp_name);
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
     return 0;
+
+add_failed:
+    if (ar_open) bp_archive_close(&ar);
+    fclose(fp);
+    unlink(tmp_name);
+    return 1;
 }
 
 /* ---- cmd_create -------------------------------------------------------- */
@@ -1479,6 +2326,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
 {
     const char *archive_name;
     FILE *fp;
+    char tmp_name[4096];
+    struct stat snapshot;
+    mode_t stage_mode;
+    int stage_fd;
     bp_io_t aio;
     bp_archive_t ar;
     int rc, i;
@@ -1495,22 +2346,36 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
+    if (archive_mode_for_stage(archive_name, &stage_mode, &snapshot, 0) != 0) {
+        fprintf(stderr, "boltpack: archive target is not a regular file: %s\n",
+                archive_name);
+        return 1;
+    }
+
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
         return 1;
     }
-    fp = fopen(archive_name, "w+b");
+    stage_fd = make_archive_stage(archive_name, tmp_name, sizeof(tmp_name));
+    if (stage_fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temporary archive beside: %s\n",
+                archive_name);
+        return 1;
+    }
+    fp = fdopen(stage_fd, "w+b");
     if (!fp) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", archive_name);
+        close(stage_fd);
+        unlink(tmp_name);
+        fprintf(stderr, "boltpack: cannot open temporary archive stream\n");
         return 1;
     }
     bp_io_from_file(&aio, fp);
     rc = bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        fclose(fp); unlink(tmp_name); return 1;
     }
     if (level > 0) ar.method_level = (bp_uint8)level;
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
@@ -1523,13 +2388,13 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
         }
     }
     rc = bp_archive_finalize(&ar);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
-        bp_archive_close(&ar); fclose(fp); return 1;
+        bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
     }
 
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
@@ -1567,7 +2432,27 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         printf("\n");
     }
     bp_archive_close(&ar);
-    fclose(fp);
+    rc = BP_OK;
+    if (fchmod(fileno(fp), stage_mode) != 0) rc = BP_ERR_IO;
+    if (fflush(fp) != 0) rc = BP_ERR_IO;
+    if (fclose(fp) != 0) rc = BP_ERR_IO;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot finish temporary archive\n");
+        unlink(tmp_name);
+        return 1;
+    }
+    if (snapshot.st_ino != 0 &&
+        !archive_target_unchanged(archive_name, &snapshot)) {
+        fprintf(stderr, "boltpack: archive target changed during creation\n");
+        unlink(tmp_name);
+        return 1;
+    }
+    if (rename(tmp_name, archive_name) != 0) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n",
+                strerror(errno));
+        unlink(tmp_name);
+        return 1;
+    }
 #ifdef BOLTPACK_NET
     if (bp_net_cli_maybe_send(archive_name) != 0) {
         fprintf(stderr,
@@ -1643,21 +2528,36 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                 bp_strerror(rc));
         fclose(fp); return 1;
     }
-    if (out_dir && !dry_run) mkdirs(out_dir);
-
+    if (extract_ctx_init(&ctx) != BP_OK) {
+        fprintf(stderr, "boltpack: out of memory preparing extraction\n");
+        fclose(fp);
+        return 1;
+    }
     bp_io_from_file(&aio, fp);
-    memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir  = out_dir;
     ctx.force    = force;
     ctx.dry_run  = dry_run;
     start = clock();
 
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
-                                g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
-                                &ctx);
-    fclose(fp);
+    rc = extract_run(&aio, &ctx,
+                     g_verbosity == VERB_DEFAULT ? progress_cb : NULL);
+    if (fclose(fp) != 0 && (rc == BP_OK || rc == BP_ERR_PARTIAL))
+        rc = BP_ERR_IO;
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx.open_error != BP_OK)
+        rc = ctx.open_error;
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+        extract_finish_file_mode(&ctx);
+        extract_finish_directories(&ctx);
+    }
+    if (rc == BP_OK && ctx.partial_count != 0) rc = BP_ERR_PARTIAL;
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        if (rc == BP_ERR_PARTIAL)
+            fprintf(stderr, "boltpack: extraction completed with partial preservation (%lu item%s affected)\n",
+                    (unsigned long)ctx.partial_count,
+                    ctx.partial_count == 1 ? "" : "s");
+        else
+            fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        extract_ctx_destroy(&ctx);
         return 1;
     }
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
@@ -1673,8 +2573,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                 "boltpack: %lu entr%s skipped (unsafe name or link target)\n",
                 (unsigned long)ctx.unsafe_count,
                 ctx.unsafe_count == 1 ? "y" : "ies");
-        return 1;
     }
+    extract_ctx_destroy(&ctx);
     return 0;
 }
 

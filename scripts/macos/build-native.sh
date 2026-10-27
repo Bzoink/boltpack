@@ -134,6 +134,7 @@ build_cli() {
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         src/frontend/macosx/main.c \
+        -framework CoreFoundation \
         -o "$outdir/boltpack"
 
     echo "Built: $outdir/boltpack"
