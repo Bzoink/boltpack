@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import tempfile
 
-from check_ql_profile import entry_properties, require_ok, run
+from check_ql_profile import check_dry_run, entry_properties, require_ok, run
 
 
 def main():
@@ -30,6 +30,7 @@ def main():
                      "first.bin", cwd=root)
         require_ok(result, "DOS profile create")
         assert entry_properties(root / "profile.blt")["first.bin"] == (1, 16384)
+        check_dry_run(dos, "profile.blt", root)
         for reader in readers:
             require_ok(run(reader, "t", "profile.blt", cwd=root),
                        f"profile create integrity with {reader.name}")

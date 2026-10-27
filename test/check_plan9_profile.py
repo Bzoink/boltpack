@@ -4,7 +4,7 @@ import pathlib
 import sys
 import tempfile
 
-from check_ql_profile import entry_properties, require_ok, run
+from check_ql_profile import check_dry_run, entry_properties, require_ok, run
 
 
 def main():
@@ -18,6 +18,7 @@ def main():
                      "profile.blt", "first.bin", cwd=root)
         require_ok(result, "Plan 9 profile create")
         assert entry_properties(root / "profile.blt")["first.bin"] == (1, 16384)
+        check_dry_run(plan9, "profile.blt", root)
         for reader in (plan9, full, mini):
             require_ok(run(reader, "t", "-qq", "profile.blt", cwd=root),
                        f"profile create integrity with {reader.name}")

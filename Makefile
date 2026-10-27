@@ -625,6 +625,13 @@ macosx:
 	    -framework CoreFoundation \
 	    -o $(MACOSX_BUILDDIR)/boltpack
 
+# Host lifecycle fixture for the POSIX parts of the macOS CLI. This does not
+# claim to exercise Apple xattrs or target filesystem behavior.
+.PHONY: macosx-host-test
+macosx-host-test: modern
+	python3 test/check_macosx_host.py --cc "$(CC)" \
+	    --linux-boltpack build/linux/boltpack
+
 # Haiku / BeOS (x86_64)
 HAIKU_CC      = x86_64-unknown-haiku-gcc
 HAIKU_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
@@ -1163,6 +1170,7 @@ test: modern unit-test
 	$(MAKE) CC=$(CC) ql-host-test
 	$(MAKE) CC=$(CC) x68k-host-test
 	$(MAKE) CC=$(CC) plan9-host-test
+	$(MAKE) CC=$(CC) macosx-host-test
 	@echo "=== All test suites passed ==="
 
 fuzz: $(ASAN_TARGET)

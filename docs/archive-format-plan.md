@@ -281,8 +281,12 @@ directory modes and times are deferred. Classic Finder creation/modification
 dates and portable FAT flags are reported as partial because this frontend
 does not restore them. Negative or host-unrepresentable source mtimes are
 encoded as unknown and warned about; epoch zero remains valid. Its path checks retain a concurrent
-parent-substitution race, and the macOS target build and runtime round trip
-remain unverified in this environment.
+parent-substitution race. `make macosx-host-test` provides reproducible C89
+host coverage for profile CRUD, dry-run, epoch-zero file/directory metadata,
+overwrite and checksum-failure preservation, failed append/delete publication
+rollback, case-collision refusal, and symlink-parent refusal. It covers the
+shared POSIX path only; Apple xattrs, the macOS target build, and target runtime
+round trips remain unverified.
 
 The macOS Cocoa GUI extraction path now checks existing path components for
 symlinks and non-directories, writes regular files to exclusive sibling stages,
@@ -671,8 +675,9 @@ of a full-writer profile archive. Windows has cross-build evidence but still
 needs runtime qualification of option behavior and emitted archives. The full
 OS/2 CLI also exposes create/add profile selection; its Watcom cross-build
 passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
-same profile option; its strict C89 host build and create/add/test smoke pass,
-but a macOS target build and runtime profile round trip remain outstanding.
+same profile option; `make macosx-host-test` checks profile create/add/delete,
+test, dry-run, metadata, and extraction failure handling, but a macOS target
+build and runtime profile round trip remain outstanding.
 The Windows FLTK GUI offers the profile for archive creation and network
 sending; the Atari GEM, Amiga GadTools, native Win32, and Windows .NET GUIs
 offer it for creation. The macOS Cocoa GUI source also offers the profile in
