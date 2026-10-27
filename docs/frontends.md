@@ -1624,9 +1624,13 @@ Drive prefixes (`C:\`, `C:`) are stripped. Backslashes are normalised to forward
 Create and delete preserve an existing archive until the replacement stage is
 complete. Publication temporarily moves the old archive to a recovery name;
 if publishing the stage fails, the frontend attempts to restore that backup.
-Append backs up the header and up to 256 MiB of file-table/footer data and
-restores it after reported add or finalize errors. These paths have Watcom
-cross-build coverage, but no OS/2 runtime round trip has been performed.
+Append copies the archive to an exclusive sibling stage, appends there, and
+publishes by a backup/recovery rename after checking the original status. It
+retains OS/2 attribute flags and creation/access timestamps while updating the
+last-write time. Handled append failures leave the original archive intact;
+interruption between publication renames may leave the original at its recovery
+name. These paths have Watcom cross-build coverage, but no OS/2 runtime round
+trip has been performed.
 
 ### OS/2: Commands and Options
 

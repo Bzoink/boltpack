@@ -83,7 +83,6 @@
 #define OS2_DIR_QUEUE_BYTES_MAX 32768UL
 #define OS2_NAME_SET_MAX 1024U
 #define OS2_NAME_SET_BYTES_MAX 32768UL
-#define OS2_APPEND_TAIL_MAX (256UL * 1024UL * 1024UL)
 
 /* ---- verbosity -------------------------------------------------------- */
 
@@ -177,45 +176,6 @@ static void bp_io_from_os2_handle(bp_io_t *io, os2_archive_io_t *file)
     io->seek = os2_archive_seek;
     io->tell = os2_archive_tell;
     io->handle = file;
-}
-
-static int os2_restore_append_tail(FILE *fp, bp_uint64 tail_off,
-                                   bp_uint64 tail_size,
-                                   const unsigned char *tail,
-                                   size_t tail_bytes,
-                                   const unsigned char *header)
-{
-    bp_uint64 archive_size;
-    bp_off_t tail_position, end_position;
-#if !defined(__EMX__)
-    long os_handle;
-#endif
-
-    archive_size = bp_u64_add(tail_off, tail_size);
-    tail_position = bp_u64_to_off(tail_off);
-    end_position = bp_u64_to_off(archive_size);
-    if (tail_position < 0 || end_position < 0 ||
-        tail_size.hi != 0 || tail_size.lo != (bp_uint32)tail_bytes)
-        return -1;
-
-    if (fflush(fp) != 0 ||
-        fseek(fp, (long)tail_position, SEEK_SET) != 0 ||
-        fwrite(tail, 1, tail_bytes, fp) != tail_bytes ||
-        fseek(fp, 0L, SEEK_SET) != 0 ||
-        fwrite(header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
-        fflush(fp) != 0)
-        return -1;
-
-#if defined(__EMX__)
-    if (ftruncate(fileno(fp), (off_t)end_position) != 0) return -1;
-#else
-    os_handle = _get_osfhandle(_fileno(fp));
-    if (os_handle == -1L) return -1;
-    if (DosResetBuffer((HFILE)os_handle) != NO_ERROR ||
-        DosSetFileSize((HFILE)os_handle, (ULONG)end_position) != NO_ERROR)
-        return -1;
-#endif
-    return 0;
 }
 
 /* ======================================================================
@@ -1119,6 +1079,44 @@ static int os2_publish_archive(const char *temporary, const char *target)
     return BP_OK;
 }
 
+static int os2_archive_status_same(const FILESTATUS3 *left,
+                                   const FILESTATUS3 *right)
+{
+    return left->cbFile == right->cbFile &&
+           left->cbFileAlloc == right->cbFileAlloc &&
+           left->attrFile == right->attrFile &&
+           left->fdateCreation.year == right->fdateCreation.year &&
+           left->fdateCreation.month == right->fdateCreation.month &&
+           left->fdateCreation.day == right->fdateCreation.day &&
+           left->ftimeCreation.hours == right->ftimeCreation.hours &&
+           left->ftimeCreation.minutes == right->ftimeCreation.minutes &&
+           left->ftimeCreation.twosecs == right->ftimeCreation.twosecs &&
+           left->fdateLastWrite.year == right->fdateLastWrite.year &&
+           left->fdateLastWrite.month == right->fdateLastWrite.month &&
+           left->fdateLastWrite.day == right->fdateLastWrite.day &&
+           left->ftimeLastWrite.hours == right->ftimeLastWrite.hours &&
+           left->ftimeLastWrite.minutes == right->ftimeLastWrite.minutes &&
+           left->ftimeLastWrite.twosecs == right->ftimeLastWrite.twosecs;
+}
+
+static int os2_copy_archive_attributes(const char *temporary,
+                                       const FILESTATUS3 *original)
+{
+    FILESTATUS3 staged;
+
+    if (DosQueryPathInfo((PSZ)temporary, FIL_STANDARD, &staged,
+                         sizeof(staged)) != NO_ERROR)
+        return -1;
+    staged.attrFile = (staged.attrFile & ~(ULONG)OS2_ATTR_MASK) |
+                      (original->attrFile & (ULONG)OS2_ATTR_MASK);
+    staged.fdateCreation = original->fdateCreation;
+    staged.ftimeCreation = original->ftimeCreation;
+    staged.fdateLastAccess = original->fdateLastAccess;
+    staged.ftimeLastAccess = original->ftimeLastAccess;
+    return DosSetPathInfo((PSZ)temporary, FIL_STANDARD, &staged,
+                          sizeof(staged), DSPI_WRTTHRU) == NO_ERROR ? 0 : -1;
+}
+
 static int os2_commit_staged(os2_staged_output_t *output, int force)
 {
     static unsigned long sequence = 0;
@@ -1782,74 +1780,113 @@ create_discard:
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                    bp_uint8 method, int interchange_profile)
 {
-    FILE *fp;
+    os2_archive_io_t archive_file;
     bp_io_t aio;
     bp_archive_t ar;
-    int rc, i;
-    bp_uint64 tail_off, tail_size, archive_size;
-    bp_off_t tail_position, end_position;
-    unsigned char original_header[BP_HEADER_SIZE];
-    unsigned char *tail_buf;
-    size_t tail_bytes;
+    FILESTATUS3 original_status, opened_status, current_status;
+    HFILE source_handle, stage_handle;
+    ULONG action, read_count, written, written_total;
+    unsigned char buffer[8192];
+    char temporary[BP_MAX_PATH];
+    int temp_handle, rc, i, archive_open, result;
 
     if (argc < 2) { fprintf(stderr, "boltpack: add requires archive and files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     g_unknown_source_times = 0;
-    fp = fopen(argv[0], "r+b");
-    if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
+    source_handle = (HFILE)-1;
+    stage_handle = (HFILE)-1;
+    temporary[0] = '\0';
+    archive_open = 0;
+    result = 1;
 
-    /* Preserve the header and the table/footer that open_append replaces.
-     * Refuse unusually large tails so recovery memory stays bounded. */
-    tail_buf = NULL;
-    tail_bytes = 0;
-    if (fread(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE) {
-        fprintf(stderr, "boltpack: cannot back up archive header\n");
-        fclose(fp);
-        return 1;
+    rc = DosQueryPathInfo((PSZ)argv[0], FIL_STANDARD, &original_status,
+                          sizeof(original_status));
+    if (rc != NO_ERROR || (original_status.attrFile & FILE_DIRECTORY)) {
+        fprintf(stderr, "boltpack: cannot use archive target: %s\n", argv[0]);
+        goto add_cleanup_os2;
     }
-    bp_io_from_file(&aio, fp);
-    rc = bp_archive_query_tail(&aio, &tail_off, &tail_size);
-    if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: cannot read archive tail: %s\n",
-                bp_strerror(rc));
-        fclose(fp);
-        return 1;
+    if (original_status.attrFile & FILE_READONLY) {
+        fprintf(stderr, "boltpack: archive is read-only: %s\n", argv[0]);
+        goto add_cleanup_os2;
     }
-    tail_position = bp_u64_to_off(tail_off);
-    archive_size = bp_u64_add(tail_off, tail_size);
-    end_position = bp_u64_to_off(archive_size);
-    if (tail_size.hi != 0 || tail_size.lo == 0 ||
-        tail_size.lo > OS2_APPEND_TAIL_MAX ||
-        tail_position < 0 || end_position < 0) {
-        fprintf(stderr, "boltpack: archive tail is too large to back up safely\n");
-        fclose(fp);
-        return 1;
+    rc = DosOpen((PSZ)argv[0], &source_handle, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_FAIL_IF_NEW | OPEN_ACTION_OPEN_IF_EXISTS,
+                 OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYWRITE |
+                 OPEN_FLAGS_SEQUENTIAL, NULL);
+    if (rc != NO_ERROR) {
+        source_handle = (HFILE)-1;
+        fprintf(stderr, "boltpack: cannot open archive for update: %s\n",
+                argv[0]);
+        goto add_cleanup_os2;
     }
-    tail_bytes = (size_t)tail_size.lo;
-    tail_buf = (unsigned char *)malloc(tail_bytes);
-    if (tail_buf == NULL ||
-        fseek(fp, (long)tail_position, SEEK_SET) != 0 ||
-        fread(tail_buf, 1, tail_bytes, fp) != tail_bytes) {
-        fprintf(stderr, "boltpack: cannot back up archive table for append\n");
-        free(tail_buf);
-        fclose(fp);
-        return 1;
+    if (DosQueryFileInfo(source_handle, FIL_STANDARD, &opened_status,
+                         sizeof(opened_status)) != NO_ERROR ||
+        !os2_archive_status_same(&original_status, &opened_status)) {
+        fprintf(stderr, "boltpack: archive changed while opening: %s\n",
+                argv[0]);
+        goto add_cleanup_os2;
     }
 
+    temp_handle = os2_make_temp_path(argv[0], temporary, sizeof(temporary));
+    if (temp_handle < 0) {
+        stage_handle = (HFILE)-1;
+        fprintf(stderr, "boltpack: cannot create archive staging file\n");
+        goto add_cleanup_os2;
+    }
+    stage_handle = (HFILE)temp_handle;
+    for (;;) {
+        if (DosRead(source_handle, buffer, sizeof(buffer), &read_count) !=
+            NO_ERROR) {
+            fprintf(stderr, "boltpack: cannot read original archive\n");
+            goto add_cleanup_os2;
+        }
+        if (read_count == 0) break;
+        written_total = 0;
+        while (written_total < read_count) {
+            rc = DosWrite(stage_handle, buffer + written_total,
+                          read_count - written_total, &written);
+            if (rc != NO_ERROR || written == 0) {
+                fprintf(stderr, "boltpack: cannot copy archive to staging file\n");
+                goto add_cleanup_os2;
+            }
+            written_total += written;
+        }
+    }
+    if (DosResetBuffer(stage_handle) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot flush archive staging file\n");
+        goto add_cleanup_os2;
+    }
+    if (DosClose(stage_handle) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot close archive staging file\n");
+        goto add_cleanup_os2;
+    }
+    stage_handle = (HFILE)-1;
+
+    rc = DosOpen((PSZ)temporary, &stage_handle, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_FAIL_IF_NEW | OPEN_ACTION_OPEN_IF_EXISTS,
+                 OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYWRITE |
+                 OPEN_FLAGS_SEQUENTIAL, NULL);
+    if (rc != NO_ERROR) {
+        stage_handle = (HFILE)-1;
+        fprintf(stderr, "boltpack: cannot reopen archive staging file\n");
+        goto add_cleanup_os2;
+    }
+    archive_file.handle = stage_handle;
+    bp_io_from_os2_handle(&aio, &archive_file);
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        goto add_restore;
+        goto add_cleanup_os2;
     }
+    archive_open = 1;
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
             fprintf(stderr,
                     "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
                     bp_strerror(rc));
-            bp_archive_close(&ar);
-            goto add_restore;
+            goto add_cleanup_os2;
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
@@ -1860,34 +1897,67 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         rc = add_path(&ar, argv[i], arcname);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", argv[i], bp_strerror(rc));
-            bp_archive_close(&ar);
-            goto add_restore;
+            goto add_cleanup_os2;
         }
     }
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
+    archive_open = 0;
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc));
-        goto add_restore;
+        goto add_cleanup_os2;
     }
-    free(tail_buf);
-    fclose(fp);
+    if (DosQueryFileInfo(source_handle, FIL_STANDARD, &opened_status,
+                         sizeof(opened_status)) != NO_ERROR ||
+        DosQueryPathInfo((PSZ)argv[0], FIL_STANDARD, &current_status,
+                         sizeof(current_status)) != NO_ERROR ||
+        !os2_archive_status_same(&original_status, &opened_status) ||
+        !os2_archive_status_same(&original_status, &current_status)) {
+        fprintf(stderr, "boltpack: archive changed during append: %s\n",
+                argv[0]);
+        goto add_cleanup_os2;
+    }
+    if (DosResetBuffer(archive_file.handle) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot flush appended archive stage\n");
+        goto add_cleanup_os2;
+    }
+    if (DosClose(archive_file.handle) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot close appended archive stage\n");
+        goto add_cleanup_os2;
+    }
+    archive_file.handle = (HFILE)-1;
+    stage_handle = (HFILE)-1;
+    if (os2_copy_archive_attributes(temporary, &original_status) != 0) {
+        fprintf(stderr, "boltpack: cannot preserve archive attributes\n");
+        goto add_cleanup_os2;
+    }
+    if (DosClose(source_handle) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot close original archive\n");
+        goto add_cleanup_os2;
+    }
+    source_handle = (HFILE)-1;
+
+    rc = os2_publish_archive(temporary, argv[0]);
+    if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: cannot publish appended archive: %s\n",
+                bp_strerror(rc));
+        goto add_cleanup_os2;
+    }
+    temporary[0] = '\0';
     if (g_unknown_source_times != 0) {
         fprintf(stderr, "boltpack: %lu timestamp(s) were stored as unknown; set BP_TZ_OFFSET (minutes east of UTC)\n",
                 (unsigned long)g_unknown_source_times);
     }
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
-    return g_unknown_source_times != 0 ? 1 : 0;
+    result = rc == BP_ERR_PARTIAL || g_unknown_source_times != 0 ? 1 : 0;
 
-add_restore:
-    if (os2_restore_append_tail(fp, tail_off, tail_size, tail_buf,
-                                tail_bytes, original_header) != 0)
-        fprintf(stderr,
-                "boltpack: warning: could not restore archive after error; archive may be corrupt\n");
-    free(tail_buf);
-    fclose(fp);
-    return 1;
+add_cleanup_os2:
+    if (archive_open) bp_archive_close(&ar);
+    if (stage_handle != (HFILE)-1) (void)DosClose(stage_handle);
+    if (source_handle != (HFILE)-1) (void)DosClose(source_handle);
+    if (temporary[0] != '\0') (void)DosDelete((PSZ)temporary);
+    return result;
 }
 
 /* ---- cmd_extract ------------------------------------------------------ */
