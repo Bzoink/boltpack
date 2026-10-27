@@ -31,6 +31,7 @@ def run(args, cwd, expected=0, env=None):
 
 def build_host_cli(cc, output):
     command = shlex.split(cc) + [
+        "-U__linux__",
         "-ansi", "-pedantic", "-Wall", "-Wextra", "-Wno-unused-function",
         "-O2", "-DBP_VERSION_MAJOR=1", "-DBP_VERSION_MINOR=9",
         "-I" + str(ROOT / "src/core"),
@@ -42,6 +43,18 @@ def build_host_cli(cc, output):
         str(ROOT / "src/frontend/macosx/main.c"),
         str(ROOT / "src/core/boltlz.c"),
         "-o", str(output),
+    ]
+    subprocess.run(command, cwd=ROOT, check=True)
+
+
+def check_apple_branches_syntax(cc):
+    command = shlex.split(cc) + [
+        "-fsyntax-only", "-U__linux__", "-D__APPLE__",
+        "-ansi", "-pedantic", "-Wall", "-Wextra", "-Wno-unused-function",
+        "-O2", "-DBP_VERSION_MAJOR=1", "-DBP_VERSION_MINOR=9",
+        "-I" + str(ROOT / "test/macosx_stubs"),
+        "-I" + str(ROOT / "src/core"),
+        str(ROOT / "src/frontend/macosx/main.c"),
     ]
     subprocess.run(command, cwd=ROOT, check=True)
 
@@ -107,6 +120,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="boltpack-macosx-host-") as temp:
         root = Path(temp)
         binary = root / "boltpack-macosx-host"
+        check_apple_branches_syntax(args.cc)
         build_host_cli(args.cc, binary)
 
         # Profile create, append, test, and delete all operate on staged files.
@@ -215,6 +229,14 @@ def main():
         run([str(binary), "x", "-o", str(symlink_out), "nested.bolt"],
             root, expected=1)
         assert not (outside / "file.txt").exists(), "extraction escaped via symlink"
+
+        # Exercise the directory-relative extraction path and staged symlink
+        # publication used by the macOS frontend, using host libc APIs.
+        subprocess.run([sys.executable, str(ROOT / "test/check_extract_race.py"),
+                        "--boltpack", str(binary)], cwd=ROOT, check=True)
+        subprocess.run([sys.executable, str(ROOT / "test/check_symlink_atomic.py"),
+                        "--boltpack", str(binary), "--cc", args.cc],
+                       cwd=ROOT, check=True)
 
     print("macOS POSIX host lifecycle checks passed")
     return 0

@@ -302,20 +302,25 @@ non-regular targets and refuse publication if the archive path's identity,
 size, or second-resolution timestamps changed during the operation. The staged
 replacement retains permission bits, but not archive ownership, ACLs, or
 extended attributes. Extraction now uses the status-aware core callback,
-stages regular files and symlinks until checksum verification, checks
-path-based parent components, and preflights up to 65,535 physical entries for
-case/Unicode collisions and file/directory prefix conflicts. It restores
-resource forks, Finder info, Unix modes, and valid mtimes where supported;
-directory modes and times are deferred. Classic Finder creation/modification
-dates and portable FAT flags are reported as partial because this frontend
-does not restore them. Negative or host-unrepresentable source mtimes are
-encoded as unknown and warned about; epoch zero remains valid. Its path checks retain a concurrent
-parent-substitution race. `make macosx-host-test` provides reproducible C89
+stages regular files and symlinks until checksum verification, pins the chosen
+output root, and resolves archive-controlled components with directory-relative
+no-follow operations. Publication and supplementary metadata use the verified
+parent or opened subject; identity checks prevent applying file or directory
+attributes to a replacement inode. Directory modes and times are deferred.
+It restores resource forks, Finder info, Unix modes, and valid mtimes where
+supported. Classic Finder creation/modification dates and portable FAT flags
+are reported as partial because this frontend does not restore them. Negative
+or host-unrepresentable source mtimes are encoded as unknown and warned about;
+epoch zero remains valid. `make macosx-host-test` provides reproducible C89
 host coverage for profile CRUD, dry-run, epoch-zero file/directory metadata,
 overwrite and checksum-failure preservation, failed append/delete publication
-rollback, case-collision refusal, and symlink-parent refusal. It covers the
-shared POSIX path only; Apple xattrs, the macOS target build, and target runtime
-round trips remain unverified.
+rollback, case-collision refusal, and symlink-parent refusal. The fixture now
+also runs deterministic parent-substitution, concurrent-destination,
+write/close failure, and staged-symlink timestamp/publication checks with Linux
+feature branches disabled. It also syntax-checks the Apple-only xattr and
+CoreFoundation branches against lightweight API declarations. The shipped
+arm64 target is macOS 11+; the macOS SDK build, Apple xattr behavior, and target
+runtime round trips remain unverified.
 
 The macOS Cocoa GUI extraction path now checks existing path components for
 symlinks and non-directories, writes regular files to exclusive sibling stages,
