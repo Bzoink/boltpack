@@ -38,14 +38,23 @@ profile, whose filename rules are documented in the [Atari ST GEM Programming
 manual](https://www.bitsavers.org/pdf/atari/ST/Atari_ST_GEM_Programming_1986/GEM_0042.pdf).
 The Windows CLI has cross-build evidence but still needs Windows
 runtime tests. The full Atari CLI now writes native and portable FAT metadata,
-defers directory time and attribute restoration, and stages files before
-checksum-verified commit. It checks existing directory components for symlinks
+defers directory time and attribute restoration, and stages extracted files
+before checksum-verified commit. It checks existing directory components for symlinks
 and uses no-replace GEMDOS renames; forced replacement keeps a recovery copy
 until the new file is committed. Atari name projection rejects non-ASCII,
 non-8.3, and over-125-byte paths, and refuses case-insensitive collisions.
-This has cross-build evidence but still needs
-Atari runtime tests. Path-based TOS calls cannot prevent a concurrent rename
-of a checked parent. Full OS/2 now writes native attributes and the portable
+Atari create/add/delete now use exclusive sibling archive stages. Add streams
+the original archive into a stage before in-place append on that stage, keeping
+memory bounded by the core's normal append storage; delete no longer uses a
+fixed temporary name or removes the original before replacement. Publication
+backs up a regular target, checks its identity again after the backup rename,
+restores it if publishing fails, and preserves hidden/system/archive flags.
+Read-only archive targets are refused. A crash during staging leaves the
+original intact; a crash between backup and publication can leave the original
+at the recovery name. `--interchange-profile-1` is available for create/add.
+The Atari cross-build passes, but runtime and interruption tests still need an
+Atari emulator or hardware. Path-based TOS calls cannot prevent a concurrent
+rename of a checked parent. Full OS/2 now writes native attributes and the portable
 FAT envelope for files and directories, applies native attributes ahead of
 portable fallback, and restores directory timestamps and flags deepest first.
 Its bounded queue holds 256 directories and 32 KiB of paths. Extraction first
@@ -111,7 +120,8 @@ Both cores reject duplicate primary names (including trailing-slash aliases) and
 groups when reading and before finalizing a new archive. Copy, append, and
 deletion tests cover a file and its portable metadata group. Linux and Windows
 CLI in-place append now require a bounded table backup and restore it on
-finalization failure; the Linux regression checks byte-for-byte restoration.
+finalization failure; Atari append uses a sibling stage. The Linux regression
+checks byte-for-byte restoration.
 Total Commander WCX append copies the original to an exclusive sibling stage,
 finalizes the updated archive there, and atomically replaces the original only
 after successful close. WCX deletion also writes an exclusive sibling stage

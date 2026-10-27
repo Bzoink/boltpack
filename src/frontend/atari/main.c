@@ -63,6 +63,8 @@
  * the frontend is intentionally compiled in strict ANSI mode. */
 extern int lstat(const char *path, struct stat *st);
 extern int mkstemp(char *template_path);
+extern FILE *fdopen(int fd, const char *mode);
+extern int fileno(FILE *stream);
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -817,7 +819,15 @@ typedef struct {
     int fd;
     char temporary[BP_MAX_PATH];
     char target[BP_MAX_PATH];
+    int preserve_target_attributes;
+    unsigned char target_attributes;
 } atari_staged_output_t;
+
+static int atari_archive_stat_matches(const struct stat *expected,
+                                      const struct stat *current);
+static int atari_archive_target_unchanged(const char *path,
+                                          const struct stat *snapshot,
+                                          int existed);
 
 static long staged_file_write(void *handle, const void *buf, bp_uint32 count)
 {
@@ -880,21 +890,56 @@ static int atari_backup_existing(const char *target, char *backup,
     return -1;
 }
 
-static int atari_commit_staged(atari_staged_output_t *out, int force)
+static int atari_commit_staged_checked(atari_staged_output_t *out, int force,
+                                       const struct stat *snapshot,
+                                       int expected_exists)
 {
     struct stat st;
+    struct stat backup_stat;
     char backup[BP_MAX_PATH];
     int has_backup = 0;
     int target_exists;
+    if (snapshot != NULL &&
+        !atari_archive_target_unchanged(out->target, snapshot,
+                                        expected_exists))
+        return BP_ERR_PARTIAL;
+    if (snapshot != NULL && out->preserve_target_attributes) {
+        unsigned char current_attributes;
+        if (atari_get_attrib(out->target, &current_attributes) != 0 ||
+            (current_attributes & ATARI_ATTR_MASK) != out->target_attributes)
+            return BP_ERR_PARTIAL;
+    }
     if (lstat(out->target, &st) == 0) target_exists = 1;
     else if (errno == ENOENT) target_exists = 0;
     else return BP_ERR_IO;
+    if (snapshot != NULL && target_exists != expected_exists)
+        return BP_ERR_PARTIAL;
     if (target_exists && !force) return BP_ERR_PARTIAL;
     backup[0] = '\0';
     if (target_exists) {
         if (atari_backup_existing(out->target, backup, sizeof(backup)) != 0)
             return BP_ERR_IO;
         has_backup = 1;
+        if (snapshot != NULL &&
+            (lstat(backup, &backup_stat) != 0 ||
+             !atari_archive_stat_matches(snapshot, &backup_stat))) {
+            if (atari_rename_noreplace(backup, out->target) != 0)
+                fprintf(stderr,
+                        "boltpack: changed archive target remains at recovery path: %s\n",
+                        backup);
+            return BP_ERR_PARTIAL;
+        }
+        if (snapshot != NULL && out->preserve_target_attributes) {
+            unsigned char backup_attributes;
+            if (atari_get_attrib(backup, &backup_attributes) != 0 ||
+                (backup_attributes & ATARI_ATTR_MASK) != out->target_attributes) {
+                if (atari_rename_noreplace(backup, out->target) != 0)
+                    fprintf(stderr,
+                            "boltpack: changed archive attributes remain at recovery path: %s\n",
+                            backup);
+                return BP_ERR_PARTIAL;
+            }
+        }
     }
     if (atari_rename_noreplace(out->temporary, out->target) != 0) {
         if (has_backup && atari_rename_noreplace(backup, out->target) != 0) {
@@ -913,6 +958,11 @@ static int atari_commit_staged(atari_staged_output_t *out, int force)
     return BP_OK;
 }
 
+static int atari_commit_staged(atari_staged_output_t *out, int force)
+{
+    return atari_commit_staged_checked(out, force, NULL, 0);
+}
+
 static void atari_discard_staged(atari_staged_output_t *out)
 {
     if (out->fd >= 0) {
@@ -923,6 +973,119 @@ static void atari_discard_staged(atari_staged_output_t *out)
         (void)unlink(out->temporary);
         out->temporary[0] = '\0';
     }
+}
+
+static int atari_archive_target_state(const char *path, int allow_missing,
+                                     struct stat *snapshot, int *exists)
+{
+    if (lstat(path, snapshot) == 0) {
+        unsigned char attributes;
+        if (!S_ISREG(snapshot->st_mode)) return BP_ERR_IO;
+        if (atari_get_attrib(path, &attributes) != 0 ||
+            (attributes & FA_RDONLY) != 0)
+            return BP_ERR_IO;
+        *exists = 1;
+        return BP_OK;
+    }
+    if (allow_missing && errno == ENOENT) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        *exists = 0;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int atari_archive_stat_matches(const struct stat *expected,
+                                      const struct stat *current)
+{
+    return S_ISREG(current->st_mode) &&
+           current->st_dev == expected->st_dev &&
+           (expected->st_ino == 0 || current->st_ino == expected->st_ino) &&
+           current->st_size == expected->st_size &&
+           current->st_mtime == expected->st_mtime &&
+           current->st_ctime == expected->st_ctime;
+}
+
+static int atari_archive_target_unchanged(const char *path,
+                                          const struct stat *snapshot,
+                                          int existed)
+{
+    struct stat current;
+    if (lstat(path, &current) == 0) {
+        return existed && atari_archive_stat_matches(snapshot, &current);
+    }
+    return !existed && errno == ENOENT;
+}
+
+static int atari_open_archive_stage(const char *target,
+                                    atari_staged_output_t *stage,
+                                    FILE **stream)
+{
+    struct stat target_stat;
+    unsigned char target_attributes;
+    int fd;
+    memset(stage, 0, sizeof(*stage));
+    stage->fd = -1;
+    *stream = NULL;
+    if (strlen(target) >= sizeof(stage->target) ||
+        atari_make_temp_template(target, stage->temporary,
+                                 sizeof(stage->temporary)) != 0)
+        return BP_ERR_NAME_TOO_LONG;
+    strcpy(stage->target, target);
+    if (lstat(target, &target_stat) == 0) {
+        if (!S_ISREG(target_stat.st_mode) ||
+            atari_get_attrib(target, &target_attributes) != 0 ||
+            (target_attributes & FA_RDONLY) != 0) {
+            return BP_ERR_IO;
+        }
+        stage->target_attributes = (unsigned char)(target_attributes &
+                                                   ATARI_ATTR_MASK);
+        stage->preserve_target_attributes = 1;
+    } else if (errno != ENOENT) {
+        return BP_ERR_IO;
+    }
+    fd = mkstemp(stage->temporary);
+    if (fd < 0) return BP_ERR_IO;
+    stage->fd = fd;
+    *stream = fdopen(fd, "w+b");
+    if (*stream == NULL) {
+        atari_discard_staged(stage);
+        return BP_ERR_IO;
+    }
+    return BP_OK;
+}
+
+static int atari_finish_archive_stage(FILE **stream,
+                                     atari_staged_output_t *stage,
+                                     const struct stat *snapshot,
+                                     int existed)
+{
+    int rc = BP_OK;
+    if (fflush(*stream) != 0) rc = BP_ERR_IO;
+    if (fclose(*stream) != 0) rc = BP_ERR_IO;
+    *stream = NULL;
+    stage->fd = -1;
+    if (rc != BP_OK) return rc;
+    if (stage->preserve_target_attributes &&
+        atari_apply_attrib(stage->temporary,
+                           (unsigned char)(ATARI_ATTR_MASK & ~FA_RDONLY),
+                           stage->target_attributes) != 0)
+        return BP_ERR_IO;
+    if (!atari_archive_target_unchanged(stage->target, snapshot, existed))
+        return BP_ERR_PARTIAL;
+    return atari_commit_staged_checked(stage, 1, snapshot, existed);
+}
+
+static int atari_copy_archive_stream(FILE *source, FILE *destination)
+{
+    static unsigned char buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        if (fwrite(buffer, 1, count, destination) != count)
+            return BP_ERR_IO;
+    }
+    if (ferror(source) || fflush(destination) != 0) return BP_ERR_IO;
+    return BP_OK;
 }
 
 static atari_dir_restore_t *queue_directory_restore(extract_ctx_t *ctx,
@@ -1432,7 +1595,9 @@ static void usage(void)
     fprintf(stderr,
         "\nOptions:\n"
         "  -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k (auto-detected)\n"
+        "  --interchange-profile-1  Mini-compatible limits for create/add\n"
         "  -0        Store only (no compression)\n"
+        "  -1        Use BoltLite compression\n"
         "  -F        Use fluff LZ77+Huffman compression (better ratio than boltlz)\n"
         "  -q        Quiet (summary only)\n"
         "  -qq       Silent (errors only)\n"
@@ -1512,15 +1677,24 @@ static const char *format_methods(const bp_uint32 *counts)
 }
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method)
+                      bp_uint8 method, int interchange_profile)
 {
     const char  *archive_name;
-    FILE        *fp;
+    FILE        *fp = NULL;
     bp_io_t      aio;
     bp_archive_t ar;
+    atari_staged_output_t stage;
+    struct stat  snapshot;
+    int          existed;
+    int          archive_open = 0;
     int          rc, i;
     clock_t      start;
     double       elapsed;
+    bp_uint64    total_orig = {0, 0};
+    bp_uint64    total_comp = {0, 0};
+    bp_uint32    file_count = 0;
+    bp_uint32    dir_count = 0;
+    bp_uint32    j;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: create requires archive name and files\n");
@@ -1528,6 +1702,12 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
+    rc = atari_archive_target_state(archive_name, 1, &snapshot, &existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: archive target must be a regular file: %s\n",
+                archive_name);
+        return 1;
+    }
     if (block_size == 0) block_size = atari_auto_block_size();
 
     rc = bp_compress_init();
@@ -1537,18 +1717,24 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    fp = fopen(archive_name, "w+b");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", archive_name);
+    rc = atari_open_archive_stage(archive_name, &stage, &fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot create archive staging file: %s\n",
+                bp_strerror(rc));
         return 1;
     }
     bp_io_from_file(&aio, fp);
 
-    rc = bp_archive_create(&ar, &aio, block_size, method);
+    rc = interchange_profile
+        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        goto create_discard;
     }
+    archive_open = 1;
+    if (interchange_profile && method == BP_METHOD_STORED)
+        ar.method = BP_METHOD_STORED;
 
     start = clock();
 
@@ -1564,30 +1750,36 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            goto create_discard;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
-        bp_archive_close(&ar); fclose(fp); return 1;
+        goto create_discard;
     }
 
+    for (j = 0; j < ar.entries_written; j++) {
+        if (ar.entry_list[j].entry_type == BP_TYPE_DIR) dir_count++;
+        else if (ar.entry_list[j].entry_type == BP_TYPE_DATA) file_count++;
+        total_orig = bp_u64_add(total_orig, ar.entry_list[j].original_size);
+        total_comp = bp_u64_add(total_comp, ar.entry_list[j].compressed_size);
+    }
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
+    bp_archive_close(&ar);
+    archive_open = 0;
+    rc = atari_finish_archive_stage(&fp, &stage, &snapshot, existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n",
+                bp_strerror(rc));
+        atari_discard_staged(&stage);
+        return 1;
+    }
 
     if (g_verbosity < VERB_SILENT) {
-        bp_uint64 total_orig = {0, 0};
-        bp_uint64 total_comp = {0, 0};
-        bp_uint32 file_count = 0, dir_count = 0, j;
         char      numbuf[32], speedbuf[64];
 
-        for (j = 0; j < ar.entries_written; j++) {
-            if      (ar.entry_list[j].entry_type == BP_TYPE_DIR)  dir_count++;
-            else if (ar.entry_list[j].entry_type == BP_TYPE_DATA) file_count++;
-            total_orig = bp_u64_add(total_orig, ar.entry_list[j].original_size);
-            total_comp = bp_u64_add(total_comp, ar.entry_list[j].compressed_size);
-        }
         format_size64(total_orig, numbuf, sizeof(numbuf));
         printf("%lu file%s, %lu director%s, %s",
                (unsigned long)file_count, file_count == 1 ? "" : "s",
@@ -1610,9 +1802,17 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         printf("\n");
     }
 
-    bp_archive_close(&ar);
-    fclose(fp);
     return 0;
+
+create_discard:
+    if (archive_open) bp_archive_close(&ar);
+    if (fp != NULL) {
+        (void)fclose(fp);
+        fp = NULL;
+        stage.fd = -1;
+    }
+    atari_discard_staged(&stage);
+    return 1;
 }
 
 static int cmd_list(const char *archive_name)
@@ -1820,9 +2020,12 @@ static int cmd_delete(int argc, char **argv)
     const char  *archive_name;
     const char **del_names;
     int          del_count;
-    FILE        *src_fp, *dst_fp;
+    FILE        *src_fp = NULL, *dst_fp = NULL;
     bp_io_t      src_io, dst_io;
-    char         tmp_name[BP_MAX_PATH];
+    atari_staged_output_t stage;
+    struct stat  snapshot;
+    struct stat  opened;
+    int          existed;
     bp_uint32    deleted = 0;
     int          rc;
 
@@ -1834,16 +2037,25 @@ static int cmd_delete(int argc, char **argv)
     del_names    = (const char **)&argv[1];
     del_count    = argc - 1;
 
-    src_fp = fopen(archive_name, "rb");
-    if (!src_fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+                archive_name);
         return 1;
     }
-    sprintf(tmp_name, "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
-    if (!dst_fp) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
-        fclose(src_fp); return 1;
+    src_fp = fopen(archive_name, "rb");
+    if (!src_fp || fstat(fileno(src_fp), &opened) != 0 ||
+        !atari_archive_stat_matches(&snapshot, &opened)) {
+        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        if (src_fp != NULL) fclose(src_fp);
+        return 1;
+    }
+    rc = atari_open_archive_stage(archive_name, &stage, &dst_fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot create archive staging file: %s\n",
+                bp_strerror(rc));
+        fclose(src_fp);
+        return 1;
     }
 
     bp_io_from_file(&src_io, src_fp);
@@ -1851,34 +2063,52 @@ static int cmd_delete(int argc, char **argv)
 
     rc = bp_archive_delete(&src_io, &dst_io, del_names,
                            (bp_uint32)del_count, &deleted);
-    fclose(src_fp);
-    fclose(dst_fp);
+    if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    src_fp = NULL;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp_name); return 1;
+        goto delete_discard;
     }
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
-        remove(tmp_name); return 1;
+        goto delete_discard;
     }
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
+    rc = atari_finish_archive_stage(&dst_fp, &stage, &snapshot, existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish deleted archive: %s\n",
+                bp_strerror(rc));
+        atari_discard_staged(&stage);
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%lu entr%s deleted\n",
                (unsigned long)deleted, deleted == 1 ? "y" : "ies");
     return 0;
+
+delete_discard:
+    if (src_fp != NULL) fclose(src_fp);
+    if (dst_fp != NULL) {
+        fclose(dst_fp);
+        stage.fd = -1;
+    }
+    atari_discard_staged(&stage);
+    return 1;
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
-                   bp_uint8 method)
+                   bp_uint8 method, int interchange_profile)
 {
     const char  *archive_name;
-    FILE        *fp;
-    bp_io_t      io;
+    FILE        *src_fp = NULL;
+    FILE        *dst_fp = NULL;
+    bp_io_t      dst_io;
     bp_archive_t ar;
+    atari_staged_output_t stage;
+    struct stat  snapshot;
+    struct stat  opened;
+    int          existed;
+    int          archive_open = 0;
     int          rc, i;
 
     if (argc < 2) {
@@ -1887,6 +2117,12 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
+    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+                archive_name);
+        return 1;
+    }
     if (block_size == 0) block_size = atari_auto_block_size();
 
     rc = bp_compress_init();
@@ -1896,17 +2132,44 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    fp = fopen(archive_name, "r+b");
-    if (!fp) {
+    src_fp = fopen(archive_name, "rb");
+    if (!src_fp || fstat(fileno(src_fp), &opened) != 0 ||
+        !atari_archive_stat_matches(&snapshot, &opened)) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        if (src_fp != NULL) fclose(src_fp);
         return 1;
     }
-    bp_io_from_file(&io, fp);
-
-    rc = bp_archive_open_append(&ar, &io, block_size, method);
+    rc = atari_open_archive_stage(archive_name, &stage, &dst_fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot create archive staging file: %s\n",
+                bp_strerror(rc));
+        fclose(src_fp);
+        return 1;
+    }
+    rc = atari_copy_archive_stream(src_fp, dst_fp);
+    if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    src_fp = NULL;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot copy existing archive: %s\n",
+                bp_strerror(rc));
+        goto add_discard;
+    }
+    bp_io_from_file(&dst_io, dst_fp);
+    rc = bp_archive_open_append(&ar, &dst_io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        goto add_discard;
+    }
+    archive_open = 1;
+    if (interchange_profile) {
+        rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
+                    bp_strerror(rc));
+            goto add_discard;
+        }
+        if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
 
     for (i = 1; i < argc; i++) {
@@ -1921,21 +2184,38 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            goto add_discard;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
+    archive_open = 0;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        goto add_discard;
+    }
+    rc = atari_finish_archive_stage(&dst_fp, &stage, &snapshot, existed);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish updated archive: %s\n",
+                bp_strerror(rc));
+        atari_discard_staged(&stage);
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
     return 0;
+
+add_discard:
+    if (archive_open) bp_archive_close(&ar);
+    if (src_fp != NULL) fclose(src_fp);
+    if (dst_fp != NULL) {
+        fclose(dst_fp);
+        stage.fd = -1;
+    }
+    atari_discard_staged(&stage);
+    return 1;
 }
 
 /* ---- main -------------------------------------------------------------- */
@@ -1948,6 +2228,8 @@ int main(int argc, char **argv)
     const char *out_dir  = NULL;
     int        force     = 0;
     int        dry_run   = 0;
+    int        interchange_profile = 0;
+    int        codec_given = 0;
     int        i;
 
     if (argc < 3) { usage(); return 1; }
@@ -1972,10 +2254,14 @@ int main(int argc, char **argv)
                 return 1;
             }
             i += 2;
+        } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
+            interchange_profile = 1; i++;
         } else if (strcmp(argv[i], "-0") == 0) {
-            method = BP_METHOD_STORED; i++;
+            method = BP_METHOD_STORED; codec_given = 1; i++;
+        } else if (strcmp(argv[i], "-1") == 0) {
+            method = BP_METHOD_BOLTLITE; codec_given = 1; i++;
         } else if (strcmp(argv[i], "-F") == 0) {
-            method = BP_METHOD_FLUFF; i++;
+            method = BP_METHOD_FLUFF; codec_given = 1; i++;
         } else if (strcmp(argv[i], "-qq") == 0) {
             g_verbosity = VERB_SILENT; i++;
         } else if (strcmp(argv[i], "-q") == 0) {
@@ -1996,13 +2282,28 @@ int main(int argc, char **argv)
         }
     }
 
+    if (interchange_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED)) {
+            fprintf(stderr,
+                    "boltpack: Interchange Profile 1 requires create/add, BoltLite or Stored, and 16 KiB blocks\n");
+            return 1;
+        }
+        block_size = BP_BLOCK_16K;
+        if (method != BP_METHOD_STORED) method = BP_METHOD_BOLTLITE;
+    }
+
     if (method == BP_METHOD_FLUFF && block_size == 0) {
         block_size = BP_BLOCK_256K;
     }
 
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method);
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method,
+                                interchange_profile);
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method,
+                             interchange_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n"); return 1;
