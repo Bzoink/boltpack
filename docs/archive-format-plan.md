@@ -458,9 +458,11 @@ names to end in `/`. Host tests cover profile output, append, refusal of
 extended codecs, entry-size and serialized-size limits, and a mini-reader test
 of a full-writer profile archive. The Linux and Windows CLIs expose the profile
 for create and add; Windows has cross-build evidence but still needs runtime
-qualification of option behavior and emitted archives. Other full frontends
-have not yet exposed a user-selectable profile option. Per-frontend evidence
-is tracked in [interoperability-matrix.md](interoperability-matrix.md).
+qualification of option behavior and emitted archives. The full OS/2 CLI now
+also exposes create/add profile selection; its Watcom cross-build passes, and
+OS/2 runtime qualification remains unavailable. Other full frontends have not
+yet exposed a user-selectable profile option. Per-frontend evidence is tracked
+in [interoperability-matrix.md](interoperability-matrix.md).
 
 ### Required validation
 
