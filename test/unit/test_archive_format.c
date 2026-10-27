@@ -359,6 +359,45 @@ static const unsigned char FORMAT6_GOLDEN_ARCHIVE[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x4C, 0x4F, 0x42
 };
 
+/* Format 6 §2.3.2's block_size == 0 case: a single unframed Stored blob.
+ * This fixture is independently laid out and guards against readers that
+ * accidentally require the 12-byte blocked-data header. */
+static const unsigned char FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE[] = {
+    0x42, 0x4F, 0x4C, 0x54, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x9E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x80, 0x94, 0xD4, 0x72, 0x31, 0xBE, 0x42, 0xF9, 0x2B, 0x00, 0x01, 0x00,
+    0x78, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x9E, 0xD9, 0xD3, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x41, 0x54, 0x42, 0x4C, 0x54, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x78, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2B, 0x00,
+    0x8B, 0x9E, 0xD9, 0xD3, 0x00, 0x00, 0x4C, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x4C,
+    0x4F, 0x42
+};
+
+/* Single-blob BoltLite case with the independently defined two-byte stream
+ * 01 41: one literal flag followed by 'A'. */
+static const unsigned char FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE[] = {
+    0x42, 0x4F, 0x4C, 0x54, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x9F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xDA, 0xBE, 0x7C, 0xEE, 0x20, 0x37, 0xEA, 0x6C, 0x2B, 0x00, 0x01, 0x00,
+    0x78, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x9E, 0xD9, 0xD3, 0x01, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01, 0x41, 0x54, 0x42, 0x4C, 0x54, 0x01, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x78,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2B,
+    0x00, 0x8B, 0x9E, 0xD9, 0xD3, 0x00, 0x00, 0x4D, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54,
+    0x4C, 0x4F, 0x42
+};
+
 static void test_independent_format6_golden_archive(void)
 {
     MemIO mem;
@@ -394,6 +433,100 @@ static void test_independent_format6_golden_archive(void)
     rc = bp_archive_test(&io, test_cb, &tested);
     UNIT_CHECK(rc == BP_OK && tested.all_ok && tested.entry_count == 1,
                "golden Stored payload passes independent CRC fixtures");
+}
+
+typedef struct {
+    MemIO output;
+    bp_io_t io;
+    unsigned char bytes[8];
+    int done_status;
+} GoldenExtractState;
+
+static bp_io_t *golden_extract_open(const bp_entry_t *entry, void *user_data)
+{
+    GoldenExtractState *state = (GoldenExtractState *)user_data;
+    (void)entry;
+    return &state->io;
+}
+
+static int golden_extract_done(const bp_entry_t *entry, bp_io_t *out,
+                               int status, void *user_data)
+{
+    GoldenExtractState *state = (GoldenExtractState *)user_data;
+    (void)entry;
+    (void)out;
+    state->done_status = status;
+    return BP_OK;
+}
+
+static void test_format6_single_blob_golden_archive(void)
+{
+    unsigned char corrupt[sizeof(FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE)];
+    MemIO mem;
+    bp_io_t io;
+    ListState listed;
+    TestState tested;
+    GoldenExtractState extracted;
+    int rc;
+
+    UNIT_SECTION("Archive format 6: unframed single-blob layout");
+    mem.buf = (unsigned char *)FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    io = make_mem_io(&mem);
+
+    memset(&listed, 0, sizeof(listed));
+    rc = bp_archive_list(&io, list_cb, &listed);
+    UNIT_CHECK(rc == BP_OK && listed.count == 1 &&
+               listed.entries[0].block_size == 0 &&
+               listed.entries[0].compressed_size.lo == 1,
+               "full reader lists the independently specified unframed entry");
+
+    memset(&tested, 0, sizeof(tested));
+    tested.all_ok = 1;
+    rc = bp_archive_test(&io, test_cb, &tested);
+    UNIT_CHECK(rc == BP_OK && tested.all_ok && tested.entry_count == 1,
+               "full test verifies the unframed Stored payload");
+
+    memset(&extracted, 0, sizeof(extracted));
+    extracted.output.buf = extracted.bytes;
+    extracted.output.cap = sizeof(extracted.bytes);
+    extracted.io = make_mem_io(&extracted.output);
+    extracted.done_status = 99;
+    rc = bp_archive_extract_all_ex(&io, golden_extract_open,
+                                   golden_extract_done, NULL, &extracted);
+    UNIT_CHECK(rc == BP_OK && extracted.done_status == BP_OK &&
+               extracted.output.size == 1 && extracted.bytes[0] == 'A',
+               "full extraction decodes the unframed single blob");
+
+    memcpy(corrupt, FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE, sizeof(corrupt));
+    corrupt[75] ^= 1;
+    mem.buf = corrupt;
+    mem.pos = 0;
+    mem.size = (long)sizeof(corrupt);
+    mem.cap = mem.size;
+    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
+               "full test detects corruption in an unframed Stored blob");
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
+               "mini test detects corruption in an unframed Stored blob");
+
+    mem.buf = (unsigned char *)FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_OK,
+               "full test decompresses the unframed BoltLite blob");
+    memset(&extracted, 0, sizeof(extracted));
+    extracted.output.buf = extracted.bytes;
+    extracted.output.cap = sizeof(extracted.bytes);
+    extracted.io = make_mem_io(&extracted.output);
+    extracted.done_status = 99;
+    rc = bp_archive_extract_all_ex(&io, golden_extract_open,
+                                   golden_extract_done, NULL, &extracted);
+    UNIT_CHECK(rc == BP_OK && extracted.done_status == BP_OK &&
+               extracted.output.size == 1 && extracted.bytes[0] == 'A',
+               "full extraction decompresses the unframed BoltLite blob");
 }
 
 /* ======================================================================== */
@@ -960,6 +1093,85 @@ static void test_mini_independent_format6_golden_archive(void)
     UNIT_CHECK(rc == BP_OK && state.done_status == BP_OK &&
                state.output.size == 1 && output[0] == 'A',
                "mini extracts and checks independent Stored payload");
+
+    mem.buf = (unsigned char *)FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    state.count = 0;
+    state.flags = 0xFFFF;
+    rc = bp_mini_archive_list(&io, mini_interop_list, &state);
+    UNIT_CHECK(rc == BP_OK && state.count == 1 && state.flags == 0,
+               "mini lists the independent unframed single-blob entry");
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_OK,
+               "mini test verifies the unframed Stored payload");
+
+    state.output.pos = 0;
+    state.output.size = 0;
+    state.count = 0;
+    state.done_status = 99;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                        mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_OK && state.done_status == BP_OK &&
+               state.output.size == 1 && output[0] == 'A',
+               "mini extraction decodes the unframed single blob");
+
+    mem.buf = (unsigned char *)FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_OK,
+               "mini test decompresses the unframed BoltLite blob");
+    state.output.pos = 0;
+    state.output.size = 0;
+    state.count = 0;
+    state.done_status = 99;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                        mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_OK && state.done_status == BP_OK &&
+               state.output.size == 1 && output[0] == 'A',
+               "mini extraction decompresses the unframed BoltLite blob");
+}
+
+static void test_mini_single_blob_resource_preflight(void)
+{
+    unsigned char archive[sizeof(FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE)];
+    unsigned char output[8];
+    MemIO mem;
+    bp_io_t io;
+    MiniInteropState state;
+    bp_uint64 oversized = bp_u64_from_u32(BP_MINI_MAX_BLOCK_SIZE + 1U);
+    bp_uint64 table_offset;
+    bp_uint64 table_size;
+    bp_uint32 table_start;
+    int rc;
+
+    UNIT_SECTION("Mini core: single-blob resource preflight");
+    memcpy(archive, FORMAT6_SINGLE_BLOB_GOLDEN_ARCHIVE, sizeof(archive));
+    bp_write_le64(archive + 37, oversized);
+    bp_write_le64(archive + 84, oversized);
+    bp_write_le64(archive + 95, oversized);
+    table_offset = bp_read_le64(archive + sizeof(archive) - BP_FOOTER_SIZE);
+    table_size = bp_read_le64(archive + sizeof(archive) - BP_FOOTER_SIZE + 8);
+    table_start = bp_u64_to_u32(table_offset);
+    bp_write_le32(archive + BP_HEADER_TABLE_CRC_OFF,
+                  bp_crc32(0, archive + table_start, bp_u64_to_u32(table_size)));
+    bp_write_le32(archive + BP_HEADER_CRC_OFF,
+                  bp_crc32(0, archive, BP_HEADER_CRC_OFF));
+
+    mem.buf = archive;
+    mem.pos = 0;
+    mem.size = (long)sizeof(archive);
+    mem.cap = mem.size;
+    io = make_mem_io(&mem);
+    memset(&state, 0, sizeof(state));
+    state.output.buf = output;
+    state.output.cap = sizeof(output);
+    state.io = make_mem_io(&state.output);
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                        mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW && state.count == 0,
+               "oversized single blob is rejected before opening output");
 }
 
 static int mini_metadata_test(const bp_mini_entry_t *entry,
@@ -1831,10 +2043,12 @@ int main(void)
 
     test_header_bytes();
     test_independent_format6_golden_archive();
+    test_format6_single_blob_golden_archive();
     test_previous_versions_rejected();
     test_format6_flags_and_names();
     test_format6_full_mini_interop();
     test_mini_independent_format6_golden_archive();
+    test_mini_single_blob_resource_preflight();
     test_mini_archive_size_limit();
     test_mini_directory_outcomes();
     test_mini_directory_queue();

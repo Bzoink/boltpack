@@ -2394,12 +2394,14 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
     {
         bp_uint32 bsize = entry->block_size;
         bp_uint32 alloc_in;
+        int single_blob = bsize == 0;
         fluff_ctx_t *dfctx = NULL;
 
-        if (bsize == 0) {
-            /* single blob mode */
+        if (single_blob) {
+            /* Format 6 defines block_size zero as one unframed compressed
+             * blob. Its size must fit this reader's bounded block buffer. */
             if (entry->original_size.hi != 0) {
-                return BP_ERR_CORRUPT;
+                return BP_ERR_OVERFLOW;
             }
             bsize = bp_u64_to_u32(entry->original_size);
         }
@@ -2414,6 +2416,11 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
 
         /* worst-case compressed block can be slightly larger than original */
         alloc_in = bp_method_compress_bound(entry->method, bsize);
+        if (single_blob &&
+            (entry->compressed_size.hi != 0 ||
+             entry->compressed_size.lo == 0 ||
+             entry->compressed_size.lo > alloc_in))
+            return BP_ERR_CORRUPT;
         in_buf = (bp_uint8 *)malloc((size_t)alloc_in);
         if (in_buf == NULL) return BP_ERR_NOMEM;
 
@@ -2434,11 +2441,20 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
             bp_uint32 comp_sz, orig_sz;
             bp_uint32 dec_len;
 
-            rc = io_read(io, blk_hdr, blk_hdr_sz);
-            if (rc != BP_OK) { if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; } free(in_buf); free(dec_buf); return rc; }
-
-            comp_sz = bp_read_le32(blk_hdr);
-            orig_sz = bp_read_le32(blk_hdr + 4);
+            if (single_blob) {
+                if (remaining.hi != 0 || remaining.lo == 0) {
+                    if (dfctx) fluff_ctx_free(dfctx);
+                    free(in_buf); free(dec_buf);
+                    return BP_ERR_CORRUPT;
+                }
+                comp_sz = entry->compressed_size.lo;
+                orig_sz = remaining.lo;
+            } else {
+                rc = io_read(io, blk_hdr, blk_hdr_sz);
+                if (rc != BP_OK) { if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; } free(in_buf); free(dec_buf); return rc; }
+                comp_sz = bp_read_le32(blk_hdr);
+                orig_sz = bp_read_le32(blk_hdr + 4);
+            }
 
             if (orig_sz > bsize || comp_sz > alloc_in) {
                 if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; }
@@ -2456,7 +2472,7 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
             if (rc != BP_OK) { if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; } free(in_buf); free(dec_buf); return rc; }
 
             /* v3: verify block CRC before decompression */
-            if (blk_hdr_sz == BP_BLOCK_HDR_V3) {
+            if (!single_blob && blk_hdr_sz == BP_BLOCK_HDR_V3) {
                 bp_uint32 stored_crc = bp_read_le32(blk_hdr + 8);
                 bp_uint32 calc_crc   = bp_crc32(0, in_buf, comp_sz);
                 if (stored_crc != calc_crc) {
