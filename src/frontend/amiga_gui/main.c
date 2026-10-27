@@ -102,6 +102,7 @@
 #define MN_METHOD_BOLTLITE    11
 #define MN_METHOD_BOLTLZ   12
 #define MN_METHOD_FLUFF   13
+#define MN_INTERCHANGE_PROFILE 14
 
 /* Gadget IDs */
 #define GID_LISTVIEW   1
@@ -171,6 +172,7 @@ typedef struct {
 
 static amiga_progress_ui_t *active_progress;
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
+static int current_interchange_profile;
 static char status_lines[STATUS_LINE_COUNT][160];
 static int gather_count;
 static char **gather_files;
@@ -1058,16 +1060,19 @@ static void sync_compression_menu_checks(void)
     struct MenuItem *BoltLite;
     struct MenuItem *boltlz;
     struct MenuItem *fluff;
+    struct MenuItem *interchange;
 
     stored = find_menu_item_by_id(MN_METHOD_STORED);
     BoltLite   = find_menu_item_by_id(MN_METHOD_BOLTLITE);
     boltlz  = find_menu_item_by_id(MN_METHOD_BOLTLZ);
     fluff  = find_menu_item_by_id(MN_METHOD_FLUFF);
+    interchange = find_menu_item_by_id(MN_INTERCHANGE_PROFILE);
 
     if (stored) stored->Flags &= (UWORD)~CHECKED;
     if (BoltLite)   BoltLite->Flags   &= (UWORD)~CHECKED;
     if (boltlz)  boltlz->Flags  &= (UWORD)~CHECKED;
     if (fluff)  fluff->Flags  &= (UWORD)~CHECKED;
+    if (interchange) interchange->Flags &= (UWORD)~CHECKED;
 
     switch (current_method) {
         case BP_METHOD_STORED:
@@ -1085,6 +1090,8 @@ static void sync_compression_menu_checks(void)
             if (boltlz) boltlz->Flags |= CHECKED;
             break;
     }
+    if (interchange && current_interchange_profile)
+        interchange->Flags |= CHECKED;
 
     if (win && menu_strip) {
         ClearMenuStrip(win);
@@ -1125,7 +1132,19 @@ static void select_compression_method(bp_uint8 method)
     }
 
     current_method = method;
+    current_interchange_profile = 0;
     log_message("Compression method selected: %s", method_name(current_method));
+    sync_compression_menu_checks();
+    refresh_idle_status();
+}
+
+static void toggle_interchange_profile(void)
+{
+    current_interchange_profile = !current_interchange_profile;
+    if (current_interchange_profile)
+        current_method = BP_METHOD_BOLTLITE;
+    log_message("Interchange Profile 1 %s",
+                current_interchange_profile ? "enabled" : "disabled");
     sync_compression_menu_checks();
     refresh_idle_status();
 }
@@ -1214,6 +1233,8 @@ static struct NewMenu new_menus[] = {
 
     { NM_TITLE, USTR("Compression"),    NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("Create New..."),   USTR("N"),  0, 0, (APTR)MN_CREATE },
+    { NM_ITEM,  USTR("Interchange Profile 1"), NULL, CHECKIT, 0,
+      (APTR)MN_INTERCHANGE_PROFILE },
     { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("Stored"),        NULL, CHECKIT, 0, (APTR)MN_METHOD_STORED },
     { NM_ITEM,  USTR("BoltLite"),          NULL, CHECKIT, 0, (APTR)MN_METHOD_BOLTLITE },
@@ -2470,9 +2491,12 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     outio = make_io(outfp);
     memset(&ar, 0, sizeof(ar));
-    rc = bp_archive_create(&ar, &outio, 0, current_method);
-    log_message("bp_archive_create('%s') rc=%d (%s) method=%s",
-                out_path, rc, bp_strerror(rc), method_name(current_method));
+    rc = current_interchange_profile
+        ? bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &outio, 0, current_method);
+    log_message("archive create('%s') rc=%d (%s) method=%s profile=%d",
+                out_path, rc, bp_strerror(rc), method_name(current_method),
+                current_interchange_profile);
     if (rc != BP_OK) {
         fclose(outfp);
         show_requester("Error", "Create failed");
@@ -2757,13 +2781,17 @@ static void event_loop(void)
                                     case MN_METHOD_FLUFF:
                                         select_compression_method(BP_METHOD_FLUFF);
                                         break;
+                                    case MN_INTERCHANGE_PROFILE:
+                                        toggle_interchange_profile();
+                                        break;
                                     case MN_QUIT:    running = FALSE;    break;
                                     case MN_ABOUT:   show_about_dialog(); break;
                                     case MN_DOC:
                                         show_requester("Documentation",
                                             "See README for full documentation.\n\n"
                                             "Use Compression to choose Stored, BoltLite,\n"
-                                            "boltlz or Fluff for new archives.\n"
+                                            "boltlz or Fluff for new archives, or select\n"
+                                            "Interchange Profile 1 for mini-reader limits.\n"
                                             "Drop .bolt/.blt files to open them.\n"
                                             "Drop other files or drawers to archive them.");
                                         break;

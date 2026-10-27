@@ -2449,6 +2449,10 @@ sizes and packed-size percentage semantics. Archive creation now uses a
 dedicated **Compression** menu with checkmarked Stored, BoltLite, boltlz, and
 Fluff choices; Fluff selection is gated against the current largest free memory
 block reported by `AvailMem(MEMF_ANY | MEMF_LARGEST)`.
+The menu also offers an Interchange Profile 1 check item for new archives.
+It selects BoltLite with 16 KiB blocks and enforces mini-reader entry-count,
+entry-size, and serialized-size limits. Selecting a compression method turns
+the profile off.
 
 Workbench integration: creates an `AppWindow` for drag-and-drop from the
 Workbench icon view. Files dropped on the application icon (via WBStartup
