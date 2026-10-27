@@ -550,11 +550,13 @@ but a macOS target build and runtime profile round trip remain outstanding.
 The Windows FLTK GUI offers the profile for archive creation and network
 sending; the Atari GEM, Amiga GadTools, native Win32, and Windows .NET GUIs
 offer it for creation. The macOS Cocoa GUI source also offers the profile in
-its compression sheet. The DLL profile wrapper cross-builds, but the .NET GUI
+its compression sheet, and the Haiku BeAPI GUI now offers it in the Compression
+menu. The DLL profile wrapper cross-builds, but the .NET GUI
 has no managed build or Windows runtime qualification; the Cocoa GUI has no
-macOS target build or runtime qualification. Haiku and the target-only GUI
-frontends listed in the matrix still lack a profile option. GUI profile code
-and target qualification remain incomplete.
+macOS target build or runtime qualification. Haiku's target cross-build and
+runtime qualification remain outstanding. The target-only GUI frontends listed
+in the matrix still lack a profile option. GUI profile code and target
+qualification remain incomplete.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
