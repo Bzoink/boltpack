@@ -22,6 +22,7 @@
 #include "bp_metadata.h"
 #include "../../src/frontend/mini_shared/dos_time.h"
 #include "../../src/frontend/mini_shared/mini_common.h"
+#include "../../src/frontend/atari/atari_path.h"
 
 /* ======================================================================== */
 /* Memory-backed bp_io_t                                                     */
@@ -1042,6 +1043,69 @@ static void test_dos_time_interop(void)
                "pre-1980 time is not clamped");
 }
 
+static void test_atari_name_projection(void)
+{
+    bp_atari_name_set_t set;
+    char key[256];
+    char name[16];
+    unsigned int key_length;
+    unsigned long i;
+    int rc;
+
+    UNIT_SECTION("Atari GEMDOS name projection and collisions");
+    rc = bp_atari_project_name("foo/bar.txt", 0, key, sizeof(key),
+                               &key_length);
+    UNIT_CHECK(rc == BP_OK && strcmp(key, "FOO\\BAR.TXT") == 0 &&
+               key_length == strlen("FOO\\BAR.TXT"),
+               "path key folds case and uses GEMDOS separators");
+    rc = bp_atari_project_name("FOO.TXT/", 1, key, sizeof(key),
+                               &key_length);
+    UNIT_CHECK(rc == BP_OK && strcmp(key, "FOO.TXT") == 0,
+               "directory trailing slash is not part of destination key");
+    UNIT_CHECK(bp_atari_project_name("123456789", 0, key, sizeof(key),
+                                     &key_length) == BP_ERR_INVALID_ARG,
+               "component longer than eight-character basename is refused");
+    UNIT_CHECK(bp_atari_project_name("FILE.abcd", 0, key, sizeof(key),
+                                     &key_length) == BP_ERR_INVALID_ARG,
+               "extension longer than three characters is refused");
+    UNIT_CHECK(bp_atari_project_name("FILE.", 0, key, sizeof(key),
+                                     &key_length) == BP_ERR_INVALID_ARG,
+               "trailing dot alias is refused");
+    UNIT_CHECK(bp_atari_project_name("DIR//FILE", 0, key, sizeof(key),
+                                     &key_length) == BP_ERR_INVALID_ARG,
+               "empty path components are refused");
+    UNIT_CHECK(bp_atari_project_name("caf\xE9.txt", 0, key, sizeof(key),
+                                     &key_length) == BP_ERR_INVALID_ARG,
+               "non-ASCII bytes outside base GEMDOS profile are refused");
+
+    bp_atari_name_set_init(&set);
+    rc = bp_atari_project_name("dir/file.txt", 0, key, sizeof(key),
+                               &key_length);
+    if (rc == BP_OK) rc = bp_atari_name_set_add(&set, key, key_length);
+    UNIT_CHECK(rc == BP_OK, "first projected archive name is indexed");
+    rc = bp_atari_project_name("DIR/FILE.TXT", 0, key, sizeof(key),
+                               &key_length);
+    if (rc == BP_OK) rc = bp_atari_name_set_add(&set, key, key_length);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT,
+               "case-insensitive destination collision is rejected");
+    bp_atari_name_set_free(&set);
+
+    bp_atari_name_set_init(&set);
+    rc = BP_OK;
+    for (i = 0; i < BP_ATARI_PATH_MAX_ENTRIES && rc == BP_OK; i++) {
+        sprintf(name, "F%07lX", i);
+        rc = bp_atari_project_name(name, 0, key, sizeof(key), &key_length);
+        if (rc == BP_OK) rc = bp_atari_name_set_add(&set, key, key_length);
+    }
+    UNIT_CHECK(rc == BP_OK && set.count == BP_ATARI_PATH_MAX_ENTRIES,
+               "bounded index accepts its documented entry capacity");
+    rc = bp_atari_project_name("ZZZZZZZZ", 0, key, sizeof(key), &key_length);
+    if (rc == BP_OK) rc = bp_atari_name_set_add(&set, key, key_length);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW,
+               "index capacity is refused before another path is accepted");
+    bp_atari_name_set_free(&set);
+}
+
 static void test_portable_metadata(void)
 {
     static const bp_uint8 golden[] = {
@@ -1362,6 +1426,7 @@ int main(void)
     test_mini_directory_outcomes();
     test_mini_directory_queue();
     test_dos_time_interop();
+    test_atari_name_projection();
     test_portable_metadata();
     test_portable_metadata_archive();
     test_duplicate_writer_names();
