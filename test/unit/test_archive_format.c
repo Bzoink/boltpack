@@ -24,6 +24,7 @@
 #include "../../src/frontend/mini_shared/dos_time.h"
 #include "../../src/frontend/mini_shared/mini_common.h"
 #include "../../src/frontend/atari/atari_path.h"
+#include "../../src/frontend/cpm86/cpm86_path.h"
 
 /* ======================================================================== */
 /* Memory-backed bp_io_t                                                     */
@@ -1627,6 +1628,42 @@ static void test_atari_name_projection(void)
     bp_atari_name_set_free(&set);
 }
 
+static void test_cpm86_name_projection(void)
+{
+    char projected[BP_CPM86_NAME_SIZE];
+    char *colliding[2];
+    char *distinct[2];
+    int ok;
+
+    UNIT_SECTION("CP/M-86 flat 8.3 name projection");
+    ok = bp_cpm86_project_name("A:report.txt", projected);
+    UNIT_CHECK(ok && strcmp(projected, "REPORT.TXT") == 0,
+               "drive prefix and ASCII case normalize without truncation");
+    UNIT_CHECK(bp_cpm86_project_name("ABCDEFGH.123", projected) &&
+               strcmp(projected, "ABCDEFGH.123") == 0,
+               "exact 8.3 boundary is accepted");
+    UNIT_CHECK(!bp_cpm86_project_name("TOOLONGNAME.TXT", projected),
+               "overlong basename is refused instead of truncated");
+    UNIT_CHECK(!bp_cpm86_project_name("FILE.TOOO", projected),
+               "overlong extension is refused instead of truncated");
+    UNIT_CHECK(!bp_cpm86_project_name("DIR/FILE.TXT", projected),
+               "directory paths are refused on the flat filesystem");
+    UNIT_CHECK(!bp_cpm86_project_name("FILE?.TXT", projected),
+               "wildcard path characters are refused");
+    colliding[0] = "report.txt";
+    colliding[1] = "REPORT.TXT";
+    UNIT_CHECK(!bp_cpm86_names_unique(colliding, 2U),
+               "case-folded 8.3 aliases fail creation preflight");
+    distinct[0] = "ONE.TXT";
+    distinct[1] = "TWO.TXT";
+    UNIT_CHECK(bp_cpm86_names_unique(distinct, 2U),
+               "distinct valid 8.3 sources pass creation preflight");
+    UNIT_CHECK(!bp_cpm86_create_names_safe("A:REPORT.TXT", colliding, 1U),
+               "archive target aliasing a source is rejected before truncation");
+    UNIT_CHECK(bp_cpm86_create_names_safe("PACK.BLT", distinct, 2U),
+               "valid archive and source names pass complete preflight");
+}
+
 static void test_portable_metadata(void)
 {
     static const bp_uint8 golden[] = {
@@ -2190,6 +2227,7 @@ int main(void)
     test_mini_directory_queue();
     test_dos_time_interop();
     test_atari_name_projection();
+    test_cpm86_name_projection();
     test_portable_metadata();
     test_portable_metadata_archive();
     test_mini_local_directory_names();
