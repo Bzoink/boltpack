@@ -135,11 +135,12 @@ Reference: [conflicting encoder instruction](specification-1.0.md#92-encoder-con
 
 ## Compatibility policy
 
-Readers currently accept format version 5 only. Because BoltPack is not widely
-used, support for earlier archive versions is not required at this stage. The
-strict policy can remain. If the on-disk layout changes, update the normative
-specification and use an appropriate new format version; a backward reader or
-migration tool is optional unless product needs change.
+At the time of this audit, readers accepted format version 5 only. The
+subsequent format-6 cutover deliberately rejects versions 1–5. Because
+BoltPack is not widely used, earlier-version support and a migration tool are
+not required; this is the current compatibility policy. The normative
+specification and [interoperability matrix](interoperability-matrix.md) record
+the format-6 behavior and present validation evidence.
 
 Compression-method support still varies by build. For exchange with vintage
 mini targets, Stored is the broadest baseline. BoltLite is supported by the
@@ -163,8 +164,8 @@ mini builds decode BoltLZ but cannot encode it.
 
 ## Interoperability plan
 
-The revised implementation plan is maintained in
-[archive-format-plan.md](archive-format-plan.md). It proposes format 6, explicit
-extraction outcomes, strict filename conversion, and a profile bounded by mini
-resource limits. Earlier archive versions need not be supported. These are
-planned changes; the findings above describe the current format-5 implementation.
+The implementation plan is maintained in
+[archive-format-plan.md](archive-format-plan.md), with per-frontend evidence in
+the [interoperability matrix](interoperability-matrix.md). The findings above
+describe the historical format-5 implementation and audit state; consult those
+current documents for format-6 behavior and remaining qualification work.
