@@ -12,10 +12,13 @@
  * TOS file attributes are archived and restored via Fattrib() (tos.h).
  * Available memory is probed with Malloc(-1L) to auto-select block size.
  *
- * Metadata (BP_TYPE_META) payload for BP_OS_ATARI:
+ * Native metadata (BP_TYPE_META) payload for BP_OS_ATARI:
  *   Byte 0 : TOS attribute byte (FA_RDONLY | FA_HIDDEN | FA_SYSTEM | FA_ARCH)
  *            (only bits 0x27 are stored; FA_LABEL(0x08) and FA_DIR(0x10)
  *             are never written)
+ * A separate BP_META_PORTABLE entry stores the same validity/value bits in
+ * the shared FAT metadata envelope. Extraction stages files before checksum
+ * verification and defers directory timestamps and attributes.
  *
  * Cross-compilation from Linux:
  *   m68k-atari-mint-gcc -ansi -Wall -Wextra -O2               \
@@ -34,9 +37,11 @@
 
 #include "../../core/archiver.h"
 #include "../../core/bp_time.h"
+#include "../../core/bp_metadata.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "atari_path.h"
 
 /* TOS system calls: Fattrib(), Malloc() */
 #include <mint/osbind.h>
@@ -50,7 +55,14 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <utime.h>
+
+/* mintlib exposes these POSIX interfaces only with feature macros enabled;
+ * the frontend is intentionally compiled in strict ANSI mode. */
+extern int lstat(const char *path, struct stat *st);
+extern int mkstemp(char *template_path);
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -63,6 +75,8 @@
 
 /* Metadata payload size: 1 byte (TOS attribute flags) */
 #define ATARI_META_PAYLOAD  1
+#define ATARI_DIR_QUEUE_MAX 256U
+#define ATARI_DIR_QUEUE_BYTES_MAX 32768UL
 
 /* TOS attribute bits we care about.  FA_LABEL (0x08) and FA_DIR (0x10)
  * are structural and must never be written back to a plain file. */
@@ -190,7 +204,8 @@ static long wbuf_read_fn(void *handle, void *buf, bp_uint32 count)
 static long wbuf_write_fn(void *handle, const void *data, bp_uint32 count)
 {
     wbuf_ctx_t *ctx = (wbuf_ctx_t *)handle;
-    if (ctx->pos + count > ctx->cap) count = ctx->cap - ctx->pos;
+    if (ctx->pos > ctx->cap) return -1;
+    if (count > ctx->cap - ctx->pos) count = ctx->cap - ctx->pos;
     if (count == 0) return 0;
     memcpy(ctx->buf + ctx->pos, data, (size_t)count);
     ctx->pos += count;
@@ -224,8 +239,20 @@ static bp_off_t wbuf_tell_fn(void *handle)
 typedef struct {
     bp_io_t       io;       /* MUST be first */
     wbuf_ctx_t    wctx;
-    unsigned char buf[4];   /* 1-byte Atari attribute + padding */
+    unsigned char buf[BP_META_MAX_SIZE];
 } meta_extract_t;
+
+typedef struct atari_dir_restore_s {
+    struct atari_dir_restore_s *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    unsigned char native_attr;
+    unsigned char fat_valid;
+    unsigned char fat_value;
+    int native_seen;
+    int fat_seen;
+} atari_dir_restore_t;
 
 /* ---- error messages ---------------------------------------------------- */
 
@@ -339,14 +366,24 @@ static int ends_with_sep(const char *s)
     return len > 0 && (s[len - 1] == '/' || s[len - 1] == '\\');
 }
 
-static void path_join(char *buf, size_t bufsize, const char *dir,
-                      const char *name)
+static int path_join(char *buf, size_t bufsize, const char *dir,
+                     const char *name)
 {
-    if (ends_with_sep(dir)) {
-        snprintf(buf, bufsize, "%s%s", dir, name);
-    } else {
-        snprintf(buf, bufsize, "%s/%s", dir, name);
+    size_t dir_len = strlen(dir);
+    size_t name_len = strlen(name);
+    int add_sep = !ends_with_sep(dir);
+    size_t pos = dir_len;
+    if (bufsize == 0 || dir_len >= bufsize) return -1;
+    if (add_sep) {
+        if (pos >= bufsize - 1) return -1;
+        buf[pos++] = '/';
     }
+    if (name_len >= bufsize - pos) return -1;
+    memcpy(buf, dir, dir_len);
+    if (add_sep) buf[dir_len] = '/';
+    memcpy(buf + pos, name, name_len);
+    buf[pos + name_len] = '\0';
+    return 0;
 }
 
 /*
@@ -387,27 +424,50 @@ static int atari_mkdir(const char *path)
     return mkdir(path, 0755);
 }
 
+static int ensure_directory_component(const char *path)
+{
+    struct stat st;
+    size_t len = strlen(path);
+    if (len == 2 && path[1] == ':') return 0;
+    if (lstat(path, &st) == 0) {
+#ifdef S_ISLNK
+        if (S_ISLNK(st.st_mode)) return -1;
+#endif
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+    if (errno != ENOENT) return -1;
+    if (atari_mkdir(path) == 0) return 0;
+    if (errno != EEXIST || lstat(path, &st) != 0) return -1;
+#ifdef S_ISLNK
+    if (S_ISLNK(st.st_mode)) return -1;
+#endif
+    return S_ISDIR(st.st_mode) ? 0 : -1;
+}
+
 static int mkdirs(const char *path)
 {
     char  tmp[BP_MAX_PATH];
     char *p;
+    size_t len;
 
     if (strlen(path) >= sizeof(tmp)) return -1;
     strcpy(tmp, path);
+    len = strlen(tmp);
+    while (len > 1 && (tmp[len - 1] == '/' || tmp[len - 1] == '\\'))
+        tmp[--len] = '\0';
 
     for (p = tmp + 1; *p; p++) {
         if (*p == '/' || *p == '\\') {
             char saved = *p;
             *p = '\0';
-            if (atari_mkdir(tmp) != 0 && errno != EEXIST) {
+            if (ensure_directory_component(tmp) != 0) {
                 *p = saved;
                 return -1;
             }
             *p = saved;
         }
     }
-    if (atari_mkdir(tmp) != 0 && errno != EEXIST) return -1;
-    return 0;
+    return ensure_directory_component(tmp);
 }
 
 static int mkdirs_for_file(const char *path)
@@ -445,23 +505,45 @@ static bp_uint32 parse_block_size(const char *s)
 /* ---- Atari attribute helpers ------------------------------------------- */
 
 /*
- * Read TOS file attributes.  Returns the masked attribute byte on success,
- * or 0 on failure.  Fattrib(path, 0, 0) returns the current attributes.
+ * Read TOS file attributes.  Fattrib(path, 0, 0) returns the current value.
  */
-static unsigned char atari_get_attrib(const char *path)
+static int atari_get_attrib(const char *path, unsigned char *attr)
 {
     long result = Fattrib(path, 0, 0);
-    if (result < 0) return 0;
-    return (unsigned char)((int)result & ATARI_ATTR_MASK);
+    if (result < 0 || attr == NULL) return -1;
+    *attr = (unsigned char)((int)result & ATARI_ATTR_MASK);
+    return 0;
 }
 
 /*
- * Write TOS file attributes.  Silently ignores errors (e.g. on FAT volumes
- * where certain bits are unsupported).
+ * Write only the supplied attribute bits and report target API failures.
  */
-static void atari_apply_attrib(const char *path, unsigned char attr)
+static int atari_apply_attrib(const char *path, unsigned char valid,
+                              unsigned char value)
 {
-    (void)Fattrib(path, 1, (int)(attr & ATARI_ATTR_MASK));
+    long current = Fattrib(path, 0, 0);
+    unsigned char desired;
+    long result;
+    if (current < 0) return -1;
+    valid = (unsigned char)(valid & ATARI_ATTR_MASK);
+    desired = (unsigned char)(((unsigned char)current & (unsigned char)~valid) |
+                              (value & valid));
+    result = Fattrib(path, 1, (int)(desired & ATARI_ATTR_MASK));
+    return result < 0 ? -1 : 0;
+}
+
+static void atari_stat_mtime(const struct stat *st, bp_uint64 *mtime,
+                             bp_uint16 *flags)
+{
+    unsigned long seconds;
+    mtime->lo = 0;
+    mtime->hi = 0;
+    *flags = 0;
+    if (st->st_mtime < (time_t)0) return;
+    seconds = (unsigned long)st->st_mtime;
+    if ((time_t)seconds != st->st_mtime) return;
+    *mtime = bp_u64_from_ulong(seconds);
+    *flags = BP_ENTRY_FLAG_MTIME_VALID;
 }
 
 /*
@@ -486,13 +568,13 @@ static bp_uint32 atari_auto_block_size(void)
  * The entry shares the same archive name as the preceding data/dir entry.
  */
 static int add_meta_entry(bp_archive_t *ar, const char *arcname,
-                          const char *fs_path)
+                          unsigned char attr)
 {
     unsigned char meta_buf[ATARI_META_PAYLOAD];
     bp_io_t       meta_io;
     rbuf_ctx_t    rctx;
 
-    meta_buf[0] = atari_get_attrib(fs_path);
+    meta_buf[0] = attr & ATARI_ATTR_MASK;
 
     rctx.buf  = meta_buf;
     rctx.size = ATARI_META_PAYLOAD;
@@ -502,6 +584,28 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
     return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_ATARI,
                                 &meta_io, bp_u64_from_u32((bp_uint32)ATARI_META_PAYLOAD),
                                 bp_u64_from_u32(0), 0);
+}
+
+static int add_portable_meta_entry(bp_archive_t *ar, const char *arcname,
+                                   bp_uint8 subject_type,
+                                   unsigned char attr)
+{
+    unsigned char meta_buf[BP_META_FAT_SIZE];
+    bp_io_t meta_io;
+    rbuf_ctx_t rctx;
+    int rc;
+    rc = bp_metadata_fat_encode(meta_buf, sizeof(meta_buf), subject_type,
+                                BP_META_FAT_MASK,
+                                (bp_uint8)(attr & BP_META_FAT_MASK));
+    if (rc != BP_OK) return rc;
+    rctx.buf = meta_buf;
+    rctx.size = sizeof(meta_buf);
+    rctx.pos = 0;
+    bp_io_from_rbuf(&meta_io, &rctx);
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_META_PORTABLE,
+                                   &meta_io,
+                                   bp_u64_from_u32((bp_uint32)sizeof(meta_buf)),
+                                   bp_u64_from_u32(0), 0);
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
@@ -523,8 +627,11 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
-        path_join(child_arc,  sizeof(child_arc),  arc_prefix, ent->d_name);
+        if (path_join(child_path, sizeof(child_path), dir_path, ent->d_name) != 0 ||
+            path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name) != 0) {
+            closedir(d);
+            return BP_ERR_NAME_TOO_LONG;
+        }
         rc = add_path(ar, child_path, child_arc);
         if (rc != BP_OK) { closedir(d); return rc; }
     }
@@ -535,16 +642,23 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct stat st;
+    unsigned char attr;
     int         rc;
 
     if (stat(path, &st) != 0) {
         fprintf(stderr, "boltpack: cannot stat: %s\n", path);
         return BP_ERR_IO;
     }
-
     if (S_ISDIR(st.st_mode)) {
         char dir_arc[BP_MAX_PATH];
         char dir_arc_utf8[BP_MAX_PATH * 2];
+        bp_uint64 mtime;
+        bp_uint16 flags;
+
+        if (atari_get_attrib(path, &attr) != 0) {
+            fprintf(stderr, "boltpack: cannot read TOS attributes: %s\n", path);
+            return BP_ERR_IO;
+        }
 
         if (!ends_with_sep(arcname))
             sprintf(dir_arc, "%s/", arcname);
@@ -557,12 +671,15 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8),
                              ATARI_CP) != 0) return BP_ERR_INVALID_ARG;
 
-        rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR,
-                                  BP_OS_ATARI, NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        atari_stat_mtime(&st, &mtime, &flags);
+        rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                     BP_OS_ATARI, NULL, bp_u64_from_u32(0),
+                                     mtime, flags);
         if (rc != BP_OK) return rc;
 
-        rc = add_meta_entry(ar, dir_arc_utf8, path);
+        rc = add_meta_entry(ar, dir_arc_utf8, attr);
+        if (rc != BP_OK) return rc;
+        rc = add_portable_meta_entry(ar, dir_arc_utf8, BP_TYPE_DIR, attr);
         if (rc != BP_OK) return rc;
 
         return add_directory(ar, path, dir_arc);
@@ -570,8 +687,18 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     } else if (S_ISREG(st.st_mode)) {
         FILE      *fp;
         bp_io_t    fio;
-        bp_uint64  file_size = bp_u64_from_ulong((unsigned long)st.st_size);
+        bp_uint64  file_size;
+        bp_uint64  mtime;
+        bp_uint16  flags;
         char       arcname_utf8[BP_MAX_PATH * 2];
+
+        if (st.st_size < 0) return BP_ERR_OVERFLOW;
+        file_size = bp_u64_from_ulong((unsigned long)st.st_size);
+        if (atari_get_attrib(path, &attr) != 0) {
+            fprintf(stderr, "boltpack: cannot read TOS attributes: %s\n", path);
+            return BP_ERR_IO;
+        }
+        atari_stat_mtime(&st, &mtime, &flags);
 
         fp = fopen(path, "rb");
         if (fp == NULL) {
@@ -591,9 +718,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA,
-                                  BP_OS_ATARI, &fio, file_size,
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
+                                     BP_OS_ATARI, &fio, file_size, mtime, flags);
         fclose(fp);
         if (rc != BP_OK) return rc;
 
@@ -613,7 +739,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 
         /* Preserve TOS attribute flags */
-        return add_meta_entry(ar, arcname_utf8, path);
+        rc = add_meta_entry(ar, arcname_utf8, attr);
+        if (rc != BP_OK) return rc;
+        return add_portable_meta_entry(ar, arcname_utf8, BP_TYPE_DATA, attr);
     }
 
     /* skip other file types (devices, etc.) */
@@ -672,41 +800,325 @@ typedef struct {
     bp_uint32   dir_count;
     int         mtime_errors;
     int         skip_errors;
+    int         metadata_errors;
     int         subject_ok;
+    int         subject_type;
+    int         subject_native_seen;
     char        subject[BP_MAX_PATH];
+    atari_dir_restore_t *directories;
+    atari_dir_restore_t *subject_directory;
+    unsigned int directory_count;
+    unsigned long directory_path_bytes;
+    bp_atari_name_set_t projected_names;
 } extract_ctx_t;
+
+typedef struct {
+    bp_io_t io;
+    int fd;
+    char temporary[BP_MAX_PATH];
+    char target[BP_MAX_PATH];
+} atari_staged_output_t;
+
+static long staged_file_write(void *handle, const void *buf, bp_uint32 count)
+{
+    atari_staged_output_t *out = (atari_staged_output_t *)handle;
+    long written = (long)write(out->fd, buf, (size_t)count);
+    return written < 0 ? -1 : written;
+}
+
+static int atari_sibling_name(const char *target, const char *base,
+                              char *out, size_t out_size)
+{
+    const char *slash = strrchr(target, '/');
+    const char *bslash = strrchr(target, '\\');
+    const char *last = slash;
+    size_t prefix;
+    size_t base_len = strlen(base);
+    if (bslash != NULL && (last == NULL || bslash > last)) last = bslash;
+    prefix = last != NULL ? (size_t)(last - target + 1) : 0;
+    if (prefix >= out_size || base_len >= out_size - prefix) return -1;
+    memcpy(out, target, prefix);
+    memcpy(out + prefix, base, base_len + 1);
+    return 0;
+}
+
+static int atari_make_temp_template(const char *target, char *out,
+                                    size_t out_size)
+{
+    /* BPXXXXXX is an eight-character TOS basename. */
+    return atari_sibling_name(target, "BPXXXXXX", out, out_size);
+}
+
+static int atari_rename_noreplace(const char *from, const char *to)
+{
+    char old_path[BP_MAX_PATH];
+    char new_path[BP_MAX_PATH];
+    char *p;
+    if (strlen(from) >= sizeof(old_path) || strlen(to) >= sizeof(new_path))
+        return -1;
+    strcpy(old_path, from);
+    strcpy(new_path, to);
+    for (p = old_path; *p; p++) if (*p == '/') *p = '\\';
+    for (p = new_path; *p; p++) if (*p == '/') *p = '\\';
+    return Frename(0, old_path, new_path) == 0 ? 0 : -1;
+}
+
+static int atari_backup_existing(const char *target, char *backup,
+                                 size_t backup_size)
+{
+    static unsigned long sequence = 0;
+    unsigned int attempt;
+    char base[9];
+    for (attempt = 0; attempt < 64U; attempt++) {
+        unsigned long id = (((unsigned long)clock() << 4) + sequence++) &
+                           0x0FFFFFFFUL;
+        sprintf(base, "B%07lX", id);
+        if (atari_sibling_name(target, base, backup, backup_size) != 0)
+            return -1;
+        if (atari_rename_noreplace(target, backup) == 0) return 0;
+    }
+    return -1;
+}
+
+static int atari_commit_staged(atari_staged_output_t *out, int force)
+{
+    struct stat st;
+    char backup[BP_MAX_PATH];
+    int has_backup = 0;
+    int target_exists;
+    if (lstat(out->target, &st) == 0) target_exists = 1;
+    else if (errno == ENOENT) target_exists = 0;
+    else return BP_ERR_IO;
+    if (target_exists && !force) return BP_ERR_PARTIAL;
+    backup[0] = '\0';
+    if (target_exists) {
+        if (atari_backup_existing(out->target, backup, sizeof(backup)) != 0)
+            return BP_ERR_IO;
+        has_backup = 1;
+    }
+    if (atari_rename_noreplace(out->temporary, out->target) != 0) {
+        if (has_backup && atari_rename_noreplace(backup, out->target) != 0) {
+            fprintf(stderr,
+                    "boltpack: original file remains at recovery path: %s\n",
+                    backup);
+        }
+        return BP_ERR_IO;
+    }
+    out->temporary[0] = '\0';
+    if (has_backup && unlink(backup) != 0) {
+        fprintf(stderr, "boltpack: cannot remove replaced-file backup: %s\n",
+                backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static void atari_discard_staged(atari_staged_output_t *out)
+{
+    if (out->fd >= 0) {
+        (void)close(out->fd);
+        out->fd = -1;
+    }
+    if (out->temporary[0] != '\0') {
+        (void)unlink(out->temporary);
+        out->temporary[0] = '\0';
+    }
+}
+
+static atari_dir_restore_t *queue_directory_restore(extract_ctx_t *ctx,
+                                                     const char *path,
+                                                     const bp_entry_t *entry)
+{
+    atari_dir_restore_t *node;
+    size_t path_len = strlen(path) + 1;
+    if (ctx->directory_count >= ATARI_DIR_QUEUE_MAX ||
+        path_len > ATARI_DIR_QUEUE_BYTES_MAX - ctx->directory_path_bytes) {
+        ctx->metadata_errors++;
+        return NULL;
+    }
+    node = (atari_dir_restore_t *)calloc(1, sizeof(*node));
+    if (node == NULL) {
+        ctx->metadata_errors++;
+        return NULL;
+    }
+    node->path = (char *)malloc(path_len);
+    if (node->path == NULL) {
+        free(node);
+        ctx->metadata_errors++;
+        return NULL;
+    }
+    memcpy(node->path, path, path_len);
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    node->next = ctx->directories;
+    ctx->directories = node;
+    ctx->directory_count++;
+    ctx->directory_path_bytes += (unsigned long)path_len;
+    return node;
+}
+
+static int path_depth(const char *path)
+{
+    int depth = 0;
+    for (; *path; path++)
+        if (*path == '/' || *path == '\\') depth++;
+    return depth;
+}
+
+/* Finalize deepest directories first so parent timestamps and protection
+ * flags cannot prevent creation or restoration of their children. */
+static void finish_directory_restores(extract_ctx_t *ctx)
+{
+    while (ctx->directories != NULL) {
+        atari_dir_restore_t **best_link = &ctx->directories;
+        atari_dir_restore_t **link;
+        int best_depth = -1;
+        atari_dir_restore_t *node;
+        for (link = &ctx->directories; *link != NULL; link = &(*link)->next) {
+            int depth = path_depth((*link)->path);
+            if (depth > best_depth) {
+                best_depth = depth;
+                best_link = link;
+            }
+        }
+        node = *best_link;
+        *best_link = node->next;
+        if (node->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+            if (bp_restore_mtime(node->path, node->mtime) != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore directory timestamp: %s\n",
+                        node->path);
+                ctx->mtime_errors++;
+            }
+        }
+        if (node->native_seen) {
+            if (atari_apply_attrib(node->path, ATARI_ATTR_MASK,
+                                   node->native_attr) != 0) {
+                fprintf(stderr, "boltpack: cannot restore TOS attributes: %s\n",
+                        node->path);
+                ctx->metadata_errors++;
+            }
+        } else if (node->fat_seen && node->fat_valid != 0) {
+            if (atari_apply_attrib(node->path, node->fat_valid,
+                                   node->fat_value) != 0) {
+                fprintf(stderr, "boltpack: cannot restore portable FAT attributes: %s\n",
+                        node->path);
+                ctx->metadata_errors++;
+            }
+        }
+        if (ctx->directory_count != 0) ctx->directory_count--;
+        if (ctx->directory_path_bytes >= (unsigned long)strlen(node->path) + 1)
+            ctx->directory_path_bytes -= (unsigned long)strlen(node->path) + 1;
+        free(node->path);
+        free(node);
+    }
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
     char            path[BP_MAX_PATH];
     char            local_name[BP_MAX_PATH];
-    FILE           *fp;
-    bp_io_t        *io;
+    char            projected_name[BP_MAX_PATH];
+    atari_staged_output_t *staged;
     meta_extract_t *mex;
     bp_uint32       meta_sz;
+    unsigned int    projected_length;
+    int             project_rc;
 
-    if (entry->entry_type != BP_TYPE_META) ctx->subject_ok = 0;
-    if (!bp_name_is_safe(entry->name)) return NULL;
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->subject_ok = 0;
+        ctx->subject_type = entry->entry_type;
+        ctx->subject_native_seen = 0;
+        ctx->subject_directory = NULL;
+    } else if (entry->entry_type != BP_TYPE_META &&
+               entry->entry_type != BP_TYPE_RSRC) {
+        ctx->subject_ok = 0;
+    }
+    if (!bp_name_is_safe(entry->name)) {
+        fprintf(stderr, "boltpack: refusing unsafe archive path\n");
+        ctx->skip_errors++;
+        return NULL;
+    }
 
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
-                         ATARI_CP) != 0) return NULL;
-
-    if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
+                         ATARI_CP) != 0) {
+        fprintf(stderr, "boltpack: filename is not representable on Atari: %s\n",
+                entry->name);
+        ctx->skip_errors++;
         return NULL;
-    if (ctx->out_dir)
-        path_join(path, sizeof(path), ctx->out_dir, local_name);
-    else
+    }
+
+    if (ctx->out_dir) {
+        if (path_join(path, sizeof(path), ctx->out_dir, local_name) != 0) {
+            ctx->skip_errors++;
+            return NULL;
+        }
+    } else {
         strcpy(path, local_name);
+    }
+
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        size_t gemdos_path_length = strlen(path);
+        if (entry->entry_type == BP_TYPE_DIR && gemdos_path_length > 0 &&
+            (path[gemdos_path_length - 1] == '/' ||
+             path[gemdos_path_length - 1] == '\\')) gemdos_path_length--;
+        if (gemdos_path_length > BP_ATARI_GEMDOS_PATH_MAX) {
+            fprintf(stderr, "boltpack: Atari GEMDOS path exceeds 125 bytes: %s\n",
+                    local_name);
+            ctx->skip_errors++;
+            return NULL;
+        }
+        project_rc = bp_atari_project_name(local_name,
+                                           entry->entry_type == BP_TYPE_DIR,
+                                           projected_name, sizeof(projected_name),
+                                           &projected_length);
+        if (project_rc != BP_OK) {
+            fprintf(stderr, "boltpack: name is outside the Atari 8.3 profile: %s\n",
+                    local_name);
+            ctx->skip_errors++;
+            return NULL;
+        }
+        project_rc = bp_atari_name_set_add(&ctx->projected_names,
+                                           projected_name, projected_length);
+        if (project_rc != BP_OK) {
+            if (project_rc == BP_ERR_CORRUPT)
+                fprintf(stderr,
+                        "boltpack: Atari destination name collision: %s\n",
+                        local_name);
+            else
+                fprintf(stderr,
+                        "boltpack: Atari name index limit or allocation failure: %s\n",
+                        local_name);
+            ctx->skip_errors++;
+            return NULL;
+        }
+    }
 
     /* --- Directory ---------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run && mkdirs(path) == 0 && strlen(entry->name) < sizeof(ctx->subject)) {
+        if (ctx->dry_run && strlen(entry->name) < sizeof(ctx->subject)) {
             strcpy(ctx->subject, entry->name);
             ctx->subject_ok = 1;
+            return NULL;
+        }
+        if (!ctx->dry_run && mkdirs(path) == 0 &&
+            strlen(entry->name) < sizeof(ctx->subject)) {
+            atari_dir_restore_t *directory =
+                queue_directory_restore(ctx, path, entry);
+            if (directory != NULL) {
+                strcpy(ctx->subject, entry->name);
+                ctx->subject_directory = directory;
+                ctx->subject_ok = 1;
+            } else {
+                ctx->skip_errors++;
+            }
+        } else if (!ctx->dry_run) {
+            ctx->skip_errors++;
         }
         return NULL;
     }
@@ -715,19 +1127,32 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_META) {
         if (!ctx->subject_ok || strcmp(entry->name, ctx->subject) != 0) {
             ctx->subject_ok = 0;
+            ctx->metadata_errors++;
             return NULL;
         }
-        if (entry->platform != BP_OS_ATARI) return NULL;
-
         meta_sz = bp_u64_to_u32(entry->original_size);
-        if (meta_sz == 0 || meta_sz > ATARI_META_PAYLOAD + 4)
+        if (entry->platform == BP_OS_ATARI && meta_sz != ATARI_META_PAYLOAD) {
+            ctx->metadata_errors++;
             return NULL;
+        }
+        if (entry->platform == BP_META_PORTABLE &&
+            (meta_sz < 8U || meta_sz > BP_META_MAX_SIZE)) {
+            ctx->metadata_errors++;
+            return NULL;
+        }
+        if (entry->platform != BP_OS_ATARI && entry->platform != BP_META_PORTABLE) {
+            ctx->metadata_errors++;
+            return NULL;
+        }
 
         mex = (meta_extract_t *)malloc(sizeof(meta_extract_t));
-        if (!mex) return NULL;
+        if (!mex) {
+            ctx->metadata_errors++;
+            return NULL;
+        }
 
         mex->wctx.buf = mex->buf;
-        mex->wctx.cap = sizeof(mex->buf);
+        mex->wctx.cap = (bp_uint32)sizeof(mex->buf);
         mex->wctx.len = 0;
         mex->wctx.pos = 0;
 
@@ -741,10 +1166,22 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     }
 
     /* --- Resource fork (skip) ----------------------------------------- */
-    if (entry->entry_type == BP_TYPE_RSRC) {
-        if (g_verbosity == VERB_DEFAULT)
-            printf("   skipping: %s [resource fork - not supported on TOS]\n",
-                   local_name);
+    if (entry->entry_type == BP_TYPE_RSRC || entry->entry_type == BP_TYPE_SYMLINK) {
+        if (g_verbosity == VERB_DEFAULT) {
+            if (entry->entry_type == BP_TYPE_RSRC)
+                printf("   skipping: %s [resource fork - not supported on TOS]\n",
+                       local_name);
+            else
+                printf("   skipping: %s [symbolic links are not supported on TOS]\n",
+                       local_name);
+        }
+        ctx->skip_errors++;
+        return NULL;
+    }
+
+    if (entry->entry_type != BP_TYPE_DATA) {
+        fprintf(stderr, "boltpack: unsupported entry type for %s\n", local_name);
+        ctx->skip_errors++;
         return NULL;
     }
 
@@ -753,29 +1190,61 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (g_verbosity == VERB_DEFAULT)
         printf(" extracting: %s\n", local_name);
 
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) {
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+        }
+        return NULL;
+    }
 
     if (!ctx->force) {
         struct stat st_buf;
-        if (stat(path, &st_buf) == 0) {
+        if (lstat(path, &st_buf) == 0) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
             ctx->skip_errors++;
             return NULL;
         }
+        if (errno != ENOENT) {
+            fprintf(stderr, "boltpack: cannot inspect destination: %s\n", path);
+            ctx->skip_errors++;
+            return NULL;
+        }
     }
 
-    mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", path);
+    if (mkdirs_for_file(path) != 0) {
+        fprintf(stderr, "boltpack: cannot create parent directories for: %s\n",
+                path);
+        ctx->skip_errors++;
         return NULL;
     }
-
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    staged = (atari_staged_output_t *)calloc(1, sizeof(*staged));
+    if (staged == NULL) {
+        ctx->skip_errors++;
+        return NULL;
+    }
+    if (strlen(path) >= sizeof(staged->target) ||
+        atari_make_temp_template(path, staged->temporary,
+                                 sizeof(staged->temporary)) != 0) {
+        free(staged);
+        ctx->skip_errors++;
+        return NULL;
+    }
+    strcpy(staged->target, path);
+    staged->fd = mkstemp(staged->temporary);
+    if (staged->fd < 0) {
+        fprintf(stderr, "boltpack: cannot create a staging file for: %s\n", path);
+        free(staged);
+        ctx->skip_errors++;
+        return NULL;
+    }
+    staged->io.read = NULL;
+    staged->io.write = staged_file_write;
+    staged->io.seek = NULL;
+    staged->io.tell = NULL;
+    staged->io.handle = staged;
+    return &staged->io;
 }
 
 static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
@@ -783,56 +1252,139 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
 
-    /* --- Metadata: apply TOS attributes to fs object ------------------ */
+    /* --- Native and portable metadata ------------------------------- */
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
-        if (status == BP_OK && entry->platform == BP_OS_ATARI && !ctx->dry_run &&
-            mex->wctx.len >= ATARI_META_PAYLOAD) {
+        if (status == BP_OK && ctx->subject_ok && !ctx->dry_run &&
+            entry->platform == BP_OS_ATARI &&
+            mex->wctx.len == ATARI_META_PAYLOAD) {
             char path[BP_MAX_PATH];
             char local_name[BP_MAX_PATH];
-
-            if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), ATARI_CP) != 0) strcpy(local_name, "<unrepresentable>");
-            if (ctx->out_dir)
-                path_join(path, sizeof(path), ctx->out_dir, local_name);
-            else
+            if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                                 ATARI_CP) != 0) {
+                ctx->metadata_errors++;
+                free(mex);
+                return BP_ERR_PARTIAL;
+            }
+            if (ctx->out_dir) {
+                if (path_join(path, sizeof(path), ctx->out_dir, local_name) != 0) {
+                    ctx->metadata_errors++;
+                    free(mex);
+                    return BP_ERR_PARTIAL;
+                }
+            } else {
                 strcpy(path, local_name);
-
-            atari_apply_attrib(path, mex->buf[0]);
+            }
+            ctx->subject_native_seen = 1;
+            if (ctx->subject_type == BP_TYPE_DIR) {
+                if (ctx->subject_directory != NULL) {
+                    ctx->subject_directory->native_seen = 1;
+                    ctx->subject_directory->native_attr = mex->buf[0];
+                }
+            } else if (atari_apply_attrib(path, ATARI_ATTR_MASK,
+                                          mex->buf[0]) != 0) {
+                fprintf(stderr, "boltpack: cannot restore TOS attributes: %s\n",
+                        path);
+                ctx->metadata_errors++;
+            }
+        } else if (status == BP_OK && ctx->subject_ok && !ctx->dry_run &&
+                   entry->platform == BP_META_PORTABLE) {
+            bp_portable_metadata_t parsed;
+            int parse_rc = bp_metadata_parse(mex->buf, (unsigned)mex->wctx.len,
+                                             &parsed);
+            if (parse_rc == BP_ERR_CORRUPT) {
+                free(mex);
+                return parse_rc;
+            }
+            if (parsed.has_fat && !ctx->subject_native_seen) {
+                if (ctx->subject_type == BP_TYPE_DIR) {
+                    if (ctx->subject_directory != NULL) {
+                        ctx->subject_directory->fat_seen = 1;
+                        ctx->subject_directory->fat_valid = parsed.fat_valid;
+                        ctx->subject_directory->fat_value = parsed.fat_value;
+                    }
+                } else {
+                    char path[BP_MAX_PATH];
+                    char local_name[BP_MAX_PATH];
+                    if (bp_utf8_to_local(entry->name, local_name,
+                                         sizeof(local_name), ATARI_CP) != 0) {
+                        ctx->metadata_errors++;
+                        free(mex);
+                        return BP_ERR_PARTIAL;
+                    }
+                    if (ctx->out_dir) {
+                        if (path_join(path, sizeof(path), ctx->out_dir,
+                                      local_name) != 0) {
+                            ctx->metadata_errors++;
+                            free(mex);
+                            return BP_ERR_PARTIAL;
+                        }
+                    } else {
+                        strcpy(path, local_name);
+                    }
+                    if (parsed.fat_valid != 0 &&
+                        atari_apply_attrib(path, parsed.fat_valid,
+                                           parsed.fat_value) != 0) {
+                        fprintf(stderr,
+                                "boltpack: cannot restore portable FAT attributes: %s\n",
+                                path);
+                        ctx->metadata_errors++;
+                    }
+                }
+            }
+            if (parse_rc == BP_ERR_PARTIAL) {
+                free(mex);
+                return BP_ERR_PARTIAL;
+            }
         }
         free(mex);
         return BP_OK;
     }
 
-    /* --- Regular file: close and set modification time ---------------- */
+    /* --- Regular file: verify, timestamp, and commit staged output ------ */
     {
-        FILE *fp = (FILE *)out->handle;
-        if (fclose(fp) != 0 && status == BP_OK) { free(out); return BP_ERR_IO; }
-
-        if (status != BP_OK) { free(out); return BP_OK; }
-        if (strlen(entry->name) < sizeof(ctx->subject)) {
-            strcpy(ctx->subject, entry->name);
-            ctx->subject_ok = 1;
+        atari_staged_output_t *staged = (atari_staged_output_t *)out->handle;
+        int close_rc = close(staged->fd);
+        int commit_rc;
+        staged->fd = -1;
+        if (close_rc != 0) {
+            atari_discard_staged(staged);
+            free(staged);
+            return status == BP_OK ? BP_ERR_IO : BP_OK;
         }
-
-        if (!ctx->dry_run) {
-            char           path[BP_MAX_PATH];
-            char           local_name[BP_MAX_PATH];
-
-            if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), ATARI_CP) != 0) strcpy(local_name, "<unrepresentable>");
-            if (ctx->out_dir)
-                path_join(path, sizeof(path), ctx->out_dir, local_name);
-            else
-                strcpy(path, local_name);
-
-            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-                bp_restore_mtime(path, entry->mtime) != BP_OK) {
-                fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+        if (status != BP_OK) {
+            atari_discard_staged(staged);
+            free(staged);
+            return BP_OK;
+        }
+        if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+            if (bp_restore_mtime(staged->temporary, entry->mtime) != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore timestamp for: %s\n",
+                        staged->target);
                 ctx->mtime_errors++;
             }
         }
-        free(out);
+        commit_rc = atari_commit_staged(staged, ctx->force);
+        if (commit_rc != BP_OK && staged->temporary[0] != '\0') {
+            fprintf(stderr, "boltpack: cannot commit extracted file: %s\n",
+                    staged->target);
+            ctx->skip_errors++;
+            atari_discard_staged(staged);
+            free(staged);
+            return commit_rc;
+        }
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name);
+            ctx->subject_ok = 1;
+            ctx->subject_type = entry->entry_type;
+            ctx->subject_native_seen = 0;
+        } else {
+            ctx->subject_ok = 0;
+            ctx->metadata_errors++;
+        }
+        free(staged);
+        return commit_rc;
     }
-    return BP_OK;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -1140,9 +1692,13 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
+    finish_directory_restores(&ctx);
+    bp_atari_name_set_free(&ctx.projected_names);
     fclose(fp);
 
-    if (rc == BP_OK && (ctx.mtime_errors || ctx.skip_errors)) rc = BP_ERR_PARTIAL;
+    if (rc == BP_OK &&
+        (ctx.mtime_errors || ctx.skip_errors || ctx.metadata_errors))
+        rc = BP_ERR_PARTIAL;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));

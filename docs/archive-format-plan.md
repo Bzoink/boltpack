@@ -1,6 +1,7 @@
 # Archive Format Interoperability Plan
 
-**Reviewed:** 2026-10-26  
+**Reviewed:** 2026-10-27
+
 **Status:** implementation in progress; the core and specification use format 6.  
 **Basis:** [archive format audit](archive-format-audit.md).
 
@@ -13,16 +14,30 @@ no equivalent for a resource fork or a POSIX permission bit.
 
 The format-6 core, timestamp validity flag, UTF-8 validation, and file-table
 consistency checks are implemented. Mini frontends have explicit name
-conversion. The Linux CLI, Linux mini, and Windows CLI stage regular-file
-outputs until checksums pass; the Linux frontends also use directory-relative
+conversion. The Linux CLI, Linux mini, Windows CLI, and full Atari CLI stage
+regular-file outputs until checksums pass; the Linux frontends also use directory-relative
 operations to reject symlink components. The Windows CLI now writes and
 restores portable FAT flags, while deferring directory flags until children
 finish. This plan is not complete: metadata coverage and safe extraction lifecycle
 handling across the remaining frontends remain outstanding. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization
-remain open. The Windows CLI has cross-build evidence but still needs Windows
-runtime tests. DOS16, Win16, and OS/2-16 now require an explicit fixed timezone
+remain open. The full Atari CLI now validates the base GEMDOS 8.3 ASCII path
+profile and rejects case-folded path collisions before output changes. Its
+index is capped at 1,024 primary entries and 32 KiB of path keys; larger
+archives return partial after that bound. This targets the original GEMDOS
+profile, whose filename rules are documented in the [Atari ST GEM Programming
+manual](https://www.bitsavers.org/pdf/atari/ST/Atari_ST_GEM_Programming_1986/GEM_0042.pdf).
+The Windows CLI has cross-build evidence but still needs Windows
+runtime tests. The full Atari CLI now writes native and portable FAT metadata,
+defers directory time and attribute restoration, and stages files before
+checksum-verified commit. It checks existing directory components for symlinks
+and uses no-replace GEMDOS renames; forced replacement keeps a recovery copy
+until the new file is committed. Atari name projection rejects non-ASCII,
+non-8.3, and over-125-byte paths, and refuses case-insensitive collisions.
+This has cross-build evidence but still needs
+Atari runtime tests. Path-based TOS calls cannot prevent a concurrent rename
+of a checked parent. DOS16, Win16, and OS/2-16 now require an explicit fixed timezone
 offset for timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
 with directory-relative `openat` calls and reject symlink components. Staged
 files and final commits use the same open parent handle. Deterministic tests
@@ -33,10 +48,17 @@ concurrent-mutation limitation. The checked-in
 classic Mac 68k core copies now match the format-6 core. The evidence and phased tasks below describe
 the original format-5 review, not a claim that each issue is still unchanged.
 
-Atari and full OS/2 extraction now limit native metadata application to the
-matching successfully extracted subject and use status-aware cleanup. This
-does not yet implement the portable metadata envelope or deferred directory
-attributes. The OS/2 changes require verification with a working OS/2 compiler
+Full Atari and OS/2 extraction limit native metadata application to the
+matching successfully extracted subject and use status-aware cleanup. Atari now
+also writes and restores the portable FAT envelope, with native Atari metadata
+taking precedence and directory restoration deferred until children finish.
+OS/2 does not yet implement the portable metadata envelope or deferred
+directory attributes. The Atari changes have cross-build evidence but require
+runtime verification. Its deferred directory queue is capped at 256 entries
+and 32 KiB of path storage; exceeding either limit reports a partial transfer.
+Atari extraction stages regular files and checks existing parent components,
+but lacks directory-relative operations to prevent concurrent parent
+substitution under MiNT. OS/2 requires verification with a working compiler
 and runtime.
 
 The portable metadata envelope and FAT validity/value masks are specified and
@@ -195,7 +217,9 @@ input, and insufficient space. Shift-JIS double-byte characters outside the
 implemented half-width range return an explicit unsupported result. DOS,
 Atari, Amiga, and OS/2 archive creation refuses names that cannot be converted;
 legacy extraction callbacks refuse unrepresentable names rather than passing
-UTF-8 bytes into a local filesystem API. Windows CLI conversion uses strict ACP
+UTF-8 bytes into a local filesystem API. Atari extraction uses a strict base
+GEMDOS 8.3 ASCII projection and tracks case-folded paths before writing; its
+collision index is bounded at 1,024 entries and 32 KiB of keys. Windows CLI conversion uses strict ACP
 conversion and tracks projected paths during extraction. It refuses
 case-insensitive collisions, reserved device names, invalid path characters,
 and trailing dots or spaces, even when `--force` is set. Remaining encoding
@@ -238,8 +262,14 @@ Use the basic FAT metadata record from Phase 0 across DOS, Win16, Win32,
 OS/2, and Atari adapters. The Windows CLI captures and restores the four
 portable FAT flags for files and directories, using `GetFileAttributesA` and
 `SetFileAttributesA`; it also restores directory times after child extraction.
-Regular file output is staged until its checksum passes. This is cross-compiled
-but has no Windows runtime test yet. Win16, DOS, and Atari use their target APIs.
+The full Atari CLI captures native TOS flags and the portable FAT envelope,
+then restores directory times and flags after child extraction. It stages file
+output using an eight-character sibling temporary name and commits with a
+no-replace GEMDOS rename; forced replacement uses a recovery name and restores
+the old entry if commit fails, retaining the recovery path and reporting an
+error if rollback itself fails. The Windows and Atari work has cross-build
+evidence, but neither has target runtime evidence yet. Win16, DOS, and Atari
+mini frontends use their target APIs.
 Cover GUI, DLL/.NET, and Total Commander paths, with shared helpers where
 practical.
 

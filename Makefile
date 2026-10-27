@@ -2017,7 +2017,7 @@ ARCHIVE_TEST_HEADERS = $(COREDIR)/archiver.h $(COREDIR)/bp_types.h \
     $(COREDIR)/compress.h $(COREDIR)/boltlite.h $(COREDIR)/fluff.h \
     $(COREDIR)/bp_codepage.h $(COREDIR)/mini/archiver.h $(COREDIR)/mini/compress.h \
     $(BOLTLZDIR)/boltlz.h src/frontend/mini_shared/dos_time.h \
-    src/frontend/mini_shared/mini_common.h
+    src/frontend/mini_shared/mini_common.h src/frontend/atari/atari_path.h
 
 $(UNIT_BUILD_DIR)/test_archive_format: \
     $(UNIT_TEST_DIR)/test_archive_format.c \
