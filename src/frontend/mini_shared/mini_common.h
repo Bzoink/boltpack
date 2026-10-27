@@ -42,10 +42,13 @@ int bp_mini_name_is_safe(const char *name);
  * fails rather than silently substituting an unrepresentable character. */
 int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size);
 int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size);
+/* Convert a local name to UTF-8 before writing; directory names are given the
+ * canonical trailing slash required by format 6. */
 int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
                             bp_uint8 entry_type, bp_uint8 platform,
                             bp_io_t *file_io, bp_uint64 file_size,
                             bp_uint64 mtime, bp_uint16 flags);
+/* A directory subject is canonicalized the same way as its primary entry. */
 int bp_mini_add_fat_metadata(bp_mini_archive_t *ar, const char *name,
                              bp_uint8 subject_type, bp_uint8 valid, bp_uint8 value);
 

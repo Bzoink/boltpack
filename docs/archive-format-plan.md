@@ -15,7 +15,11 @@ no equivalent for a resource fork or a POSIX permission bit.
 The format-6 core, timestamp validity flag, UTF-8 and canonical path validation,
 and file-table consistency checks are implemented in both full and mini cores.
 Supplementary metadata and resource forks must follow one exact file or
-directory subject, and resource forks are unique within that group. Mini frontends have explicit name
+directory subject, and resource forks are unique within that group. Mini local
+entry helpers now append the required directory slash and give portable FAT
+metadata the same canonical directory path; Linux mini's direct core writer
+does the same. Format-6 tests cover the common helper, Linux mini runtime, and
+a DOS16 nested-directory transfer. Mini frontends have explicit name
 conversion. The Linux CLI, Linux mini, Windows CLI, full Atari CLI, and full
 OS/2 CLI stage regular-file output until checksums pass. Linux uses
 directory-relative operations; EMX OS/2 checks existing components with

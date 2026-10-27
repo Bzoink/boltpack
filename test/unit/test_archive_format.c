@@ -1848,6 +1848,61 @@ static void test_duplicate_writer_names(void)
     free(mem.buf);
 }
 
+static void test_mini_local_directory_names(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_mini_archive_t mini;
+    StringSrc input;
+    ListState listed;
+    int rc;
+
+    UNIT_SECTION("Mini local directory path spelling");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0;
+    mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    if (rc == BP_OK)
+        rc = bp_mini_add_local_entry(&mini, "folder", BP_TYPE_DIR,
+                                     BP_OS_DOS, NULL,
+                                     bp_u64_from_u32(0),
+                                     bp_u64_from_u32(0), 0);
+    UNIT_CHECK(rc == BP_OK,
+               "mini local-entry helper adds a directory without caller slash");
+    if (rc == BP_OK)
+        rc = bp_mini_add_fat_metadata(&mini, "folder", BP_TYPE_DIR,
+                                      BP_META_FAT_MASK, 0x02);
+    UNIT_CHECK(rc == BP_OK,
+               "directory portable metadata uses the canonical subject path");
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK)
+        rc = bp_mini_add_local_entry(&mini, "folder/FILE.TXT", BP_TYPE_DATA,
+                                     BP_OS_DOS, &source,
+                                     bp_u64_from_u32(FILE1_LEN),
+                                     bp_u64_from_u32(0), 0);
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    bp_mini_archive_close(&mini);
+    UNIT_CHECK(rc == BP_OK,
+               "mini archive with directory, metadata, and child finalizes");
+
+    memset(&listed, 0, sizeof(listed));
+    if (rc == BP_OK) rc = bp_archive_list(&io, list_cb, &listed);
+    UNIT_CHECK(rc == BP_OK && listed.count == 3 &&
+               strcmp(listed.names[0], "folder/") == 0 &&
+               listed.entries[1].entry_type == BP_TYPE_META &&
+               strcmp(listed.names[1], "folder/") == 0 &&
+               strcmp(listed.names[2], "folder/FILE.TXT") == 0,
+               "directory and portable metadata share the canonical slash path");
+    if (rc == BP_OK)
+        UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_OK &&
+                   bp_mini_archive_test(&io, NULL, NULL) == BP_OK,
+                   "full and mini readers verify the local-helper archive");
+    free(mem.buf);
+}
+
 static void test_full_interchange_profile(void)
 {
     MemIO mem;
@@ -2056,6 +2111,7 @@ int main(void)
     test_atari_name_projection();
     test_portable_metadata();
     test_portable_metadata_archive();
+    test_mini_local_directory_names();
     test_duplicate_writer_names();
     test_full_interchange_profile();
 
