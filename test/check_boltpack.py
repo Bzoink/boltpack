@@ -460,6 +460,43 @@ int rename(const char *old_path, const char *new_path)
               "append replacement retains archive owner and group")
 
 
+def test_staged_edits_refuse_hardlinked_archives() -> None:
+    section("Append and delete refuse multiply linked archives")
+
+    with tempfile.TemporaryDirectory(prefix="bp_edit_hardlink_") as tmp:
+        source = os.path.join(tmp, "src")
+        archive = os.path.join(tmp, "archive.bolt")
+        alias = os.path.join(tmp, "archive-alias.bolt")
+        os.makedirs(source)
+        make_file(os.path.join(source, "existing.txt"), 128, "text", 96)
+        make_file(os.path.join(source, "added.txt"), 256, "text", 97)
+
+        created = run_bp("c", "archive.bolt", "src/existing.txt", cwd=tmp)
+        check(created.returncode == 0, "hard-link fixture archive created")
+        if created.returncode != 0:
+            return
+        os.link(archive, alias)
+        with open(archive, "rb") as stream:
+            original_bytes = stream.read()
+
+        appended = run_bp("a", archive, "src/added.txt", cwd=tmp)
+        checked = run_bp("d", archive, "src/existing.txt", cwd=tmp)
+        with open(archive, "rb") as stream:
+            archive_bytes = stream.read()
+        with open(alias, "rb") as stream:
+            alias_bytes = stream.read()
+        archive_stat = os.stat(archive)
+        alias_stat = os.stat(alias)
+
+        check(appended.returncode != 0 and checked.returncode != 0,
+              "append and delete refuse a multiply linked archive")
+        check(archive_bytes == original_bytes and alias_bytes == original_bytes,
+              "refused edits leave every hard-link name byte-for-byte unchanged")
+        check((archive_stat.st_dev, archive_stat.st_ino) ==
+              (alias_stat.st_dev, alias_stat.st_ino),
+              "refused edits preserve the archive hard-link relationship")
+
+
 def test_empty_archive() -> None:
     section("Edge case: empty archive")
 
@@ -1046,6 +1083,7 @@ def main() -> int:
         test_operations,
         test_delete_publication_failure,
         test_append_publication_failure,
+        test_staged_edits_refuse_hardlinked_archives,
         test_empty_archive,
         test_empty_file,
         test_utf8_filenames,

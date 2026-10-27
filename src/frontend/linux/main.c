@@ -2864,6 +2864,12 @@ static int cmd_delete(int argc, char **argv)
                 archive_name);
         return 1;
     }
+    if (original_stat.st_nlink > 1) {
+        fprintf(stderr,
+                "boltpack: refusing to replace an archive with multiple hard links: %s\n",
+                archive_name);
+        return 1;
+    }
 
     src_fp = fopen(archive_name, "rb");
     if (src_fp == NULL) {
@@ -3075,6 +3081,12 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (lstat(archive_name, &original_stat) != 0 ||
         !S_ISREG(original_stat.st_mode)) {
         fprintf(stderr, "boltpack: archive must be a regular, non-symlink file: %s\n",
+                archive_name);
+        goto add_cleanup;
+    }
+    if (original_stat.st_nlink > 1) {
+        fprintf(stderr,
+                "boltpack: refusing to replace an archive with multiple hard links: %s\n",
                 archive_name);
         goto add_cleanup;
     }
