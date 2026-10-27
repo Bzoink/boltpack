@@ -42,6 +42,34 @@ int bp_mini_name_is_safe(const char *name);
  * fails rather than silently substituting an unrepresentable character. */
 int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size);
 int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size);
+
+/* Bounded projected-name preflight for case-insensitive mini filesystems.
+ * Stores exact and folded component prefixes, so case aliases and
+ * file/directory-prefix conflicts are refused before extraction starts. */
+#define BP_MINI_PROJECTED_INDEX_MAX   128U
+#define BP_MINI_PROJECTED_INDEX_BYTES 4096U
+typedef struct {
+    char *allocation;
+    char *storage;
+    unsigned count;
+    unsigned used;
+    unsigned short *exact_offset;
+    unsigned short *folded_offset;
+    unsigned char *is_directory;
+} bp_mini_projected_index_t;
+
+int bp_mini_projected_index_init(bp_mini_projected_index_t *index);
+void bp_mini_projected_index_free(bp_mini_projected_index_t *index);
+int bp_mini_projected_index_add(bp_mini_projected_index_t *index,
+                                const char *local_path, int is_directory);
+typedef struct {
+    bp_mini_projected_index_t *index;
+    int result;
+} bp_mini_projected_preflight_t;
+/* Suitable as a bp_mini_list_fn callback. */
+int bp_mini_projected_name_preflight(const bp_mini_entry_t *entry,
+                                     void *user_data);
+
 /* Convert a local name to UTF-8 before writing; directory names are given the
  * canonical trailing slash required by format 6. */
 int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,

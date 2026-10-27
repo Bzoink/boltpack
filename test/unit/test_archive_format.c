@@ -1664,6 +1664,45 @@ static void test_cpm86_name_projection(void)
                "valid archive and source names pass complete preflight");
 }
 
+static void test_mini_projected_name_index(void)
+{
+    bp_mini_projected_index_t index;
+    char cp437_lower[] = {(char)0x82, '.', 'T', 'X', 'T', '\0'};
+    char cp437_upper[] = {(char)0x90, '.', 'T', 'X', 'T', '\0'};
+
+    UNIT_SECTION("Mini case-insensitive projected-name preflight");
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "bounded projected-name index initializes");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, "Dir/One.txt", 0) == BP_OK,
+               "first file and directory prefixes are indexed");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, "DIR/Two.txt", 0) == BP_ERR_PARTIAL,
+               "case-folded parent-directory collision is refused");
+    bp_mini_projected_index_free(&index);
+
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "projected-name index can be reused");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, "DIR/One.txt", 0) == BP_OK &&
+               bp_mini_projected_index_add(&index, "DIR/Two.txt", 0) == BP_OK,
+               "same-spelling parent directories may be shared");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, "dir/Three.txt", 0) == BP_ERR_PARTIAL,
+               "case-only aliases cannot merge directory trees");
+    bp_mini_projected_index_free(&index);
+
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "projected-name index initializes for codepage aliases");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, cp437_lower, 0) == BP_OK &&
+               bp_mini_projected_index_add(&index, cp437_upper, 0) == BP_ERR_PARTIAL,
+               "CP437 lowercase and uppercase names collide");
+    bp_mini_projected_index_free(&index);
+
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "projected-name index initializes for prefix type check");
+    UNIT_CHECK(bp_mini_projected_index_add(&index, "NAME", 0) == BP_OK &&
+               bp_mini_projected_index_add(&index, "NAME/CHILD.TXT", 0) == BP_ERR_PARTIAL,
+               "a file cannot also be a projected parent directory");
+    bp_mini_projected_index_free(&index);
+}
+
 static void test_portable_metadata(void)
 {
     static const bp_uint8 golden[] = {
@@ -2228,6 +2267,7 @@ int main(void)
     test_dos_time_interop();
     test_atari_name_projection();
     test_cpm86_name_projection();
+    test_mini_projected_name_index();
     test_portable_metadata();
     test_portable_metadata_archive();
     test_mini_local_directory_names();

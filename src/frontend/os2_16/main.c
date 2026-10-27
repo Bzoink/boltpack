@@ -711,6 +711,8 @@ static int cmd_extract(const char *arc_path, const char *dest)
     FILE *fp;
     bp_io_t arc_io;
     extract_ctx_t ctx;
+    bp_mini_projected_index_t name_index;
+    bp_mini_projected_preflight_t preflight;
     int rc;
 
     fp = fopen(arc_path, "rb");
@@ -720,6 +722,22 @@ static int cmd_extract(const char *arc_path, const char *dest)
     bp_io_from_file(&arc_io, fp);
     memset(&ctx, 0, sizeof(ctx));
     if (dest) strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
+
+    preflight.index = &name_index;
+    preflight.result = BP_OK;
+    rc = bp_mini_projected_index_init(&name_index);
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_list(&arc_io, bp_mini_projected_name_preflight,
+                                  &preflight);
+        if (rc == BP_OK && preflight.result != BP_OK) rc = preflight.result;
+    }
+    bp_mini_projected_index_free(&name_index);
+    if (rc != BP_OK) {
+        fclose(fp);
+        fprintf(stderr, PROG_NAME ": destination-name preflight failed: %s\n",
+                bp_mini_strerror(rc));
+        return 1;
+    }
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {

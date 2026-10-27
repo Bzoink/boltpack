@@ -806,6 +806,8 @@ static int cmd_extract(const char *arc_path, const char *dest)
 #endif
     bp_io_t arc_io;
     extract_ctx_t ctx;
+    bp_mini_projected_index_t name_index;
+    bp_mini_projected_preflight_t preflight;
     int rc;
 
 #ifdef __WATCOMC__
@@ -827,6 +829,28 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     memset(&ctx, 0, sizeof(ctx));
     if (dest) strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
+
+    preflight.index = &name_index;
+    preflight.result = BP_OK;
+    rc = bp_mini_projected_index_init(&name_index);
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_list(&arc_io, bp_mini_projected_name_preflight,
+                                  &preflight);
+        if (rc == BP_OK && preflight.result != BP_OK) rc = preflight.result;
+    }
+    bp_mini_projected_index_free(&name_index);
+    if (rc != BP_OK) {
+#ifdef __WATCOMC__
+        close(fd);
+        bp_wstr(2, PROG_NAME ": destination-name preflight failed: ");
+        bp_wstr(2, bp_mini_strerror(rc)); write(2, "\n", 1);
+#else
+        fclose(fp);
+        fprintf(stderr, PROG_NAME ": destination-name preflight failed: %s\n",
+                bp_mini_strerror(rc));
+#endif
+        return 1;
+    }
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
