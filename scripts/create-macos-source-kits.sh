@@ -138,6 +138,7 @@ stage_modern_gui() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/frontend/macosx_gui" "$kitdir/src/frontend/macosx_gui"
+    copy_tree "$PROJROOT/src/frontend/posix" "$kitdir/src/frontend/posix"
     copy_file "$PROJROOT/src/frontend/gui_common/help_text.h" \
         "$kitdir/src/frontend/gui_common/help_text.h"
 }
@@ -149,6 +150,7 @@ stage_legacy_gui() {
         "$kitdir/src/frontend/macosx_legacy_gui"
     copy_tree "$PROJROOT/src/frontend/macosx_gui" \
         "$kitdir/src/frontend/macosx_gui"
+    copy_tree "$PROJROOT/src/frontend/posix" "$kitdir/src/frontend/posix"
     copy_file "$PROJROOT/src/frontend/gui_common/help_text.h" \
         "$kitdir/src/frontend/gui_common/help_text.h"
 }

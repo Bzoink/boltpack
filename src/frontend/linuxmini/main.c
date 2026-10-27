@@ -35,7 +35,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <utime.h>
-#include "../linux/extract_paths.h"
+#include "../posix/extract_paths.h"
 
 /* ---- constants --------------------------------------------------------- */
 
