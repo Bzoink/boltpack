@@ -1669,6 +1669,8 @@ static void test_mini_projected_name_index(void)
     bp_mini_projected_index_t index;
     char cp437_lower[] = {(char)0x82, '.', 'T', 'X', 'T', '\0'};
     char cp437_upper[] = {(char)0x90, '.', 'T', 'X', 'T', '\0'};
+    char name[251];
+    unsigned i;
 
     UNIT_SECTION("Mini case-insensitive projected-name preflight");
     UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
@@ -1700,6 +1702,39 @@ static void test_mini_projected_name_index(void)
     UNIT_CHECK(bp_mini_projected_index_add(&index, "NAME", 0) == BP_OK &&
                bp_mini_projected_index_add(&index, "NAME/CHILD.TXT", 0) == BP_ERR_PARTIAL,
                "a file cannot also be a projected parent directory");
+    bp_mini_projected_index_free(&index);
+
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "projected-name index initializes for entry bound");
+    for (i = 0; i < BP_MINI_PROJECTED_INDEX_MAX; i++) {
+        name[0] = (char)('A' + i / 26U);
+        name[1] = (char)('A' + i % 26U);
+        name[2] = '\0';
+        if (bp_mini_projected_index_add(&index, name, 0) != BP_OK) break;
+    }
+    UNIT_CHECK(i == BP_MINI_PROJECTED_INDEX_MAX && index.count == i &&
+               bp_mini_projected_index_add(&index, "OVERFLOW", 0) == BP_ERR_PARTIAL &&
+               index.count == BP_MINI_PROJECTED_INDEX_MAX,
+               "entry bound refuses additional prefixes without changing the index");
+    bp_mini_projected_index_free(&index);
+
+    UNIT_CHECK(bp_mini_projected_index_init(&index) == BP_OK,
+               "projected-name index initializes for key-byte bound");
+    memset(name, 'A', sizeof(name) - 1U);
+    name[sizeof(name) - 1U] = '\0';
+    for (i = 0; i < 8U; i++) {
+        name[0] = (char)('1' + i);
+        if (bp_mini_projected_index_add(&index, name, 0) != BP_OK) break;
+    }
+    {
+        unsigned saved_count = index.count;
+        unsigned saved_used = index.used;
+        name[0] = '9';
+        UNIT_CHECK(i == 8U && saved_count == 8U && saved_used == 4016U &&
+                   bp_mini_projected_index_add(&index, name, 0) == BP_ERR_PARTIAL &&
+                   index.count == saved_count && index.used == saved_used,
+                   "key-byte bound refuses long prefixes and rolls back partial state");
+    }
     bp_mini_projected_index_free(&index);
 }
 
