@@ -7,8 +7,8 @@
  * File I/O uses the standard ANSI C runtime (fopen/fread/fwrite/fseek/ftell)
  * provided by kLIBC or Open Watcom's OS/2 C runtime.
  * Directory traversal uses the native OS/2 API (DosFindFirst/DosFindNext).
- * Optional HPFS extended attribute support reads/writes the ".TYPE" EA
- * to preserve file-type information across archives.
+ * OS/2 FAT/HPFS attributes and portable FAT metadata are preserved; HPFS
+ * extended attributes such as ".TYPE" are not transferred.
  *
  * Metadata (BP_TYPE_META) payload for BP_OS_OS2 (same as DOS family):
  *   Byte 0 : FAT/HPFS attribute byte (read-only/hidden/system/archive bits)
@@ -21,6 +21,7 @@
  *       src/frontend/os2/main.c                            \
  *       src/core/boltlz.c                         \
  *       -o build/os2/boltpack.exe
+ *   make os2-watcom
  *
  * ANSI C (C89/C90) throughout.
  *
@@ -35,11 +36,14 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/bp_metadata.h"
+#include "../mini_shared/dos_time.h"
 
 /* OS/2 Toolkit headers */
 #define INCL_DOSFILEMGR
 #define INCL_DOSERRORS
 #define INCL_DOSPROCESS
+#define INCL_DOSNLS
 #include <os2.h>
 
 #include <stdio.h>
@@ -47,6 +51,9 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#if defined(__EMX__)
+#  include <sys/stat.h>
+#endif
 
 /* ---- constants -------------------------------------------------------- */
 
@@ -68,16 +75,10 @@
 
 /* Metadata payload: 1 byte (FAT/HPFS attribute) */
 #define OS2_META_PAYLOAD    1
-
-/* EA name for file type (HPFS extended attribute) */
-#define OS2_EA_TYPE         ".TYPE"
-#define OS2_EA_VALUE_MAX    64
-
-/* HPFS .TYPE EA value type codes */
-#define EAT_ASCII   0xFFFD  /* ASCII string value */
-
-/* HPFS EA on/off flag */
-#define OS2_EA_ENABLED  1   /* set to 0 to skip EA operations */
+#define OS2_DIR_QUEUE_MAX 256U
+#define OS2_DIR_QUEUE_BYTES_MAX 32768UL
+#define OS2_NAME_SET_MAX 1024U
+#define OS2_NAME_SET_BYTES_MAX 32768UL
 
 /* ---- verbosity -------------------------------------------------------- */
 
@@ -86,6 +87,7 @@
 #define VERB_SILENT   2
 
 static int g_verbosity = VERB_DEFAULT;
+static bp_uint32 g_unknown_source_times;
 
 /* ======================================================================
  * bp_io_t adapters for FILE *
@@ -178,7 +180,8 @@ static long wbuf_read_fn(void *h, void *b, bp_uint32 n) { (void)h;(void)b;(void)
 static long wbuf_write_fn(void *h, const void *data, bp_uint32 n)
 {
     wbuf_ctx_t *c = (wbuf_ctx_t *)h;
-    if (c->pos + n > c->cap) n = c->cap - c->pos;
+    if (c->pos > c->cap) return -1;
+    if (n > c->cap - c->pos) n = c->cap - c->pos;
     if (!n) return 0;
     memcpy(c->buf + c->pos, data, (size_t)n);
     c->pos += n;
@@ -202,8 +205,20 @@ static bp_off_t wbuf_tell_fn(void *h) { return (bp_off_t)((wbuf_ctx_t *)h)->pos;
 typedef struct {
     bp_io_t       io;       /* MUST be first */
     wbuf_ctx_t    wctx;
-    unsigned char buf[4];   /* 1-byte attribute + padding */
+    unsigned char buf[BP_META_MAX_SIZE];
 } meta_extract_t;
+
+typedef struct os2_dir_restore_s {
+    struct os2_dir_restore_s *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    unsigned char native_attr;
+    unsigned char fat_valid;
+    unsigned char fat_value;
+    int native_seen;
+    int fat_seen;
+} os2_dir_restore_t;
 
 /* ---- error messages --------------------------------------------------- */
 
@@ -288,10 +303,23 @@ static int ends_with_sep(const char *s)
     return n > 0 && (s[n - 1] == '/' || s[n - 1] == '\\');
 }
 
-static void path_join(char *buf, size_t sz, const char *dir, const char *name)
+static int path_join(char *buf, size_t sz, const char *dir, const char *name)
 {
-    if (ends_with_sep(dir)) snprintf(buf, sz, "%s%s", dir, name);
-    else                    snprintf(buf, sz, "%s/%s", dir, name);
+    size_t d = strlen(dir), n = strlen(name), pos = d;
+    const char *slash = strrchr(dir, '/');
+    const char *backslash = strrchr(dir, '\\');
+    char separator_char = backslash != NULL && (slash == NULL || backslash > slash) ? '\\' : '/';
+    int separator = d != 0 && !ends_with_sep(dir);
+    if (d >= sz) return -1;
+    if (separator) {
+        if (pos >= sz - 1) return -1;
+        pos++;
+    }
+    if (n >= sz - pos) return -1;
+    memcpy(buf, dir, d);
+    if (separator) buf[d] = separator_char;
+    memcpy(buf + pos, name, n + 1U);
+    return 0;
 }
 
 static const char *clean_path(const char *p)
@@ -307,47 +335,6 @@ static void normalise_seps(char *p)
     for (; *p; p++) if (*p == '\\') *p = '/';
 }
 
-/* ---- mkdir -p --------------------------------------------------------- */
-
-static int os2_mkdir(const char *path)
-{
-    return DosCreateDir((PSZ)path, NULL) == NO_ERROR ? 0 : -1;
-}
-
-static int mkdirs(const char *path)
-{
-    char  tmp[BP_MAX_PATH]; char *p;
-    if (strlen(path) >= sizeof(tmp)) return -1;
-    strcpy(tmp, path);
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            char sv = *p; *p = '\0';
-            if (os2_mkdir(tmp) != 0 && DosQueryPathInfo((PSZ)tmp,
-                    FIL_STANDARD, NULL, 0) != NO_ERROR)
-            { *p = sv; return -1; }
-            *p = sv;
-        }
-    }
-    if (os2_mkdir(tmp) != 0) {
-        /* Ignore EEXIST */
-        FILESTATUS3 fs; APIRET rc2 = DosQueryPathInfo((PSZ)tmp, FIL_STANDARD, &fs, sizeof(fs));
-        if (rc2 != NO_ERROR) return -1;
-    }
-    return 0;
-}
-
-static int mkdirs_for_file(const char *path)
-{
-    char tmp[BP_MAX_PATH]; char *sl, *bsl;
-    if (strlen(path) >= sizeof(tmp)) return -1;
-    strcpy(tmp, path);
-    sl  = strrchr(tmp, '/');
-    bsl = strrchr(tmp, '\\');
-    if (bsl && (!sl || bsl > sl)) sl = bsl;
-    if (sl && sl != tmp) { *sl = '\0'; return mkdirs(tmp); }
-    return 0;
-}
-
 /* ---- parse block size ------------------------------------------------- */
 
 static bp_uint32 parse_block_size(const char *s)
@@ -360,92 +347,54 @@ static bp_uint32 parse_block_size(const char *s)
     return 0;
 }
 
-/* ---- HPFS .TYPE EA helpers -------------------------------------------- */
-
-/*
- * Try to read the ".TYPE" extended attribute from a file.
- * On HPFS volumes, this contains an ASCII string like "Plain Text".
- * Returns the EA value length (0 if not present or not readable).
- *
- * The GEA2LIST/FEA2LIST structures follow the OS/2 EA API.
- */
-static int os2_get_ea_type(const char *path, char *val, int val_max)
+/* Convert OS/2's local FAT date/time with an explicit offset. */
+static int os2_mtime(FDATE d, FTIME t, bp_uint64 *mtime)
 {
-#pragma pack(1)
-    /* Get EA Areas: list of EAs to query */
-    struct {
-        ULONG  cbList;
-        ULONG  oNext;
-        BYTE   cbName;
-        CHAR   szName[sizeof(OS2_EA_TYPE) + 1];
-    } gea2;
-    /* Found EA Areas */
-    struct {
-        ULONG  cbList;
-        ULONG  oNext;
-        BYTE   fEA;
-        BYTE   cbName;
-        USHORT cbValue;
-        CHAR   szNameValue[sizeof(OS2_EA_TYPE) + 1 + 4 + OS2_EA_VALUE_MAX];
-    } fea2;
-    EAOP2  eaop;
-#pragma pack()
-    APIRET rc;
-    int    vlen;
-
-    memset(&gea2, 0, sizeof(gea2));
-    gea2.cbList = sizeof(gea2);
-    gea2.oNext  = 0;
-    gea2.cbName = (BYTE)(sizeof(OS2_EA_TYPE) - 1);
-    strcpy(gea2.szName, OS2_EA_TYPE);
-
-    memset(&fea2, 0, sizeof(fea2));
-    fea2.cbList = sizeof(fea2);
-
-    eaop.fpGEA2List = (GEA2LIST *)&gea2;
-    eaop.fpFEA2List = (FEA2LIST *)&fea2;
-    eaop.oError     = 0;
-
-    rc = DosQueryPathInfo((PSZ)path, FIL_QUERYEASFROMLIST, &eaop, sizeof(eaop));
-    if (rc != NO_ERROR) return 0;
-    if (fea2.cbValue < 4) return 0;  /* too short for type + length + data */
-
-    /* FEA2 value layout: USHORT type (EAT_ASCII etc.) + USHORT length + data */
-    {
-        USHORT ea_type, ea_len;
-        memcpy(&ea_type, fea2.szNameValue + fea2.cbName + 1, 2);
-        memcpy(&ea_len,  fea2.szNameValue + fea2.cbName + 1 + 2, 2);
-        if (ea_len == 0 || ea_len > (USHORT)val_max) return 0;
-        memcpy(val, fea2.szNameValue + fea2.cbName + 1 + 4, ea_len);
-        val[ea_len] = '\0';
-        vlen = (int)ea_len;
-    }
-    return vlen;
-}
-
-/* OS/2 mtime from FDATE/FTIME (DOS-packed format) */
-static bp_uint32 os2_mtime(FDATE d, FTIME t)
-{
-    unsigned yr  = (unsigned)(d.year + 1980);
-    unsigned mon = (unsigned)d.month;
-    unsigned day = (unsigned)d.day;
-    unsigned hr  = (unsigned)t.hours;
-    unsigned min = (unsigned)t.minutes;
-    unsigned sec = (unsigned)t.twosecs * 2;
-    /* Simple approximation to Unix epoch seconds */
-    unsigned long days = (yr - 1970) * 365UL + (yr - 1969) / 4
-                       + (mon > 1 ? (mon - 1) * 30 : 0) + day;
-    return (bp_uint32)(days * 86400UL + hr * 3600UL + min * 60UL + sec);
+    long offset;
+    unsigned date, time_value;
+    mtime->lo = 0;
+    mtime->hi = 0;
+    if (bp_dos_timezone(&offset) != 0) return -1;
+    date = ((unsigned)d.year << 9) | ((unsigned)d.month << 5) |
+           (unsigned)d.day;
+    time_value = ((unsigned)t.hours << 11) | ((unsigned)t.minutes << 5) |
+                 (unsigned)t.twosecs;
+    return bp_dos_local_to_utc(date, time_value, offset, mtime);
 }
 
 /* Set OS/2 file attribute via DosSetPathInfo */
-static void os2_apply_attr(const char *path, unsigned char attr)
+static int os2_apply_attr(const char *path, unsigned char valid,
+                          unsigned char value)
 {
     FILESTATUS3 fs;
     if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) != NO_ERROR)
-        return;
-    fs.attrFile = (ULONG)(attr & OS2_ATTR_MASK);
-    DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU);
+        return BP_ERR_IO;
+    valid = (unsigned char)(valid & OS2_ATTR_MASK);
+    fs.attrFile = (ULONG)((fs.attrFile & ~(ULONG)valid) | (ULONG)(value & valid));
+    return DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU)
+        == NO_ERROR ? BP_OK : BP_ERR_IO;
+}
+
+static int os2_restore_mtime(const char *path, bp_uint64 value)
+{
+    FILESTATUS3 fs;
+    long offset;
+    unsigned date, time_value;
+    int converted;
+    if (bp_dos_timezone(&offset) != 0) return BP_ERR_PARTIAL;
+    converted = bp_dos_utc_to_local(value, offset, &date, &time_value);
+    if (converted < 0) return BP_ERR_OVERFLOW;
+    if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) != NO_ERROR)
+        return BP_ERR_IO;
+    fs.fdateLastWrite.year    = (USHORT)((date >> 9) & 127U);
+    fs.fdateLastWrite.month   = (USHORT)((date >> 5) & 15U);
+    fs.fdateLastWrite.day     = (USHORT)(date & 31U);
+    fs.ftimeLastWrite.hours   = (USHORT)((time_value >> 11) & 31U);
+    fs.ftimeLastWrite.minutes = (USHORT)((time_value >> 5) & 63U);
+    fs.ftimeLastWrite.twosecs = (USHORT)(time_value & 31U);
+    if (DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU)
+        != NO_ERROR) return BP_ERR_IO;
+    return converted > 0 ? BP_ERR_PARTIAL : BP_OK;
 }
 
 /* ---- recursive add ---------------------------------------------------- */
@@ -469,6 +418,28 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
                                 bp_u64_from_u32(0), 0);
 }
 
+static int add_portable_meta_entry(bp_archive_t *ar, const char *arcname,
+                                   bp_uint8 subject_type,
+                                   unsigned char attr)
+{
+    unsigned char meta_buf[BP_META_FAT_SIZE];
+    bp_io_t meta_io;
+    rbuf_ctx_t rctx;
+    int rc;
+    rc = bp_metadata_fat_encode(meta_buf, sizeof(meta_buf), subject_type,
+                                BP_META_FAT_MASK,
+                                (bp_uint8)(attr & BP_META_FAT_MASK));
+    if (rc != BP_OK) return rc;
+    rctx.buf = meta_buf;
+    rctx.size = sizeof(meta_buf);
+    rctx.pos = 0;
+    bp_io_from_rbuf(&meta_io, &rctx);
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_META_PORTABLE,
+                                   &meta_io,
+                                   bp_u64_from_u32((bp_uint32)sizeof(meta_buf)),
+                                   bp_u64_from_u32(0), 0);
+}
+
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 
 static int add_directory_contents(bp_archive_t *ar, const char *dir_path,
@@ -490,8 +461,11 @@ static int add_directory_contents(bp_archive_t *ar, const char *dir_path,
                       &fb, sizeof(fb), &cFound, FIL_STANDARD);
     while (rc == NO_ERROR) {
         if (strcmp(fb.achName, ".") != 0 && strcmp(fb.achName, "..") != 0) {
-            path_join(child_path, sizeof(child_path), dir_path, fb.achName);
-            path_join(child_arc,  sizeof(child_arc),  arc_prefix, fb.achName);
+            if (path_join(child_path, sizeof(child_path), dir_path, fb.achName) != 0 ||
+                path_join(child_arc, sizeof(child_arc), arc_prefix, fb.achName) != 0) {
+                DosFindClose(hDir);
+                return BP_ERR_NAME_TOO_LONG;
+            }
             brc = add_path(ar, child_path, child_arc);
             if (brc != BP_OK) { DosFindClose(hDir); return brc; }
         }
@@ -518,6 +492,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         /* Directory */
         char dir_arc[BP_MAX_PATH];
         char dir_arc_utf8[BP_MAX_PATH * 2];
+        bp_uint64 mtime;
+        bp_uint16 time_flags = 0;
 
         if (!ends_with_sep(arcname)) sprintf(dir_arc, "%s/", arcname);
         else                         strcpy(dir_arc, arcname);
@@ -527,13 +503,20 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8), OS2_CP) != 0)
             return BP_ERR_INVALID_ARG;
 
-        rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_OS2,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32(os2_mtime(fs.fdateLastWrite,
-                                                             fs.ftimeLastWrite)));
+        if (os2_mtime(fs.fdateLastWrite, fs.ftimeLastWrite, &mtime) == 0)
+            time_flags = BP_ENTRY_FLAG_MTIME_VALID;
+        else {
+            g_unknown_source_times++;
+            mtime.lo = 0; mtime.hi = 0;
+        }
+        rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_OS2,
+                                     NULL, bp_u64_from_u32(0), mtime, time_flags);
         if (rc != BP_OK) return rc;
 
         rc = add_meta_entry(ar, dir_arc_utf8, (unsigned char)fs.attrFile);
+        if (rc != BP_OK) return rc;
+        rc = add_portable_meta_entry(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                     (unsigned char)fs.attrFile);
         if (rc != BP_OK) return rc;
 
         return add_directory_contents(ar, path, dir_arc);
@@ -544,8 +527,16 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         FILE     *fp;
         bp_io_t   fio;
         bp_uint64 fsize = bp_u64_from_ulong(fs.cbFile);
+        bp_uint64 mtime;
+        bp_uint16 time_flags = 0;
         char      arcname_utf8[BP_MAX_PATH * 2];
-        bp_uint32 mtime = os2_mtime(fs.fdateLastWrite, fs.ftimeLastWrite);
+
+        if (os2_mtime(fs.fdateLastWrite, fs.ftimeLastWrite, &mtime) == 0)
+            time_flags = BP_ENTRY_FLAG_MTIME_VALID;
+        else {
+            g_unknown_source_times++;
+            mtime.lo = 0; mtime.hi = 0;
+        }
 
         fp = fopen(path, "rb");
         if (!fp) {
@@ -563,8 +554,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_OS2,
-                                  &fio, fsize, bp_u64_from_u32(mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_OS2,
+                                     &fio, fsize, mtime, time_flags);
         fclose(fp);
         if (rc != BP_OK) return rc;
 
@@ -581,7 +572,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             }
         }
 
-        return add_meta_entry(ar, arcname_utf8, (unsigned char)fs.attrFile);
+        rc = add_meta_entry(ar, arcname_utf8, (unsigned char)fs.attrFile);
+        if (rc != BP_OK) return rc;
+        return add_portable_meta_entry(ar, arcname_utf8, BP_TYPE_DATA,
+                                       (unsigned char)fs.attrFile);
     }
 }
 
@@ -622,6 +616,18 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 /* ---- extract callbacks ------------------------------------------------ */
 
+typedef struct os2_name_node_s {
+    struct os2_name_node_s *next;
+    char *key;
+    unsigned int length;
+} os2_name_node_t;
+
+typedef struct {
+    os2_name_node_t *head;
+    unsigned int count;
+    unsigned long bytes;
+} os2_name_set_t;
+
 typedef struct {
     const char *out_dir;
     int         force;
@@ -630,147 +636,669 @@ typedef struct {
     bp_uint32   dir_count;
     bp_uint32   mtime_errors;
     bp_uint32   skip_errors;
+    bp_uint32   metadata_errors;
     int         subject_ok;
+    int         subject_type;
+    int         subject_native_seen;
     char        subject[BP_MAX_PATH];
+    os2_dir_restore_t *directories;
+    os2_dir_restore_t *subject_directory;
+    unsigned int directory_count;
+    unsigned long directory_path_bytes;
 } extract_ctx_t;
+
+typedef struct {
+    bp_io_t io;
+    HFILE handle;
+    int committed;
+    char temporary[BP_MAX_PATH];
+    char target[BP_MAX_PATH];
+} os2_staged_output_t;
+
+typedef struct {
+    os2_name_set_t names;
+    const char *out_dir;
+    int fat_profile;
+    int error;
+} os2_preflight_t;
+
+static int os2_path_join(char *out, size_t size, const char *dir,
+                         const char *name)
+{
+    size_t d = strlen(dir), n = strlen(name), pos = d;
+    int separator = d != 0 && dir[d - 1] != '/' && dir[d - 1] != '\\';
+    if (pos >= size || n >= size - pos) return -1;
+    if (separator) {
+        if (pos + 1 >= size) return -1;
+        out[pos++] = '\\';
+    }
+    if (n >= size - pos) return -1;
+    memcpy(out, dir, d);
+    if (separator) out[d] = '\\';
+    memcpy(out + pos, name, n + 1);
+    return 0;
+}
+
+static int os2_ensure_directory(const char *path)
+{
+    FILESTATUS3 fs;
+#if defined(__EMX__)
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        if (S_ISLNK(st.st_mode) || !S_ISDIR(st.st_mode)) return -1;
+        return 0;
+    }
+    if (errno != ENOENT) return -1;
+#endif
+    if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR)
+        return (fs.attrFile & FILE_DIRECTORY) ? 0 : -1;
+    if (DosCreateDir((PSZ)path, NULL) == NO_ERROR) return 0;
+#if defined(__EMX__)
+    if (lstat(path, &st) == 0)
+        return !S_ISLNK(st.st_mode) && S_ISDIR(st.st_mode) ? 0 : -1;
+#endif
+    if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) != NO_ERROR)
+        return -1;
+    return (fs.attrFile & FILE_DIRECTORY) ? 0 : -1;
+}
+
+static int os2_mkdirs_checked(const char *path)
+{
+    char tmp[BP_MAX_PATH];
+    char *p;
+    size_t length = strlen(path);
+    if (length == 0 || length >= sizeof(tmp)) return -1;
+    memcpy(tmp, path, length + 1);
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            char saved = *p;
+            *p = '\0';
+            if (!(strlen(tmp) == 2 && tmp[1] == ':') &&
+                os2_ensure_directory(tmp) != 0) {
+                *p = saved;
+                return -1;
+            }
+            *p = saved;
+        }
+    }
+    while (length > 1 && (tmp[length - 1] == '/' || tmp[length - 1] == '\\'))
+        tmp[--length] = '\0';
+    if (length == 2 && tmp[1] == ':') return 0;
+    return os2_ensure_directory(tmp);
+}
+
+static int os2_mkdirs_for_file_checked(const char *path)
+{
+    char tmp[BP_MAX_PATH];
+    char *slash, *backslash;
+    size_t length = strlen(path);
+    if (length >= sizeof(tmp)) return -1;
+    memcpy(tmp, path, length + 1U);
+    slash = strrchr(tmp, '/');
+    backslash = strrchr(tmp, '\\');
+    if (backslash != NULL && (slash == NULL || backslash > slash)) slash = backslash;
+    if (slash == NULL || slash == tmp) return 0;
+    *slash = '\0';
+    return os2_mkdirs_checked(tmp);
+}
+
+static int os2_check_local_name(char *local, int is_directory,
+                                int fat_profile)
+{
+    size_t length = strlen(local), i, start = 0;
+    if (is_directory && length > 0 && local[length - 1] == '/') local[--length] = '\0';
+    if (length == 0 || length >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    for (i = 0; i <= length; i++) {
+        unsigned char c = (unsigned char)local[i];
+        if (i == length || c == '/') {
+            size_t component = i - start, j, base = 0, ext = 0;
+            char short_base[9];
+            int in_ext = 0;
+            memset(short_base, 0, sizeof(short_base));
+            if (component == 0) return BP_ERR_INVALID_ARG;
+            if ((component == 1 && local[start] == '.') ||
+                (component == 2 && local[start] == '.' && local[start + 1] == '.'))
+                return BP_ERR_INVALID_ARG;
+            if (local[i - 1] == '.' || local[i - 1] == ' ')
+                return BP_ERR_INVALID_ARG;
+            for (j = start; j < i; j++) {
+                c = (unsigned char)local[j];
+                if (c < 0x20U || c == ':' || c == '\\' || c == '*' ||
+                    c == '?' || c == '<' || c == '>' || c == '"' || c == '|')
+                    return BP_ERR_INVALID_ARG;
+                if (fat_profile && (c == ' ' || c == '+' || c == ',' ||
+                    c == ';' || c == '=' || c == '[' || c == ']'))
+                    return BP_ERR_INVALID_ARG;
+                if (c == '.') {
+                    if (in_ext) return BP_ERR_INVALID_ARG;
+                    in_ext = 1;
+                } else if (in_ext) ext++;
+                else {
+                    if (base < sizeof(short_base) - 1U)
+                        short_base[base] = (char)(c >= 'a' && c <= 'z' ?
+                                                  c - 'a' + 'A' : c);
+                    base++;
+                }
+            }
+            if (fat_profile) {
+                int reserved = 0;
+                if (base == 0 || base > 8U || ext > 3U) return BP_ERR_NAME_TOO_LONG;
+                if ((base == 3U && (!memcmp(short_base, "CON", 3) ||
+                                    !memcmp(short_base, "PRN", 3) ||
+                                    !memcmp(short_base, "AUX", 3) ||
+                                    !memcmp(short_base, "NUL", 3))) ||
+                    (base == 4U && short_base[3] >= '1' && short_base[3] <= '9' &&
+                     (!memcmp(short_base, "COM", 3) ||
+                      !memcmp(short_base, "LPT", 3)))) reserved = 1;
+                if (reserved) return BP_ERR_INVALID_ARG;
+            }
+            start = i + 1;
+        }
+    }
+    return BP_OK;
+}
+
+static int os2_query_fat_profile(const char *out_dir, int *is_fat)
+{
+    char drive[3];
+    char buffer[512];
+    PFSQBUFFER2 query = (PFSQBUFFER2)buffer;
+    char *fsd;
+    ULONG length = sizeof(buffer), disk = 0, map = 0;
+    APIRET rc;
+    if (out_dir != NULL && out_dir[0] == '\\' && out_dir[1] == '\\') return -1;
+    if (out_dir != NULL && out_dir[0] != '\0' && out_dir[1] == ':') {
+        drive[0] = out_dir[0]; drive[1] = ':'; drive[2] = '\0';
+    } else {
+        rc = DosQueryCurrentDisk(&disk, &map);
+        if (rc != NO_ERROR || disk < 1 || disk > 26) return -1;
+        drive[0] = (char)('A' + disk - 1); drive[1] = ':'; drive[2] = '\0';
+    }
+    memset(buffer, 0, sizeof(buffer));
+    rc = DosQueryFSAttach((PSZ)drive, 0, FSAIL_QUERYNAME, query, &length);
+    if (rc != NO_ERROR) return -1;
+    fsd = (char *)(query->szName + query->cbName + 1);
+    *is_fat = strncmp(fsd, "FAT", 3) == 0;
+    return 0;
+}
+
+static int os2_name_set_add(os2_name_set_t *set, char *key, unsigned int length)
+{
+    os2_name_node_t *node;
+    if (set->count >= OS2_NAME_SET_MAX ||
+        (unsigned long)length + 1UL > OS2_NAME_SET_BYTES_MAX - set->bytes)
+        return BP_ERR_OVERFLOW;
+    for (node = set->head; node != NULL; node = node->next)
+        if (node->length == length && memcmp(node->key, key, length) == 0)
+            return BP_ERR_CORRUPT;
+    node = (os2_name_node_t *)malloc(sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->key = (char *)malloc((size_t)length + 1U);
+    if (node->key == NULL) { free(node); return BP_ERR_NOMEM; }
+    memcpy(node->key, key, length + 1U);
+    node->length = length;
+    node->next = set->head;
+    set->head = node;
+    set->count++;
+    set->bytes += (unsigned long)length + 1UL;
+    return BP_OK;
+}
+
+static void os2_name_set_free(os2_name_set_t *set)
+{
+    os2_name_node_t *node = set->head;
+    while (node != NULL) {
+        os2_name_node_t *next = node->next;
+        free(node->key); free(node); node = next;
+    }
+    set->head = NULL; set->count = 0; set->bytes = 0;
+}
+
+static int os2_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    os2_preflight_t *preflight = (os2_preflight_t *)user_data;
+    char local[BP_MAX_PATH];
+    char full_path[BP_MAX_PATH];
+    COUNTRYCODE country;
+    size_t length, i;
+    unsigned int key_length;
+    int rc;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), OS2_CP) != 0) {
+        preflight->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    rc = os2_check_local_name(local, entry->entry_type == BP_TYPE_DIR,
+                              preflight->fat_profile);
+    if (rc != BP_OK) { preflight->error = rc; return 1; }
+    if (preflight->out_dir != NULL &&
+        os2_path_join(full_path, sizeof(full_path), preflight->out_dir,
+                      local) != 0) {
+        preflight->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+    length = strlen(local);
+    for (i = 0; i < length; i++) if (local[i] == '/') local[i] = '\\';
+    country.country = 0;
+    country.codepage = OS2_CP;
+    if (DosMapCase((ULONG)length, &country, local) != NO_ERROR) {
+        preflight->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    key_length = (unsigned int)length;
+    rc = os2_name_set_add(&preflight->names, local, key_length);
+    if (rc != BP_OK) { preflight->error = rc; return 1; }
+    return 0;
+}
+
+static int os2_make_path(const extract_ctx_t *ctx, const char *archive_name,
+                         int is_directory, char *local, char *path)
+{
+    size_t out_len;
+    if (!bp_name_is_safe(archive_name) ||
+        bp_utf8_to_local(archive_name, local, BP_MAX_PATH, OS2_CP) != 0)
+        return BP_ERR_PARTIAL;
+    if (os2_check_local_name(local, is_directory, 0) != BP_OK)
+        return BP_ERR_INVALID_ARG;
+    if (ctx->out_dir == NULL) {
+        if (strlen(local) >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+        strcpy(path, local);
+        return BP_OK;
+    }
+    out_len = strlen(ctx->out_dir) + strlen(local) + 2U;
+    if (out_len > BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    return os2_path_join(path, BP_MAX_PATH, ctx->out_dir, local) == 0 ?
+           BP_OK : BP_ERR_NAME_TOO_LONG;
+}
+
+static int os2_make_temp_path(const char *target, char *temporary, size_t size)
+{
+    static unsigned long sequence = 0;
+    const char *slash = strrchr(target, '\\');
+    const char *forward = strrchr(target, '/');
+    size_t prefix;
+    unsigned int attempt;
+    if (forward != NULL && (slash == NULL || forward > slash)) slash = forward;
+    prefix = slash != NULL ? (size_t)(slash - target + 1) : 0;
+    if (prefix + 13U >= size) return -1;
+    for (attempt = 0; attempt < 128U; attempt++) {
+        HFILE handle;
+        ULONG action = 0;
+        ULONG id = sequence++ & 0xFFFFFFUL;
+        APIRET rc;
+        memcpy(temporary, target, prefix);
+        sprintf(temporary + prefix, "BP%06lX.TMP", id);
+        rc = DosOpen((PSZ)temporary, &handle, &action, 0, FILE_NORMAL,
+                     OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_FAIL_IF_EXISTS,
+                     OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYWRITE |
+                     OPEN_FLAGS_SEQUENTIAL, NULL);
+        if (rc == NO_ERROR) return (int)handle;
+    }
+    return -1;
+}
+
+static long os2_staged_write(void *handle, const void *data, bp_uint32 count)
+{
+    os2_staged_output_t *output = (os2_staged_output_t *)handle;
+    ULONG written = 0;
+    APIRET rc = DosWrite(output->handle, (PVOID)data, (ULONG)count, &written);
+    return rc == NO_ERROR ? (long)written : -1L;
+}
+
+static void os2_discard_staged(os2_staged_output_t *output)
+{
+    if (output->handle != (HFILE)-1) {
+        (void)DosClose(output->handle);
+        output->handle = (HFILE)-1;
+    }
+    if (output->temporary[0] != '\0') {
+        (void)DosDelete((PSZ)output->temporary);
+        output->temporary[0] = '\0';
+    }
+}
+
+static int os2_restore_backup(const char *backup, const char *target)
+{
+    FILESTATUS3 fs;
+    if (DosQueryPathInfo((PSZ)target, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR)
+        return -1;
+    return DosMove((PSZ)backup, (PSZ)target) == NO_ERROR ? 0 : -1;
+}
+
+static int os2_commit_staged(os2_staged_output_t *output, int force)
+{
+    static unsigned long sequence = 0;
+    FILESTATUS3 fs;
+    char backup[BP_MAX_PATH];
+    int has_backup = 0;
+    unsigned int attempt;
+    APIRET rc;
+    HFILE source = (HFILE)-1, destination = (HFILE)-1;
+    ULONG action = 0;
+    unsigned char buffer[8192];
+    int copy_error = 0;
+    if (DosQueryPathInfo((PSZ)output->target, FIL_STANDARD, &fs, sizeof(fs))
+        == NO_ERROR) {
+        if (fs.attrFile & FILE_DIRECTORY) return BP_ERR_PARTIAL;
+        if (!force) return BP_ERR_PARTIAL;
+        for (attempt = 0; attempt < 128U; attempt++) {
+            const char *slash = strrchr(output->target, '\\');
+            const char *forward = strrchr(output->target, '/');
+            size_t prefix;
+            if (forward != NULL && (slash == NULL || forward > slash)) slash = forward;
+            prefix = slash != NULL ? (size_t)(slash - output->target + 1) : 0;
+            if (prefix + 13U >= sizeof(backup)) return BP_ERR_NAME_TOO_LONG;
+            memcpy(backup, output->target, prefix);
+            sprintf(backup + prefix, "BO%06lX.BAK", sequence++ & 0xFFFFFFUL);
+            if (DosQueryPathInfo((PSZ)backup, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR)
+                continue;
+            rc = DosMove((PSZ)output->target, (PSZ)backup);
+            if (rc == NO_ERROR) { has_backup = 1; break; }
+        }
+        if (!has_backup) return BP_ERR_IO;
+    }
+
+    /* Reserve the final name without replacing a file created by another
+     * process after preflight. Payload bytes have already passed the archive
+     * checksum before this copy begins. */
+    rc = DosOpen((PSZ)output->target, &destination, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_FAIL_IF_EXISTS,
+                 OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYREADWRITE |
+                 OPEN_FLAGS_SEQUENTIAL, NULL);
+    if (rc != NO_ERROR) {
+        if (has_backup && os2_restore_backup(backup, output->target) != 0)
+            fprintf(stderr, "boltpack: original file remains at recovery path: %s\n", backup);
+        return force ? BP_ERR_IO : BP_ERR_PARTIAL;
+    }
+    rc = DosOpen((PSZ)output->temporary, &source, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_FAIL_IF_NEW | OPEN_ACTION_OPEN_IF_EXISTS,
+                 OPEN_ACCESS_READONLY | OPEN_SHARE_DENYNONE |
+                 OPEN_FLAGS_SEQUENTIAL, NULL);
+    if (rc != NO_ERROR) copy_error = 1;
+    while (!copy_error) {
+        ULONG read_count = 0, written_total = 0;
+        rc = DosRead(source, buffer, sizeof(buffer), &read_count);
+        if (rc != NO_ERROR) { copy_error = 1; break; }
+        if (read_count == 0) break;
+        while (written_total < read_count) {
+            ULONG written = 0;
+            rc = DosWrite(destination, buffer + written_total,
+                          read_count - written_total, &written);
+            if (rc != NO_ERROR || written == 0) { copy_error = 1; break; }
+            written_total += written;
+        }
+    }
+    if (!copy_error && DosResetBuffer(destination) != NO_ERROR) copy_error = 1;
+    if (source != (HFILE)-1 && DosClose(source) != NO_ERROR) copy_error = 1;
+    if (DosClose(destination) != NO_ERROR) copy_error = 1;
+    if (copy_error) {
+        (void)DosDelete((PSZ)output->target);
+        if (has_backup && os2_restore_backup(backup, output->target) != 0)
+            fprintf(stderr, "boltpack: original file remains at recovery path: %s\n", backup);
+        return BP_ERR_IO;
+    }
+    output->committed = 1;
+    if (DosDelete((PSZ)output->temporary) != NO_ERROR) {
+        return BP_ERR_PARTIAL;
+    }
+    output->temporary[0] = '\0';
+    if (has_backup && DosDelete((PSZ)backup) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot remove replaced-file backup: %s\n", backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static os2_dir_restore_t *os2_queue_directory(extract_ctx_t *ctx,
+                                               const char *path,
+                                               const bp_entry_t *entry)
+{
+    os2_dir_restore_t *node;
+    size_t length = strlen(path) + 1U;
+    if (ctx->directory_count >= OS2_DIR_QUEUE_MAX ||
+        length > OS2_DIR_QUEUE_BYTES_MAX - ctx->directory_path_bytes) {
+        ctx->metadata_errors++;
+        return NULL;
+    }
+    node = (os2_dir_restore_t *)calloc(1, sizeof(*node));
+    if (node == NULL) { ctx->metadata_errors++; return NULL; }
+    node->path = (char *)malloc(length);
+    if (node->path == NULL) { free(node); ctx->metadata_errors++; return NULL; }
+    memcpy(node->path, path, length);
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    node->next = ctx->directories;
+    ctx->directories = node;
+    ctx->directory_count++;
+    ctx->directory_path_bytes += (unsigned long)length;
+    return node;
+}
+
+static int os2_path_depth(const char *path)
+{
+    int depth = 0;
+    for (; *path; path++) if (*path == '/' || *path == '\\') depth++;
+    return depth;
+}
+
+static void os2_finish_directories(extract_ctx_t *ctx)
+{
+    while (ctx->directories != NULL) {
+        os2_dir_restore_t **best = &ctx->directories, **link;
+        os2_dir_restore_t *node;
+        int depth = -1;
+        for (link = &ctx->directories; *link != NULL; link = &(*link)->next) {
+            int d = os2_path_depth((*link)->path);
+            if (d > depth) { depth = d; best = link; }
+        }
+        node = *best; *best = node->next;
+        if (!ctx->dry_run && (node->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+            int rc = os2_restore_mtime(node->path, node->mtime);
+            if (rc != BP_OK) ctx->mtime_errors++;
+        }
+        if (!ctx->dry_run && node->native_seen) {
+            if (os2_apply_attr(node->path, OS2_ATTR_MASK, node->native_attr) != BP_OK)
+                ctx->metadata_errors++;
+        } else if (!ctx->dry_run && node->fat_seen && node->fat_valid != 0) {
+            if (os2_apply_attr(node->path, node->fat_valid, node->fat_value) != BP_OK)
+                ctx->metadata_errors++;
+        }
+        if (ctx->directory_count != 0) ctx->directory_count--;
+        if (ctx->directory_path_bytes >= (unsigned long)strlen(node->path) + 1UL)
+            ctx->directory_path_bytes -= (unsigned long)strlen(node->path) + 1UL;
+        free(node->path); free(node);
+    }
+}
+
+static int os2_preflight_archive(FILE *fp, const char *out_dir)
+{
+    bp_io_t io;
+    os2_preflight_t preflight;
+    int rc;
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.out_dir = out_dir;
+    if (os2_query_fat_profile(out_dir, &preflight.fat_profile) != 0)
+        return BP_ERR_PARTIAL;
+    bp_io_from_file(&io, fp);
+    rc = bp_archive_list(&io, os2_preflight_entry, &preflight);
+    os2_name_set_free(&preflight.names);
+    if (preflight.error != 0) return preflight.error;
+    return rc;
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
-    extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
-    char            path[BP_MAX_PATH];
-    char            local_name[BP_MAX_PATH];
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    char path[BP_MAX_PATH], local_name[BP_MAX_PATH];
     meta_extract_t *mex;
-    bp_io_t        *io;
-    FILE           *fp;
-    bp_uint32       meta_sz;
-
-    if (entry->entry_type != BP_TYPE_META) ctx->subject_ok = 0;
-    if (!bp_name_is_safe(entry->name)) return NULL;
-
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
-                         OS2_CP) != 0) return NULL;
-    if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
-        return NULL;
-    if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
-    else              strcpy(path, local_name);
-
-    if (entry->entry_type == BP_TYPE_DIR) {
-        ctx->dir_count++;
-        if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run && mkdirs(path) == 0 && strlen(entry->name) < sizeof(ctx->subject)) {
-            strcpy(ctx->subject, entry->name);
-            ctx->subject_ok = 1;
-        }
-        return NULL;
+    bp_uint32 meta_sz;
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->subject_ok = 0; ctx->subject_type = entry->entry_type;
+        ctx->subject_native_seen = 0; ctx->subject_directory = NULL;
     }
-
     if (entry->entry_type == BP_TYPE_META) {
         if (!ctx->subject_ok || strcmp(entry->name, ctx->subject) != 0) {
-            ctx->subject_ok = 0;
+            ctx->metadata_errors++;
             return NULL;
         }
-        if (entry->platform != BP_OS_OS2) return NULL;
         meta_sz = bp_u64_to_u32(entry->original_size);
-        if (meta_sz == 0 || meta_sz > OS2_META_PAYLOAD + 4) return NULL;
-        mex = (meta_extract_t *)malloc(sizeof(meta_extract_t));
-        if (!mex) return NULL;
-        mex->wctx.buf = mex->buf;
-        mex->wctx.cap = sizeof(mex->buf);
-        mex->wctx.len = 0;
-        mex->wctx.pos = 0;
-        mex->io.read   = wbuf_read_fn;
-        mex->io.write  = wbuf_write_fn;
-        mex->io.seek   = wbuf_seek_fn;
-        mex->io.tell   = wbuf_tell_fn;
+        if ((entry->platform == BP_OS_OS2 && meta_sz != OS2_META_PAYLOAD) ||
+            (entry->platform == BP_META_PORTABLE &&
+             (meta_sz < 8U || meta_sz > BP_META_MAX_SIZE)) ||
+            (entry->platform != BP_OS_OS2 && entry->platform != BP_META_PORTABLE)) {
+            ctx->metadata_errors++;
+            return NULL;
+        }
+        mex = (meta_extract_t *)malloc(sizeof(*mex));
+        if (mex == NULL) { ctx->metadata_errors++; return NULL; }
+        mex->wctx.buf = mex->buf; mex->wctx.cap = sizeof(mex->buf);
+        mex->wctx.len = 0; mex->wctx.pos = 0;
+        mex->io.read = wbuf_read_fn; mex->io.write = wbuf_write_fn;
+        mex->io.seek = wbuf_seek_fn; mex->io.tell = wbuf_tell_fn;
         mex->io.handle = &mex->wctx;
         return &mex->io;
     }
-
     if (entry->entry_type == BP_TYPE_RSRC || entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->skip_errors++;
         if (g_verbosity == VERB_DEFAULT)
-            printf("   skipping: %s [not supported on OS/2]\n", local_name);
+            printf("   skipping: %s [not supported on OS/2]\n", entry->name);
         return NULL;
     }
-
-    ctx->file_count++;
-    if (g_verbosity == VERB_DEFAULT) printf(" extracting: %s\n", local_name);
-    if (ctx->dry_run) return NULL;
-
-    if (!ctx->force) {
-        FILESTATUS3 tmp_fs;
-        if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &tmp_fs, sizeof(tmp_fs))
-            == NO_ERROR) {
-            fprintf(stderr, "boltpack: file exists (use -f to overwrite): %s\n", path);
-            ctx->skip_errors++;
-            return NULL;
+    if (entry->entry_type == BP_TYPE_DIR) {
+        os2_dir_restore_t *directory = NULL;
+        ctx->dir_count++;
+        if (os2_make_path(ctx, entry->name, 1, local_name, path) != BP_OK) {
+            ctx->skip_errors++; return NULL;
         }
+        if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", local_name);
+        if (!ctx->dry_run) {
+            if (os2_mkdirs_checked(path) != 0) { ctx->skip_errors++; return NULL; }
+            directory = os2_queue_directory(ctx, path, entry);
+            if (directory == NULL) { ctx->skip_errors++; return NULL; }
+        }
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name); ctx->subject_ok = 1;
+            ctx->subject_directory = directory;
+        }
+        return NULL;
     }
-
-    mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", path); return NULL; }
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    if (entry->entry_type != BP_TYPE_DATA) { ctx->skip_errors++; return NULL; }
+    ctx->file_count++;
+    if (os2_make_path(ctx, entry->name, 0, local_name, path) != BP_OK) {
+        ctx->skip_errors++; return NULL;
+    }
+    if (g_verbosity == VERB_DEFAULT) printf(" extracting: %s\n", local_name);
+    if (ctx->dry_run) {
+        if (strlen(entry->name) < sizeof(ctx->subject)) {
+            strcpy(ctx->subject, entry->name); ctx->subject_ok = 1;
+        }
+        return NULL;
+    }
+    {
+        FILESTATUS3 fs;
+        os2_staged_output_t *output;
+        int handle;
+        if (DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR) {
+            if (!ctx->force || (fs.attrFile & FILE_DIRECTORY)) {
+                ctx->skip_errors++; return NULL;
+            }
+        }
+        if (os2_mkdirs_for_file_checked(path) != 0) {
+            ctx->skip_errors++; return NULL;
+        }
+        output = (os2_staged_output_t *)calloc(1, sizeof(*output));
+        if (output == NULL) { ctx->skip_errors++; return NULL; }
+        if (strlen(path) >= sizeof(output->target)) { free(output); ctx->skip_errors++; return NULL; }
+        strcpy(output->target, path);
+        output->handle = (HFILE)-1;
+        handle = os2_make_temp_path(path, output->temporary, sizeof(output->temporary));
+        if (handle < 0) { free(output); ctx->skip_errors++; return NULL; }
+        output->handle = (HFILE)handle;
+        output->io.read = NULL; output->io.write = os2_staged_write;
+        output->io.seek = NULL; output->io.tell = NULL; output->io.handle = output;
+        return &output->io;
+    }
 }
 
 static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
-        if (status == BP_OK && entry->platform == BP_OS_OS2 && !ctx->dry_run
-            && mex->wctx.len >= OS2_META_PAYLOAD) {
-            char path[BP_MAX_PATH], local_name[BP_MAX_PATH];
-            if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0)
-                strncpy(local_name, entry->name, sizeof(local_name) - 1);
-            if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
-            else              strcpy(path, local_name);
-            os2_apply_attr(path, mex->buf[0]);
+        char path[BP_MAX_PATH], local_name[BP_MAX_PATH];
+        int rc = BP_OK;
+        if (status != BP_OK) { free(mex); return BP_OK; }
+        if (!ctx->subject_ok || strcmp(entry->name, ctx->subject) != 0 ||
+            os2_make_path(ctx, entry->name, ctx->subject_type == BP_TYPE_DIR,
+                          local_name, path) != BP_OK) {
+            ctx->metadata_errors++; free(mex); return BP_ERR_PARTIAL;
+        }
+        if (entry->platform == BP_OS_OS2 && mex->wctx.len == OS2_META_PAYLOAD) {
+            ctx->subject_native_seen = 1;
+            if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DIR &&
+                ctx->subject_directory != NULL) {
+                ctx->subject_directory->native_seen = 1;
+                ctx->subject_directory->native_attr = mex->buf[0];
+            } else if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DATA &&
+                       os2_apply_attr(path, OS2_ATTR_MASK, mex->buf[0]) != BP_OK) {
+                ctx->metadata_errors++;
+            }
+        } else if (entry->platform == BP_META_PORTABLE) {
+            bp_portable_metadata_t parsed;
+            rc = bp_metadata_parse(mex->buf, (unsigned)mex->wctx.len, &parsed);
+            if (rc == BP_ERR_CORRUPT) { free(mex); return rc; }
+            if (parsed.has_fat && !ctx->subject_native_seen) {
+                if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DIR &&
+                    ctx->subject_directory != NULL) {
+                    ctx->subject_directory->fat_seen = 1;
+                    ctx->subject_directory->fat_valid = parsed.fat_valid;
+                    ctx->subject_directory->fat_value = parsed.fat_value;
+                } else if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DATA &&
+                           parsed.fat_valid != 0 &&
+                           os2_apply_attr(path, parsed.fat_valid,
+                                          parsed.fat_value) != BP_OK) {
+                    ctx->metadata_errors++;
+                }
+            }
+            if (rc == BP_ERR_PARTIAL) {
+                ctx->metadata_errors++; free(mex); return BP_ERR_PARTIAL;
+            }
+        } else {
+            ctx->metadata_errors++; rc = BP_ERR_PARTIAL;
         }
         free(mex);
-        return BP_OK;
+        return rc;
     }
-
     {
-        FILE *fp = (FILE *)out->handle;
-        char  path[BP_MAX_PATH], local_name[BP_MAX_PATH];
-        FILESTATUS3 fs;
-        if (fclose(fp) != 0 && status == BP_OK) { free(out); return BP_ERR_IO; }
-        if (status != BP_OK) { free(out); return BP_OK; }
+        os2_staged_output_t *output = (os2_staged_output_t *)out->handle;
+        int rc = BP_OK;
+        if (DosClose(output->handle) != NO_ERROR) rc = BP_ERR_IO;
+        output->handle = (HFILE)-1;
+        if (status != BP_OK || rc != BP_OK) {
+            if (status == BP_OK && rc != BP_OK) ctx->skip_errors++;
+            os2_discard_staged(output); free(output); return BP_OK;
+        }
+        rc = os2_commit_staged(output, ctx->force);
+        if (!output->committed) {
+            ctx->skip_errors++;
+            os2_discard_staged(output); free(output);
+            return rc == BP_ERR_PARTIAL ? BP_ERR_PARTIAL : BP_OK;
+        }
+        if (rc != BP_OK) ctx->skip_errors++;
+        if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+            int time_rc = os2_restore_mtime(output->target, entry->mtime);
+            if (time_rc != BP_OK) ctx->mtime_errors++;
+        }
         if (strlen(entry->name) < sizeof(ctx->subject)) {
-            strcpy(ctx->subject, entry->name);
-            ctx->subject_ok = 1;
-        }
-        if (!ctx->dry_run) {
-            if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0)
-                strncpy(local_name, entry->name, sizeof(local_name) - 1);
-            if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
-            else              strcpy(path, local_name);
-            /* Restore mtime via DosSetPathInfo */
-            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-                entry->mtime.hi == 0 &&
-                DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR) {
-                time_t t = (time_t)entry->mtime.lo;
-                struct tm *tm_p = gmtime(&t);
-                if (t >= 0 && (bp_uint32)t == entry->mtime.lo && tm_p &&
-                    tm_p->tm_year >= 80 && tm_p->tm_year <= 207) {
-                    fs.fdateLastWrite.year    = (USHORT)(tm_p->tm_year - 80);
-                    fs.fdateLastWrite.month   = (USHORT)(tm_p->tm_mon + 1);
-                    fs.fdateLastWrite.day     = (USHORT)tm_p->tm_mday;
-                    fs.ftimeLastWrite.hours   = (USHORT)tm_p->tm_hour;
-                    fs.ftimeLastWrite.minutes = (USHORT)tm_p->tm_min;
-                    fs.ftimeLastWrite.twosecs = (USHORT)(tm_p->tm_sec / 2);
-                    if (DosSetPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs), DSPI_WRTTHRU) != NO_ERROR)
-                        ctx->mtime_errors++;
-                } else ctx->mtime_errors++;
-            } else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-                ctx->mtime_errors++;
-            }
-        }
-        free(out);
+            strcpy(ctx->subject, entry->name); ctx->subject_ok = 1;
+            ctx->subject_type = entry->entry_type; ctx->subject_native_seen = 0;
+        } else { ctx->subject_ok = 0; ctx->metadata_errors++; }
+        os2_discard_staged(output);
+        free(output);
+        if (rc == BP_ERR_PARTIAL) return BP_ERR_PARTIAL;
     }
     return BP_OK;
 }
@@ -991,6 +1519,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     if (argc < 2) { fprintf(stderr, "boltpack: create requires archive and files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
+    g_unknown_source_times = 0;
     fp = fopen(argv[0], "w+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
     bp_io_from_file(&aio, fp);
@@ -1008,6 +1537,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar); fclose(fp);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc)); return 1; }
+    if (g_unknown_source_times != 0) {
+        fprintf(stderr, "boltpack: %lu timestamp(s) were stored as unknown; set BP_TZ_OFFSET (minutes east of UTC)\n",
+                (unsigned long)g_unknown_source_times);
+    }
     if (g_verbosity < VERB_SILENT) {
         double elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
         bp_uint64 to = {0,0}, tc = {0,0}; bp_uint32 j, fc = 0, dc = 0;
@@ -1036,7 +1569,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
         }
         printf("\n");
     }
-    return 0;
+    return g_unknown_source_times != 0 ? 1 : 0;
 }
 
 /* ---- cmd_add ---------------------------------------------------------- */
@@ -1047,13 +1580,17 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
     if (argc < 2) { fprintf(stderr, "boltpack: add requires archive and files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
+    g_unknown_source_times = 0;
     fp = fopen(argv[0], "r+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
     bp_io_from_file(&aio, fp);
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
     for (i = 1; i < argc; i++) {
-        rc = add_path(&ar, argv[i], clean_path(argv[i]));
+        char arcname[BP_MAX_PATH];
+        strcpy(arcname, clean_path(argv[i]));
+        normalise_seps(arcname);
+        rc = add_path(&ar, argv[i], arcname);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", argv[i], bp_strerror(rc));
             bp_archive_close(&ar); fclose(fp); return 1;
@@ -1061,9 +1598,13 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
     }
     rc = bp_archive_finalize(&ar); bp_archive_close(&ar); fclose(fp);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc)); return 1; }
+    if (g_unknown_source_times != 0) {
+        fprintf(stderr, "boltpack: %lu timestamp(s) were stored as unknown; set BP_TZ_OFFSET (minutes east of UTC)\n",
+                (unsigned long)g_unknown_source_times);
+    }
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
-    return 0;
+    return g_unknown_source_times != 0 ? 1 : 0;
 }
 
 /* ---- cmd_extract ------------------------------------------------------ */
@@ -1077,7 +1618,18 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", archive_name); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
-    if (out_dir && !dry_run) mkdirs(out_dir);
+    rc = os2_preflight_archive(fp, out_dir);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: destination name preflight failed: %s\n",
+                bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+    if (out_dir && !dry_run && os2_mkdirs_checked(out_dir) != 0) {
+        fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
+        fclose(fp);
+        return 1;
+    }
     bp_io_from_file(&aio, fp);
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
@@ -1085,11 +1637,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
+    os2_finish_directories(&ctx);
     fclose(fp);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
-    if (ctx.skip_errors) return 1;
-    if (ctx.mtime_errors) {
-        fprintf(stderr, "boltpack: could not restore %lu modification time(s)\n",
+    if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        return 1;
+    }
+    if (ctx.skip_errors || ctx.metadata_errors || ctx.mtime_errors || rc == BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: partial extraction (%lu skipped, %lu metadata, %lu timestamps)\n",
+                (unsigned long)ctx.skip_errors, (unsigned long)ctx.metadata_errors,
                 (unsigned long)ctx.mtime_errors);
         return 1;
     }

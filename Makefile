@@ -911,8 +911,12 @@ e2k:
 OS2_CC=os2-gcc
 OS2_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
 OS2_BUILDDIR=build/os2
+OS2_WATCOM_BUILDDIR=build/os2-watcom
+OS2_WATCOM_EXE=$(OS2_WATCOM_BUILDDIR)/boltpack.exe
+OS2_WATCOM_FLAGS=-bt=os2 -w4
+OS2_WATCOM_INCS=-i=$(WATCOM_ROOT)/h/os2 -i=$(COREDIR) -i=$(BOLTLZDIR)
 
-.PHONY: os2
+.PHONY: os2 os2-watcom
 os2:
 	$(call check_cc,$(OS2_CC) $(OS2_CFLAGS),os2)
 	mkdir -p $(OS2_BUILDDIR)
@@ -921,10 +925,34 @@ os2:
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/os2/main.c \
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(OS2_BUILDDIR)/boltpack.exe
+
+# Open Watcom 32-bit OS/2 cross-build. The Watcom OS/2 SDK headers reject
+# strict -za mode because they declare USHORT bitfields, so use the compiler's
+# default ANSI-compatible mode for this target.
+os2-watcom:
+	mkdir -p $(OS2_WATCOM_BUILDDIR)
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/archiver.obj $(COREDIR)/archiver.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/compress.obj $(COREDIR)/compress.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/boltlite.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/fluff.obj $(COREDIR)/fluff.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/main.obj src/frontend/os2/main.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/boltlz.obj $(BOLTLZDIR)/boltlz.c
+	$(MINI_ENV) WLINK_LNK=$(WATCOM_BIN)/wlink.lnk $(WLINK16) system os2v2 option quiet \
+	    file {$(OS2_WATCOM_BUILDDIR)/archiver.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/compress.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/boltlite.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/fluff.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/bp_codepage.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/main.obj} \
+	    file {$(OS2_WATCOM_BUILDDIR)/boltlz.obj} \
+	    name $(OS2_WATCOM_EXE)
+	@echo "  OK    $(OS2_WATCOM_EXE)"
 
 # Sinclair QL (QDOS / SMSQ/E)
 QL_CC ?= qcc
