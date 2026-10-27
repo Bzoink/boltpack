@@ -74,6 +74,8 @@ namespace BoltPack
             "to archive. Choose a destination and file name for\r\n" +
             "the new archive. A progress window shows the packing\r\n" +
             "progress.\r\n" +
+            "Enable Archive > Interchange Profile 1 before creating\r\n" +
+            "an archive to use BoltLite and mini-reader size limits.\r\n" +
             "\r\n" +
             "You can also drag and drop files or folders onto the\r\n" +
             "main window to create a new archive from them.\r\n" +

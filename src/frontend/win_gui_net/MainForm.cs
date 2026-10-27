@@ -23,6 +23,7 @@ namespace BoltPack
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusLabel;
         private Label welcomeLabel;
+        private ToolStripMenuItem interchangeProfileItem;
 
         /* --- State --- */
         private string archivePath;
@@ -61,6 +62,13 @@ namespace BoltPack
             archiveMenu.DropDownItems.Add(MakeItem("&Validate", Keys.Control | Keys.T, OnValidate));
             archiveMenu.DropDownItems.Add(new ToolStripSeparator());
             archiveMenu.DropDownItems.Add(MakeItem("Create &New...", Keys.Control | Keys.N, OnCreate));
+            interchangeProfileItem = new ToolStripMenuItem(
+                "Interchange Profile 1 (mini-reader compatible)")
+            {
+                CheckOnClick = true,
+                Checked = false
+            };
+            archiveMenu.DropDownItems.Add(interchangeProfileItem);
             archiveMenu.DropDownItems.Add(new ToolStripSeparator());
             archiveMenu.DropDownItems.Add(MakeItem("E&xit", Keys.Alt | Keys.F4, OnExit));
             menuStrip.Items.Add(archiveMenu);
@@ -1400,8 +1408,13 @@ namespace BoltPack
                         arPtr = NativeMethods.bp_dll_archive_alloc();
                         if (arPtr == IntPtr.Zero) rc = NativeMethods.BP_ERR_NOMEM;
                         if (rc == NativeMethods.BP_OK)
-                            rc = NativeMethods.bp_dll_archive_create(arPtr,
-                                ioHandle.AddrOfPinnedObject(), 0, NativeMethods.BP_METHOD_BOLTLZ);
+                            rc = interchangeProfileItem.Checked
+                                ? NativeMethods.bp_dll_archive_create_profile(arPtr,
+                                    ioHandle.AddrOfPinnedObject(),
+                                    NativeMethods.BP_PROFILE_INTERCHANGE_1)
+                                : NativeMethods.bp_dll_archive_create(arPtr,
+                                    ioHandle.AddrOfPinnedObject(), 0,
+                                    NativeMethods.BP_METHOD_BOLTLZ);
 
                         for (int i = 0; rc == NativeMethods.BP_OK && i < items.Count; i++)
                         {

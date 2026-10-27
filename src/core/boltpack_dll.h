@@ -50,6 +50,9 @@ BP_EXPORT int   bp_dll_archive_test_progress(bp_io_t *io,
 BP_EXPORT int   bp_dll_archive_create(bp_archive_t *ar, bp_io_t *io,
                     bp_uint32 block_size, bp_uint8 method);
 
+BP_EXPORT int   bp_dll_archive_create_profile(bp_archive_t *ar, bp_io_t *io,
+                    int profile);
+
 /* Heap-owned context helpers for managed bindings. */
 BP_EXPORT bp_archive_t *bp_dll_archive_alloc(void);
 BP_EXPORT void  bp_dll_archive_free(bp_archive_t *ar);

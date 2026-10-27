@@ -2037,6 +2037,7 @@ calls into `boltpack_core.dll` via P/Invoke. The DLL wrapper in
 | `bp_dll_archive_extract_all` | `bp_archive_extract_all` |
 | `bp_dll_archive_extract_all_ex` | `bp_archive_extract_all_ex` |
 | `bp_dll_archive_create`      | `bp_archive_create`      |
+| `bp_dll_archive_create_profile` | `bp_archive_create_profile` |
 | `bp_dll_archive_add_entry`   | `bp_archive_add_entry`   |
 | `bp_dll_archive_add_entry_ex` | `bp_archive_add_entry_ex` |
 | `bp_dll_archive_add_fat_metadata` | portable FAT metadata writer |
@@ -2270,6 +2271,11 @@ portable FAT flags and explicit timestamp validity, and replaces the selected
 archive only after successful finalization and close. Path-based checks retain
 a race with concurrent parent substitution.
 
+The Archive menu's Interchange Profile 1 check applies to new archives. It
+selects BoltLite with 16 KiB blocks and enforces mini-reader entry-count,
+entry-size, and serialized-size limits through the DLL profile-create wrapper.
+The archive is still published through the existing exclusive sibling stage.
+
 The Win32 and Win64 DLL variants cross-build, but the .NET project has not been
 compiled or run in this environment because no .NET compiler or Windows runtime
 is available.
@@ -2316,7 +2322,7 @@ CLI frontend and the `macosx-ppc` native source kit instead.
 | File dialogs       | `NSOpenPanel` / `NSSavePanel`                                                                |
 | Progress           | Sheet-attached `BPProgressPanel` (`NSWindow`) with cancel                                    |
 | Validation         | `bp_archive_test_progress()` with live entry progress                                        |
-| Preferences        | `NSUserDefaults` for window frame, columns, compression, and the multi-threaded Fluff toggle |
+| Preferences        | `NSUserDefaults` for window frame, columns, compression, multi-threaded Fluff, and Interchange Profile 1 |
 | Keyboard shortcuts | Cmd+O, Cmd+E, Cmd+W, Cmd+T, Cmd+I, Cmd+N, Cmd+Q                                              |
 | Linking            | Static to archiver core                                                                      |
 
@@ -2340,6 +2346,9 @@ Recent parity updates brought this frontend in line with the Linux FLTK GUI:
   compression method and level
 - The compression sheet also persists a `Use Multi-threaded Fluff` checkbox
   when Fluff is selected
+- The compression sheet offers a persisted Interchange Profile 1 checkbox;
+  when selected, new archives use BoltLite with 16 KiB blocks and mini-reader
+  entry-count, entry-size, and serialized-size limits
 - Validation shows current entry name, current entry index, file/directory
   totals, and a scrollable results window
 

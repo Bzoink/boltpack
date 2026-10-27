@@ -548,9 +548,13 @@ passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now ex
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
 The Windows FLTK GUI offers the profile for archive creation and network
-sending; the Atari GEM, Amiga GadTools, and native Win32 GUIs offer it for
-creation. The Windows .NET and macOS Cocoa GUIs have not yet exposed a
-user-selectable profile option; target GUI profile coverage remains incomplete.
+sending; the Atari GEM, Amiga GadTools, native Win32, and Windows .NET GUIs
+offer it for creation. The macOS Cocoa GUI source also offers the profile in
+its compression sheet. The DLL profile wrapper cross-builds, but the .NET GUI
+has no managed build or Windows runtime qualification; the Cocoa GUI has no
+macOS target build or runtime qualification. Haiku and the target-only GUI
+frontends listed in the matrix still lack a profile option. GUI profile code
+and target qualification remain incomplete.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
