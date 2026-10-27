@@ -971,19 +971,19 @@ static int dos_preflight_archive(bp_io_t *io, const char *out_dir)
 
 static bp_uint32 g_extract_temp_id = 1;
 
-/* DOS has no mkstemp on every supported runtime. Reserve a short 8.3-style
- * sibling with O_EXCL so the staged output cannot truncate an existing file. */
-static int extract_open_stage(const char *target, char *stage,
-                              size_t stage_size)
+static int dos_open_unique_sibling(const char *target, char *stage,
+                                   size_t stage_size, const char *prefix,
+                                   const char *suffix, int access_mode)
 {
     const char *slash = strrchr(target, '/');
     const char *bslash = strrchr(target, '\\');
     size_t parent_len, need;
     unsigned long tries;
+    size_t prefix_len = strlen(prefix), suffix_len = strlen(suffix);
 
     if (bslash != NULL && (slash == NULL || bslash > slash)) slash = bslash;
     parent_len = slash != NULL ? (size_t)(slash - target + 1) : 0;
-    need = parent_len + 2U + 6U + 4U + 1U;
+    need = parent_len + prefix_len + 6U + suffix_len + 1U;
     if (need > stage_size) return -1;
 
     for (tries = 0; tries < 0x1000000UL; tries++) {
@@ -991,12 +991,21 @@ static int extract_open_stage(const char *target, char *stage,
         unsigned long id = (unsigned long)(g_extract_temp_id++ & 0xFFFFFFUL);
         if (g_extract_temp_id == 0) g_extract_temp_id = 1;
         if (parent_len != 0) memcpy(stage, target, parent_len);
-        sprintf(stage + parent_len, "BP%06lX.TMP", id);
-        fd = open(stage, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0666);
+        sprintf(stage + parent_len, "%s%06lX%s", prefix, id, suffix);
+        fd = open(stage, access_mode | O_CREAT | O_EXCL | O_BINARY, 0666);
         if (fd >= 0) return fd;
         if (errno != EEXIST) return -1;
     }
     return -1;
+}
+
+/* DOS has no mkstemp on every supported runtime. Reserve a short 8.3-style
+ * sibling with O_EXCL so the staged output cannot truncate an existing file. */
+static int extract_open_stage(const char *target, char *stage,
+                              size_t stage_size)
+{
+    return dos_open_unique_sibling(target, stage, stage_size, "BP", ".TMP",
+                                   O_WRONLY);
 }
 
 static long extract_stage_write(void *handle, const void *data,
@@ -1063,6 +1072,123 @@ static int extract_publish(extract_ctx_t *ctx)
     }
     if (errno != ENOENT) return BP_ERR_IO;
     return rename(ctx->stage_path, ctx->target_path) == 0 ? BP_OK : BP_ERR_IO;
+}
+
+static int dos_archive_stat(const char *path, int *exists,
+                           struct stat *snapshot)
+{
+    if (lstat(path, snapshot) == 0) {
+        if (!S_ISREG(snapshot->st_mode) || snapshot->st_nlink > 1)
+            return BP_ERR_IO;
+        *exists = 1;
+        return BP_OK;
+    }
+    if (errno == ENOENT) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        *exists = 0;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int dos_archive_same_stat(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_mode == b->st_mode && a->st_nlink == b->st_nlink &&
+           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
+           a->st_ctime == b->st_ctime;
+}
+
+static int dos_archive_capture_attributes(const char *path, int exists,
+                                          bp_uint8 *valid, bp_uint8 *value)
+{
+    *valid = 0;
+    *value = 0;
+    if (!exists) return BP_OK;
+#ifdef BP_DOS_FAT_ATTRIBUTES
+    {
+        bp_uint8 attr;
+        int rc = dos_get_fat_attributes(path, &attr);
+        if (rc != BP_OK || (attr & 0x01U)) return BP_ERR_IO;
+        *valid = (bp_uint8)(BP_META_FAT_MASK & (bp_uint8)~0x01U);
+        *value = attr;
+    }
+#else
+    (void)path;
+#endif
+    return BP_OK;
+}
+
+static FILE *dos_archive_open_stage(const char *target, char *stage,
+                                    size_t stage_size)
+{
+    int fd = dos_open_unique_sibling(target, stage, stage_size,
+                                     "BP", ".TMP", O_RDWR);
+    FILE *fp;
+    if (fd < 0) return NULL;
+    fp = fdopen(fd, "w+b");
+    if (fp == NULL) {
+        close(fd);
+        remove(stage);
+    }
+    return fp;
+}
+
+static int dos_archive_copy(FILE *source, FILE *destination)
+{
+    unsigned char buffer[8192];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        if (fwrite(buffer, 1, count, destination) != count) return BP_ERR_IO;
+    }
+    if (ferror(source) || fflush(destination) != 0) return BP_ERR_IO;
+    return BP_OK;
+}
+
+static int dos_archive_publish(const char *target, const char *stage,
+                               int expected_exists,
+                               const struct stat *expected_stat,
+                               bp_uint8 attr_valid, bp_uint8 attr_value)
+{
+    struct stat current, backup_stat;
+    char backup[BP_MAX_PATH];
+    int exists, rc;
+
+    if (attr_valid != 0 &&
+        dos_apply_fat_attributes(stage, attr_valid, attr_value) != BP_OK)
+        return BP_ERR_PARTIAL;
+    rc = dos_archive_stat(target, &exists, &current);
+    if (rc != BP_OK || exists != expected_exists ||
+        (exists && !dos_archive_same_stat(&current, expected_stat)))
+        return BP_ERR_IO;
+
+    if (!exists)
+        return rename(stage, target) == 0 ? BP_OK : BP_ERR_IO;
+
+    if (extract_backup_name(target, backup, sizeof(backup)) != 0 ||
+        rename(target, backup) != 0)
+        return BP_ERR_IO;
+    if (lstat(backup, &backup_stat) != 0 ||
+        !dos_archive_same_stat(&backup_stat, expected_stat)) {
+        if (rename(backup, target) != 0)
+            fprintf(stderr,
+                    "boltpack: original archive remains at recovery path: %s\n",
+                    backup);
+        return BP_ERR_IO;
+    }
+    if (rename(stage, target) != 0) {
+        if (rename(backup, target) != 0)
+            fprintf(stderr,
+                    "boltpack: original archive remains at recovery path: %s\n",
+                    backup);
+        return BP_ERR_IO;
+    }
+    if (remove(backup) != 0) {
+        fprintf(stderr, "boltpack: previous archive remains at recovery path: %s\n",
+                backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
 }
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
@@ -1367,6 +1493,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     FILE *fp;
     bp_io_t aio;
     bp_archive_t ar;
+    struct stat original_stat;
+    char stage[BP_MAX_PATH];
+    int original_exists;
+    bp_uint8 attr_valid, attr_value;
     int rc, i;
     clock_t start;
     double elapsed;
@@ -1385,9 +1515,19 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    fp = fopen(archive_name, "w+b");
+    rc = dos_archive_stat(archive_name, &original_exists, &original_stat);
+    if (rc != BP_OK ||
+        dos_archive_capture_attributes(archive_name, original_exists,
+                                       &attr_valid, &attr_value) != BP_OK) {
+        fprintf(stderr, "boltpack: cannot safely replace archive: %s\n",
+                archive_name);
+        return 1;
+    }
+
+    fp = dos_archive_open_stage(archive_name, stage, sizeof(stage));
     if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", archive_name);
+        fprintf(stderr, "boltpack: cannot create staged archive beside: %s\n",
+                archive_name);
         return 1;
     }
 
@@ -1396,6 +1536,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         fclose(fp);
+        remove(stage);
         return 1;
     }
 
@@ -1416,6 +1557,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
                     bp_strerror(rc));
             bp_archive_close(&ar);
             fclose(fp);
+            remove(stage);
             return 1;
         }
     }
@@ -1425,6 +1567,23 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
         bp_archive_close(&ar);
         fclose(fp);
+        remove(stage);
+        return 1;
+    }
+
+    if (fclose(fp) != 0) {
+        fprintf(stderr, "boltpack: cannot close staged archive: %s\n", stage);
+        bp_archive_close(&ar);
+        remove(stage);
+        return 1;
+    }
+    rc = dos_archive_publish(archive_name, stage, original_exists,
+                             &original_stat, attr_valid, attr_value);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n",
+                bp_strerror(rc));
+        bp_archive_close(&ar);
+        remove(stage);
         return 1;
     }
 
@@ -1473,7 +1632,6 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
 
     bp_archive_close(&ar);
-    fclose(fp);
     return 0;
 }
 
@@ -1787,7 +1945,10 @@ static int cmd_delete(int argc, char **argv)
     int del_count;
     FILE *src_fp, *dst_fp;
     bp_io_t src_io, dst_io;
-    char tmp_name[4096];
+    char stage[BP_MAX_PATH];
+    struct stat original_stat, opened_stat;
+    int original_exists;
+    bp_uint8 attr_valid, attr_value;
     bp_uint32 deleted = 0;
     int rc;
 
@@ -1800,16 +1961,32 @@ static int cmd_delete(int argc, char **argv)
     del_names = (const char **)&argv[1];
     del_count = argc - 1;
 
+    rc = dos_archive_stat(archive_name, &original_exists, &original_stat);
+    if (rc != BP_OK || !original_exists ||
+        dos_archive_capture_attributes(archive_name, 1,
+                                       &attr_valid, &attr_value) != BP_OK) {
+        fprintf(stderr, "boltpack: cannot safely edit archive: %s\n",
+                archive_name);
+        return 1;
+    }
+
     src_fp = fopen(archive_name, "rb");
     if (src_fp == NULL) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
         return 1;
     }
+    if (fstat(fileno(src_fp), &opened_stat) != 0 ||
+        !dos_archive_same_stat(&opened_stat, &original_stat)) {
+        fprintf(stderr, "boltpack: archive changed while opening: %s\n",
+                archive_name);
+        fclose(src_fp);
+        return 1;
+    }
 
-    snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
+    dst_fp = dos_archive_open_stage(archive_name, stage, sizeof(stage));
     if (dst_fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
+        fprintf(stderr, "boltpack: cannot create staged archive beside: %s\n",
+                archive_name);
         fclose(src_fp);
         return 1;
     }
@@ -1820,23 +1997,27 @@ static int cmd_delete(int argc, char **argv)
     rc = bp_archive_delete(&src_io, &dst_io, del_names, (bp_uint32)del_count,
                            &deleted);
 
-    fclose(src_fp);
-    fclose(dst_fp);
+    if (fclose(src_fp) != 0) rc = BP_ERR_IO;
+    if (fclose(dst_fp) != 0) rc = BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp_name);
+        remove(stage);
         return 1;
     }
 
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
-        remove(tmp_name);
+        remove(stage);
         return 1;
     }
 
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
+    rc = dos_archive_publish(archive_name, stage, 1, &original_stat,
+                             attr_valid, attr_value);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish deleted archive: %s\n",
+                bp_strerror(rc));
+        remove(stage);
         return 1;
     }
 
@@ -1851,9 +2032,13 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                    bp_uint8 method)
 {
     const char *archive_name;
-    FILE *fp;
+    FILE *source_fp, *fp;
     bp_io_t io;
     bp_archive_t ar;
+    struct stat original_stat, opened_stat;
+    char stage[BP_MAX_PATH];
+    int original_exists;
+    bp_uint8 attr_valid, attr_value;
     int rc, i;
 
     if (argc < 2) {
@@ -1863,6 +2048,15 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
 
     archive_name = argv[0];
 
+    rc = dos_archive_stat(archive_name, &original_exists, &original_stat);
+    if (rc != BP_OK || !original_exists ||
+        dos_archive_capture_attributes(archive_name, 1,
+                                       &attr_valid, &attr_value) != BP_OK) {
+        fprintf(stderr, "boltpack: cannot safely edit archive: %s\n",
+                archive_name);
+        return 1;
+    }
+
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
@@ -1870,9 +2064,32 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    fp = fopen(archive_name, "r+b");
-    if (fp == NULL) {
+    source_fp = fopen(archive_name, "rb");
+    if (source_fp == NULL) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        return 1;
+    }
+    if (fstat(fileno(source_fp), &opened_stat) != 0 ||
+        !dos_archive_same_stat(&opened_stat, &original_stat)) {
+        fprintf(stderr, "boltpack: archive changed while opening: %s\n",
+                archive_name);
+        fclose(source_fp);
+        return 1;
+    }
+
+    fp = dos_archive_open_stage(archive_name, stage, sizeof(stage));
+    if (fp == NULL) {
+        fprintf(stderr, "boltpack: cannot create staged archive beside: %s\n",
+                archive_name);
+        fclose(source_fp);
+        return 1;
+    }
+    rc = dos_archive_copy(source_fp, fp);
+    if (fclose(source_fp) != 0) rc = BP_ERR_IO;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot copy original archive to stage\n");
+        fclose(fp);
+        remove(stage);
         return 1;
     }
 
@@ -1882,6 +2099,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         fclose(fp);
+        remove(stage);
         return 1;
     }
 
@@ -1895,16 +2113,27 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
             bp_archive_close(&ar); fclose(fp);
+            remove(stage);
             return 1;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
+    if (fclose(fp) != 0) rc = BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        remove(stage);
+        return 1;
+    }
+
+    rc = dos_archive_publish(archive_name, stage, 1, &original_stat,
+                             attr_valid, attr_value);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish appended archive: %s\n",
+                bp_strerror(rc));
+        remove(stage);
         return 1;
     }
 

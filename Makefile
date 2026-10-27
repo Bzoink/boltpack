@@ -155,8 +155,9 @@ $(BUILDDIR)/.version: VERSION VERSION_MINI | $(BUILDDIR)
 all: $(TARGET)
 
 # Build the full DOS frontend with the host toolchain and exercise its
-# destination projection and staged extraction lifecycle. This is not a DOS
-# target build; it complements, but does not replace, a DJGPP/DOSBox run.
+# destination projection, staged extraction, and staged archive-edit paths.
+# This is not a DOS target build; it complements, but does not replace, a
+# DJGPP/DOSBox run.
 dos-host-test:
 	$(MAKE) FRONTEND=dos CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 \
 	    CFLAGS='$(CFLAGS) -DBP_DOS_TEST_ATTRIBUTES' \
@@ -628,6 +629,7 @@ HAIKU_BUILDDIR = build/haiku
 
 .PHONY: haiku
 haiku:
+	$(call check_cc,$(HAIKU_CC),Haiku)
 	mkdir -p $(HAIKU_BUILDDIR)
 	$(HAIKU_CC) $(HAIKU_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \

@@ -389,14 +389,22 @@ publishing. Forced replacement moves an existing regular file to a recovery
 name and restores it if publication fails. A CP850 projected-path preflight
 rejects case aliases and file/directory-prefix conflicts before creating the
 output tree. With DJGPP, creation writes portable FAT metadata and extraction
-restores known FAT flags, deferring directory flags and timestamps until
-children finish. The host test build simulates the flags and does not validate
-the DOS APIs. Resource forks and symlinks are reported as unsupported, as are
+restores known FAT flags, deferring directory flags until children finish.
+Directory timestamp restoration is not supported on plain DOS and is reported
+as partial. The host test build simulates FAT flags and does not validate the
+DOS APIs. Resource forks and symlinks are reported as unsupported, as are
 metadata records the frontend cannot apply.
 Preflight does not model generated short-name aliases on filesystems without
 long filename support.
 The pathname-based adapter cannot prevent a concurrent parent-directory
 substitution.
+
+Create, add, and delete write a unique exclusive sibling stage. Add copies the
+source archive to the stage before appending. Existing archives are retained
+under a recovery name until the staged replacement succeeds; known hidden,
+system, and archive flags are copied on DJGPP, and read-only or multiply linked
+archive targets are refused. The host fixture injects write, close, and
+publication failures and checks that original archive bytes survive.
 
 Native DJGPP compilation and DOS runtime validation remain outstanding in
 this environment because the cross-compiler and DOS runtime fixture are not
