@@ -67,6 +67,14 @@ and file length after a reported add or finalize failure. This is rollback for
 handled failures; process interruption during in-place append remains
 unqualified. The Watcom OS/2 build uses 32-bit `bp_off_t`, so its addressable
 archive size remains below 2 GiB.
+OS/2 create and delete now write to exclusive sibling staging files and publish
+only after successful archive finalization, flush, and close. Replacing an
+existing archive first moves it to a recovery name and restores it if stage
+publication fails. A process interruption between the two rename operations
+can leave the original at that recovery path; interruption while writing a
+stage can leave an orphan temporary file while the original remains intact.
+These edit paths have Watcom cross-build evidence, but still need OS/2 runtime
+qualification.
 DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
 timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
 with directory-relative `openat` calls and reject symlink components. Staged

@@ -1563,7 +1563,10 @@ os2-gcc -ansi -Wall -Wextra -O2 \
 
 ### OS/2: bp_io_t Implementation
 
-Standard ANSI C `<stdio.h>` wrappers (`fopen`, `fread`, `fwrite`, `fseek`, `ftell`) provided by kLIBC or Open Watcom's OS/2 C runtime.
+Archive reads and in-place append use the C runtime `FILE *` wrappers. Archive
+creation and deletion write to an exclusive sibling stage through OS/2 file
+handles, flush and close it, then publish it. The frontend uses 32-bit
+`bp_off_t`, so archives are limited to offsets below 2 GiB.
 
 ### OS/2: Directory Recursion
 
@@ -1604,6 +1607,12 @@ OS/2 uses CP850 (Western Europe) for filenames. File names are converted to UTF-
 ### OS/2: Path Handling
 
 Drive prefixes (`C:\`, `C:`) are stripped. Backslashes are normalised to forward slashes.
+Create and delete preserve an existing archive until the replacement stage is
+complete. Publication temporarily moves the old archive to a recovery name;
+if publishing the stage fails, the frontend attempts to restore that backup.
+Append backs up the header and up to 256 MiB of file-table/footer data and
+restores it after reported add or finalize errors. These paths have Watcom
+cross-build coverage, but no OS/2 runtime round trip has been performed.
 
 ### OS/2: Commands and Options
 
