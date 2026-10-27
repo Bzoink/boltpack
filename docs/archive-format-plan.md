@@ -314,8 +314,22 @@ as partial. Its collision preflight is bounded at 65,535 selected primary
 entries and 65,535 projected path nodes; exceeding either bound refuses before
 output changes. Win32 and Win64 cross-builds pass; Windows runtime tests,
 parent-swap race coverage, and names outside the active ACP remain unqualified. DLL/.NET
-and Total Commander paths still need equivalent lifecycle review; share helpers
-where practical.
+and Total Commander paths have separate lifecycle requirements. The Total
+Commander WCX now rejects invalid, reserved, unrepresentable, and colliding
+Windows paths before listing, with a 65,535-primary-entry bound. It verifies
+archive data for the WCX test operation, stages selected regular files beside
+their destinations, and publishes only after checksum verification and close.
+It captures and restores portable FAT flags, restores representable file times,
+and defers directory times and flags until `CloseArchive`. Unrepresentable
+source times are encoded as unknown and cause a WCX error after the archive is
+finalized. Symlinks, resource forks, POSIX
+modes, unsupported metadata, and lossy restores return a WCX creation error
+(the WCX API has no partial-preservation result). Win32 and Win64 cross-builds
+pass; plugin-host runtime tests and concurrent parent-swap coverage remain
+unavailable. The path-based component checks still have a race with concurrent
+parent substitution. The legacy WCX `ReadHeader` API refuses entries larger
+than `INT_MAX`; `ReadHeaderEx` carries 64-bit sizes. DLL/.NET still needs
+equivalent lifecycle review.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level
