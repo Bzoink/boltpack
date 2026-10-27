@@ -910,6 +910,7 @@ static void test_previous_versions_rejected(void)
     MemIO mem;
     bp_io_t io;
     bp_archive_info_t info;
+    bp_mini_archive_info_t mini_info;
     bp_uint16 version;
     int rc;
     mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
@@ -929,6 +930,10 @@ static void test_previous_versions_rejected(void)
                    "info rejects previous version with valid header CRC");
         UNIT_CHECK(bp_archive_test(&io, test_cb, NULL) == BP_ERR_VERSION,
                    "test rejects previous version with valid header CRC");
+        UNIT_CHECK(bp_mini_archive_info(&io, &mini_info) == BP_ERR_VERSION,
+                   "mini info rejects previous version with valid header CRC");
+        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_VERSION,
+                   "mini test rejects previous version with valid header CRC");
     }
     free(mem.buf);
 }
