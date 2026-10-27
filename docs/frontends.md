@@ -2236,7 +2236,11 @@ code page before writing UTF-8 archive names. It writes a same-directory stage
 and publishes only after finalization, flush, commit, and close succeed. On
 Windows versions with `ReplaceFile`, replacement keeps the destination's
 attributes and ACLs; the compatibility fallback uses recovery renames. Source
-reparse points are refused rather than followed into their targets.
+reparse points are refused rather than followed into their targets. File-dialog
+and drag-and-drop creation preflight case-insensitive duplicate names and
+file/directory path conflicts, bounded at 65,535 primary entries/path nodes
+and 16 MiB of path keys. Unicode normalization collisions and source-tree
+changes during creation remain unqualified.
 
 Link libraries: `comctl32`, `comdlg32`, `shell32`, `user32`, `gdi32`.
 
