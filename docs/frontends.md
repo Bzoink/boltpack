@@ -2228,6 +2228,16 @@ dialog (220x120), progress dialog (280x100), documentation dialog
 Text encoding: UTF-8 to ANSI code page conversion for Windows 9x
 compatibility.
 
+The Archive menu's `Interchange Profile 1` check applies to files created
+through the menu or drag-and-drop. The profile selects BoltLite with 16 KiB
+blocks and enforces mini-reader entry-count, entry-size, and serialized-size
+limits. Creation strictly round-trips source names through the active Windows
+code page before writing UTF-8 archive names. It writes a same-directory stage
+and publishes only after finalization, flush, commit, and close succeed. On
+Windows versions with `ReplaceFile`, replacement keeps the destination's
+attributes and ACLs; the compatibility fallback uses recovery renames. Source
+reparse points are refused rather than followed into their targets.
+
 Link libraries: `comctl32`, `comdlg32`, `shell32`, `user32`, `gdi32`.
 
 ---

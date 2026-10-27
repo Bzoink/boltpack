@@ -399,11 +399,15 @@ a partial file if the process stops mid-copy, and path APIs leave a race with
 concurrent parent substitution. Watcom cross-compilation and linking of the
 OS/2 executable succeeds, but neither the Atari nor OS/2 adapter has target
 runtime evidence yet. Win16, DOS, and Atari mini frontends use their target
-APIs. The native Win32 GUI now uses strict UTF-8-to-ACP projection, refuses
-reserved or colliding Windows names, checks archive-controlled directory
-components for reparse points, stages regular files until checksums pass,
-restores representable times and portable FAT attributes, and defers directory
-restoration. It reports POSIX modes, symlinks, and resource forks as partial.
+APIs. The native Win32 GUI now uses strict ACP-to-UTF-8 conversion for source
+names and UTF-8-to-ACP projection for extraction, refuses reserved or
+colliding Windows names, checks archive-controlled directory components for
+reparse points, stages regular files until checksums pass, restores
+representable times and portable FAT attributes, and defers directory
+restoration. Archive creation exposes Interchange Profile 1 and writes to a
+same-directory stage before publishing a completed archive; it refuses source
+reparse points instead of following them. It reports POSIX modes, symlinks,
+and resource forks as partial.
 Its path-based checks have a race with concurrent parent substitution, and it
 has cross-build evidence but no Windows runtime qualification. The Windows
 FLTK GUI now uses strict UTF-8-to-ACP name and destination-root projection
@@ -539,8 +543,8 @@ passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now ex
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
 The Windows FLTK GUI offers the profile for archive creation and network
-sending; the Atari GEM GUI offers it for creation. Other full frontends have
-not yet exposed a user-selectable profile option.
+sending; the Atari GEM and native Win32 GUIs offer it for creation. Other full
+frontends have not yet exposed a user-selectable profile option.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 

@@ -803,6 +803,8 @@ typedef struct {
 } ExtractCtx;
 
 static LONG g_gui_temp_counter = 0;
+static int g_create_reparse_refused = 0;
+static int g_interchange_profile = 0;
 
 static int win_gui_validate_component(const WCHAR *component, size_t length)
 {
@@ -1000,6 +1002,163 @@ static int win_gui_open_staged_file(const char *target, char *temporary,
         return BP_OK;
     }
     return BP_ERR_IO;
+}
+
+typedef struct {
+    int exists;
+    BY_HANDLE_FILE_INFORMATION info;
+} ArchiveTargetSnapshot;
+
+static int win_gui_open_archive_stage(const char *target, char *temporary,
+                                      size_t temporary_size, FILE **file)
+{
+    char directory[MAX_PATH];
+    char *slash, *scan;
+    int attempt;
+    size_t length = strlen(target);
+    if (length >= sizeof(directory)) return BP_ERR_NAME_TOO_LONG;
+    strcpy(directory, target);
+    slash = NULL;
+    for (scan = directory; *scan; scan = CharNextA(scan))
+        if (*scan == '\\' || *scan == '/') slash = scan;
+    if (slash == NULL)
+        strcpy(directory, ".\\");
+    else
+        slash[1] = '\0';
+
+    for (attempt = 0; attempt < 256; attempt++) {
+        LONG serial = InterlockedIncrement(&g_gui_temp_counter);
+        int n = _snprintf(temporary, temporary_size,
+                          "%s.boltpack-create-%08lx.tmp", directory,
+                          (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
+        HANDLE handle;
+        int fd;
+        FILE *fp;
+        if (n < 0 || (size_t)n >= temporary_size) return BP_ERR_NAME_TOO_LONG;
+        handle = CreateFileA(temporary, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return BP_ERR_IO;
+        }
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
+        if (fd < 0) {
+            CloseHandle(handle);
+            DeleteFileA(temporary);
+            return BP_ERR_IO;
+        }
+        fp = _fdopen(fd, "w+b");
+        if (fp == NULL) {
+            _close(fd);
+            DeleteFileA(temporary);
+            return BP_ERR_IO;
+        }
+        *file = fp;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int win_gui_archive_target_snapshot(const char *path,
+                                           ArchiveTargetSnapshot *snapshot)
+{
+    DWORD attributes = GetFileAttributesA(path);
+    HANDLE handle;
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            snapshot->exists = 0;
+            memset(&snapshot->info, 0, sizeof(snapshot->info));
+            return 1;
+        }
+        return 0;
+    }
+    if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+        return 0;
+    handle = CreateFileA(path, FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    if (!GetFileInformationByHandle(handle, &snapshot->info)) {
+        CloseHandle(handle);
+        return 0;
+    }
+    CloseHandle(handle);
+    if (snapshot->info.dwFileAttributes &
+        (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
+    snapshot->exists = 1;
+    return 1;
+}
+
+static int win_gui_archive_target_unchanged(const ArchiveTargetSnapshot *expected,
+                                            const ArchiveTargetSnapshot *current)
+{
+    if (expected->exists != current->exists) return 0;
+    if (!expected->exists) return 1;
+    return expected->info.dwVolumeSerialNumber == current->info.dwVolumeSerialNumber &&
+           expected->info.nFileIndexHigh == current->info.nFileIndexHigh &&
+           expected->info.nFileIndexLow == current->info.nFileIndexLow &&
+           expected->info.nFileSizeHigh == current->info.nFileSizeHigh &&
+           expected->info.nFileSizeLow == current->info.nFileSizeLow &&
+           expected->info.ftLastWriteTime.dwHighDateTime ==
+               current->info.ftLastWriteTime.dwHighDateTime &&
+           expected->info.ftLastWriteTime.dwLowDateTime ==
+               current->info.ftLastWriteTime.dwLowDateTime;
+}
+
+/* Returns 0 when published, 1 when published with an old-file backup left,
+ * -1 when the target remains intact, or -2 when recovery files must be kept. */
+static int win_gui_publish_archive_stage(const char *temporary, const char *target,
+                                         const ArchiveTargetSnapshot *expected,
+                                         char *backup, size_t backup_size)
+{
+    ArchiveTargetSnapshot current;
+    int n;
+    if (!win_gui_archive_target_snapshot(target, &current) ||
+        !win_gui_archive_target_unchanged(expected, &current)) {
+        SetLastError(ERROR_FILE_INVALID);
+        return -1;
+    }
+    if (!expected->exists)
+        return MoveFileA(temporary, target) ? 0 : -1;
+
+    n = _snprintf(backup, backup_size, "%s.previous", temporary);
+    if (n < 0 || (size_t)n >= backup_size) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return -1;
+    }
+    if (GetFileAttributesA(backup) != INVALID_FILE_ATTRIBUTES) {
+        SetLastError(ERROR_FILE_EXISTS);
+        return -1;
+    }
+
+    {
+        typedef BOOL (WINAPI *replace_file_fn)(LPCSTR, LPCSTR, LPCSTR,
+                                               DWORD, LPVOID, LPVOID);
+        FARPROC proc;
+        HMODULE kernel = GetModuleHandleA("kernel32.dll");
+        replace_file_fn replace_file = NULL;
+        proc = kernel == NULL ? NULL : GetProcAddress(kernel, "ReplaceFileA");
+        if (proc != NULL)
+            memcpy(&replace_file, &proc, sizeof(replace_file));
+        if (replace_file != NULL) {
+            if (replace_file(target, temporary, backup, 0, NULL, NULL))
+                return DeleteFileA(backup) ? 0 : 1;
+            if (GetFileAttributesA(backup) != INVALID_FILE_ATTRIBUTES)
+                return -2;
+            return -1;
+        }
+    }
+
+    /* Older Windows releases lack ReplaceFileA. Keep a recovery rename if the
+     * second move fails, and never discard the previous target in that case. */
+    if (!MoveFileA(target, backup)) return -1;
+    if (!MoveFileA(temporary, target)) {
+        if (!MoveFileA(backup, target)) return -2;
+        return -1;
+    }
+    return DeleteFileA(backup) ? 0 : 1;
 }
 
 static int win_gui_apply_fat(const char *path, bp_uint8 valid, bp_uint8 value)
@@ -1386,6 +1545,54 @@ static void DoExtract(void)
 static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name);
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath, const char *prefix);
 
+static int win_gui_acp_name_to_utf8(const char *local, char *utf8, size_t capacity)
+{
+    int local_length, wide_length, roundtrip_length, utf8_length;
+    UINT codepage = GetACP();
+    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    BOOL used_default = FALSE;
+    BOOL *used_default_ptr = codepage == CP_UTF8 ? NULL : &used_default;
+    WCHAR *wide = NULL;
+    char *roundtrip = NULL;
+    int rc = BP_ERR_PARTIAL;
+
+    local_length = (int)strlen(local) + 1;
+    wide_length = MultiByteToWideChar(CP_ACP, 0, local, local_length, NULL, 0);
+    if (wide_length <= 0) return BP_ERR_PARTIAL;
+    wide = (WCHAR *)malloc((size_t)wide_length * sizeof(WCHAR));
+    if (wide == NULL) return BP_ERR_NOMEM;
+    if (MultiByteToWideChar(CP_ACP, 0, local, local_length,
+                            wide, wide_length) <= 0) goto done;
+
+    roundtrip_length = WideCharToMultiByte(codepage, flags,
+                                           wide, wide_length, NULL, 0, NULL,
+                                           used_default_ptr);
+    if (roundtrip_length != local_length || used_default) goto done;
+    roundtrip = (char *)malloc((size_t)roundtrip_length);
+    if (roundtrip == NULL) { rc = BP_ERR_NOMEM; goto done; }
+    used_default = FALSE;
+    if (WideCharToMultiByte(codepage, flags, wide, wide_length,
+                            roundtrip, roundtrip_length, NULL,
+                            used_default_ptr) != roundtrip_length || used_default ||
+        memcmp(roundtrip, local, (size_t)local_length) != 0) goto done;
+
+    utf8_length = WideCharToMultiByte(CP_UTF8, 0,
+                                      wide, wide_length, NULL, 0, NULL, NULL);
+    if (utf8_length <= 0 || (size_t)utf8_length > capacity) {
+        rc = BP_ERR_NAME_TOO_LONG;
+        goto done;
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, wide_length,
+                            utf8, (int)capacity, NULL, NULL) != utf8_length)
+        goto done;
+    rc = BP_OK;
+
+done:
+    free(wide);
+    free(roundtrip);
+    return rc;
+}
+
 static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name)
 {
     DWORD attrs;
@@ -1393,21 +1600,28 @@ static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name
     FILE *fp;
     bp_io_t fio;
     bp_uint64 fsize, mtime;
+    char archive_name[4096];
     int rc;
 
     attrs = GetFileAttributesA(filepath);
     if (attrs == INVALID_FILE_ATTRIBUTES)
         return BP_ERR_IO;
+    if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+        g_create_reparse_refused = 1;
+        return BP_ERR_INVALID_ARG;
+    }
 
     if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
         char dname[1024];
-        _snprintf(dname, sizeof(dname), "%s/", arc_name);
-        dname[sizeof(dname) - 1] = '\0';
+        int n = _snprintf(dname, sizeof(dname), "%s/", arc_name);
+        if (n < 0 || (size_t)n >= sizeof(dname)) return BP_ERR_NAME_TOO_LONG;
+        rc = win_gui_acp_name_to_utf8(dname, archive_name, sizeof(archive_name));
+        if (rc != BP_OK) return rc;
 
         if (_stat64(filepath, &st) != 0)
             return BP_ERR_IO;
         mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        rc = bp_archive_add_entry(ar, dname, BP_TYPE_DIR, BP_OS_WINDOWS,
+        rc = bp_archive_add_entry(ar, archive_name, BP_TYPE_DIR, BP_OS_WINDOWS,
                                   NULL, bp_u64_from_u32(0), mtime);
         if (rc != BP_OK) return rc;
         return add_dir_recursive(ar, filepath, dname);
@@ -1422,7 +1636,9 @@ static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name
     bp_io_from_file(&fio, fp);
     fsize = bp_off_to_u64((bp_off_t)st.st_size);
     mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-    rc = bp_archive_add_entry(ar, arc_name, BP_TYPE_DATA, BP_OS_WINDOWS,
+    rc = win_gui_acp_name_to_utf8(arc_name, archive_name, sizeof(archive_name));
+    if (rc != BP_OK) { fclose(fp); return rc; }
+    rc = bp_archive_add_entry(ar, archive_name, BP_TYPE_DATA, BP_OS_WINDOWS,
                               &fio, fsize, mtime);
     fclose(fp);
     return rc;
@@ -1466,12 +1682,19 @@ static void DoCreate(void)
     OPENFILENAMEA ofn;
     char input_buf[32768]; /* OFN_ALLOWMULTISELECT buffer */
     char save_buf[MAX_PATH];
+    char stage_buf[MAX_PATH + 64];
+    char backup_buf[MAX_PATH + 128];
+    char recovery_msg[MAX_PATH * 2 + 192];
     char *p;
     char dir[MAX_PATH];
     FILE *fp;
     bp_io_t io;
     bp_archive_t ar;
+    ArchiveTargetSnapshot target_snapshot;
+    int publish_state;
     int rc;
+
+    g_create_reparse_refused = 0;
 
     /* pick input files */
     memset(&ofn, 0, sizeof(ofn));
@@ -1500,9 +1723,14 @@ static void DoCreate(void)
 
     if (!GetSaveFileNameA(&ofn)) return;
 
-    fp = fopen(save_buf, "wb");
-    if (!fp) {
-        MessageBoxA(g_hWnd, "Cannot create output file.", "Error", MB_OK | MB_ICONERROR);
+    if (!win_gui_archive_target_snapshot(save_buf, &target_snapshot)) {
+        MessageBoxA(g_hWnd, "The selected destination must be a regular file.",
+                    "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (win_gui_open_archive_stage(save_buf, stage_buf, sizeof(stage_buf), &fp) != BP_OK) {
+        MessageBoxA(g_hWnd, "Cannot create a staging file beside the destination.",
+                    "Error", MB_OK | MB_ICONERROR);
         return;
     }
     bp_io_from_file(&io, fp);
@@ -1518,17 +1746,19 @@ static void DoCreate(void)
     ShowWindow(g_progress.hDlg, SW_SHOW);
     SetWindowTextA(g_progress.hDlg, "Creating archive...");
 
-    ar.progress_fn   = progress_cb;
-    ar.progress_data = &g_progress;
-
-    rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
+    if (g_interchange_profile)
+        rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
+    else
+        rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
     if (rc != BP_OK) {
         DestroyWindow(g_progress.hDlg);
         fclose(fp);
-        DeleteFileA(save_buf);
+        DeleteFileA(stage_buf);
         MessageBoxA(g_hWnd, bp_strerror(rc), "Error", MB_OK | MB_ICONERROR);
         return;
     }
+    ar.progress_fn   = progress_cb;
+    ar.progress_data = &g_progress;
 
     /* Parse OFN_ALLOWMULTISELECT result:
      * Single file: "C:\path\file" (one null-terminated string)
@@ -1558,17 +1788,44 @@ static void DoCreate(void)
 
     bp_archive_close(&ar);
     DestroyWindow(g_progress.hDlg);
-    fclose(fp);
+    if (rc == BP_OK && fflush(fp) != 0) rc = BP_ERR_IO;
+    if (rc == BP_OK && _commit(_fileno(fp)) != 0) rc = BP_ERR_IO;
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
     if (g_progress.cancelled || rc == BP_ERR_ABORTED) {
-        DeleteFileA(save_buf);
+        DeleteFileA(stage_buf);
         MessageBoxA(g_hWnd, "Archive creation cancelled.", "BoltPack",
                     MB_OK | MB_ICONINFORMATION);
     } else if (rc != BP_OK) {
-        DeleteFileA(save_buf);
-        MessageBoxA(g_hWnd, bp_strerror(rc), "Error", MB_OK | MB_ICONERROR);
+        DeleteFileA(stage_buf);
+        MessageBoxA(g_hWnd,
+            g_create_reparse_refused
+                ? "A source reparse point was refused instead of following its target."
+                : bp_strerror(rc),
+            "Error", MB_OK | MB_ICONERROR);
     } else {
-        DoOpen(save_buf);
+        publish_state = win_gui_publish_archive_stage(stage_buf, save_buf,
+            &target_snapshot, backup_buf, sizeof(backup_buf));
+        if (publish_state >= 0) {
+            DoOpen(save_buf);
+            if (publish_state == 1) {
+                _snprintf(recovery_msg, sizeof(recovery_msg),
+                          "Archive saved. The previous archive remains at:\n%s",
+                          backup_buf);
+                recovery_msg[sizeof(recovery_msg) - 1] = '\0';
+                MessageBoxA(g_hWnd, recovery_msg, "BoltPack", MB_OK | MB_ICONINFORMATION);
+            }
+        } else if (publish_state == -2) {
+            _snprintf(recovery_msg, sizeof(recovery_msg),
+                      "Replacement did not finish cleanly. Keep both recovery files:\n%s\n%s",
+                      stage_buf, backup_buf);
+            recovery_msg[sizeof(recovery_msg) - 1] = '\0';
+            MessageBoxA(g_hWnd, recovery_msg, "Error", MB_OK | MB_ICONERROR);
+        } else {
+            DeleteFileA(stage_buf);
+            MessageBoxA(g_hWnd, "The destination changed or could not be replaced.",
+                        "Error", MB_OK | MB_ICONERROR);
+        }
     }
 }
 
@@ -1581,6 +1838,8 @@ static void UpdateMenuState(void)
     EnableMenuItem(hMenu, IDM_CLOSE,    g_archive_open ? MF_ENABLED : MF_GRAYED);
     EnableMenuItem(hMenu, IDM_VALIDATE, g_archive_open ? MF_ENABLED : MF_GRAYED);
     EnableMenuItem(hMenu, IDM_INFO,     g_archive_open ? MF_ENABLED : MF_GRAYED);
+    CheckMenuItem(hMenu, IDM_INTERCHANGE_PROFILE,
+                  MF_BYCOMMAND | (g_interchange_profile ? MF_CHECKED : MF_UNCHECKED));
     DrawMenuBar(g_hWnd);
 }
 
@@ -1761,9 +2020,14 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         /* create archive from dropped files */
         OPENFILENAMEA ofn;
         char save_buf[MAX_PATH];
+        char stage_buf[MAX_PATH + 64];
+        char backup_buf[MAX_PATH + 128];
+        char recovery_msg[MAX_PATH * 2 + 192];
         FILE *fp;
         bp_io_t io;
         bp_archive_t ar;
+        ArchiveTargetSnapshot target_snapshot;
+        int publish_state;
         int rc;
 
         memset(&ofn, 0, sizeof(ofn));
@@ -1779,8 +2043,17 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
 
         if (!GetSaveFileNameA(&ofn)) goto cleanup;
 
-        fp = fopen(save_buf, "wb");
-        if (!fp) { MessageBoxA(g_hWnd, "Cannot create file.", "Error", MB_OK | MB_ICONERROR); goto cleanup; }
+        if (!win_gui_archive_target_snapshot(save_buf, &target_snapshot)) {
+            MessageBoxA(g_hWnd, "The selected destination must be a regular file.",
+                        "Error", MB_OK | MB_ICONERROR);
+            goto cleanup;
+        }
+        if (win_gui_open_archive_stage(save_buf, stage_buf, sizeof(stage_buf), &fp) != BP_OK) {
+            MessageBoxA(g_hWnd, "Cannot create a staging file beside the destination.",
+                        "Error", MB_OK | MB_ICONERROR);
+            goto cleanup;
+        }
+        g_create_reparse_refused = 0;
         bp_io_from_file(&io, fp);
 
         memset(&ar, 0, sizeof(ar));
@@ -1792,11 +2065,13 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         ShowWindow(GetDlgItem(g_progress.hDlg, IDC_PROG_BAR), SW_HIDE);
         ShowWindow(g_progress.hDlg, SW_SHOW);
         SetWindowTextA(g_progress.hDlg, "Creating archive...");
-        ar.progress_fn   = progress_cb;
-        ar.progress_data = &g_progress;
-
-        rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
+        if (g_interchange_profile)
+            rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
+        else
+            rc = bp_archive_create(&ar, &io, BP_BLOCK_DEFAULT, BP_METHOD_BOLTLZ);
         if (rc == BP_OK) {
+            ar.progress_fn   = progress_cb;
+            ar.progress_data = &g_progress;
             for (i = 0; i < nother && !g_progress.cancelled; i++) {
                 const char *base = strrchr(others[i], '\\');
                 if (!base) base = strrchr(others[i], '/');
@@ -1809,12 +2084,47 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         }
         bp_archive_close(&ar);
         DestroyWindow(g_progress.hDlg);
-        fclose(fp);
+        if (rc == BP_OK && fflush(fp) != 0) rc = BP_ERR_IO;
+        if (rc == BP_OK && _commit(_fileno(fp)) != 0) rc = BP_ERR_IO;
+        if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
-        if (rc == BP_OK)
-            DoOpen(save_buf);
-        else if (rc != BP_ERR_ABORTED)
-            MessageBoxA(g_hWnd, bp_strerror(rc), "Error", MB_OK | MB_ICONERROR);
+        if (g_progress.cancelled || rc == BP_ERR_ABORTED) {
+            DeleteFileA(stage_buf);
+            MessageBoxA(g_hWnd, "Archive creation cancelled.", "BoltPack",
+                        MB_OK | MB_ICONINFORMATION);
+        } else if (rc != BP_OK) {
+            DeleteFileA(stage_buf);
+            MessageBoxA(g_hWnd,
+                g_create_reparse_refused
+                    ? "A source reparse point was refused instead of following its target."
+                    : bp_strerror(rc),
+                "Error", MB_OK | MB_ICONERROR);
+        } else {
+            publish_state = win_gui_publish_archive_stage(stage_buf, save_buf,
+                &target_snapshot, backup_buf, sizeof(backup_buf));
+            if (publish_state >= 0) {
+                DoOpen(save_buf);
+                if (publish_state == 1) {
+                    _snprintf(recovery_msg, sizeof(recovery_msg),
+                              "Archive saved. The previous archive remains at:\n%s",
+                              backup_buf);
+                    recovery_msg[sizeof(recovery_msg) - 1] = '\0';
+                    MessageBoxA(g_hWnd, recovery_msg, "BoltPack",
+                                MB_OK | MB_ICONINFORMATION);
+                }
+            } else if (publish_state == -2) {
+                _snprintf(recovery_msg, sizeof(recovery_msg),
+                          "Replacement did not finish cleanly. Keep both recovery files:\n%s\n%s",
+                          stage_buf, backup_buf);
+                recovery_msg[sizeof(recovery_msg) - 1] = '\0';
+                MessageBoxA(g_hWnd, recovery_msg, "Error", MB_OK | MB_ICONERROR);
+            } else {
+                DeleteFileA(stage_buf);
+                MessageBoxA(g_hWnd,
+                    "The destination changed or could not be replaced.",
+                    "Error", MB_OK | MB_ICONERROR);
+            }
+        }
     } else {
         /* mixed */
         int choice = MessageBoxA(g_hWnd,
@@ -1961,6 +2271,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         case IDM_VALIDATE: DoValidate(); return 0;
         case IDM_INFO:     DoInfo();     return 0;
         case IDM_CREATE:  DoCreate();  return 0;
+        case IDM_INTERCHANGE_PROFILE:
+            g_interchange_profile = !g_interchange_profile;
+            UpdateMenuState();
+            return 0;
         case IDM_EXIT:    PostQuitMessage(0); return 0;
         case IDM_DOC:
             DialogBoxA(g_hInst, MAKEINTRESOURCEA(IDD_DOC), hWnd, DocDlgProc);
