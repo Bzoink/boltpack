@@ -2367,6 +2367,29 @@ rows. Scrolling is handled via `WM_ARROWED` messages.
 Cross-compiled with `m68k-atari-mint-gcc`. The `-pedantic` flag is omitted
 because GEM headers are not strict C89 compliant.
 
+Archive creation strictly converts names to UTF-8, rejects names outside the
+Atari 8.3 ASCII profile and case-folded or file/directory-prefix collisions
+(bounded at 1,024 names and 32 KiB), and stages the complete archive beside
+the destination. It publishes after finalization and close. Replacing an
+existing archive preserves its non-read-only TOS attributes and refuses a
+read-only target.
+Created file and directory entries carry representable timestamps, native TOS
+attributes, and the portable FAT fallback, including empty directories.
+
+Extraction preflights projected names and file/directory-prefix conflicts
+before creating output. The index is capped at 1,024 names and 32 KiB of keys,
+and full GEMDOS paths are limited to 125 bytes. It rejects unrepresentable or
+non-8.3 names, checks existing path components for symlinks, and stages regular
+files beside their destinations until checksum verification and close
+succeed. Existing files are replaced through a recovery rename. File times
+and matching native TOS attributes are restored; portable FAT attributes are
+the fallback, and directory timestamps and attributes are deferred until
+children finish. Unsupported links, resource forks, foreign metadata, and
+POSIX modes are reported as partial. These path checks retain a concurrent
+parent-substitution race. `make atari-gui` passes a 68k cross-build with
+warnings treated as errors; no Hatari runtime is available for round-trip
+testing.
+
 ---
 
 ### Amiga GadTools GUI

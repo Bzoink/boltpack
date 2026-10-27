@@ -25,10 +25,13 @@
  */
 
 #include "../../core/archiver.h"
+#include "../../core/bp_metadata.h"
+#include "../../core/bp_time.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
+#include "../atari/atari_path.h"
 
 #include <gem.h>            /* AES + VDI (gemlib) */
 #include <mint/osbind.h>
@@ -36,9 +39,31 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#include <unistd.h>
+#include <utime.h>
+
+/* mintlib exposes these POSIX interfaces through the target runtime. */
+extern int lstat(const char *path, struct stat *st);
+extern int mkstemp(char *template_path);
+extern int fileno(FILE *stream);
+extern FILE *fdopen(int fd, const char *mode);
+
+#ifndef FA_RDONLY
+# define FA_RDONLY 0x01
+# define FA_HIDDEN 0x02
+# define FA_SYSTEM 0x04
+# define FA_LABEL  0x08
+# define FA_DIR    0x10
+# define FA_ARCH   0x20
+#endif
+#ifndef FA_ARCH
+# define FA_ARCH 0x20
+#endif
 
 /* ====================================================================== */
 /*  Constants                                                             */
@@ -154,7 +179,9 @@ static atari_progress_ui_t *active_progress;
 
 static int gather_count;
 static char **gather_files;
+static unsigned char *gather_is_directory;
 static int gather_capacity;
+static int gather_skipped_sources;
 
 static void redraw_window(short rx, short ry, short rw, short rh);
 
@@ -336,14 +363,18 @@ static void free_gather_files(void)
         free(gather_files);
         gather_files = NULL;
     }
+    free(gather_is_directory);
+    gather_is_directory = NULL;
 
     gather_count = 0;
     gather_capacity = 0;
+    gather_skipped_sources = 0;
 }
 
 static int ensure_gather_capacity(int needed)
 {
     char **new_files;
+    unsigned char *new_types;
     int new_capacity;
 
     if (needed <= gather_capacity)
@@ -353,19 +384,34 @@ static int ensure_gather_capacity(int needed)
     while (new_capacity < needed)
         new_capacity *= 2;
 
-    new_files = (char **)realloc(gather_files,
-                                 (size_t)new_capacity * sizeof(char *));
-    if (new_files == NULL)
+    new_files = (char **)malloc((size_t)new_capacity * sizeof(char *));
+    new_types = (unsigned char *)malloc((size_t)new_capacity);
+    if (new_files == NULL || new_types == NULL) {
+        free(new_files);
+        free(new_types);
         return 0;
-
+    }
+    if (gather_count != 0) {
+        memcpy(new_files, gather_files, (size_t)gather_count * sizeof(char *));
+        memcpy(new_types, gather_is_directory, (size_t)gather_count);
+    }
+    free(gather_files);
+    free(gather_is_directory);
     gather_files = new_files;
+    gather_is_directory = new_types;
     gather_capacity = new_capacity;
     return 1;
 }
 
-static int add_gather_file(const char *path)
+static int add_gather_entry(const char *path, int is_directory)
 {
     char *copy;
+    int i;
+
+    for (i = 0; i < gather_count; i++) {
+        if (gather_is_directory[i] == (unsigned char)(is_directory != 0) &&
+            strcmp(gather_files[i], path) == 0) return 0;
+    }
 
     if (gather_count >= MAX_ENTRIES)
         return -2;
@@ -377,8 +423,20 @@ static int add_gather_file(const char *path)
     if (copy == NULL)
         return -1;
 
-    gather_files[gather_count++] = copy;
+    gather_files[gather_count] = copy;
+    gather_is_directory[gather_count] = (unsigned char)(is_directory != 0);
+    gather_count++;
     return 0;
+}
+
+static int add_gather_file(const char *path)
+{
+    return add_gather_entry(path, 0);
+}
+
+static int add_gather_directory(const char *path)
+{
+    return add_gather_entry(path, 1);
 }
 
 static const char *method_name(int m)
@@ -1251,6 +1309,910 @@ static void selector_build_path(const char *pattern, const char *fname,
 
 /* ---- Extract ---- */
 
+#define GUI_ATARI_DIR_QUEUE_MAX 256U
+#define GUI_ATARI_DIR_QUEUE_BYTES_MAX 32768UL
+
+typedef struct {
+    char dest_dir[BP_MAX_PATH];
+    int cancelled;
+    int partial;
+    int invalid_entry;
+    int subject_ok;
+    int subject_type;
+    int subject_native_seen;
+    char subject[BP_MAX_PATH];
+    struct atari_gui_dir_restore *directories;
+    struct atari_gui_dir_restore *subject_directory;
+    unsigned int directory_count;
+    unsigned long directory_path_bytes;
+    atari_progress_ui_t progress;
+} extract_ctx_t;
+
+typedef struct atari_gui_dir_restore {
+    struct atari_gui_dir_restore *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    unsigned char native_attr;
+    unsigned char fat_valid;
+    unsigned char fat_value;
+    int native_seen;
+    int fat_seen;
+} atari_gui_dir_restore_t;
+
+typedef struct {
+    bp_io_t io;
+    int fd;
+    char target[BP_MAX_PATH];
+    char temporary[BP_MAX_PATH];
+    int target_existed;
+    int committed;
+    int preserve_target_attributes;
+    unsigned char target_attributes;
+    struct stat target_snapshot;
+} atari_gui_staged_output_t;
+
+typedef struct {
+    bp_io_t io;
+    bp_uint32 length;
+    bp_uint32 position;
+    unsigned char data[BP_META_MAX_SIZE];
+} atari_gui_meta_output_t;
+
+typedef struct {
+    const char *dest_dir;
+    char *keys[BP_ATARI_PATH_MAX_ENTRIES];
+    unsigned char is_directory[BP_ATARI_PATH_MAX_ENTRIES];
+    unsigned int count;
+    unsigned long bytes;
+    const char *error;
+} atari_gui_name_index_t;
+
+static int atari_gui_name_prefix(const char *prefix, const char *path)
+{
+    size_t len = strlen(prefix);
+    return strncmp(prefix, path, len) == 0 && path[len] == '\\';
+}
+
+static int atari_gui_index_projected_name(atari_gui_name_index_t *index,
+                                          const char *local, int is_dir)
+{
+    char key[BP_MAX_PATH];
+    size_t len;
+    unsigned int key_len, i;
+    int rc;
+    rc = bp_atari_project_name(local, is_dir, key, sizeof(key), &key_len);
+    if (rc != BP_OK) {
+        index->error = "Name is outside Atari's 8.3 filename profile";
+        return rc;
+    }
+    for (i = 0; i < index->count; i++) {
+        if (strcmp(index->keys[i], key) == 0 ||
+            (!index->is_directory[i] &&
+             atari_gui_name_prefix(index->keys[i], key)) ||
+            (!is_dir && atari_gui_name_prefix(key, index->keys[i]))) {
+            index->error = "Names collide on the Atari destination";
+            return BP_ERR_CORRUPT;
+        }
+    }
+    len = strlen(key);
+    if (index->count >= BP_ATARI_PATH_MAX_ENTRIES ||
+        index->bytes + (unsigned long)len + 1UL > BP_ATARI_PATH_MAX_BYTES) {
+        index->error = "Name index exceeds Atari's bounded limit";
+        return BP_ERR_OVERFLOW;
+    }
+    index->keys[index->count] = (char *)malloc(len + 1);
+    if (index->keys[index->count] == NULL) {
+        index->error = "Not enough memory for Atari name checks";
+        return BP_ERR_NOMEM;
+    }
+    memcpy(index->keys[index->count], key, len + 1);
+    index->is_directory[index->count] = (unsigned char)is_dir;
+    index->count++;
+    index->bytes += (unsigned long)len + 1UL;
+    return BP_OK;
+}
+
+static int atari_gui_build_path(const char *dir, const char *name,
+                                char *path, size_t capacity)
+{
+    size_t dlen = strlen(dir), nlen = strlen(name), pos = dlen, len;
+    int add_sep = dlen != 0 && dir[dlen - 1] != '/' && dir[dlen - 1] != '\\';
+    char *p;
+    if (dlen + (size_t)add_sep + nlen + 1 > capacity) return -1;
+    memcpy(path, dir, dlen);
+    if (add_sep) path[pos++] = '\\';
+    memcpy(path + pos, name, nlen + 1);
+    for (p = path; *p; p++) if (*p == '/') *p = '\\';
+    len = strlen(path);
+    while (len > 0 && (path[len - 1] == '/' || path[len - 1] == '\\'))
+        path[--len] = '\0';
+    return 0;
+}
+
+static int atari_gui_preflight_name(const bp_entry_t *entry, void *user_data)
+{
+    atari_gui_name_index_t *index = (atari_gui_name_index_t *)user_data;
+    char local[BP_MAX_PATH], full[BP_MAX_PATH];
+    int is_dir, rc;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    is_dir = entry->entry_type == BP_TYPE_DIR;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), BP_CP_ATARIST) != 0 ||
+        atari_gui_build_path(index->dest_dir, local, full, sizeof(full)) != 0 ||
+        strlen(full) > BP_ATARI_GEMDOS_PATH_MAX) {
+        index->error = "Archive name cannot be represented in an Atari GEMDOS path";
+        return 1;
+    }
+    rc = atari_gui_index_projected_name(index, local, is_dir);
+    if (rc != BP_OK) {
+        if (rc == BP_ERR_INVALID_ARG || rc == BP_ERR_OVERFLOW)
+            index->error = "Archive name is outside Atari's 8.3 filename profile";
+        else if (rc == BP_ERR_CORRUPT)
+            index->error = "Archive names collide on the Atari destination";
+        return 1;
+    }
+    return 0;
+}
+
+static void atari_gui_name_index_clear(atari_gui_name_index_t *index)
+{
+    unsigned int i;
+    for (i = 0; i < index->count; i++) free(index->keys[i]);
+    index->count = 0;
+    index->bytes = 0;
+}
+
+static int atari_gui_check_dir(const char *path, int create)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        if (errno != ENOENT || !create) return -1;
+        if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
+        if (lstat(path, &st) != 0) return -1;
+    }
+    return S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode) ? 0 : -1;
+}
+
+static int makedirs_checked(const char *path)
+{
+    char tmp[BP_MAX_PATH];
+    char *p;
+    size_t len;
+    if (strlen(path) >= sizeof(tmp)) return -1;
+    strcpy(tmp, path);
+    len = strlen(tmp);
+    while (len > 3 && (tmp[len - 1] == '/' || tmp[len - 1] == '\\'))
+        tmp[--len] = '\0';
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            char sep = *p;
+            *p = '\0';
+            if (*tmp && !(p > tmp && p[-1] == ':') &&
+                atari_gui_check_dir(tmp, 1) != 0) {
+                *p = sep;
+                return -1;
+            }
+            *p = sep;
+        }
+    }
+    if (len >= 2 && tmp[len - 1] == ':' ) return 0;
+    return atari_gui_check_dir(tmp, 1);
+}
+
+static int atari_gui_make_parents(const char *path)
+{
+    char parent[BP_MAX_PATH];
+    char *slash, *backslash;
+    if (strlen(path) >= sizeof(parent)) return -1;
+    strcpy(parent, path);
+    slash = strrchr(parent, '/');
+    backslash = strrchr(parent, '\\');
+    if (backslash != NULL && (slash == NULL || backslash > slash)) slash = backslash;
+    if (slash == NULL) return 0;
+    *slash = '\0';
+    if (slash > parent && slash[-1] == ':') return 0;
+    return makedirs_checked(parent);
+}
+
+static int atari_gui_same_file(const struct stat *a, const struct stat *b)
+{
+    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_dev == b->st_dev && (a->st_ino == 0 || a->st_ino == b->st_ino) &&
+           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
+           a->st_ctime == b->st_ctime;
+}
+
+static int atari_gui_sibling_name(const char *target, const char *base,
+                                  char *out, size_t capacity)
+{
+    const char *slash = strrchr(target, '/');
+    const char *backslash = strrchr(target, '\\');
+    size_t prefix, base_len = strlen(base);
+    if (backslash != NULL && (slash == NULL || backslash > slash)) slash = backslash;
+    prefix = slash != NULL ? (size_t)(slash - target + 1) : 0;
+    if (prefix >= capacity || base_len >= capacity - prefix) return -1;
+    memcpy(out, target, prefix);
+    memcpy(out + prefix, base, base_len + 1);
+    return 0;
+}
+
+static int atari_gui_rename_noreplace(const char *from, const char *to)
+{
+    char old_path[BP_MAX_PATH], new_path[BP_MAX_PATH], *p;
+    if (strlen(from) >= sizeof(old_path) || strlen(to) >= sizeof(new_path)) return -1;
+    strcpy(old_path, from);
+    strcpy(new_path, to);
+    for (p = old_path; *p; p++) if (*p == '/') *p = '\\';
+    for (p = new_path; *p; p++) if (*p == '/') *p = '\\';
+    return Frename(0, old_path, new_path) == 0 ? 0 : -1;
+}
+
+static int atari_gui_backup_existing(const char *target, char *backup,
+                                     size_t capacity)
+{
+    static unsigned long sequence = 0;
+    unsigned int attempt;
+    char base[9];
+    for (attempt = 0; attempt < 64U; attempt++) {
+        unsigned long id = (((unsigned long)clock() << 4) + sequence++) &
+                           0x0FFFFFFFUL;
+        sprintf(base, "B%07lX", id);
+        if (atari_gui_sibling_name(target, base, backup, capacity) != 0) return -1;
+        if (atari_gui_rename_noreplace(target, backup) == 0) return 0;
+    }
+    return -1;
+}
+
+static long staged_output_write(void *handle, const void *data, bp_uint32 count)
+{
+    atari_gui_staged_output_t *stage = (atari_gui_staged_output_t *)handle;
+    const unsigned char *p = (const unsigned char *)data;
+    bp_uint32 done = 0;
+    while (done < count) {
+        long written = (long)write(stage->fd, p + done, (size_t)(count - done));
+        if (written <= 0) return -1;
+        done += (bp_uint32)written;
+    }
+    return (long)done;
+}
+
+static long meta_output_write(void *handle, const void *data, bp_uint32 count)
+{
+    atari_gui_meta_output_t *meta = (atari_gui_meta_output_t *)handle;
+    if (meta->position > sizeof(meta->data) ||
+        count > sizeof(meta->data) - meta->position) return -1;
+    memcpy(meta->data + meta->position, data, (size_t)count);
+    meta->position += count;
+    if (meta->position > meta->length) meta->length = meta->position;
+    return (long)count;
+}
+
+static long meta_output_read(void *handle, void *data, bp_uint32 count)
+{
+    (void)handle; (void)data; (void)count;
+    return -1;
+}
+
+static int meta_output_seek(void *handle, bp_off_t offset, int origin)
+{
+    (void)handle; (void)offset; (void)origin;
+    return -1;
+}
+
+static bp_off_t meta_output_tell(void *handle)
+{
+    return (bp_off_t)((atari_gui_meta_output_t *)handle)->position;
+}
+
+static int atari_gui_get_attr(const char *path, unsigned char *attr)
+{
+    long value = Fattrib((char *)path, 0, 0);
+    if (value < 0 || attr == NULL) return -1;
+    *attr = (unsigned char)((int)value & BP_META_FAT_MASK);
+    return 0;
+}
+
+static int atari_gui_apply_attr(const char *path, unsigned char valid,
+                                unsigned char value)
+{
+    long current = Fattrib((char *)path, 0, 0);
+    unsigned char desired;
+    long result;
+    if (current < 0) return -1;
+    valid = (unsigned char)(valid & BP_META_FAT_MASK);
+    desired = (unsigned char)(((unsigned char)current & (unsigned char)~valid) |
+                              (value & valid));
+    result = Fattrib((char *)path, 1, (int)(desired & BP_META_FAT_MASK));
+    return result < 0 ? -1 : 0;
+}
+
+typedef struct {
+    const unsigned char *data;
+    bp_uint32 length;
+    bp_uint32 position;
+} atari_gui_meta_reader_t;
+
+static long atari_gui_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    atari_gui_meta_reader_t *reader = (atari_gui_meta_reader_t *)handle;
+    bp_uint32 available = reader->length - reader->position;
+    if (count > available) count = available;
+    if (count == 0) return 0;
+    memcpy(buffer, reader->data + reader->position, (size_t)count);
+    reader->position += count;
+    return (long)count;
+}
+
+static long atari_gui_meta_write_unused(void *handle, const void *buffer,
+                                        bp_uint32 count)
+{
+    (void)handle; (void)buffer; (void)count;
+    return -1;
+}
+
+static int atari_gui_meta_seek(void *handle, bp_off_t offset, int origin)
+{
+    atari_gui_meta_reader_t *reader = (atari_gui_meta_reader_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)reader->position + (long)offset;
+    else if (origin == SEEK_END) position = (long)reader->length + (long)offset;
+    else return -1;
+    if (position < 0 || (bp_uint32)position > reader->length) return -1;
+    reader->position = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t atari_gui_meta_tell(void *handle)
+{
+    return (bp_off_t)((atari_gui_meta_reader_t *)handle)->position;
+}
+
+static int atari_gui_add_meta(bp_archive_t *archive, const char *name,
+                              bp_uint8 platform, const unsigned char *data,
+                              bp_uint32 length)
+{
+    atari_gui_meta_reader_t reader;
+    bp_io_t io;
+    reader.data = data;
+    reader.length = length;
+    reader.position = 0;
+    io.read = atari_gui_meta_read;
+    io.write = atari_gui_meta_write_unused;
+    io.seek = atari_gui_meta_seek;
+    io.tell = atari_gui_meta_tell;
+    io.handle = &reader;
+    return bp_archive_add_entry_ex(archive, name, BP_TYPE_META, platform, &io,
+                                   bp_u64_from_u32(length),
+                                   bp_u64_from_u32(0), 0);
+}
+
+static void atari_gui_stat_mtime(time_t source, bp_uint64 *mtime,
+                                 bp_uint16 *flags)
+{
+    unsigned long seconds;
+    *mtime = bp_u64_from_u32(0);
+    *flags = 0;
+    if (source < (time_t)0) return;
+    seconds = (unsigned long)source;
+    if ((time_t)seconds != source) return;
+    *mtime = bp_u64_from_ulong(seconds);
+    *flags = BP_ENTRY_FLAG_MTIME_VALID;
+}
+
+static int atari_gui_add_entry_metadata(bp_archive_t *archive, const char *name,
+                                        const char *path, bp_uint8 subject_type,
+                                        int *captured)
+{
+    unsigned char attr, portable[BP_META_FAT_SIZE];
+    int rc;
+    *captured = 0;
+    if (atari_gui_get_attr(path, &attr) != 0) return BP_OK;
+    rc = atari_gui_add_meta(archive, name, BP_OS_ATARI, &attr, 1);
+    if (rc != BP_OK) return rc;
+    rc = bp_metadata_fat_encode(portable, sizeof(portable), subject_type,
+                                BP_META_FAT_MASK,
+                                (bp_uint8)(attr & BP_META_FAT_MASK));
+    if (rc != BP_OK) return rc;
+    rc = atari_gui_add_meta(archive, name, BP_META_PORTABLE, portable,
+                            (bp_uint32)sizeof(portable));
+    if (rc == BP_OK) *captured = 1;
+    return rc;
+}
+
+static atari_gui_dir_restore_t *queue_directory_restore(
+    extract_ctx_t *ctx, const char *path, const bp_entry_t *entry)
+{
+    atari_gui_dir_restore_t *node;
+    size_t len = strlen(path) + 1;
+    if (ctx->directory_count >= GUI_ATARI_DIR_QUEUE_MAX ||
+        len > GUI_ATARI_DIR_QUEUE_BYTES_MAX - ctx->directory_path_bytes) return NULL;
+    node = (atari_gui_dir_restore_t *)calloc(1, sizeof(*node));
+    if (node == NULL) return NULL;
+    node->path = (char *)malloc(len);
+    if (node->path == NULL) { free(node); return NULL; }
+    memcpy(node->path, path, len);
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    node->next = ctx->directories;
+    ctx->directories = node;
+    ctx->directory_count++;
+    ctx->directory_path_bytes += (unsigned long)len;
+    return node;
+}
+
+static int atari_gui_path_depth(const char *path)
+{
+    int depth = 0;
+    while (*path) {
+        if (*path == '\\' || *path == '/') depth++;
+        path++;
+    }
+    return depth;
+}
+
+static void finish_directory_restores(extract_ctx_t *ctx)
+{
+    while (ctx->directories != NULL) {
+        atari_gui_dir_restore_t **best = &ctx->directories, **link;
+        atari_gui_dir_restore_t *node;
+        int best_depth = -1;
+        for (link = &ctx->directories; *link; link = &(*link)->next) {
+            int depth = atari_gui_path_depth((*link)->path);
+            if (depth > best_depth) { best = link; best_depth = depth; }
+        }
+        node = *best;
+        *best = node->next;
+        if ((node->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+            bp_restore_mtime(node->path, node->mtime) != BP_OK)
+            ctx->partial = 1;
+        if (node->native_seen) {
+            if (atari_gui_apply_attr(node->path, BP_META_FAT_MASK,
+                                     node->native_attr) != 0) ctx->partial = 1;
+        } else if (node->fat_seen && node->fat_valid != 0 &&
+                   atari_gui_apply_attr(node->path, node->fat_valid,
+                                        node->fat_value) != 0) {
+            ctx->partial = 1;
+        }
+        free(node->path);
+        free(node);
+    }
+    ctx->directory_count = 0;
+    ctx->directory_path_bytes = 0;
+}
+
+static void discard_staged_output(atari_gui_staged_output_t *stage)
+{
+    if (stage->fd >= 0) { (void)close(stage->fd); stage->fd = -1; }
+    if (stage->temporary[0]) {
+        (void)unlink(stage->temporary);
+        stage->temporary[0] = '\0';
+    }
+}
+
+static int commit_staged_output(atari_gui_staged_output_t *stage)
+{
+    struct stat current, backup_stat;
+    char backup[BP_MAX_PATH], template[BP_MAX_PATH];
+    unsigned char current_attributes;
+    int fd, backup_moved = 0;
+    if (lstat(stage->target, &current) == 0) {
+        if (!stage->target_existed || !atari_gui_same_file(&stage->target_snapshot,
+                                                           &current))
+            return BP_ERR_PARTIAL;
+    } else if (errno != ENOENT || stage->target_existed) return BP_ERR_IO;
+    if (stage->preserve_target_attributes &&
+        (atari_gui_get_attr(stage->target, &current_attributes) != 0 ||
+         current_attributes != stage->target_attributes)) return BP_ERR_PARTIAL;
+    if (stage->target_existed) {
+        if (atari_gui_sibling_name(stage->target, "BRXXXXXX", template,
+                                   sizeof(template)) != 0) return BP_ERR_NAME_TOO_LONG;
+        fd = mkstemp(template);
+        if (fd < 0) return BP_ERR_IO;
+        if (close(fd) != 0 || unlink(template) != 0) {
+            (void)unlink(template);
+            return BP_ERR_IO;
+        }
+        strcpy(backup, template);
+        if (atari_gui_rename_noreplace(stage->target, backup) != 0) return BP_ERR_IO;
+        backup_moved = 1;
+        if (lstat(backup, &backup_stat) != 0 ||
+            !atari_gui_same_file(&stage->target_snapshot, &backup_stat)) {
+            if (atari_gui_rename_noreplace(backup, stage->target) != 0)
+                printf("Changed destination remains at recovery path: %s\n", backup);
+            return BP_ERR_PARTIAL;
+        }
+        if (stage->preserve_target_attributes &&
+            (atari_gui_get_attr(backup, &current_attributes) != 0 ||
+             current_attributes != stage->target_attributes)) {
+            if (atari_gui_rename_noreplace(backup, stage->target) != 0)
+                printf("Changed archive remains at recovery path: %s\n", backup);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    if (atari_gui_rename_noreplace(stage->temporary, stage->target) != 0) {
+        if (backup_moved && atari_gui_rename_noreplace(backup, stage->target) != 0)
+            printf("Original file remains at recovery path: %s\n", backup);
+        return BP_ERR_IO;
+    }
+    stage->temporary[0] = '\0';
+    stage->committed = 1;
+    if (backup_moved && unlink(backup) != 0) {
+        printf("Cannot remove replaced-file backup: %s\n", backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static int open_archive_stage(const char *target,
+                              atari_gui_staged_output_t *stage,
+                              FILE **stream)
+{
+    struct stat st;
+    int fd;
+    memset(stage, 0, sizeof(*stage));
+    stage->fd = -1;
+    *stream = NULL;
+    if (strlen(target) > BP_ATARI_GEMDOS_PATH_MAX ||
+        strlen(target) >= sizeof(stage->target) ||
+        atari_gui_sibling_name(target, "BPXXXXXX", stage->temporary,
+                               sizeof(stage->temporary)) != 0)
+        return BP_ERR_NAME_TOO_LONG;
+    strcpy(stage->target, target);
+    if (lstat(target, &st) == 0) {
+        if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) return BP_ERR_IO;
+        if (atari_gui_get_attr(target, &stage->target_attributes) != 0 ||
+            (stage->target_attributes & FA_RDONLY) != 0) return BP_ERR_IO;
+        stage->target_existed = 1;
+        stage->preserve_target_attributes = 1;
+        stage->target_snapshot = st;
+    } else if (errno != ENOENT) {
+        return BP_ERR_IO;
+    }
+    fd = mkstemp(stage->temporary);
+    if (fd < 0) return BP_ERR_IO;
+    stage->fd = fd;
+    *stream = fdopen(fd, "w+b");
+    if (*stream == NULL) {
+        discard_staged_output(stage);
+        return BP_ERR_IO;
+    }
+    return BP_OK;
+}
+
+static int finish_archive_stage(FILE **stream,
+                                atari_gui_staged_output_t *stage)
+{
+    int rc = BP_OK;
+    if (fflush(*stream) != 0) rc = BP_ERR_IO;
+    if (fclose(*stream) != 0) rc = BP_ERR_IO;
+    *stream = NULL;
+    stage->fd = -1;
+    if (rc == BP_OK && stage->preserve_target_attributes &&
+        atari_gui_apply_attr(stage->temporary,
+                             (unsigned char)(BP_META_FAT_MASK & ~FA_RDONLY),
+                             stage->target_attributes) != 0)
+        rc = BP_ERR_IO;
+    if (rc == BP_OK) rc = commit_staged_output(stage);
+    if (rc != BP_OK) discard_staged_output(stage);
+    return rc;
+}
+
+static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    char local[BP_MAX_PATH], full[BP_MAX_PATH];
+    struct stat st;
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->subject_ok = 0;
+        ctx->subject_type = entry->entry_type;
+        ctx->subject_native_seen = 0;
+        ctx->subject_directory = NULL;
+        ctx->subject[0] = '\0';
+    }
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), BP_CP_ATARIST) != 0 ||
+        atari_gui_build_path(ctx->dest_dir, local, full, sizeof(full)) != 0) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_META) {
+        atari_gui_meta_output_t *meta;
+        if (entry->platform != BP_OS_ATARI && entry->platform != BP_META_PORTABLE) {
+            ctx->partial = 1;
+            return NULL;
+        }
+        if (!ctx->subject_ok || strcmp(ctx->subject, entry->name) != 0) {
+            ctx->partial = 1;
+            return NULL;
+        }
+        if (entry->original_size.hi != 0 ||
+            entry->original_size.lo > BP_META_MAX_SIZE ||
+            (entry->platform == BP_OS_ATARI && entry->original_size.lo != 1)) {
+            ctx->invalid_entry = 1;
+            ctx->subject_ok = 0;
+            return NULL;
+        }
+        meta = (atari_gui_meta_output_t *)calloc(1, sizeof(*meta));
+        if (meta == NULL) { ctx->partial = 1; return NULL; }
+        meta->io.read = meta_output_read;
+        meta->io.write = meta_output_write;
+        meta->io.seek = meta_output_seek;
+        meta->io.tell = meta_output_tell;
+        meta->io.handle = meta;
+        return &meta->io;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_DIR) {
+        atari_gui_dir_restore_t *directory;
+        if (!bp_u64_is_zero(entry->original_size) ||
+            !bp_u64_is_zero(entry->compressed_size) || entry->checksum != 0) {
+            ctx->invalid_entry = 1;
+            return NULL;
+        }
+        if (strlen(entry->name) >= sizeof(ctx->subject) ||
+            makedirs_checked(full) != 0 || lstat(full, &st) != 0 ||
+            !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+            ctx->partial = 1;
+            return NULL;
+        }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial = 1;
+        directory = queue_directory_restore(ctx, full, entry);
+        if (directory == NULL) { ctx->partial = 1; return NULL; }
+        strcpy(ctx->subject, entry->name);
+        ctx->subject_ok = 1;
+        ctx->subject_directory = directory;
+        return NULL;
+    }
+    if (entry->entry_type != BP_TYPE_DATA ||
+        strlen(entry->name) >= sizeof(ctx->subject) ||
+        atari_gui_make_parents(full) != 0) {
+        ctx->partial = 1;
+        return NULL;
+    }
+    {
+        atari_gui_staged_output_t *stage;
+        int fd;
+        stage = (atari_gui_staged_output_t *)calloc(1, sizeof(*stage));
+        if (stage == NULL) { ctx->partial = 1; return NULL; }
+        stage->fd = -1;
+        strcpy(stage->target, full);
+        if (lstat(full, &st) == 0) {
+            if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+                free(stage);
+                ctx->partial = 1;
+                return NULL;
+            }
+            stage->target_existed = 1;
+            stage->target_snapshot = st;
+        } else if (errno != ENOENT) {
+            free(stage);
+            ctx->partial = 1;
+            return NULL;
+        }
+        if (atari_gui_sibling_name(full, "BPXXXXXX", stage->temporary,
+                                   sizeof(stage->temporary)) != 0 ||
+            (fd = mkstemp(stage->temporary)) < 0) {
+            free(stage);
+            ctx->partial = 1;
+            return NULL;
+        }
+        stage->fd = fd;
+        strcpy(ctx->subject, entry->name);
+        stage->io.read = NULL;
+        stage->io.write = staged_output_write;
+        stage->io.seek = NULL;
+        stage->io.tell = NULL;
+        stage->io.handle = stage;
+        return &stage->io;
+    }
+}
+
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    if (entry->entry_type == BP_TYPE_META) {
+        atari_gui_meta_output_t *meta = (atari_gui_meta_output_t *)out->handle;
+        char local[BP_MAX_PATH], full[BP_MAX_PATH];
+        if (status != BP_OK) { free(meta); return BP_OK; }
+        if (entry->platform == BP_OS_ATARI) {
+            unsigned char attr;
+            if (meta->length != 1) { free(meta); return BP_ERR_CORRUPT; }
+            if ((meta->data[0] & (unsigned char)~BP_META_FAT_MASK) != 0) {
+                free(meta);
+                return BP_ERR_CORRUPT;
+            }
+            attr = (unsigned char)(meta->data[0] & BP_META_FAT_MASK);
+            ctx->subject_native_seen = 1;
+            if (ctx->subject_directory != NULL) {
+                ctx->subject_directory->native_seen = 1;
+                ctx->subject_directory->native_attr = attr;
+            } else if (bp_utf8_to_local(entry->name, local, sizeof(local),
+                                        BP_CP_ATARIST) != 0 ||
+                       atari_gui_build_path(ctx->dest_dir, local, full,
+                                            sizeof(full)) != 0 ||
+                       atari_gui_apply_attr(full, BP_META_FAT_MASK, attr) != 0) {
+                ctx->partial = 1;
+            }
+        } else if (entry->platform == BP_META_PORTABLE) {
+            bp_portable_metadata_t parsed;
+            int parse_rc = bp_metadata_parse(meta->data, meta->length, &parsed);
+            if (parse_rc == BP_ERR_CORRUPT) { free(meta); return parse_rc; }
+            if (parse_rc == BP_ERR_PARTIAL) ctx->partial = 1;
+            if (parsed.has_fat && !ctx->subject_native_seen) {
+                if (ctx->subject_directory != NULL) {
+                    ctx->subject_directory->fat_seen = 1;
+                    ctx->subject_directory->fat_valid = parsed.fat_valid;
+                    ctx->subject_directory->fat_value = parsed.fat_value;
+                } else if (bp_utf8_to_local(entry->name, local, sizeof(local),
+                                            BP_CP_ATARIST) != 0 ||
+                           atari_gui_build_path(ctx->dest_dir, local, full,
+                                                sizeof(full)) != 0 ||
+                           (parsed.fat_valid != 0 &&
+                            atari_gui_apply_attr(full, parsed.fat_valid,
+                                                 parsed.fat_value) != 0)) {
+                    ctx->partial = 1;
+                }
+            }
+        }
+        free(meta);
+        return ctx->partial ? BP_ERR_PARTIAL : BP_OK;
+    }
+    {
+        atari_gui_staged_output_t *stage =
+            (atari_gui_staged_output_t *)out->handle;
+        int close_rc = close(stage->fd);
+        int rc;
+        stage->fd = -1;
+        if (close_rc != 0) {
+            discard_staged_output(stage);
+            free(stage);
+            ctx->subject_ok = 0;
+            ctx->partial = 1;
+            return status == BP_OK ? BP_ERR_IO : BP_OK;
+        }
+        if (status != BP_OK) {
+            discard_staged_output(stage);
+            free(stage);
+            ctx->subject_ok = 0;
+            return BP_OK;
+        }
+        if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+            if (bp_restore_mtime(stage->temporary, entry->mtime) != BP_OK)
+                ctx->partial = 1;
+        }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial = 1;
+        rc = commit_staged_output(stage);
+        if (rc != BP_OK) {
+            discard_staged_output(stage);
+            free(stage);
+            ctx->subject_ok = 0;
+            ctx->partial = 1;
+            return rc;
+        }
+        ctx->subject_ok = 1;
+        ctx->subject_type = BP_TYPE_DATA;
+        ctx->subject_native_seen = 0;
+        free(stage);
+        return BP_OK;
+    }
+}
+
+static int extract_progress_cb(const bp_progress_t *p, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    return update_progress_ui(p, &ctx->progress);
+}
+
+static void do_extract(void)
+{
+    char path[BP_MAX_PATH];
+    char fname[128];
+    char selected[BP_MAX_PATH];
+    short button;
+    bp_io_t io;
+    extract_ctx_t ctx;
+    atari_gui_name_index_t *index;
+    struct stat dest_stat;
+    const char *preflight_error;
+    int rc;
+
+    if (!archive_fp) {
+        show_alert("No archive is open");
+        return;
+    }
+
+    {
+        const char *sep;
+        sep = strrchr(archive_path, '\\');
+        if (!sep) sep = strrchr(archive_path, '/');
+        if (sep && (sep - archive_path + 1) < (int)sizeof(path)) {
+            int dlen = (int)(sep - archive_path + 1);
+            strncpy(path, archive_path, (size_t)dlen);
+            path[dlen] = '\0';
+            strncat(path, "*.*", sizeof(path) - (size_t)dlen - 1);
+        } else {
+            strcpy(path, "A:\\*.*");
+        }
+    }
+    fname[0] = '\0';
+    fsel_exinput(path, fname, &button, "Select destination folder");
+    restore_main_window_after_dialog();
+    if (button == 0) return;
+
+    selector_build_path(path, fname, selected);
+    memset(&ctx, 0, sizeof(ctx));
+    {
+        struct stat st;
+        if (stat(selected, &st) == 0 && S_ISDIR(st.st_mode)) {
+            strncpy(ctx.dest_dir, selected, sizeof(ctx.dest_dir) - 1);
+            ctx.dest_dir[sizeof(ctx.dest_dir) - 1] = '\0';
+        } else {
+            selector_dir_from_pattern(path, ctx.dest_dir);
+        }
+    }
+    if (lstat(ctx.dest_dir, &dest_stat) != 0 || !S_ISDIR(dest_stat.st_mode) ||
+        S_ISLNK(dest_stat.st_mode)) {
+        show_alert("Destination must be a real directory");
+        return;
+    }
+
+    index = (atari_gui_name_index_t *)calloc(1, sizeof(*index));
+    if (index == NULL) {
+        show_alert("Not enough memory to check archive names");
+        return;
+    }
+    index->dest_dir = ctx.dest_dir;
+    if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+        free(index);
+        show_alert("Cannot seek in archive");
+        return;
+    }
+    io = make_io(archive_fp);
+    rc = bp_archive_list(&io, atari_gui_preflight_name, index);
+    preflight_error = index->error;
+    atari_gui_name_index_clear(index);
+    free(index);
+    if (rc != BP_OK) {
+        show_alert(preflight_error != NULL ? preflight_error :
+                   "Cannot validate archive names");
+        return;
+    }
+    if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+        show_alert("Cannot rewind archive after name checks");
+        return;
+    }
+
+    start_progress_ui(&ctx.progress, "Extracting archive", NULL,
+                      u64_to_dbl(archive_info.total_original),
+                      (unsigned long)(archive_info.entry_count - archive_info.dir_count));
+    graf_mouse(BUSYBEE, NULL);
+    io = make_io(archive_fp);
+    rc = bp_archive_extract_all_ex(&io, extract_open_cb, extract_done_cb,
+                                   extract_progress_cb, &ctx);
+    finish_directory_restores(&ctx);
+    if (ctx.invalid_entry && (rc == BP_OK || rc == BP_ERR_PARTIAL))
+        rc = BP_ERR_CORRUPT;
+    else if (rc == BP_OK && ctx.partial)
+        rc = BP_ERR_PARTIAL;
+    graf_mouse(ARROW, NULL);
+    stop_progress_ui(&ctx.progress);
+
+    if (rc == BP_ERR_PARTIAL)
+        show_alert("Partial extraction: some data or attributes were not restored");
+    else if (rc != BP_OK && rc != BP_ERR_ABORTED)
+        show_alert("Extraction failed; incomplete files were not published");
+}
+
+/* ---- Validate and archive information ---- */
 struct atari_test_ctx {
     int ok_count;
     int fail_count;
@@ -1327,166 +2289,7 @@ static void do_info(void)
     form_alert(1, msg);
 }
 
-/* ---- Extract ---- */
-
-typedef struct {
-    char dest_dir[BP_MAX_PATH];
-    int cancelled;
-    atari_progress_ui_t progress;
-} extract_ctx_t;
-
-static void makedirs(const char *path)
-{
-    char tmp[BP_MAX_PATH];
-    char *p;
-    strncpy(tmp, path, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '\\' || *p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '\\';
-        }
-    }
-    mkdir(tmp, 0755);
-}
-
-static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
-{
-    extract_ctx_t *ctx = (extract_ctx_t *)ud;
-    char full[BP_MAX_PATH];
-    char *sl;
-    FILE *fp;
-    bp_io_t *out;
-
-    if (!entry->name) return NULL;
-    if (!bp_name_is_safe(entry->name)) return NULL;
-    if (entry->entry_type == BP_TYPE_RSRC ||
-        entry->entry_type == BP_TYPE_META)
-        return NULL;
-
-    if (strlen(ctx->dest_dir) + strlen(entry->name) + 2 >= sizeof(full))
-        return NULL;
-    snprintf(full, sizeof(full), "%s\\%s", ctx->dest_dir, entry->name);
-    /* Convert forward slashes to backslash for TOS */
-    {
-        char *c;
-        for (c = full; *c; c++)
-            if (*c == '/') *c = '\\';
-    }
-
-    /* Path traversal check */
-    if (strstr(full, "\\..\\") != NULL) return NULL;
-
-    if (entry->entry_type == BP_TYPE_DIR) {
-        makedirs(full);
-        return NULL;
-    }
-
-    sl = strrchr(full, '\\');
-    if (sl) {
-        char dir[BP_MAX_PATH];
-        memcpy(dir, full, (size_t)(sl - full));
-        dir[sl - full] = '\0';
-        makedirs(dir);
-    }
-
-    fp = fopen(full, "wb");
-    if (!fp) return NULL;
-
-    out = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!out) { fclose(fp); return NULL; }
-    *out = make_io(fp);
-    return out;
-}
-
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out,
-                             void *ud)
-{
-    (void)entry; (void)ud;
-    if (out) {
-        if (out->handle) fclose((FILE *)out->handle);
-        free(out);
-    }
-}
-
-static int extract_progress_cb(const bp_progress_t *p, void *ud)
-{
-    extract_ctx_t *ctx = (extract_ctx_t *)ud;
-    return update_progress_ui(p, &ctx->progress);
-}
-
-static void do_extract(void)
-{
-    char path[BP_MAX_PATH];
-    char fname[128];
-    char selected[BP_MAX_PATH];
-    short button;
-    bp_io_t io;
-    extract_ctx_t ctx;
-    int rc;
-
-    if (!archive_fp) {
-        show_alert("No archive is open");
-        return;
-    }
-
-    /* Start the folder selector in the archive's own directory */
-    {
-        const char *sep;
-        sep = strrchr(archive_path, '\\');
-        if (!sep) sep = strrchr(archive_path, '/');
-        if (sep && (sep - archive_path + 1) < (int)sizeof(path)) {
-            int dlen = (int)(sep - archive_path + 1);
-            strncpy(path, archive_path, (size_t)dlen);
-            path[dlen] = '\0';
-            strncat(path, "*.*", sizeof(path) - (size_t)dlen - 1);
-        } else {
-            strcpy(path, "A:\\*.*");
-        }
-    }
-    fname[0] = '\0';
-    fsel_exinput(path, fname, &button, "Select destination folder");
-    restore_main_window_after_dialog();
-    if (button == 0) return;
-
-    selector_build_path(path, fname, selected);
-
-    /* Use selected directory if one was picked, otherwise the current folder. */
-    {
-        struct stat st;
-
-        if (stat(selected, &st) == 0 && S_ISDIR(st.st_mode)) {
-            strncpy(ctx.dest_dir, selected, sizeof(ctx.dest_dir) - 1);
-            ctx.dest_dir[sizeof(ctx.dest_dir) - 1] = '\0';
-        } else {
-            selector_dir_from_pattern(path, ctx.dest_dir);
-        }
-    }
-    ctx.cancelled = 0;
-
-    start_progress_ui(&ctx.progress, "Extracting archive", NULL,
-                      u64_to_dbl(archive_info.total_original),
-                      (unsigned long)(archive_info.entry_count - archive_info.dir_count));
-
-    graf_mouse(BUSYBEE, NULL);
-
-    fseek(archive_fp, 0L, SEEK_SET);
-    io = make_io(archive_fp);
-
-    rc = bp_archive_extract_all(&io,
-        extract_open_cb, extract_done_cb,
-        extract_progress_cb, &ctx);
-
-    graf_mouse(ARROW, NULL);
-    stop_progress_ui(&ctx.progress);
-
-    if (rc != BP_OK && rc != BP_ERR_ABORTED)
-        show_alert("Extraction error");
-}
-
 /* ---- Create ---- */
-
 static int gather_dir(const char *dir)
 {
     DIR *dp;
@@ -1494,16 +2297,37 @@ static int gather_dir(const char *dir)
     int add_rc;
 
     dp = opendir(dir);
-    if (!dp) return 0;
+    if (!dp) {
+        gather_skipped_sources++;
+        return 0;
+    }
+    add_rc = add_gather_directory(dir);
+    if (add_rc != 0) {
+        closedir(dp);
+        return add_rc;
+    }
 
     while ((de = readdir(dp)) != NULL) {
         char full[BP_MAX_PATH];
         struct stat st;
 
-        if (de->d_name[0] == '.') continue;
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        if (strlen(dir) + strlen(de->d_name) + 2 >= sizeof(full)) {
+            gather_skipped_sources++;
+            continue;
+        }
         sprintf(full, "%s\\%s", dir, de->d_name);
 
-        if (stat(full, &st) != 0) continue;
+        if (lstat(full, &st) != 0) {
+            gather_skipped_sources++;
+            continue;
+        }
+
+        if (S_ISLNK(st.st_mode)) {
+            gather_skipped_sources++;
+            continue;
+        }
 
         if (S_ISDIR(st.st_mode)) {
             add_rc = gather_dir(full);
@@ -1511,13 +2335,13 @@ static int gather_dir(const char *dir)
                 closedir(dp);
                 return add_rc;
             }
-        } else {
+        } else if (S_ISREG(st.st_mode)) {
             add_rc = add_gather_file(full);
             if (add_rc != 0) {
                 closedir(dp);
                 return add_rc;
             }
-        }
+        } else gather_skipped_sources++;
     }
     closedir(dp);
     return 0;
@@ -1532,12 +2356,98 @@ static double gathered_total_bytes(void)
     for (i = 0; i < gather_count; i++) {
         struct stat st;
 
-        if (stat(gather_files[i], &st) != 0)
+        if (gather_is_directory[i]) continue;
+        if (lstat(gather_files[i], &st) != 0 || !S_ISREG(st.st_mode))
             continue;
         total += (double)st.st_size;
     }
 
     return total;
+}
+
+static int atari_gui_is_separator(char c)
+{
+    return c == '/' || c == '\\';
+}
+
+static int atari_gui_path_char_equal(char a, char b)
+{
+    if (atari_gui_is_separator(a) && atari_gui_is_separator(b)) return 1;
+    if (a >= 'a' && a <= 'z') a = (char)(a - ('a' - 'A'));
+    if (b >= 'a' && b <= 'z') b = (char)(b - ('a' - 'A'));
+    return a == b;
+}
+
+static int atari_gui_parent_path(const char *path, char *parent,
+                                 size_t capacity)
+{
+    char *slash, *backslash;
+    size_t len;
+    if (strlen(path) >= capacity) return -1;
+    strcpy(parent, path);
+    slash = strrchr(parent, '/');
+    backslash = strrchr(parent, '\\');
+    if (backslash != NULL && (slash == NULL || backslash > slash)) slash = backslash;
+    if (slash == NULL) {
+        parent[0] = '\0';
+        return 0;
+    }
+    if (slash == parent) {
+        parent[1] = '\0';
+        return 0;
+    }
+    if (slash > parent && slash[-1] == ':') {
+        slash[1] = '\0';
+        return 0;
+    }
+    *slash = '\0';
+    len = strlen(parent);
+    while (len > 1 && atari_gui_is_separator(parent[len - 1]) &&
+           !(len == 3 && parent[1] == ':' &&
+             atari_gui_is_separator(parent[2])))
+        parent[--len] = '\0';
+    return 0;
+}
+
+static void atari_gui_merge_parent(char *base, const char *parent)
+{
+    size_t i = 0, base_len = strlen(base), parent_len = strlen(parent), end;
+    while (i < base_len && i < parent_len &&
+           atari_gui_path_char_equal(base[i], parent[i])) i++;
+    if (i == base_len && (i == parent_len ||
+        (i > 0 && atari_gui_is_separator(base[i - 1])) ||
+        atari_gui_is_separator(parent[i]))) return;
+    if (i == parent_len && atari_gui_is_separator(base[i])) {
+        strcpy(base, parent);
+        return;
+    }
+    end = i;
+    while (end > 0 && !atari_gui_is_separator(base[end - 1])) end--;
+    if (end == 0) {
+        base[0] = '\0';
+    } else if (end == 1 && atari_gui_is_separator(base[0])) {
+        base[1] = '\0';
+    } else if (end == 3 && base[1] == ':' &&
+               atari_gui_is_separator(base[2])) {
+        base[3] = '\0';
+    } else {
+        base[end - 1] = '\0';
+    }
+}
+
+static const char *atari_gui_relative_path(const char *path,
+                                           const char *base)
+{
+    size_t i, len = strlen(base);
+    if (len == 0) return path;
+    for (i = 0; i < len; i++) {
+        if (path[i] == '\0' || !atari_gui_path_char_equal(path[i], base[i]))
+            return path;
+    }
+    if (atari_gui_is_separator(base[len - 1])) return path + len;
+    if (atari_gui_is_separator(path[len])) return path + len + 1;
+    if (path[len] == '\0') return path + len;
+    return path;
 }
 
 static void do_create_from_paths(char **paths, int path_count)
@@ -1551,33 +2461,54 @@ static void do_create_from_paths(char **paths, int path_count)
     FILE *outfp;
     bp_io_t outio;
     bp_archive_t ar;
+    atari_gui_staged_output_t archive_stage;
+    atari_gui_name_index_t *source_names;
     int gather_rc;
+    int preservation_partial;
+    int archive_published;
+    int base_initialized;
+    const char *create_error;
     int rc, i;
 
     free_gather_files();
     base_dir[0] = '\0';
+    base_initialized = 0;
     gather_rc = 0;
 
     for (i = 0; i < path_count; i++) {
         struct stat st;
-
-        if (stat(paths[i], &st) != 0)
+        char parent[BP_MAX_PATH];
+        if (lstat(paths[i], &st) != 0 || S_ISLNK(st.st_mode) ||
+            atari_gui_parent_path(paths[i], parent, sizeof(parent)) != 0)
             continue;
+        if (!base_initialized) {
+            strcpy(base_dir, parent);
+            base_initialized = 1;
+        }
+        else atari_gui_merge_parent(base_dir, parent);
+    }
 
-        if (base_dir[0] == '\0') {
-            char *sl;
+    for (i = 0; i < path_count; i++) {
+        struct stat st;
 
-            strncpy(base_dir, paths[i], sizeof(base_dir) - 1);
-            base_dir[sizeof(base_dir) - 1] = '\0';
-            sl = strrchr(base_dir, '\\');
-            if (sl)
-                *sl = '\0';
+        if (lstat(paths[i], &st) != 0) {
+            gather_skipped_sources++;
+            continue;
+        }
+
+        if (S_ISLNK(st.st_mode)) {
+            gather_skipped_sources++;
+            continue;
         }
 
         if (S_ISDIR(st.st_mode))
             gather_rc = gather_dir(paths[i]);
-        else
+        else if (S_ISREG(st.st_mode))
             gather_rc = add_gather_file(paths[i]);
+        else {
+            gather_skipped_sources++;
+            continue;
+        }
 
         if (gather_rc != 0)
             break;
@@ -1596,7 +2527,9 @@ static void do_create_from_paths(char **paths, int path_count)
     }
 
     if (gather_count == 0) {
-        show_alert("No files to archive");
+        show_alert(gather_skipped_sources != 0
+                   ? "No supported regular files were selected"
+                   : "No files to archive");
         free_gather_files();
         return;
     }
@@ -1619,12 +2552,26 @@ static void do_create_from_paths(char **paths, int path_count)
 
     {
         char *sl = strrchr(out_path, '\\');
-        if (sl) *(sl + 1) = '\0';
-        strcat(out_path, out_fname);
+        char *slash = strrchr(out_path, '/');
+        size_t base_len;
+        if (slash != NULL && (sl == NULL || slash > sl)) sl = slash;
+        if (sl == NULL) {
+            show_alert("Cannot determine archive output folder");
+            free_gather_files();
+            return;
+        }
+        sl[1] = '\0';
+        base_len = strlen(out_path);
+        if (base_len + strlen(out_fname) + 1 > sizeof(out_path)) {
+            show_alert("Archive path is too long");
+            free_gather_files();
+            return;
+        }
+        strcpy(out_path + base_len, out_fname);
     }
 
-    outfp = fopen(out_path, "wb");
-    if (!outfp) {
+    rc = open_archive_stage(out_path, &archive_stage, &outfp);
+    if (rc != BP_OK) {
         show_alert("Cannot create file");
         free_gather_files();
         return;
@@ -1639,7 +2586,11 @@ static void do_create_from_paths(char **paths, int path_count)
     memset(&ar, 0, sizeof(ar));
     rc = bp_archive_create(&ar, &outio, 0, current_method);
     if (rc != BP_OK) {
-        fclose(outfp);
+        bp_archive_close(&ar);
+        (void)fclose(outfp);
+        outfp = NULL;
+        archive_stage.fd = -1;
+        discard_staged_output(&archive_stage);
         graf_mouse(ARROW, NULL);
         stop_progress_ui(&progress);
         free_gather_files();
@@ -1648,58 +2599,159 @@ static void do_create_from_paths(char **paths, int path_count)
     }
     ar.progress_fn = update_progress_ui;
     ar.progress_data = &progress;
+    preservation_partial = gather_skipped_sources != 0;
+    archive_published = 0;
+    create_error = NULL;
+    source_names = (atari_gui_name_index_t *)calloc(1, sizeof(*source_names));
+    if (source_names == NULL) {
+        create_error = "Not enough memory for Atari name checks";
+        rc = BP_ERR_NOMEM;
+    }
 
-    for (i = 0; i < gather_count; i++) {
+    for (i = 0; rc == BP_OK && i < gather_count; i++) {
         char *rel;
+        char archive_name[BP_MAX_PATH];
         struct stat st;
         bp_uint64 fsize, mtime;
+        bp_uint16 mtime_flags;
+        bp_uint8 subject_type;
+        int metadata_captured;
+        int name_rc;
         FILE *fp;
         bp_io_t fio;
+        int is_directory;
 
-        rel = gather_files[i];
-        if (base_dir[0] != '\0' &&
-            strncmp(rel, base_dir, strlen(base_dir)) == 0)
-            rel += strlen(base_dir) + 1;
+        rel = (char *)atari_gui_relative_path(gather_files[i], base_dir);
+        is_directory = gather_is_directory[i] != 0;
+        subject_type = is_directory ? BP_TYPE_DIR : BP_TYPE_DATA;
 
         /* Convert backslash to forward slash */
         {
             char *c;
             char relcopy[BP_MAX_PATH];
+            size_t rel_len;
+            int index_rc;
             strncpy(relcopy, rel, sizeof(relcopy) - 1);
             relcopy[sizeof(relcopy) - 1] = '\0';
             for (c = relcopy; *c; c++)
                 if (*c == '\\') *c = '/';
+            rel_len = strlen(relcopy);
+            if (is_directory && (rel_len == 0 || relcopy[rel_len - 1] != '/')) {
+                if (rel_len + 1 >= sizeof(relcopy)) {
+                    create_error = "A directory name is too long";
+                    rc = BP_ERR_NAME_TOO_LONG;
+                    break;
+                }
+                relcopy[rel_len++] = '/';
+                relcopy[rel_len] = '\0';
+            }
 
-            if (stat(gather_files[i], &st) != 0) continue;
-            fsize = bp_off_to_u64((bp_off_t)st.st_size);
-            mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+            if (bp_local_to_utf8(relcopy, archive_name, sizeof(archive_name),
+                                 BP_CP_ATARIST) != 0) {
+                create_error = "A selected filename cannot be converted to UTF-8";
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+            source_names->error = NULL;
+            index_rc = atari_gui_index_projected_name(source_names,
+                                                      relcopy, is_directory);
+            name_rc = index_rc;
+            if (name_rc != BP_OK) {
+                create_error = source_names->error != NULL
+                             ? source_names->error
+                             : "A name is outside Atari's 8.3 profile";
+                rc = name_rc;
+                break;
+            }
 
-            fp = fopen(gather_files[i], "rb");
-            if (!fp) continue;
-            fio = make_io(fp);
+            if (lstat(gather_files[i], &st) != 0 ||
+                (is_directory ? !S_ISDIR(st.st_mode) : !S_ISREG(st.st_mode))) {
+                rc = BP_ERR_IO;
+                break;
+            }
+            if (!is_directory &&
+                (st.st_size < 0 || (off_t)(bp_off_t)st.st_size != st.st_size)) {
+                create_error = "A source file exceeds Atari's archive size range";
+                rc = BP_ERR_OVERFLOW;
+                break;
+            }
+            fsize = is_directory ? bp_u64_from_u32(0)
+                                 : bp_off_to_u64((bp_off_t)st.st_size);
+            atari_gui_stat_mtime(st.st_mtime, &mtime, &mtime_flags);
+            if (mtime_flags == 0 && st.st_mtime != (time_t)0) {
+                printf("Source time not representable; storing unknown: %s\n",
+                       gather_files[i]);
+                preservation_partial = 1;
+            }
 
-            rc = bp_archive_add_entry(&ar, relcopy,
-                BP_TYPE_DATA, BP_OS_ATARI,
-                &fio, fsize, mtime);
-            fclose(fp);
+            if (is_directory) {
+                rc = bp_archive_add_entry_ex(&ar, archive_name, BP_TYPE_DIR,
+                                             BP_OS_ATARI, NULL,
+                                             bp_u64_from_u32(0), mtime,
+                                             mtime_flags);
+            } else {
+                fp = fopen(gather_files[i], "rb");
+                if (!fp) {
+                    rc = BP_ERR_IO;
+                    break;
+                }
+                fio = make_io(fp);
+                rc = bp_archive_add_entry_ex(&ar, archive_name,
+                    BP_TYPE_DATA, BP_OS_ATARI, &fio, fsize, mtime, mtime_flags);
+                if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+            }
+            if (rc == BP_OK) {
+                rc = atari_gui_add_entry_metadata(&ar, archive_name,
+                                                  gather_files[i], subject_type,
+                                                  &metadata_captured);
+                if (rc == BP_OK && !metadata_captured) {
+                    printf("Could not read Atari attributes: %s\n",
+                           gather_files[i]);
+                    preservation_partial = 1;
+                }
+            }
         }
 
         if (rc != BP_OK) break;
     }
 
+    if (source_names != NULL) {
+        atari_gui_name_index_clear(source_names);
+        free(source_names);
+    }
+
     if (rc == BP_OK)
         rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(outfp);
+    if (rc == BP_OK) {
+        rc = finish_archive_stage(&outfp, &archive_stage);
+        archive_published = archive_stage.committed;
+    } else {
+        if (outfp != NULL) {
+            (void)fclose(outfp);
+            outfp = NULL;
+            archive_stage.fd = -1;
+        }
+        discard_staged_output(&archive_stage);
+    }
 
     graf_mouse(ARROW, NULL);
     stop_progress_ui(&progress);
     free_gather_files();
 
     if (rc != BP_OK) {
-        show_alert("Create failed");
+        if (rc == BP_ERR_PARTIAL && archive_published) {
+            show_alert("Archive created, but its replacement backup needs attention");
+            do_open(out_path);
+        } else {
+            show_alert(create_error != NULL ? create_error :
+                       "Create failed; the existing archive was preserved");
+        }
         return;
     }
+
+    if (preservation_partial)
+        show_alert("Archive created, but some source attributes or times were not saved");
 
     do_open(out_path);
 }
