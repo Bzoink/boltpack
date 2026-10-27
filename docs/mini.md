@@ -279,11 +279,13 @@ CP/M Plus 3.0. Files are addressed by drive letter (`A:`) and user number
 - **Create (`c`):** accepts individual filenames on the command line only — no
   directory recursion is possible (no `findfirst`/directory API). The archive
   path stored for each file is the basename only (no directory prefix).
-- **Extract (`x`):** strips all directory components from the stored path,
-  truncates the name part to 8 characters and the extension to 3, converts to
-  uppercase, and writes the result to the current drive/user area. Warns on
-  name collision. `BP_TYPE_DIR` and `BP_TYPE_SYMLINK` entries are silently
-  skipped.
+- **Name policy:** accepts only flat CP/M 8.3 names. It refuses overlong
+  names, unsupported characters, case-folded collisions, and an archive name
+  that aliases one of its source names before opening the output. It also
+  refuses to overwrite an existing archive.
+- **Extract (`x`):** creates only exact uppercase 8.3 names. It refuses to
+  truncate or flatten paths; directories, noncanonical names, duplicate
+  projections, and existing destinations are reported as partial extraction.
 - **mtime:** CP/M-86 has no standard file timestamp API; mtime is not set on
   extraction and not read on creation (stored as zero).
 - **Executable format:** `.CMD` (CP/M-86 segmented command format), not `.COM`.
@@ -553,17 +555,18 @@ strip boltlz from `src/core/mini/compress.c` cleanly. The mini layer already
 isolates boltlz behind `bp_mini_compress_block`, so the removal is a
 localised change.
 
-### CP/M-86 Filename Collisions on Extract
+### CP/M-86 Filename Projection
 
-When a multi-level archive is extracted to CP/M-86, multiple entries can map to
-the same 8.3 basename (e.g. `src/core/main.c` and `src/frontend/main.c` both
-become `MAIN.C`). The CP/M-86 frontend must detect this and print a warning
-naming the collision before skipping the duplicate. Overwriting silently would
-corrupt data with no way to recover on a flat filesystem.
+The CP/M-86 frontend now refuses lossy 8.3 projections during creation and
+extraction. A host-run C89 fixture covers create/list/extract, truncation and
+case-folded collision refusal, archive/source alias refusal, and preservation
+of an existing archive. No CP/M-86 compiler or runtime is currently available,
+so target filesystem behavior remains unqualified. See the
+[interoperability matrix](interoperability-matrix.md).
 
 ### OS/2 1.x Long Filenames
 
-HPFS on OS/2 supports filenames longer than 8.3. The archive format stores the
-full UTF-8 name. The OS/2 1.x frontend should attempt to create the full name
-and fall back to a truncated 8.3 name (with a warning) only when the target
-volume is FAT.
+HPFS on OS/2 supports filenames longer than 8.3. FAT destinations cannot
+represent every archive path; the OS/2 1.x frontend must apply its documented
+path policy and report names it cannot create. It must not silently truncate
+names or merge projected collisions.

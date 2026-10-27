@@ -102,9 +102,11 @@ commits use the same open parent handle. Deterministic tests cover the Linux
 implementation's parent substitution, concurrent destination creation, and
 write failure. Other frontends still need equivalent protection. A process
 able to rename an already opened directory outside the extraction tree is a
-separate concurrent-mutation limitation. The checked-in
-classic Mac 68k core copies now match the format-6 core. The evidence and phased tasks below describe
-the original format-5 review, not a claim that each issue is still unchanged.
+separate concurrent-mutation limitation. The checked-in classic Mac 68k core
+copies now match the format-6 core. Some findings below originated in the
+format-5 review; the phase descriptions and acceptance criteria track the
+current format-6 work. Use the interoperability matrix for the latest
+per-frontend evidence and remaining qualification limits.
 
 Full Atari and OS/2 extraction limit native metadata application to the
 matching successfully extracted subject and use status-aware cleanup. Both
@@ -199,10 +201,12 @@ file identity before publication. Native target metadata is delegated to
 Windows replacement behavior and still needs runtime verification. A native
 Windows smoke script covers append/delete integrity, hidden attributes, and
 conditional hard-link/reparse-point refusal fixtures, but has not run here.
-OS/2 CLI
-append still uses a bounded tail backup and in-place update, so interruption
-or power loss can damage the only archive copy. Atari append uses a sibling
-stage.
+The OS/2 CLI now copies the original archive to a unique sibling stage and
+appends there; handled failures leave the original untouched. Publication uses
+a recovery rename, so interruption between the backup and publish renames can
+leave the original at its recovery name. The Watcom cross-build passes, but
+runtime and interruption tests remain unavailable. Atari append also uses a
+sibling stage.
 Total Commander WCX append copies the original to an exclusive sibling stage,
 finalizes the updated archive there, and atomically replaces the original only
 after successful close. WCX deletion also writes an exclusive sibling stage
