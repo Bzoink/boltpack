@@ -171,9 +171,10 @@ dos-host-test:
 # Build selected POSIX wrappers against the host libc with Linux-only feature
 # branches disabled, then exercise directory-relative extraction. These host
 # shims do not replace target-system builds or runtime checks. The AIX shim
-# defines _AIX73 to exercise that wrapper's version-gated selection.
+# defines _AIX73 to exercise that wrapper's version-gated selection; the z/OS
+# wrapper enables APIs available with the z/OS 3.1 June 2024 refresh or later.
 POSIX_DIRFD_HOST_DIR = build/posix-dirfd-host
-POSIX_DIRFD_FRONTENDS = hurd solaris illumos freebsd netbsd openbsd aix
+POSIX_DIRFD_FRONTENDS = hurd solaris illumos freebsd netbsd openbsd aix zos
 POSIX_DIRFD_HOST_BINS = $(foreach frontend,$(POSIX_DIRFD_FRONTENDS),$(POSIX_DIRFD_HOST_DIR)/$(frontend)/boltpack)
 
 $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/linux/main.c \
@@ -181,7 +182,7 @@ $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 	mkdir -p $(@D)
-	$(CC) -U__linux__ $(if $(filter aix,$*),-D_AIX73,-DBP_POSIX_USE_DIRFD_EXTRACTION=1) \
+	$(CC) -U__linux__ $(if $(filter aix,$*),-D_AIX73,$(if $(filter zos,$*),,-DBP_POSIX_USE_DIRFD_EXTRACTION=1)) \
 	    -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \

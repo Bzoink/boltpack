@@ -1,7 +1,10 @@
 /*
  * main.c -- z/OS (USS) CLI frontend for BoltPack
  *
- * Thin wrapper around linux/main.c. z/OS provides a POSIX.1 environment
+ * Thin wrapper around linux/main.c. z/OS 3.1 with the June 2024 refresh (or
+ * later) provides the POSIX.1-2008 directory-relative APIs used by hardened
+ * extraction. Expose z/OS O_DIRECTORY/O_NOFOLLOW flags with _XPLATFORM_SOURCE.
+ * z/OS provides a POSIX.1 environment
  * through the Unix System Services (USS) subsystem; lstat, readlink,
  * opendir/readdir, symlink, and fseeko/ftello are all available.
  *
@@ -25,6 +28,8 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#define _XPLATFORM_SOURCE 1
 #define BP_CREATOR_OS  BP_OS_ZOS
 #define BP_CREATOR_CPU BP_CPU_ZARCH
+#define BP_POSIX_USE_DIRFD_EXTRACTION 1
 #include "../linux/main.c"

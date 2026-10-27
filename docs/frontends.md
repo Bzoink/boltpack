@@ -2028,11 +2028,11 @@ because each wrapper `main.c` includes the shared Amiga frontend directly.
 These frontends define `BP_CREATOR_OS` and `BP_CREATOR_CPU`, then `#include "../linux/main.c"` directly. All POSIX I/O, directory recursion, symlink handling, and `BP_TYPE_META` permission archiving are identical to the Linux frontend. No additional metadata handling is added.
 
 Extraction uses directory-relative no-follow operations on Linux, FreeBSD,
-NetBSD, OpenBSD, GNU Hurd, Solaris 11, and illumos builds. The AIX wrapper
+NetBSD, OpenBSD, GNU Hurd, Solaris 11, illumos, and z/OS builds. The AIX wrapper
 selects that path when the target compiler defines `_AIX73`; older or
 unidentified AIX targets retain path-based symlink checks and the corresponding
-parent-substitution race. Other thin wrappers also retain that race. These
-target branches still require native build and runtime qualification.
+parent-substitution race. Other thin wrappers retain path-based checks and
+require native build/runtime qualification.
 
 | Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
 | ------------ | ------------------------------ | ---------------- | --------------- | ---------------------------- | ----------------------------------------------------- |
@@ -2059,9 +2059,9 @@ target branches still require native build and runtime qualification.
 **File:** `src/frontend/zos/main.c`
 **Compiler:** IBM Open XL C/C++ (`xlc`) or z/OS XL C/C++ (`cc`)
 **Interface:** Command-line
-**Target:** z/OS Unix System Services (z/Architecture mainframe)
+**Target:** z/OS 3.1 with the June 2024 refresh or later (z/Architecture mainframe)
 
-This is a thin wrapper around `src/frontend/linux/main.c`. z/OS provides a POSIX.1 environment through its Unix System Services (USS) subsystem; `lstat`, `readlink`, `opendir`/`readdir`, `symlink`, `fseeko`, and `ftello` are all available.
+This is a thin wrapper around `src/frontend/linux/main.c`. z/OS 3.1 with the June 2024 refresh or later provides the POSIX.1-2008 directory-relative APIs used by extraction, including [`openat`](https://www.ibm.com/docs/en/zos/3.1.0?topic=functions-openat-open-file-relative-directory-file-descriptor), [`fstatat`](https://www.ibm.com/docs/en/zos/3.1.0?topic=lf-fstatat-fstatat64-get-file-status-information-relative-directory-file-descriptor), and [`fdopendir`](https://www.ibm.com/docs/en/zos/3.1.0?topic=functions-fdopendir-opens-directory-associated-file-descriptor). IBM added `fdopendir` in the z/OS 3.1 June 2024 refresh ([change summary](https://www.ibm.com/docs/en/zos/3.2.0?topic=sc-summary-changes-zos-31-174)). `_XPLATFORM_SOURCE` enables the `O_DIRECTORY` and `O_NOFOLLOW` flags, as documented in the [`open` reference](https://www.ibm.com/docs/en/zos/3.1.0?topic=functions-open-open-file). The USS subsystem also provides `lstat`, `readlink`, `opendir`/`readdir`, `symlink`, `fseeko`, and `ftello`.
 
 **Important notes:**
 
