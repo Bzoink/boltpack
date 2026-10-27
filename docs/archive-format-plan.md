@@ -96,11 +96,17 @@ platform adapters remain outstanding.
 Both cores reject duplicate primary names (including trailing-slash aliases) and invalid portable metadata
 groups when reading and before finalizing a new archive. Copy, append, and
 deletion tests cover a file and its portable metadata group. Linux and Windows
-in-place append now require a bounded table backup and restore it on
+CLI in-place append now require a bounded table backup and restore it on
 finalization failure; the Linux regression checks byte-for-byte restoration.
-Destination-specific collisions, native/portable precedence, and other
-archive-edit cases remain outstanding. The mini extractor checks all table and
-inline entry headers before opening an output file.
+Total Commander WCX append copies the original to an exclusive sibling stage,
+finalizes the updated archive there, and atomically replaces the original only
+after successful close. WCX deletion also writes an exclusive sibling stage
+and replaces the original atomically, preserving it on copy, close, or
+publication failure. Both operations refuse directory and reparse-point
+archive targets. Destination-specific collisions, native/portable
+precedence, and other archive-edit cases remain outstanding. The mini
+extractor checks all table and inline entry headers before opening an output
+file.
 
 BoltPack is not widely used, so earlier archive versions need not be supported.
 Use that freedom to define a clear new contract. Basic transfer correctness is
@@ -319,6 +325,8 @@ Commander WCX now rejects invalid, reserved, unrepresentable, and colliding
 Windows paths before listing, with a 65,535-primary-entry bound. It verifies
 archive data for the WCX test operation, stages selected regular files beside
 their destinations, and publishes only after checksum verification and close.
+WCX append and deletion now stage a complete replacement archive beside the
+target and atomically publish after successful finalization and close.
 It captures and restores portable FAT flags, restores representable file times,
 and defers directory times and flags until `CloseArchive`. Unrepresentable
 source times are encoded as unknown and cause a WCX error after the archive is
