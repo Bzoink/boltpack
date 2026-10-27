@@ -14,12 +14,13 @@ no equivalent for a resource fork or a POSIX permission bit.
 
 The format-6 core, timestamp validity flag, UTF-8 validation, and file-table
 consistency checks are implemented. Mini frontends have explicit name
-conversion. The Linux CLI, Linux mini, Windows CLI, and full Atari CLI stage
-regular-file outputs until checksums pass; the Linux frontends also use directory-relative
-operations to reject symlink components. The Windows CLI now writes and
-restores portable FAT flags, while deferring directory flags until children
-finish. This plan is not complete: metadata coverage and safe extraction lifecycle
-handling across the remaining frontends remain outstanding. The Windows CLI
+conversion. The Linux CLI, Linux mini, Windows CLI, full Atari CLI, and full
+OS/2 CLI stage regular-file output until checksums pass. Linux uses
+directory-relative operations; EMX OS/2 checks existing components with
+`lstat`, while Watcom OS/2 relies on pathname APIs. The Windows CLI now writes
+and restores portable FAT flags, while deferring directory flags until
+children finish. This plan remains incomplete: other frontends and wrappers
+still need comparable metadata and extraction lifecycle coverage. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization
 remain open. The full Atari CLI now validates the base GEMDOS 8.3 ASCII path
@@ -37,8 +38,24 @@ until the new file is committed. Atari name projection rejects non-ASCII,
 non-8.3, and over-125-byte paths, and refuses case-insensitive collisions.
 This has cross-build evidence but still needs
 Atari runtime tests. Path-based TOS calls cannot prevent a concurrent rename
-of a checked parent. DOS16, Win16, and OS/2-16 now require an explicit fixed timezone
-offset for timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
+of a checked parent. Full OS/2 now writes native attributes and the portable
+FAT envelope for files and directories, applies native attributes ahead of
+portable fallback, and restores directory timestamps and flags deepest first.
+Its bounded queue holds 256 directories and 32 KiB of paths. Extraction first
+checks projected names against the destination code page and filesystem; FAT
+targets require 8.3 components, while other OS/2 filesystems use OS/2 case
+mapping to reject collisions. Regular files are written to exclusive sibling
+temporary files. After checksum verification OS/2 reserves the final filename
+with exclusive-create and copies the verified stage; forced replacement keeps
+a recovery copy and rolls it back if publication fails. OS/2 timestamps use
+the fixed `BP_TZ_OFFSET` setting. The 32-bit Watcom compiler compiled the OS/2
+frontend and core and linked an LX executable with `make os2-watcom`, but no
+OS/2 runtime is available here. A process interruption during the final copy
+can leave a partial destination. OS/2 pathname operations still cannot prevent
+a concurrent parent substitution. HPFS `.TYPE` extended attributes are not
+transferred. No Atari or OS/2 runtime round trip has been run.
+DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
+timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
 with directory-relative `openat` calls and reject symlink components. Staged
 files and final commits use the same open parent handle. Deterministic tests
 cover parent substitution, concurrent destination creation, and write failure.
@@ -49,22 +66,21 @@ classic Mac 68k core copies now match the format-6 core. The evidence and phased
 the original format-5 review, not a claim that each issue is still unchanged.
 
 Full Atari and OS/2 extraction limit native metadata application to the
-matching successfully extracted subject and use status-aware cleanup. Atari now
-also writes and restores the portable FAT envelope, with native Atari metadata
-taking precedence and directory restoration deferred until children finish.
-OS/2 does not yet implement the portable metadata envelope or deferred
-directory attributes. The Atari changes have cross-build evidence but require
-runtime verification. Its deferred directory queue is capped at 256 entries
-and 32 KiB of path storage; exceeding either limit reports a partial transfer.
-Atari extraction stages regular files and checks existing parent components,
-but lacks directory-relative operations to prevent concurrent parent
-substitution under MiNT. OS/2 requires verification with a working compiler
-and runtime.
+matching successfully extracted subject and use status-aware cleanup. Both
+write and restore the portable FAT envelope, prefer native attributes on the
+matching platform, and defer directory timestamps and attributes until after
+children. Each has a 256-directory/32-KiB queue bound and reports overflow.
+Atari stages files and checks existing parent components but lacks
+directory-relative operations. OS/2 stages files and checks path components;
+EMX builds can reject existing symbolic-link components, while Watcom builds
+cannot. Both adapters have cross-compile evidence but still need runtime
+verification. Their path-based APIs cannot prevent concurrent parent
+substitution.
 
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
 reject orphaned or duplicate portable envelopes and verify the subject type.
-DOS16, Win16, and OS/2-16 capture portable FAT flags for files and directories
+The full OS/2 CLI, DOS16, Win16, and OS/2-16 capture portable FAT flags for files and directories
 and defer directory restoration until children are extracted. DOS16 and Win16
 report directory times as unrestored; OS/2-16 attempts to restore them. The
 directory queue is limited to 256 entries. DOS16 has a DOSBox nested-directory
@@ -262,14 +278,18 @@ Use the basic FAT metadata record from Phase 0 across DOS, Win16, Win32,
 OS/2, and Atari adapters. The Windows CLI captures and restores the four
 portable FAT flags for files and directories, using `GetFileAttributesA` and
 `SetFileAttributesA`; it also restores directory times after child extraction.
-The full Atari CLI captures native TOS flags and the portable FAT envelope,
+The full Atari and OS/2 CLIs capture native attributes and the portable FAT envelope,
 then restores directory times and flags after child extraction. It stages file
-output using an eight-character sibling temporary name and commits with a
-no-replace GEMDOS rename; forced replacement uses a recovery name and restores
-the old entry if commit fails, retaining the recovery path and reporting an
-error if rollback itself fails. The Windows and Atari work has cross-build
-evidence, but neither has target runtime evidence yet. Win16, DOS, and Atari
-mini frontends use their target APIs.
+output using same-directory temporary files and verifies checksums before
+publishing. Atari uses GEMDOS renames; OS/2 reserves the destination with
+exclusive-create and copies the verified stage, preserving the old file under
+a recovery name during forced replacement. OS/2 FAT targets require 8.3 names
+and all OS/2 targets preflight case-mapped collisions. The final copy can leave
+a partial file if the process stops mid-copy, and path APIs leave a race with
+concurrent parent substitution. Watcom cross-compilation and linking of the
+OS/2 executable succeeds, but neither the Atari nor OS/2 adapter has target
+runtime evidence yet. Win16,
+DOS, and Atari mini frontends use their target APIs.
 Cover GUI, DLL/.NET, and Total Commander paths, with shared helpers where
 practical.
 
