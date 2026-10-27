@@ -130,7 +130,9 @@ bounded case-folded name and file/directory-prefix preflight, checked existing
 directory components, and deferred directory time/protection restoration. It
 captures and restores native protection/comment metadata for files; GUI archive
 creation does not add directory entries, so it has no directory metadata to
-capture. Latin-1-unrepresentable names, resource forks, symlinks, foreign
+capture. Its Compression menu offers Interchange Profile 1 for new archives,
+selecting BoltLite with 16 KiB blocks under mini-reader limits.
+Latin-1-unrepresentable names, resource forks, symlinks, foreign
 metadata, and portable FAT envelopes are skipped with a partial result. Source
 times outside the host's nonnegative representable range are recorded as
 unknown. The GUI cross-build passes, but its path-based checks retain a
@@ -532,9 +534,9 @@ limit, including table and footer bytes. The full writer now offers
 checks codecs, block and per-entry sizes, physical entry count, and projected
 archive size during create, append, packed-entry commit, and archive copy.
 Profile append validates existing inline headers against the table before
-changing the archive. The Linux and Windows CLIs expose this as
-`--interchange-profile-1` for create and add. The Linux FLTK GUI offers the
-profile for archive creation and network sending. Readers reject oversized
+changing the archive. The Linux, Windows, Atari, OS/2, and macOS CLIs expose
+this as `--interchange-profile-1` for create and add. The Linux and Windows
+FLTK GUIs offer the profile for archive creation and network sending. Readers reject oversized
 declared archives before extraction. Both cores reject absolute, drive-prefixed,
 backslash, empty, `.` and `..` path components, and require primary directory
 names to end in `/`. Host tests cover profile output, append, refusal of
@@ -546,8 +548,9 @@ passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now ex
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
 The Windows FLTK GUI offers the profile for archive creation and network
-sending; the Atari GEM and native Win32 GUIs offer it for creation. Other full
-frontends have not yet exposed a user-selectable profile option.
+sending; the Atari GEM, Amiga GadTools, and native Win32 GUIs offer it for
+creation. The Windows .NET and macOS Cocoa GUIs have not yet exposed a
+user-selectable profile option; target GUI profile coverage remains incomplete.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
