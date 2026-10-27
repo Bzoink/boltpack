@@ -160,7 +160,16 @@ path prefixes and 4 KiB of key storage. DOSBox validates DOS16 nested-directory
 and portable-metadata transfer, timezone conversion, cleanup after a corrupt
 block, and pre-output refusal of case-only directory aliases, long names,
 invalid DOS characters, and overlong output roots; it does not qualify Win16
-or OS/2-16 runtimes. The Linux
+or OS/2-16 runtimes. The DOS16, Win16, and OS/2-16 extractors validate the
+archive's UTF-8 name before converting it to local bytes; they must not pass
+the resulting CP437 or CP850 byte string back through the UTF-8 validator.
+The full codepage unit fixture checks CP437 `café.txt` conversion both ways,
+and mini-configured CP437/CP850 fixtures check accented filename byte round
+trips. `make mini-all` cross-builds all three 16-bit frontends. The DOSBox
+transfer fixture still uses ASCII filenames: an attempted CP437 accented-name
+extraction to DOSBox's host-mounted filesystem did not materialize the expected
+file, so target filesystem handling of non-ASCII names remains unqualified.
+The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
 POSIX wrapper, resolve archive-controlled directories with directory-relative
 `openat` calls and reject symlink components. GNU Hurd, Solaris 11, and illumos
@@ -825,6 +834,13 @@ destination-creation, write/close-failure, and metadata/profile checks.
 `make CC=gcc dos16-interoperability-test` passed its 20-check DOS16 core suite
 and DOS16-to-Linux transfer fixtures under DOSBox. Neither emulator target
 qualifies Win16, OS/2-16, or other platform runtimes.
+After CP437/CP850 filename conversion fixtures were added,
+`make CC=gcc unit-test` passed again with 30 codepage checks, including exact
+CP437 `café.txt` round trips and configured mini CP437/CP850 filename
+conversion. `make mini-all` cross-built DOS16, Win16, and OS/2-16 after fixing
+their local-name validation order. The DOSBox transfer fixture passed for its
+existing ASCII names; CP437 non-ASCII extraction to the host-mounted drive
+remains unresolved as described above.
 
 Golden expectations must not be generated solely by the same writer under
 test. On capable destinations require exact bytes/names/attributes. On limited

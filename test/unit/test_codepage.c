@@ -204,6 +204,19 @@ static void test_cp437(void)
     UNIT_SECTION("Codepage: CP437 spot checks");
     check_local_to_utf8("CP437 0x84 (a-umlaut) -> UTF-8",
                          BP_CP_437, ae_local, 1, ae_utf8);
+
+    {
+        const char cp437_name[] = {
+            'c', 'a', 'f', (char)0x82, '.', 't', 'x', 't', '\0'
+        };
+        const char utf8_name[] = "caf\xC3\xA9.txt";
+        check_local_to_utf8("CP437 filename -> UTF-8 archive spelling",
+                            BP_CP_437, cp437_name,
+                            (int)sizeof(cp437_name) - 1, utf8_name);
+        check_utf8_to_local("UTF-8 archive filename -> exact CP437 bytes",
+                            BP_CP_437, utf8_name, cp437_name,
+                            (int)sizeof(cp437_name) - 1);
+    }
 }
 
 /* --- Windows-1252 ------------------------------------------------------- */
