@@ -110,9 +110,11 @@ qualify Win16 or OS/2-16 runtimes. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
 shared POSIX wrapper, resolve archive-controlled directories with directory-
 relative `openat` calls and reject symlink components. Staged files and final
-commits use the same open parent handle. Deterministic tests cover the Linux
-implementation's parent substitution, concurrent destination creation, and
-write failure. Other frontends still need equivalent protection. A process
+commits use the same open parent handle. Deterministic tests cover the full
+Linux and Linux mini implementations' parent substitution, concurrent
+destination creation, write failure, and close failure; failed stages are
+removed without publishing output. Other frontends still need equivalent
+protection. A process
 able to rename an already opened directory outside the extraction tree is a
 separate concurrent-mutation limitation. The checked-in classic Mac 68k core
 copies now match the format-6 core. Some findings below originated in the
