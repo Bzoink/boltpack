@@ -31,7 +31,13 @@ destinations, commits after checksum verification, and restores file and
 deferred directory mode/time metadata. Unsupported metadata and resource forks
 produce a partial result. This frontend has build evidence but still needs
 interactive runtime tests. This plan remains incomplete: other frontends and wrappers
-still need comparable metadata and extraction lifecycle coverage. The Windows CLI
+still need comparable metadata and extraction lifecycle coverage. The full DOS
+frontend remains a separate gap: its source uses the legacy extraction API,
+writes directly to final paths, does not check close status, applies timestamps
+after checksum failure, and can return success after skipping unsupported
+metadata. It has no build target or runtime fixture in this environment. Do not
+claim format-6 safe extraction for this adapter until it uses status-aware
+completion and stages output. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization
 remain open. The full Atari CLI now validates the base GEMDOS 8.3 ASCII path
