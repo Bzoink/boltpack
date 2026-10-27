@@ -179,7 +179,9 @@ deletion tests cover a file and its portable metadata group. Linux CLI append
 and deletion write to unique same-directory stages and publish by atomic
 rename. Both retain owner, group, and permission bits where the caller has
 authority to set them, and abort before publication if those cannot be
-preserved. Append syncs the staged archive before publication, and checks the
+preserved. Both refuse targets with multiple hard links because replacement
+would otherwise leave aliases pointing at different archive contents. Append
+syncs the staged archive before publication, and checks the
 original file identity, size, and high-resolution mtime/ctime before replacing
 it. Delete also checks identity, size, and mtime before publication.
 Failure-injection tests prove that failed publication leaves the original
