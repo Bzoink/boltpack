@@ -164,16 +164,19 @@ or OS/2-16 runtimes. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
 POSIX wrapper, resolve archive-controlled directories with directory-relative
 `openat` calls and reject symlink components. GNU Hurd, Solaris 11, and illumos
-wrappers now select this implementation explicitly. The
-`posix-dirfd-host-test` make target compiles the Hurd, Solaris, illumos, and BSD
-wrappers with Linux feature branches disabled and tests parent substitution, concurrent
+wrappers select this implementation explicitly; the AIX wrapper selects it
+when the target compiler defines `_AIX73`, while older or unidentified AIX
+targets retain path-based extraction. The
+`posix-dirfd-host-test` make target compiles the Hurd, Solaris, illumos, BSD,
+and AIX wrappers with Linux feature branches disabled and tests parent substitution, concurrent
 destination creation, write failure, close failure, and staged symlink
 timestamp/publication on host libc. These are host-shim checks, not target
 builds or runtime tests. Staged files and final commits use the same open
 parent handle. Full Linux and Linux mini tests cover parent substitution,
 concurrent destination creation, write failure, and close failure; the host
-shims exercise the same POSIX implementation in Hurd, Solaris, illumos, and BSD
-configurations. Failed stages are
+shims exercise the same POSIX implementation in Hurd, Solaris, illumos, BSD,
+and AIX configurations. These host checks do not qualify target APIs or
+runtimes; native AIX validation remains open. Failed stages are
 removed without publishing output, and forced replacement preserves the
 existing file when close fails. Other frontends still need equivalent
 protection. QNX retains the path-based fallback: its resource-manager model

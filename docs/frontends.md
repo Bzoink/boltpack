@@ -2028,9 +2028,11 @@ because each wrapper `main.c` includes the shared Amiga frontend directly.
 These frontends define `BP_CREATOR_OS` and `BP_CREATOR_CPU`, then `#include "../linux/main.c"` directly. All POSIX I/O, directory recursion, symlink handling, and `BP_TYPE_META` permission archiving are identical to the Linux frontend. No additional metadata handling is added.
 
 Extraction uses directory-relative no-follow operations on Linux, FreeBSD,
-NetBSD, and OpenBSD builds. Other thin wrappers retain path-based
-symlink checks and the corresponding parent-substitution race; these target
-branches still require native build and runtime qualification.
+NetBSD, OpenBSD, GNU Hurd, Solaris 11, and illumos builds. The AIX wrapper
+selects that path when the target compiler defines `_AIX73`; older or
+unidentified AIX targets retain path-based symlink checks and the corresponding
+parent-substitution race. Other thin wrappers also retain that race. These
+target branches still require native build and runtime qualification.
 
 | Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
 | ------------ | ------------------------------ | ---------------- | --------------- | ---------------------------- | ----------------------------------------------------- |
@@ -2039,7 +2041,7 @@ branches still require native build and runtime qualification.
 | OpenBSD      | `src/frontend/openbsd/main.c`  | `BP_OS_OPENBSD`  | `BP_CPU_X86_64` | `openbsd-gcc`                |                                                       |
 | Solaris      | `src/frontend/solaris/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `sparc-sun-solaris2-gcc`     | Override with `BP_CPU_SPARC` or `BP_CPU_SPARC64`      |
 | HP-UX        | `src/frontend/hpux/main.c`     | `BP_OS_HPUX`     | `BP_CPU_PARISC` | `hppa-hp-hpux-gcc`           | Override with `BP_CPU_IA64` for Itanium               |
-| AIX          | `src/frontend/aix/main.c`      | `BP_OS_AIX`      | `BP_CPU_PPC64`  | `powerpc-ibm-aix-gcc`        | Override with `BP_CPU_PPC32` for 32-bit AIX           |
+| AIX          | `src/frontend/aix/main.c`      | `BP_OS_AIX`      | `BP_CPU_PPC64`  | `powerpc-ibm-aix-gcc`        | `_AIX73` selects dirfd extraction; override with `BP_CPU_PPC32` for 32-bit AIX |
 | IRIX         | `src/frontend/irix/main.c`     | `BP_OS_IRIX`     | `BP_CPU_MIPS64` | `mips-sgi-irix6.5-gcc`       | MIPS hardware only (R4000–R16000)                     |
 | illumos      | `src/frontend/illumos/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `x86_64-unknown-illumos-gcc` | OpenIndiana, OmniOS, SmartOS                          |
 | GNU Hurd     | `src/frontend/hurd/main.c`     | `BP_OS_HURD`     | `BP_CPU_X86_64` | `hurd-gcc`                   | Override with `BP_CPU_X86` for 32-bit                 |
