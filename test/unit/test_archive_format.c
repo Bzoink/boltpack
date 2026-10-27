@@ -1028,6 +1028,81 @@ static void test_format6_flags_and_names(void)
     free(mem.buf);
 }
 
+static void test_format6_name_length_boundary(void)
+{
+    MemIO mem;
+    bp_io_t io;
+    bp_archive_t full;
+    bp_mini_archive_t mini;
+    bp_uint64 zero = bp_u64_from_u32(0);
+    char *name;
+    int rc, full_open, mini_open;
+
+    UNIT_SECTION("Archive format 6: maximum encoded name length");
+    name = (char *)malloc((size_t)BP_MAX_NAME_LEN + 2U);
+    mem.buf = (unsigned char *)malloc((size_t)MEM_IO_CAP);
+    if (name == NULL || mem.buf == NULL) exit(2);
+    memset(name, 'a', BP_MAX_NAME_LEN);
+    name[BP_MAX_NAME_LEN - 1U] = '/';
+    name[BP_MAX_NAME_LEN] = '\0';
+
+    mem.pos = mem.size = 0;
+    mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    full_open = rc == BP_OK;
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&full, name, BP_TYPE_DIR, BP_OS_LINUX,
+                                     NULL, zero, zero, 0);
+    UNIT_CHECK(rc == BP_OK,
+               "full writer accepts a 65,493-byte name that exactly fills the header size");
+    if (rc == BP_OK) rc = bp_archive_finalize(&full);
+    if (full_open) bp_archive_close(&full);
+    UNIT_CHECK(rc == BP_OK && bp_archive_test(&io, NULL, NULL) == BP_OK,
+               "full reader verifies the maximum-length name record");
+
+    mem.pos = mem.size = 0;
+    io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    mini_open = rc == BP_OK;
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, name, BP_TYPE_DIR,
+                                          BP_OS_DOS, NULL, zero, zero, 0);
+    UNIT_CHECK(rc == BP_OK,
+               "mini writer accepts the maximum 65,493-byte name");
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    if (mini_open) bp_mini_archive_close(&mini);
+    UNIT_CHECK(rc == BP_OK && bp_mini_archive_test(&io, NULL, NULL) == BP_OK,
+               "mini reader verifies the maximum-length name record");
+
+    name[BP_MAX_NAME_LEN - 1U] = 'a';
+    name[BP_MAX_NAME_LEN] = '/';
+    name[BP_MAX_NAME_LEN + 1U] = '\0';
+    mem.pos = mem.size = 0;
+    io = make_mem_io(&mem);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    full_open = rc == BP_OK;
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&full, name, BP_TYPE_DIR, BP_OS_LINUX,
+                                     NULL, zero, zero, 0);
+    UNIT_CHECK(rc == BP_ERR_NAME_TOO_LONG,
+               "full writer rejects a name one byte beyond the header limit");
+    if (full_open) bp_archive_close(&full);
+
+    mem.pos = mem.size = 0;
+    io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    mini_open = rc == BP_OK;
+    if (rc == BP_OK)
+        rc = bp_mini_archive_add_entry_ex(&mini, name, BP_TYPE_DIR,
+                                          BP_OS_DOS, NULL, zero, zero, 0);
+    UNIT_CHECK(rc == BP_ERR_NAME_TOO_LONG,
+               "mini writer rejects a name one byte beyond the header limit");
+    if (mini_open) bp_mini_archive_close(&mini);
+    free(name);
+    free(mem.buf);
+}
+
 typedef struct {
     MemIO output;
     bp_io_t io;
@@ -2106,6 +2181,7 @@ int main(void)
     test_format6_single_blob_golden_archive();
     test_previous_versions_rejected();
     test_format6_flags_and_names();
+    test_format6_name_length_boundary();
     test_format6_full_mini_interop();
     test_mini_independent_format6_golden_archive();
     test_mini_single_blob_resource_preflight();
