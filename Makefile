@@ -572,8 +572,8 @@ MACOS68K_CFLAGS   = -Wall -Wextra -Wno-unused-function -O2 \
                     -include src/frontend/macos9/68k/compat/MacCompat.h
 MACOS68K_BUILDDIR = build/macos9-68k
 MACOS68K_FRONTEND = src/frontend/macos9/68k/Source
-# Retro68 executables need the Boost shared libraries installed alongside this
-# toolchain in the development image. Override this path for other installs.
+# Retro68 executables need the Boost shared libraries provided by the
+# development image. Override this directory for other installations.
 MACOS68K_BOOST_LIBDIR ?= /opt/boost1_92/lib
 MACOS68K_ENV = LD_LIBRARY_PATH=$(MACOS68K_BOOST_LIBDIR)$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
 

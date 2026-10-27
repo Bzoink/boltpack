@@ -687,9 +687,10 @@ has no managed build or Windows runtime qualification; the Cocoa GUI has no
 macOS target build or runtime qualification. Haiku's target cross-build and
 runtime qualification remain outstanding. The Retro68 Classic Mac 68k GUI
 source now offers Interchange Profile 1 and its checked-in core copies match
-the shared format-6 core. `make CC=gcc macos9-68k` now links the CLI and GUI
-resource fork; the target adds the installed Boost library directory to the
-Retro68 tool environment. Mac OS 9 runtime qualification remains outstanding.
+the shared format-6 core. `make CC=gcc macos9-68k` now builds the application
+data and merged resource-fork artifacts; the target adds the installed Boost
+library directory to the Retro68 tool environment. Mac OS 9 runtime
+qualification remains outstanding.
 The PowerPC Mac
 OS 9 GUI source now offers a create-time choice for the profile; its legacy
 CodeWarrior/MPW build and Mac OS 9 runtime remain unqualified. GUI target
