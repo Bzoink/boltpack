@@ -171,9 +171,10 @@ static int on_extract_directory(const bp_mini_entry_t *e, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char path[BP_MAX_PATH], local_name[BP_MAX_PATH], *p;
+    /* Validate archive UTF-8 before conversion. Local CP850 bytes may not be
+     * valid UTF-8 and must not be passed back to the archive-name validator. */
     if (!bp_mini_name_is_safe(e->name) ||
         bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0 ||
-        !bp_mini_name_is_safe(local_name) ||
         (ctx->dest[0] && strlen(ctx->dest) + strlen(local_name) + 2 >= sizeof(path))) {
         fprintf(stderr, PROG_NAME ": cannot represent archive directory: %s\n", e->name);
         ctx->name_error = 1;
@@ -210,9 +211,9 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     struct stat st;
 #endif
 
+    /* Validate archive UTF-8 before conversion; local CP850 bytes are opaque. */
     if (!bp_mini_name_is_safe(e->name) ||
-        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0 ||
-        !bp_mini_name_is_safe(local_name)) {
+        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0) {
         fprintf(stderr, PROG_NAME ": cannot represent archive name: %s\n", e->name);
         ctx->name_error = 1;
         return NULL;
