@@ -137,6 +137,12 @@ Uses POSIX `opendir()` / `readdir()` / `closedir()` with `stat()` for file metad
 - Sets `mtime` from `stat.st_mtime`
 - On extraction, restores permissions with `chmod()` and modification time with `utime()`
 
+Before creating the extraction root, Linux scans the file table and rejects
+unsafe or overlong components, duplicate projected paths, and file/directory
+prefix conflicts. The preflight is bounded to 1,048,576 names and 64 MiB of
+path keys. Extraction then uses directory-relative no-follow operations and
+stages regular files beside their destinations.
+
 ### Text Encoding
 
 Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion needed.

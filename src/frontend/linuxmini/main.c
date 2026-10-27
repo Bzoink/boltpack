@@ -20,6 +20,8 @@
 
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#define BP_POSIX_PREFLIGHT_MAX_ENTRIES 65535U
+#define BP_POSIX_PREFLIGHT_MAX_KEY_BYTES (16U * 1024U * 1024U)
 
 #include "../../core/mini/archiver.h"
 #include "../mini_shared/mini_common.h"
@@ -36,6 +38,7 @@
 #include <fcntl.h>
 #include <utime.h>
 #include "../posix/extract_paths.h"
+#include "../posix/archive_preflight.h"
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -135,6 +138,38 @@ typedef struct {
     char *temporary;
     char *destination;
 } mini_extract_output_t;
+
+typedef struct {
+    bp_posix_preflight_t names;
+    int error;
+} extract_preflight_t;
+
+static int preflight_name_cb(const bp_mini_entry_t *e, void *user_data)
+{
+    extract_preflight_t *preflight = (extract_preflight_t *)user_data;
+    int rc;
+
+    if (e->entry_type != BP_TYPE_DATA && e->entry_type != BP_TYPE_DIR &&
+        e->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!bp_mini_name_is_safe(e->name)) rc = BP_ERR_PARTIAL;
+    else rc = bp_posix_preflight_add(&preflight->names, e->name, e->name_len,
+                                     e->entry_type == BP_TYPE_DIR);
+    if (rc != BP_OK) { preflight->error = rc; return 1; }
+    return 0;
+}
+
+static int preflight_extract_names(bp_io_t *archive_io)
+{
+    extract_preflight_t preflight;
+    int rc;
+
+    memset(&preflight, 0, sizeof(preflight));
+    rc = bp_mini_archive_list(archive_io, preflight_name_cb, &preflight);
+    if (preflight.error != BP_OK) rc = preflight.error;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&preflight.names);
+    bp_posix_preflight_free(&preflight.names);
+    return rc;
+}
 
 static int queue_directory(extract_ctx_t *ctx, const char *path, const bp_mini_entry_t *e)
 {
@@ -557,6 +592,14 @@ static int cmd_extract(const char *arc_path, const char *dest)
         }
         strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
     }
+    rc = preflight_extract_names(&arc_io);
+    if (rc != BP_OK) {
+        fprintf(stderr, PROG_NAME ": archive has names that cannot be mapped safely: %s\n",
+                bp_mini_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+
     if (ctx.dest[0]) {
         make_parents(ctx.dest);
         if (mkdir(ctx.dest, 0755) != 0 && errno != EEXIST) {

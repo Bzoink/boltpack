@@ -18,11 +18,17 @@ Supplementary metadata and resource forks must follow one exact file or
 directory subject, and resource forks are unique within that group. Mini local
 entry helpers now append the required directory slash and give portable FAT
 metadata the same canonical directory path; Linux mini's direct core writer
-does the same. Format-6 tests cover the common helper, Linux mini runtime, and
-a DOS16 nested-directory transfer. Mini frontends have explicit name
+does the same. Linux mini now validates all projected primary paths before
+creating the destination tree, refusing file/directory prefix conflicts and
+overlong components. The QEMU interop fixture checks both archive entry orders
+and confirms an existing destination tree is unchanged. Format-6 tests cover
+the common helper, Linux mini runtime, and a DOS16 nested-directory transfer.
+Mini frontends have explicit name
 conversion. The Linux CLI, Linux mini, Windows CLI, full Atari CLI, and full
-OS/2 CLI stage regular-file output until checksums pass. Linux uses
-directory-relative operations; EMX OS/2 checks existing components with
+OS/2 CLI stage regular-file output until checksums pass. Linux full and mini
+frontends validate the complete path table before creating the destination
+tree, refusing overlong components and file/directory prefix conflicts; Linux
+uses directory-relative operations. EMX OS/2 checks existing components with
 `lstat`, while Watcom OS/2 relies on pathname APIs. The Windows CLI now writes
 and restores portable FAT flags, while deferring directory flags until
 children finish. The Linux FLTK GUI now uses the same directory-relative

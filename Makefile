@@ -219,7 +219,8 @@ $(BUILDDIR)/core/fluff_fast.o: $(COREDIR)/fluff_fast.c $(BUILDDIR)/.config | $(B
 $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/frontend
 	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
-$(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h
+$(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
+	                          src/frontend/posix/archive_preflight.h
 
 # boltlz vendored codec: compiled with warnings suppressed (lib code, strict
 # C89 port kept in src/core; the C89 port already suppresses the fallthrough
