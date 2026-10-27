@@ -1715,7 +1715,7 @@ static int read_header(bp_io_t *io, bp_uint32 *file_count,
         return BP_ERR_VERSION;
     }
 
-    /* Format 5 reserves the 16-bit flags field at bytes 6-7. */
+    /* Format 6 reserves the archive flags field at bytes 6-7. */
     if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
 
     if (version == BP_FORMAT_VERSION) {
@@ -1939,7 +1939,7 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
         free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
     }
 
-    /* Format 5 writes CRC-32 only; reject retired/unknown checksum kinds. */
+    /* Format 6 requires CRC-32; reject retired or unknown checksum kinds. */
     if (entry->checksum_type != BP_CKSUM_CRC32) {
         free(entry->name); entry->name = NULL;
         return BP_ERR_CORRUPT;
