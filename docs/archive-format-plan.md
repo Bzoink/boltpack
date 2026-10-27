@@ -165,18 +165,21 @@ CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
 POSIX wrapper, resolve archive-controlled directories with directory-relative
 `openat` calls and reject symlink components. GNU Hurd, Solaris 11, and illumos
 wrappers now select this implementation explicitly. The
-`posix-dirfd-host-test` make target compiles these three wrappers with Linux
-feature branches disabled and tests parent substitution, concurrent
+`posix-dirfd-host-test` make target compiles the Hurd, Solaris, illumos, and BSD
+wrappers with Linux feature branches disabled and tests parent substitution, concurrent
 destination creation, write failure, close failure, and staged symlink
 timestamp/publication on host libc. These are host-shim checks, not target
 builds or runtime tests. Staged files and final commits use the same open
 parent handle. Full Linux and Linux mini tests cover parent substitution,
 concurrent destination creation, write failure, and close failure; the host
-shims exercise the same POSIX implementation in Hurd, Solaris, and illumos
+shims exercise the same POSIX implementation in Hurd, Solaris, illumos, and BSD
 configurations. Failed stages are
 removed without publishing output, and forced replacement preserves the
 existing file when close fails. Other frontends still need equivalent
-protection. A process
+protection. QNX retains the path-based fallback: its resource-manager model
+does not make multi-component `openat` traversal race-free, as detailed in the
+[QNX `openat` reference](https://qnx.com/developers/docs/8.0/com.qnx.doc.neutrino.lib_ref/topic/o/openat.html).
+A process
 able to rename an already opened directory outside the extraction tree is a
 separate concurrent-mutation limitation. The checked-in classic Mac 68k core
 copies now match the format-6 core. Some findings below originated in the
