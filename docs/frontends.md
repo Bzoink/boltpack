@@ -480,11 +480,13 @@ Wraps standard C `<stdio.h>` functions (provided by libnix):
 
 Uses POSIX `opendir()` / `readdir()` with `stat()` for file type and size. Both are supplied by libnix and map to AmigaDOS `Lock()`/`ExNext()` internally. Depth-first walk: directory entry before its contents.
 
-Symlinks (AmigaOS soft links via `MakeLink`) are not supported and are silently skipped. They are rare and require OS 2.0+ with a filesystem that supports them.
+Symlinks (AmigaOS soft links via `MakeLink`) are not extracted; the command reports a partial result. Before extraction, the CLI checks projected path collisions using case folding and rejects AmigaDOS `:` volume/device syntax. The bounded preflight index accepts up to 1,024 primary entries and 32 KiB of projected path keys; exceeding either limit refuses extraction before creating output. Existing parent components are checked with `lstat` and symlink components are refused. These pathname checks cannot prevent a concurrent parent rename.
+
+Regular files are written to an exclusive sibling staging file. The destination is published only after the core verifies the entry checksum and the staging descriptor closes successfully. Forced replacement moves the old regular file to a unique recovery name before publishing and restores it if publication fails. A process interruption between those renames can leave the original at the recovery path. Unsupported entry kinds and failed metadata restores produce a partial result.
 
 ### AmigaOS: Platform Metadata
 
-AmigaOS is the primary platform that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_OS_AMIGA_68K` is written immediately following it, carrying the file's protection bits and comment.
+AmigaOS is the primary platform that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_CREATOR_OS` is written immediately following it, carrying the file's protection bits and comment. The same shared frontend source is used by AmigaOS 4.x, MorphOS, and AROS wrappers, so each records its own platform identifier.
 
 **Metadata payload layout:**
 
@@ -509,10 +511,11 @@ AmigaOS is the primary platform that makes BoltPack's `BP_TYPE_META` mechanism w
 
 Lower four bits (RWED) are inverted: a clear bit grants the permission. Upper four bits (HSPA) are direct flags: a set bit means the flag is active.
 
-`amiga_get_meta()` uses `Lock()` + `Examine()` to read `fib_Protection` and `fib_Comment`.
-`amiga_apply_meta()` calls `SetProtection()` and `SetComment()` after extraction.
+`amiga_get_meta()` uses `Lock()` + `Examine()` to read `fib_Protection` and `fib_Comment`. `amiga_apply_meta()` checks both `SetProtection()` and `SetComment()` results. Native metadata is applied only when its exact subject was successfully extracted; directory metadata and timestamps are deferred until all entries have been processed, so protection bits do not block child extraction. Malformed Amiga payloads fail as corrupt metadata.
 
-On extraction from a non-Amiga archive, `BP_TYPE_META` entries with a different `platform` field are silently skipped. Extracted files receive AmigaOS default protection (RWED all granted, archive bit set).
+Foreign native metadata, portable FAT envelopes, resource forks, and symlink entries are skipped and make the extraction result partial. Malformed payloads for this Amiga-family metadata type are rejected as corrupt, including when the subject was skipped. Amiga protection bits are not mapped from POSIX or FAT fields because their meanings differ. Extracted files without native Amiga metadata receive the filesystem's default permissions.
+
+File and directory modification times use format-6 UTC seconds. Epoch zero is preserved. Negative or host-unrepresentable source times are warned about and recorded as unknown rather than wrapping into a different date.
 
 ### AmigaOS: Text Encoding
 
