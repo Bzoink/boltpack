@@ -270,6 +270,93 @@ def test_operations() -> None:
             _log("delete returned non-zero (may need exact entry path)")
 
 
+def test_delete_publication_failure() -> None:
+    section("Delete: failed publication preserves original archive")
+
+    interposer = r'''#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int rename(const char *old_path, const char *new_path)
+{
+    const char *target = getenv("BP_TEST_RENAME_TARGET");
+    const char *marker = getenv("BP_TEST_RENAME_MARKER");
+    int fd;
+    (void)old_path;
+    if (target == NULL || strcmp(target, new_path) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    if (marker != NULL) {
+        fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) close(fd);
+    }
+    errno = EIO;
+    return -1;
+}
+'''
+
+    with tempfile.TemporaryDirectory(prefix="bp_delete_publish_") as tmp:
+        source = os.path.join(tmp, "src")
+        archive = os.path.join(tmp, "archive.bolt")
+        marker = os.path.join(tmp, "rename-called")
+        interposer_c = os.path.join(tmp, "fail_rename.c")
+        interposer_so = os.path.join(tmp, "fail_rename.so")
+        os.makedirs(source)
+        make_file(os.path.join(source, "file.txt"), 128, "text", 93)
+
+        created = run_bp("c", "archive.bolt", "src", cwd=tmp)
+        check(created.returncode == 0,
+              "delete publication fixture archive created")
+        if created.returncode != 0:
+            return
+        os.chmod(archive, 0o640)
+        with open(archive, "rb") as stream:
+            original_bytes = stream.read()
+
+        with open(interposer_c, "w", encoding="utf-8") as stream:
+            stream.write(interposer)
+        compiler = shutil.which("cc")
+        if compiler is None:
+            check(False, "C compiler available for rename-failure injection")
+            return
+        built = subprocess.run(
+            [compiler, "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+             interposer_c, "-o", interposer_so],
+            capture_output=True,
+        )
+        check(built.returncode == 0,
+              "rename-failure interposer compiled")
+        if built.returncode != 0:
+            return
+
+        env = os.environ.copy()
+        prior_preload = env.get("LD_PRELOAD")
+        env["LD_PRELOAD"] = interposer_so + (":" + prior_preload if prior_preload else "")
+        env["BP_TEST_RENAME_TARGET"] = archive
+        env["BP_TEST_RENAME_MARKER"] = marker
+        failed = subprocess.run(
+            [BP, "d", archive, "src/file.txt"], cwd=tmp,
+            env=env, capture_output=True,
+        )
+        with open(archive, "rb") as stream:
+            after_failure = stream.read()
+        check(os.path.exists(marker), "delete reached the injected rename failure")
+        check(failed.returncode != 0 and after_failure == original_bytes,
+              "failed atomic publication preserves original archive bytes")
+        check(not any(name.startswith("bpdel_") for name in os.listdir(tmp)),
+              "failed delete removes its staged archive")
+
+        completed = run_bp("d", "archive.bolt", "src/file.txt", cwd=tmp)
+        tested = run_bp("t", "archive.bolt", cwd=tmp)
+        check(completed.returncode == 0 and tested.returncode == 0,
+              "successful delete publishes a valid replacement archive")
+        check(os.stat(archive).st_mode & 0o777 == 0o640,
+              "delete replacement retains archive permission bits")
+
+
 def test_empty_archive() -> None:
     section("Edge case: empty archive")
 
@@ -854,6 +941,7 @@ def main() -> int:
         test_linux_help_and_long_form_cli,
         test_roundtrip_per_method,
         test_operations,
+        test_delete_publication_failure,
         test_empty_archive,
         test_empty_file,
         test_utf8_filenames,
