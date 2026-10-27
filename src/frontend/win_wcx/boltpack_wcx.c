@@ -402,12 +402,17 @@ static LONG g_wcx_temp_counter = 0;
 static int wcx_open_sibling_stage(const char *target, char *temporary,
                                  size_t temporary_size, FILE **file)
 {
-    char directory[WCX_MAX_PATH];
+    char directory[WCX_MAX_PATH], full_target[WCX_MAX_PATH];
     char *slash, *fslash;
-    size_t length = strlen(target);
+    DWORD full_length;
+    size_t length;
     int attempt;
+    full_length = GetFullPathNameA(target, (DWORD)sizeof(full_target),
+                                   full_target, NULL);
+    if (full_length == 0 || full_length >= sizeof(full_target)) return -1;
+    length = strlen(full_target);
     if (length >= sizeof(directory) || temporary_size < WCX_MAX_PATH) return -1;
-    strcpy(directory, target);
+    strcpy(directory, full_target);
     slash = strrchr(directory, '\\');
     fslash = strrchr(directory, '/');
     if (fslash != NULL && (slash == NULL || fslash > slash)) slash = fslash;
@@ -423,7 +428,7 @@ static int wcx_open_sibling_stage(const char *target, char *temporary,
                     (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
         if (count < 0 || (size_t)count >= temporary_size) return -1;
         handle = CreateFileA(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
+                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                              NULL);
         if (handle == INVALID_HANDLE_VALUE) {
             DWORD error = GetLastError();
@@ -438,6 +443,21 @@ static int wcx_open_sibling_stage(const char *target, char *temporary,
         return 0;
     }
     return -1;
+}
+
+static int wcx_copy_stream(FILE *source, FILE *destination)
+{
+    unsigned char buffer[64 * 1024];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        if (fwrite(buffer, 1, count, destination) != count) return -1;
+    }
+    return ferror(source) ? -1 : 0;
+}
+
+static int wcx_flush_stage(FILE *file)
+{
+    return fflush(file) == 0 && _commit(_fileno(file)) == 0 ? 0 : -1;
 }
 
 static int wcx_apply_fat(const char *path, bp_uint8 valid, bp_uint8 value)
@@ -1379,19 +1399,27 @@ __declspec(dllexport)
 int WINAPI PackFiles(char *PackedFile, char *SubPath,
                      char *SrcPath, char *AddList, int Flags)
 {
-    FILE *fp;
+    FILE *fp = NULL;
+    FILE *source_fp = NULL;
     bp_io_t aio;
     bp_archive_t ar;
     char *name;
     char src[WCX_MAX_PATH];
     char arc_name[WCX_MAX_PATH];
+    char target[WCX_MAX_PATH];
+    char temporary[WCX_MAX_PATH] = "";
     const char *base;
     char *sep;
     char *fsep;
+    DWORD target_length;
+    DWORD target_attr;
     int rc;
     int appending = 0;
     int method;
     int partial = 0;
+    int archive_open = 0;
+    int stage_exists = 0;
+    int result = E_ECREATE;
 
     rc = bp_compress_init();
     if (rc != BP_OK) return E_BAD_DATA;
@@ -1399,36 +1427,59 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
     /* Get compression method from registry (defaults to boltlz) */
     method = get_compression_method();
 
-    /* If the archive already exists, append in-place. */
-    {
-        DWORD attr = GetFileAttributesA(PackedFile);
-        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            appending = 1;
-        }
+    target_length = GetFullPathNameA(PackedFile, (DWORD)sizeof(target),
+                                     target, NULL);
+    if (target_length == 0 || target_length >= sizeof(target))
+        return E_ECREATE;
+    target_attr = GetFileAttributesA(target);
+    if (target_attr != INVALID_FILE_ATTRIBUTES) {
+        if (target_attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+            return E_ECREATE;
+        appending = 1;
     }
+
+    /* Build the complete archive away from the visible path. This leaves an
+     * existing archive intact if adding an entry or finalizing the new table
+     * fails, and lets publication replace the old archive atomically. */
+    if (wcx_open_sibling_stage(target, temporary, sizeof(temporary), &fp) != 0)
+        return E_ECREATE;
+    stage_exists = 1;
 
     if (appending) {
-        fp = fopen(PackedFile, "r+b");
-        if (fp == NULL) return E_EOPEN;
-
-        bp_io_from_file(&aio, fp);
-        rc = bp_archive_open_append(&ar, &aio, BP_BLOCK_DEFAULT,
-                                    method);
-        if (rc != BP_OK) {
-            fclose(fp);
-            return E_BAD_DATA;
+        source_fp = fopen(target, "rb");
+        if (source_fp == NULL || wcx_copy_stream(source_fp, fp) != 0 ||
+            wcx_flush_stage(fp) != 0) {
+            result = E_ECOPY;
+            goto pack_cleanup;
         }
-    } else {
-        fp = fopen(PackedFile, "w+b");
-        if (fp == NULL) return E_ECREATE;
-
-        bp_io_from_file(&aio, fp);
-        rc = bp_archive_create(&ar, &aio, BP_BLOCK_DEFAULT, method);
-        if (rc != BP_OK) {
-            fclose(fp);
-            return E_BAD_DATA;
+        if (fclose(source_fp) != 0) {
+            source_fp = NULL;
+            result = E_ECOPY;
+            goto pack_cleanup;
+        }
+        source_fp = NULL;
+        if (fclose(fp) != 0) {
+            fp = NULL;
+            result = E_ECOPY;
+            goto pack_cleanup;
+        }
+        fp = fopen(temporary, "r+b");
+        if (fp == NULL) {
+            result = E_EOPEN;
+            goto pack_cleanup;
         }
     }
+
+    bp_io_from_file(&aio, fp);
+    if (appending)
+        rc = bp_archive_open_append(&ar, &aio, BP_BLOCK_DEFAULT, method);
+    else
+        rc = bp_archive_create(&ar, &aio, BP_BLOCK_DEFAULT, method);
+    if (rc != BP_OK) {
+        result = E_BAD_DATA;
+        goto pack_cleanup;
+    }
+    archive_open = 1;
 
     /* AddList is a double-null-terminated list of filenames. */
     for (name = AddList; name != NULL && *name != '\0';
@@ -1479,31 +1530,60 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
             continue;
         }
         if (rc != BP_OK) {
-            bp_archive_close(&ar);
-            fclose(fp);
-            return E_ECOPY;
+            result = E_ECOPY;
+            goto pack_cleanup;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
+    archive_open = 0;
 
     if (rc != BP_OK) {
-        return E_BAD_DATA;
+        result = E_BAD_DATA;
+        goto pack_cleanup;
     }
+    if (wcx_flush_stage(fp) != 0) {
+        result = E_EWRITE;
+        goto pack_cleanup;
+    }
+    if (fclose(fp) != 0) {
+        fp = NULL;
+        result = E_ECLOSE;
+        goto pack_cleanup;
+    }
+    fp = NULL;
+
+    if (!MoveFileExA(temporary, target,
+                     (appending ? MOVEFILE_REPLACE_EXISTING : 0) |
+                     MOVEFILE_WRITE_THROUGH)) {
+        result = E_ECOPY;
+        goto pack_cleanup;
+    }
+    stage_exists = 0;
 
     return partial ? E_ECOPY : E_SUCCESS;
+
+pack_cleanup:
+    if (source_fp != NULL) fclose(source_fp);
+    if (archive_open) bp_archive_close(&ar);
+    if (fp != NULL) fclose(fp);
+    if (stage_exists) DeleteFileA(temporary);
+    return result;
 }
 
 __declspec(dllexport)
 int WINAPI DeleteFiles(char *PackedFile, char *DeleteList)
 {
-    FILE *src_fp, *dst_fp;
+    FILE *src_fp = NULL, *dst_fp = NULL;
     bp_io_t src_io, dst_io;
     char tmp_name[WCX_MAX_PATH];
+    char target[WCX_MAX_PATH];
+    DWORD target_length;
+    DWORD target_attr;
     int rc;
     bp_uint32 deleted = 0;
+    int stage_exists = 0;
 
     /* Count the entries and build an array of name pointers.
      * DeleteList is double-null terminated, names use backslashes.
@@ -1535,40 +1615,59 @@ int WINAPI DeleteFiles(char *PackedFile, char *DeleteList)
             names[i] = dup;
         }
 
-        src_fp = fopen(PackedFile, "rb");
+        target_length = GetFullPathNameA(PackedFile, (DWORD)sizeof(target),
+                                         target, NULL);
+        if (target_length == 0 || target_length >= sizeof(target)) {
+            for (i = 0; i < count; i++) free((void *)names[i]);
+            free(names);
+            return E_EOPEN;
+        }
+        target_attr = GetFileAttributesA(target);
+        if (target_attr == INVALID_FILE_ATTRIBUTES ||
+            (target_attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+            for (i = 0; i < count; i++) free((void *)names[i]);
+            free(names);
+            return E_EOPEN;
+        }
+        src_fp = fopen(target, "rb");
         if (src_fp == NULL) {
             for (i = 0; i < count; i++) free((void *)names[i]);
             free(names);
             return E_EOPEN;
         }
 
-        snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", PackedFile);
-        dst_fp = fopen(tmp_name, "w+b");
-        if (dst_fp == NULL) {
+        if (wcx_open_sibling_stage(target, tmp_name, sizeof(tmp_name), &dst_fp) != 0) {
             fclose(src_fp);
             for (i = 0; i < count; i++) free((void *)names[i]);
             free(names);
             return E_ECREATE;
         }
+        stage_exists = 1;
 
         bp_io_from_file(&src_io, src_fp);
         bp_io_from_file(&dst_io, dst_fp);
 
         rc = bp_archive_delete(&src_io, &dst_io, names, count, &deleted);
 
-        fclose(src_fp);
-        fclose(dst_fp);
+        if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        src_fp = NULL;
+        if (rc == BP_OK && deleted != 0 && wcx_flush_stage(dst_fp) != 0)
+            rc = BP_ERR_IO;
+        if (fclose(dst_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        dst_fp = NULL;
 
         for (i = 0; i < count; i++) free((void *)names[i]);
         free(names);
     }
 
     if (rc != BP_OK || deleted == 0) {
-        remove(tmp_name);
+        if (stage_exists) DeleteFileA(tmp_name);
         return (rc != BP_OK) ? E_BAD_DATA : E_SUCCESS;
     }
 
-    if (remove(PackedFile) != 0 || rename(tmp_name, PackedFile) != 0) {
+    if (!MoveFileExA(tmp_name, target,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileA(tmp_name);
         return E_ECOPY;
     }
 
