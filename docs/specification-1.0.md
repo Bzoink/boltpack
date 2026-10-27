@@ -1316,10 +1316,10 @@ size, and serialized archive-size limits. The full writer API exposes
 `bp_archive_create_profile(..., BP_PROFILE_INTERCHANGE_1)` and
 `bp_archive_use_profile()` to apply the same limits during creation and
 append; profile append validates the existing archive before enabling the
-profile. The Linux CLI exposes this as `--interchange-profile-1` for create and
-add. Full writers without the profile selected may produce larger or extended
-archives. Filesystem path limits and working-memory limits are separate
-capabilities and must be documented by each frontend.
+profile. The Linux and Windows CLIs expose this as `--interchange-profile-1`
+for create and add. Full writers without the profile selected may produce
+larger or extended archives. Filesystem path limits and working-memory limits
+are separate capabilities and must be documented by each frontend.
 
 ---
 
