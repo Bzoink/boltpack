@@ -233,6 +233,14 @@ surface used by the Linux-family frontends: long-form commands such as
 basic `boltpack help` page that hides expert compression tuning. Run
 `boltpack help advanced` to show the full Windows CLI surface.
 
+`--interchange-profile-1` is available for `create` and `add`. It selects
+BoltLite with 16 KiB blocks by default, or Stored with `-0`, and enforces the
+mini-compatible entry-count, per-entry, block, and serialized archive limits.
+Explicit codec, block-size, or level settings that conflict with the profile
+are refused. Appending also checks that the existing archive already conforms.
+The option has Win32 and Win64 cross-build coverage; Windows runtime behavior
+and profile archive round trips still need target testing.
+
 On OpenMP-enabled Windows CLI builds, BoltLZ, Fluff, and zstd use multiple
 workers automatically for sufficiently large workloads. Use
 `--single-thread` to force serial compression, or `-j N` to set the worker

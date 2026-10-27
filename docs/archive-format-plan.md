@@ -442,9 +442,11 @@ archives before extraction. Both cores reject absolute, drive-prefixed,
 backslash, empty, `.` and `..` path components, and require primary directory
 names to end in `/`. Host tests cover profile output, append, refusal of
 extended codecs, entry-size and serialized-size limits, and a mini-reader test
-of a full-writer profile archive. Other full frontends have not yet exposed a
-user-selectable profile option. Per-frontend evidence is tracked in
-[interoperability-matrix.md](interoperability-matrix.md).
+of a full-writer profile archive. The Linux and Windows CLIs expose the profile
+for create and add; Windows has cross-build evidence but still needs runtime
+qualification of option behavior and emitted archives. Other full frontends
+have not yet exposed a user-selectable profile option. Per-frontend evidence
+is tracked in [interoperability-matrix.md](interoperability-matrix.md).
 
 ### Required validation
 
