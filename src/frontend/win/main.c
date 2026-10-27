@@ -13,6 +13,7 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
+#include "../../core/bp_metadata.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -33,6 +34,10 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <io.h>
+#include <stdint.h>
+#include <wchar.h>
 #include <utime.h>
 
 #ifdef BOLTPACK_NET
@@ -80,6 +85,42 @@ static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
     if (alen == 0 || used_default) return -1;
 
     return 0;
+}
+
+typedef struct {
+    bp_uint8 data[BP_META_FAT_SIZE];
+    unsigned pos;
+} win_fat_source_t;
+
+static long win_fat_read(void *handle, void *buffer, bp_uint32 count)
+{
+    win_fat_source_t *source = (win_fat_source_t *)handle;
+    unsigned remaining = BP_META_FAT_SIZE - source->pos;
+    if (count > remaining) count = remaining;
+    memcpy(buffer, source->data + source->pos, count);
+    source->pos += count;
+    return (long)count;
+}
+
+static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
+                                const char *path, bp_uint8 subject_type)
+{
+    win_fat_source_t source;
+    bp_io_t io;
+    DWORD attributes = GetFileAttributesA(path);
+    bp_uint8 value;
+    int rc;
+    if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
+    value = (bp_uint8)(attributes & BP_META_FAT_MASK);
+    rc = bp_metadata_fat_encode(source.data, sizeof(source.data),
+                                subject_type, BP_META_FAT_MASK, value);
+    if (rc != BP_OK) return rc;
+    source.pos = 0;
+    io.read = win_fat_read; io.write = NULL; io.seek = NULL; io.tell = NULL;
+    io.handle = &source;
+    return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_META_PORTABLE,
+                                   &io, bp_u64_from_u32(BP_META_FAT_SIZE),
+                                   bp_u64_from_u32(0), 0);
 }
 
 /* ---- verbosity --------------------------------------------------------- */
@@ -1374,6 +1415,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                                   bp_off_to_u64((bp_off_t)st.st_mtime));
         if (rc != BP_OK) return rc;
 
+        rc = add_win_fat_metadata(ar, dir_arc_utf8, path, BP_TYPE_DIR);
+        if (rc != BP_OK) return rc;
+
         return add_directory(ar, path, dir_arc);
 
     } else if (S_ISREG(st.st_mode)) {
@@ -1406,6 +1450,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                                   bp_off_to_u64((bp_off_t)st.st_mtime));
         fclose(fp);
 
+        if (rc != BP_OK) return rc;
+
+        rc = add_win_fat_metadata(ar, arcname_utf8, path, BP_TYPE_DATA);
         if (rc != BP_OK) return rc;
 
         if (g_verbosity == VERB_DEFAULT) {
@@ -1480,6 +1527,171 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 /* ---- extract callbacks ------------------------------------------------- */
 
+typedef struct win_path_node_s {
+    struct win_path_node_s *left;
+    struct win_path_node_s *right;
+    int height;
+    wchar_t name[BP_MAX_PATH];
+} win_path_node_t;
+
+static int win_path_height(const win_path_node_t *node)
+{
+    return node == NULL ? 0 : node->height;
+}
+
+static void win_path_update_height(win_path_node_t *node)
+{
+    int left = win_path_height(node->left);
+    int right = win_path_height(node->right);
+    node->height = (left > right ? left : right) + 1;
+}
+
+static win_path_node_t *win_path_rotate_right(win_path_node_t *root)
+{
+    win_path_node_t *top = root->left;
+    root->left = top->right;
+    top->right = root;
+    win_path_update_height(root);
+    win_path_update_height(top);
+    return top;
+}
+
+static win_path_node_t *win_path_rotate_left(win_path_node_t *root)
+{
+    win_path_node_t *top = root->right;
+    root->right = top->left;
+    top->left = root;
+    win_path_update_height(root);
+    win_path_update_height(top);
+    return top;
+}
+
+static int win_path_compare(const wchar_t *left, const wchar_t *right)
+{
+    int rc = CompareStringOrdinal(left, -1, right, -1, TRUE);
+    if (rc == CSTR_LESS_THAN) return -1;
+    if (rc == CSTR_GREATER_THAN) return 1;
+    return rc == CSTR_EQUAL ? 0 : 2;
+}
+
+static int win_path_compare_n(const wchar_t *left, size_t left_length,
+                              const char *right, size_t right_length)
+{
+    wchar_t wide[16];
+    size_t i;
+    int rc;
+    if (left_length != right_length || right_length >= 16U) return 1;
+    for (i = 0; i < right_length; i++) wide[i] = (unsigned char)right[i];
+    rc = CompareStringOrdinal(left, (int)left_length, wide,
+                              (int)right_length, TRUE);
+    if (rc == CSTR_EQUAL) return 0;
+    return rc == CSTR_LESS_THAN ? -1 : 1;
+}
+
+static win_path_node_t *win_path_insert(win_path_node_t *root,
+                                        const wchar_t *name,
+                                        int *result)
+{
+    int cmp, balance;
+    win_path_node_t *child;
+    if (root == NULL) {
+        root = (win_path_node_t *)calloc(1, sizeof(*root));
+        if (root == NULL) { *result = BP_ERR_NOMEM; return NULL; }
+        wcscpy(root->name, name);
+        root->height = 1;
+        *result = BP_OK;
+        return root;
+    }
+    cmp = win_path_compare(name, root->name);
+    if (cmp == 2) { *result = BP_ERR_INVALID_ARG; return root; }
+    if (cmp == 0) { *result = BP_ERR_PARTIAL; return root; }
+    if (cmp < 0) {
+        child = win_path_insert(root->left, name, result);
+        if (*result != BP_OK) return root;
+        root->left = child;
+    } else {
+        child = win_path_insert(root->right, name, result);
+        if (*result != BP_OK) return root;
+        root->right = child;
+    }
+    win_path_update_height(root);
+    balance = win_path_height(root->left) - win_path_height(root->right);
+    if (balance > 1) {
+        if (win_path_compare(name, root->left->name) > 0)
+            root->left = win_path_rotate_left(root->left);
+        return win_path_rotate_right(root);
+    }
+    if (balance < -1) {
+        if (win_path_compare(name, root->right->name) < 0)
+            root->right = win_path_rotate_right(root->right);
+        return win_path_rotate_left(root);
+    }
+    return root;
+}
+
+static void win_path_free(win_path_node_t *root)
+{
+    if (root == NULL) return;
+    win_path_free(root->left);
+    win_path_free(root->right);
+    free(root);
+}
+
+static int win_component_is_device(const wchar_t *component, size_t length)
+{
+    size_t base = 0;
+    size_t i;
+    static const char *const devices[] = {
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"
+    };
+    while (base < length && component[base] != L'.') base++;
+    while (base > 0 && (component[base - 1] == L' ' ||
+                        component[base - 1] == L'.')) base--;
+    for (i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        size_t n = strlen(devices[i]);
+        if (base == n && win_path_compare_n(component, base, devices[i], n) == 0)
+            return 1;
+    }
+    if (base == 4 &&
+        (win_path_compare_n(component, 3, "COM", 3) == 0 ||
+         win_path_compare_n(component, 3, "LPT", 3) == 0) &&
+        component[3] >= L'1' && component[3] <= L'9') return 1;
+    return 0;
+}
+
+static int win_project_windows_path(const char *local_name, wchar_t *key,
+                                    int key_capacity)
+{
+    int length, i, start;
+    length = MultiByteToWideChar(CP_ACP, 0, local_name, -1,
+                                 key, key_capacity);
+    if (length <= 0) return BP_ERR_INVALID_ARG;
+    length--;
+    for (i = 0; i < length; i++) {
+        if (key[i] == L'/') key[i] = L'\\';
+        if (key[i] == L':' || key[i] == L'<' || key[i] == L'>' ||
+            key[i] == L'"' || key[i] == L'|' || key[i] == L'?' ||
+            key[i] == L'*' || key[i] < 32) return BP_ERR_INVALID_ARG;
+    }
+    while (length > 0 && key[length - 1] == L'\\') length--;
+    if (length == 0) return BP_ERR_INVALID_ARG;
+    key[length] = L'\0';
+    start = 0;
+    for (i = 0; i <= length; i++) {
+        if (key[i] == L'\\' || key[i] == L'\0') {
+            int component_length = i - start;
+            if (component_length <= 0 || key[i - 1] == L'.' ||
+                key[i - 1] == L' ' ||
+                (component_length == 1 && key[start] == L'.') ||
+                win_component_is_device(key + start,
+                                        (size_t)component_length))
+                return BP_ERR_INVALID_ARG;
+            start = i + 1;
+        }
+    }
+    return BP_OK;
+}
+
 typedef struct {
     const char *out_dir;    /* -o PATH or NULL */
     int         force;      /* -f flag */
@@ -1488,7 +1700,207 @@ typedef struct {
     bp_uint32   dir_count;
     bp_uint32   unsafe_count;  /* entries skipped for unsafe names */
     int         slash_warned;  /* printed the leading-'/' warning once */
+    struct win_dir_attr_s *directories;
+    win_path_node_t *projected_names;
+    char        last_subject_path[BP_MAX_PATH];
+    int         last_subject_valid;
+    int         last_subject_ok;
 } extract_ctx_t;
+
+static int win_register_output_path(extract_ctx_t *ctx, const char *local_name)
+{
+    wchar_t key[BP_MAX_PATH];
+    int rc = win_project_windows_path(local_name, key, BP_MAX_PATH);
+    if (rc != BP_OK) return rc;
+    ctx->projected_names = win_path_insert(ctx->projected_names, key, &rc);
+    return rc;
+}
+
+typedef struct {
+    bp_io_t io;
+    bp_uint8 data[BP_META_MAX_SIZE];
+    unsigned length;
+} win_metadata_sink_t;
+
+typedef struct win_dir_attr_s {
+    struct win_dir_attr_s *next;
+    bp_uint8 valid;
+    bp_uint8 value;
+    bp_uint64 mtime;
+    int mtime_valid;
+    char path[BP_MAX_PATH];
+} win_dir_attr_t;
+
+typedef struct {
+    bp_io_t io;
+    char target[BP_MAX_PATH];
+    char temporary[BP_MAX_PATH];
+    int force;
+} win_staged_file_t;
+
+static long win_metadata_write(void *handle, const void *data, bp_uint32 size)
+{
+    win_metadata_sink_t *sink = (win_metadata_sink_t *)handle;
+    if (size > BP_META_MAX_SIZE - sink->length) return -1;
+    memcpy(sink->data + sink->length, data, size);
+    sink->length += (unsigned)size;
+    return (long)size;
+}
+
+static int win_apply_fat_attributes(const char *path, bp_uint8 valid,
+                                    bp_uint8 value);
+
+static LONG g_extract_temp_counter = 0;
+
+static int win_open_staged_file(const char *target, char *temporary,
+                                size_t temporary_size, FILE **file)
+{
+    char directory[BP_MAX_PATH];
+    char *slash1, *slash2, *slash;
+    size_t length;
+    unsigned attempt;
+    HANDLE handle;
+    int fd;
+    FILE *fp;
+    if (strlen(target) >= sizeof(directory) || temporary_size < BP_MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+    strcpy(directory, target);
+    slash1 = strrchr(directory, '\\');
+    slash2 = strrchr(directory, '/');
+    slash = slash1;
+    if (slash2 != NULL && (slash == NULL || slash2 > slash)) slash = slash2;
+    if (slash == NULL) strcpy(directory, ".");
+    else {
+        length = (size_t)(slash - directory);
+        if (length == 0) length = 1;
+        else if (length == 2 && directory[1] == ':') length = 3;
+        directory[length] = '\0';
+    }
+    for (attempt = 0; attempt < 256U; attempt++) {
+        unsigned long serial = (unsigned long)GetTickCount() ^
+            ((unsigned long)GetCurrentProcessId() << 16) ^
+            (unsigned long)InterlockedIncrement(&g_extract_temp_counter) ^ attempt;
+        int written = _snprintf(temporary, temporary_size,
+                                "%s\\bp%08lx.tmp", directory, serial);
+        if (written < 0 || (size_t)written >= temporary_size) return BP_ERR_NAME_TOO_LONG;
+        handle = CreateFileA(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
+                             NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return BP_ERR_IO;
+        }
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_WRONLY);
+        if (fd < 0) { CloseHandle(handle); DeleteFileA(temporary); return BP_ERR_IO; }
+        fp = _fdopen(fd, "wb");
+        if (fp == NULL) { _close(fd); DeleteFileA(temporary); return BP_ERR_IO; }
+        *file = fp;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int win_queue_directory_attributes(extract_ctx_t *ctx,
+                                          const char *path,
+                                          bp_uint8 valid, bp_uint8 value)
+{
+    win_dir_attr_t *node, **at;
+    size_t length = strlen(path);
+    if (length >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    for (node = ctx->directories; node != NULL; node = node->next) {
+        if (strcmp(node->path, path) == 0) {
+            node->valid = valid;
+            node->value = value;
+            return BP_OK;
+        }
+    }
+    node = (win_dir_attr_t *)calloc(1, sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->valid = valid; node->value = value;
+    memcpy(node->path, path, length + 1);
+    at = &ctx->directories;
+    while (*at != NULL && strlen((*at)->path) >= length) at = &(*at)->next;
+    node->next = *at; *at = node;
+    return BP_OK;
+}
+
+static int win_queue_directory_time(extract_ctx_t *ctx, const char *path,
+                                    bp_uint64 mtime, int valid)
+{
+    win_dir_attr_t *node, **at;
+    size_t length = strlen(path);
+    if (length >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    for (node = ctx->directories; node != NULL; node = node->next) {
+        if (strcmp(node->path, path) == 0) {
+            node->mtime = mtime;
+            node->mtime_valid = valid;
+            return BP_OK;
+        }
+    }
+    node = (win_dir_attr_t *)calloc(1, sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    memcpy(node->path, path, length + 1);
+    node->mtime = mtime;
+    node->mtime_valid = valid;
+    at = &ctx->directories;
+    while (*at != NULL && strlen((*at)->path) >= length) at = &(*at)->next;
+    node->next = *at; *at = node;
+    return BP_OK;
+}
+
+static int win_finish_directory_attributes(extract_ctx_t *ctx, int apply)
+{
+    win_dir_attr_t *node = ctx->directories;
+    int result = BP_OK;
+    ctx->directories = NULL;
+    while (node != NULL) {
+        win_dir_attr_t *next = node->next;
+        if (apply) {
+            if (node->mtime_valid) {
+                bp_off_t seconds = bp_u64_to_off(node->mtime);
+                time_t t = (time_t)seconds;
+                struct _stat64 st;
+                struct utimbuf ut;
+                if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), node->mtime) != 0 ||
+                    (bp_off_t)t != seconds || _stat64(node->path, &st) != 0) {
+                    result = BP_ERR_PARTIAL;
+                } else {
+                    ut.actime = (time_t)st.st_atime;
+                    ut.modtime = t;
+                    if (utime(node->path, &ut) != 0) result = BP_ERR_PARTIAL;
+                }
+                if (result != BP_OK)
+                    fprintf(stderr, "boltpack: directory timestamp not restored: %s\n",
+                            node->path);
+            }
+            if (node->valid != 0 &&
+                win_apply_fat_attributes(node->path, node->valid,
+                                         node->value) != BP_OK) {
+                fprintf(stderr, "boltpack: directory FAT attributes not restored: %s\n",
+                        node->path);
+                result = BP_ERR_PARTIAL;
+            }
+        }
+        free(node);
+        node = next;
+    }
+    return result;
+}
+
+static int win_apply_fat_attributes(const char *path, bp_uint8 valid,
+                                    bp_uint8 value)
+{
+    DWORD old_attributes = GetFileAttributesA(path);
+    DWORD desired, actual;
+    if (old_attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_PARTIAL;
+    desired = (old_attributes & ~(DWORD)valid) | value;
+    if (!SetFileAttributesA(path, desired)) return BP_ERR_PARTIAL;
+    actual = GetFileAttributesA(path);
+    if (actual == INVALID_FILE_ATTRIBUTES || (actual & valid) != value)
+        return BP_ERR_PARTIAL;
+    return BP_OK;
+}
 
 /* Strip leading '/' from an entry name (tar-style), warning once. */
 static const char *extract_entry_name(const bp_entry_t *entry,
@@ -1511,8 +1923,9 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     char path[BP_MAX_PATH];
     char local_name[BP_MAX_PATH];
     FILE *fp;
-    bp_io_t *io;
+    win_staged_file_t *staged;
     const char *name;
+    int rc;
 
     /* Validate on the UTF-8 archive name before any codepage conversion:
      * a hostile archive must not choose where we write.  Rejects ".."
@@ -1538,13 +1951,64 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         strcpy(path, local_name);
     }
 
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR) {
+        ctx->last_subject_valid = 0;
+        ctx->last_subject_ok = 0;
+        rc = win_register_output_path(ctx, local_name);
+        if (rc != BP_OK) {
+            if (rc == BP_ERR_PARTIAL)
+                fprintf(stderr, "boltpack: destination name collision: %s\n", name);
+            else
+                fprintf(stderr, "boltpack: unsupported Windows filename: %s\n", name);
+            ctx->unsafe_count++;
+            return NULL;
+        }
+        if (strlen(path) >= sizeof(ctx->last_subject_path)) {
+            ctx->unsafe_count++;
+            return NULL;
+        }
+        strcpy(ctx->last_subject_path, path);
+        ctx->last_subject_valid = 1;
+        ctx->last_subject_ok = 0;
+    }
+
+    if (entry->entry_type == BP_TYPE_META) {
+        win_metadata_sink_t *sink;
+        if (entry->platform != BP_META_PORTABLE) {
+            ctx->unsafe_count++;
+            return NULL;
+        }
+        if (!ctx->last_subject_valid || !ctx->last_subject_ok ||
+            strcmp(ctx->last_subject_path, path) != 0) {
+            ctx->unsafe_count++;
+            return NULL;
+        }
+        sink = (win_metadata_sink_t *)calloc(1, sizeof(*sink));
+        if (sink == NULL) { ctx->unsafe_count++; return NULL; }
+        sink->io.read = NULL; sink->io.write = win_metadata_write;
+        sink->io.seek = NULL; sink->io.tell = NULL; sink->io.handle = sink;
+        return &sink->io;
+    }
+
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) {
             printf("   creating: %s\n", local_name);
         }
-        if (!ctx->dry_run) {
-            mkdirs(path);
+        if (ctx->dry_run) ctx->last_subject_ok = 1;
+        else {
+            DWORD attrs;
+            if (mkdirs(path) != 0) ctx->unsafe_count++;
+            else {
+                attrs = GetFileAttributesA(path);
+                if (attrs == INVALID_FILE_ATTRIBUTES ||
+                    !(attrs & FILE_ATTRIBUTE_DIRECTORY) ||
+                    (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) ctx->unsafe_count++;
+                else if (win_queue_directory_time(ctx, path, entry->mtime,
+                                (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0) != BP_OK)
+                    ctx->unsafe_count++;
+                else ctx->last_subject_ok = 1;
+            }
         }
         return NULL;
     }
@@ -1557,6 +2021,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
                    entry->entry_type == BP_TYPE_RSRC ? "resource fork"
                                                      : "metadata");
         }
+        ctx->unsafe_count++;
         return NULL;
     }
 
@@ -1565,6 +2030,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             printf("   skipping: %s [symlink - not supported on DOS]\n",
                    local_name);
         }
+        ctx->unsafe_count++;
         return NULL;
     }
 
@@ -1573,7 +2039,10 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         printf(" extracting: %s\n", local_name);
     }
 
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) {
+        ctx->last_subject_ok = 1;
+        return NULL;
+    }
 
     /* check for existing file */
     if (!ctx->force) {
@@ -1581,69 +2050,113 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (_stat64(path, &st_buf) == 0) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
+            ctx->unsafe_count++;
             return NULL;
         }
     }
 
     mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
+    staged = (win_staged_file_t *)calloc(1, sizeof(*staged));
+    if (staged == NULL) { ctx->unsafe_count++; return NULL; }
+    rc = win_open_staged_file(path, staged->temporary,
+                              sizeof(staged->temporary), &fp);
+    if (rc != BP_OK) {
         fprintf(stderr, "boltpack: cannot create: %s\n", path);
+        free(staged);
+        ctx->unsafe_count++;
         return NULL;
     }
-
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (io == NULL) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    strcpy(staged->target, path);
+    staged->force = ctx->force;
+    bp_io_from_file(&staged->io, fp);
+    return &staged->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-    FILE *fp = (FILE *)out->handle;
     char path[BP_MAX_PATH];
     char local_name[BP_MAX_PATH];
-    struct utimbuf ut;
+    const char *name = extract_entry_name(entry, ctx);
+    int result = BP_OK;
 
-    fclose(fp);
-
-    /* Convert UTF-8 archive name to ACP for filesystem (same leading-'/'
-     * stripping as extract_open so the paths agree) */
-    {
-        const char *name = extract_entry_name(entry, ctx);
+    if (entry->entry_type == BP_TYPE_META) {
+        win_metadata_sink_t *sink = (win_metadata_sink_t *)out;
+        bp_portable_metadata_t parsed;
+        int parse_rc;
+        if (status != BP_OK) { free(sink); return status; }
+        parse_rc = bp_metadata_parse(sink->data, sink->length, &parsed);
+        if (parse_rc == BP_ERR_CORRUPT) { free(sink); return parse_rc; }
         if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
-            free(out);
-            return;
+            free(sink); return BP_ERR_PARTIAL;
         }
+        if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
+        else strcpy(path, local_name);
+        if (parsed.has_fat && !ctx->dry_run) {
+            if (parsed.subject_type == BP_TYPE_DIR)
+                result = win_queue_directory_attributes(ctx, path,
+                                                        parsed.fat_valid,
+                                                        parsed.fat_value);
+            else
+                result = win_apply_fat_attributes(path, parsed.fat_valid,
+                                                  parsed.fat_value);
+            if (result != BP_OK)
+                fprintf(stderr, "boltpack: FAT attributes not restored: %s\n", path);
+        }
+        free(sink);
+        if ((parse_rc == BP_ERR_PARTIAL || parsed.has_unknown) && result == BP_OK)
+            result = BP_ERR_PARTIAL;
+        return result;
     }
 
-    /* set modification time */
-    if (ctx->out_dir) {
-        path_join(path, sizeof(path), ctx->out_dir, local_name);
-    } else {
-        strcpy(path, local_name);
-    }
-    if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-        bp_off_t seconds = bp_u64_to_off(entry->mtime);
-        time_t t = (time_t)seconds;
-        struct _stat64 st;
-        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
-            (bp_off_t)t != seconds || _stat64(path, &st) != 0) {
-            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
-            ctx->unsafe_count++;
-        } else {
-            ut.actime = (time_t)st.st_atime;
-            ut.modtime = t;
-            if (utime(path, &ut) != 0) {
+    {
+        win_staged_file_t *staged = (win_staged_file_t *)out;
+        FILE *fp = (FILE *)out->handle;
+        if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
+            fclose(fp); DeleteFileA(staged->temporary); free(staged);
+            return BP_ERR_PARTIAL;
+        }
+        if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
+        else strcpy(path, local_name);
+        if (fclose(fp) != 0 && status == BP_OK) status = BP_ERR_IO;
+        if (status != BP_OK) {
+            DeleteFileA(staged->temporary);
+            free(staged);
+            return status;
+        }
+
+        if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+            bp_off_t seconds = bp_u64_to_off(entry->mtime);
+            time_t t = (time_t)seconds;
+            struct _stat64 st;
+            struct utimbuf ut;
+            if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+                (bp_off_t)t != seconds || _stat64(staged->temporary, &st) != 0) {
                 fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
-                ctx->unsafe_count++;
+                result = BP_ERR_PARTIAL;
+            } else {
+                ut.actime = (time_t)st.st_atime;
+                ut.modtime = t;
+                if (utime(staged->temporary, &ut) != 0) {
+                    fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
+                    result = BP_ERR_PARTIAL;
+                }
             }
         }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) result = BP_ERR_PARTIAL;
+        if (!MoveFileExA(staged->temporary, path,
+                         MOVEFILE_WRITE_THROUGH |
+                         (staged->force ? MOVEFILE_REPLACE_EXISTING : 0))) {
+            fprintf(stderr, "boltpack: cannot commit extracted file: %s\n", path);
+            DeleteFileA(staged->temporary);
+            free(staged);
+            return BP_ERR_IO;
+        }
+        ctx->last_subject_ok = 1;
+        free(staged);
     }
-
-    free(out);
+    return result;
 }
 
 #ifdef BOLTPACK_NET
@@ -1662,7 +2175,16 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = 0;
-    return bp_archive_extract_all(aio, extract_open, extract_done, NULL, &ctx);
+    {
+        int rc = bp_archive_extract_all_ex(aio, extract_open, extract_done,
+                                           NULL, &ctx);
+        int dir_rc = win_finish_directory_attributes(&ctx,
+                              rc == BP_OK || rc == BP_ERR_PARTIAL);
+        if (dir_rc != BP_OK && rc == BP_OK) rc = dir_rc;
+        if (ctx.unsafe_count != 0 && rc == BP_OK) rc = BP_ERR_PARTIAL;
+        win_path_free(ctx.projected_names);
+        return rc;
+    }
 }
 #endif
 
@@ -2107,10 +2629,17 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
 
     start = wall_time_seconds();
 
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
-                                g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
-                                &ctx);
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
+                                   g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
+                                   &ctx);
     fclose(fp);
+
+    {
+        int dir_rc = win_finish_directory_attributes(&ctx,
+                              rc == BP_OK || rc == BP_ERR_PARTIAL);
+        if (dir_rc != BP_OK && rc == BP_OK) rc = dir_rc;
+    }
+    win_path_free(ctx.projected_names);
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
