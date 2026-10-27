@@ -1629,6 +1629,7 @@ cross-build coverage, but no OS/2 runtime round trip has been performed.
 | Option    | Description                                   |
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
+| `--interchange-profile-1` | Enforce mini-compatible limits for create/add (BoltLite by default, 16 KiB blocks) |
 | `-0`      | Store only (no compression)                   |
 | `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
