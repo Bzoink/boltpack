@@ -473,10 +473,12 @@ DOS files have Read-only, Hidden, System, and Archive attribute bits. The
 16-bit DOS mini frontend captures/restores portable FAT metadata with the
 Watcom DOS attribute APIs. The full DOS CLI captures and restores those bits
 through the portable FAT metadata envelope when built with DJGPP; directory
-flags are applied after children finish. Its host-only test mode simulates
-these flags and does not validate DOS APIs. Native DOS build/runtime validation
-is still outstanding. Do not infer attribute preservation from the archive's
-platform field alone.
+flags are applied after children finish. Create, add, and delete stage archive
+replacements and preserve known archive flags on DJGPP. Directory timestamps
+cannot be changed on plain DOS and are reported as partial. Its host-only test
+mode simulates these flags and does not validate DOS APIs. Native DOS
+build/runtime validation is still outstanding. Do not infer attribute
+preservation from the archive's platform field alone.
 
 #### Linux / modern Unix (permissions)
 

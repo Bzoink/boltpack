@@ -17,6 +17,7 @@ INTERPOSER = r'''
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -49,6 +50,41 @@ ssize_t write(int fd, const void *buf, size_t count)
         return -1;
     }
     return real_write(fd, buf, count);
+}
+size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream)
+{
+    static size_t (*real_fwrite)(const void *, size_t, size_t, FILE *);
+    if (!real_fwrite) real_fwrite = dlsym(RTLD_NEXT, "fwrite");
+    if (fileno(stream) == stage_fd && getenv("BP_FAIL_WRITE")) {
+        errno = EIO;
+        return 0;
+    }
+    return real_fwrite(ptr, size, count, stream);
+}
+int fclose(FILE *stream)
+{
+    static int (*real_fclose)(FILE *);
+    int fail;
+    if (!real_fclose) real_fclose = dlsym(RTLD_NEXT, "fclose");
+    fail = fileno(stream) == stage_fd && getenv("BP_FAIL_CLOSE") != NULL;
+    if (fail) stage_fd = -1;
+    if (real_fclose(stream) != 0) return EOF;
+    if (fail) {
+        errno = EIO;
+        return EOF;
+    }
+    return 0;
+}
+int rename(const char *oldpath, const char *newpath)
+{
+    static int (*real_rename)(const char *, const char *);
+    if (!real_rename) real_rename = dlsym(RTLD_NEXT, "rename");
+    if (getenv("BP_FAIL_RENAME") && strstr(oldpath, "BP") &&
+        strstr(oldpath, ".TMP")) {
+        errno = EIO;
+        return -1;
+    }
+    return real_rename(oldpath, newpath);
 }
 int close(int fd)
 {
@@ -83,6 +119,15 @@ def main():
         source = root / "source"
         (source / "src").mkdir(parents=True)
         (source / "src" / "file.txt").write_bytes(b"verified DOS frontend output\n")
+        readonly_source = source / "src" / "readonly.txt"
+        readonly_source.write_bytes(b"read-only portable FAT flag\n")
+        readonly_source.chmod(0o444)
+        hidden_system_source = source / "src" / ".hidden.SYS"
+        hidden_system_source.write_bytes(b"hidden and system name flags\n")
+        protected_dir_source = source / "src" / "protected"
+        protected_dir_source.mkdir()
+        (protected_dir_source / "child.txt").write_bytes(b"child of protected directory\n")
+        protected_dir_source.chmod(0o555)
         result = run([str(boltpack), "c", "normal.blt", "src"], source)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
 
@@ -91,7 +136,19 @@ def main():
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         target = output / "src" / "file.txt"
         assert target.read_bytes() == b"verified DOS frontend output\n"
+        readonly_target = output / "src" / "readonly.txt"
+        assert readonly_target.read_bytes() == b"read-only portable FAT flag\n"
+        assert readonly_target.stat().st_mode & 0o222 == 0
+        hidden_system_target = output / "src" / ".hidden.SYS"
+        assert hidden_system_target.read_bytes() == b"hidden and system name flags\n"
+        protected_dir_target = output / "src" / "protected"
+        assert (protected_dir_target / "child.txt").read_bytes() == b"child of protected directory\n"
+        assert protected_dir_target.stat().st_mode & 0o222 == 0
 
+        # The host simulation maps a directory's FAT read-only flag to POSIX
+        # write permissions. Make it writable so the second extraction can
+        # create sibling stages, then verify the archive restores the flag.
+        protected_dir_target.chmod(0o755)
         target.write_bytes(b"previous destination survives failed replacement\n")
         result = run([str(boltpack), "x", "-f", "-o", str(output), "normal.blt"], source)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
@@ -158,6 +215,71 @@ def main():
         interposer = root / "failure.so"
         subprocess.run(["cc", "-shared", "-fPIC", str(interposer_c), "-ldl", "-o", str(interposer)],
                        check=True, capture_output=True)
+
+        addition = source / "addition.txt"
+        addition.write_bytes(b"staged DOS archive edit\n")
+        archive = source / "normal.blt"
+
+        def archive_snapshot():
+            return archive.read_bytes()
+
+        for command, args_for_command in (
+            ("c", ["normal.blt", "src"]),
+            ("a", ["normal.blt", "addition.txt"]),
+            ("d", ["normal.blt", "src/file.txt"]),
+        ):
+            before = archive_snapshot()
+            env = os.environ.copy()
+            env.update(LD_PRELOAD=str(interposer), BP_FAIL_WRITE="1")
+            result = run([str(boltpack), command, *args_for_command], source, env=env)
+            assert result.returncode != 0, f"{command}: staged write failure was not reported"
+            assert archive_snapshot() == before, f"{command}: failed edit changed the original archive"
+            assert not list(source.glob("BP*.TMP")), f"{command}: failed edit left a stage"
+            assert not list(source.glob("BK*.BAK")), f"{command}: failed edit left a recovery file"
+
+        for command, args_for_command in (
+            ("c", ["normal.blt", "src"]),
+            ("a", ["normal.blt", "addition.txt"]),
+            ("d", ["normal.blt", "src/file.txt"]),
+        ):
+            before = archive_snapshot()
+            env = os.environ.copy()
+            env.update(LD_PRELOAD=str(interposer), BP_FAIL_CLOSE="1")
+            result = run([str(boltpack), command, *args_for_command], source, env=env)
+            assert result.returncode != 0, f"{command}: staged close failure was not reported"
+            assert archive_snapshot() == before, f"{command}: close failure changed the original archive"
+            assert not list(source.glob("BP*.TMP")), f"{command}: close failure left a stage"
+            assert not list(source.glob("BK*.BAK")), f"{command}: close failure left a recovery file"
+
+        for command, args_for_command in (
+            ("c", ["normal.blt", "src"]),
+            ("a", ["normal.blt", "addition.txt"]),
+            ("d", ["normal.blt", "src/file.txt"]),
+        ):
+            before = archive_snapshot()
+            env = os.environ.copy()
+            env.update(LD_PRELOAD=str(interposer), BP_FAIL_RENAME="1")
+            result = run([str(boltpack), command, *args_for_command], source, env=env)
+            assert result.returncode != 0, f"{command}: publication failure was not reported"
+            assert archive_snapshot() == before, f"{command}: publication failure changed the original archive"
+            assert not list(source.glob("BP*.TMP")), f"{command}: publication failure left a stage"
+            assert not list(source.glob("BK*.BAK")), f"{command}: publication failure left a recovery file"
+
+        result = run([str(boltpack), "c", "normal.blt", "src"], source)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert run([str(boltpack), "t", "normal.blt"], source).returncode == 0
+        result = run([str(boltpack), "a", "normal.blt", "addition.txt"], source)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        listing = run([str(boltpack), "l", "normal.blt"], source)
+        assert listing.returncode == 0 and b"addition.txt" in listing.stdout
+        assert run([str(boltpack), "t", "normal.blt"], source).returncode == 0
+        result = run([str(boltpack), "d", "normal.blt", "addition.txt"], source)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        listing = run([str(boltpack), "l", "normal.blt"], source)
+        assert listing.returncode == 0 and b"addition.txt" not in listing.stdout
+        assert run([str(boltpack), "t", "normal.blt"], source).returncode == 0
+        assert not list(source.glob("BP*.TMP"))
+        assert not list(source.glob("BK*.BAK"))
 
         write_output = root / "write_failure"
         write_output.mkdir()

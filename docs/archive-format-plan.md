@@ -35,12 +35,22 @@ still need comparable metadata and extraction lifecycle coverage. The full DOS
 frontend now uses a bounded CP850 projected-name preflight and status-aware
 staged file extraction. It checks close and checksum status before publication,
 removes failed stages, uses a recovery name during forced replacement, and
-reports skipped resource forks and symlinks as partial. It captures and
-restores portable FAT flags with DJGPP's DOS attribute API; directory times
-and flags are deferred until children finish. The reproducible
+reports skipped resource forks and symlinks as partial. Create, add, and delete
+write exclusive sibling stages; add copies the original before appending, and
+all three keep an existing archive under a recovery name until publication
+succeeds. They check target identity before publication, refuse multiply linked
+archive targets, preserve known archive FAT flags on DJGPP, and retain the
+original on handled write, close, or publication failures. The host fixture
+injects those failures for create/add/delete. File extraction captures and
+restores portable FAT flags with DJGPP's DOS attribute API; directory flags
+are deferred until children finish. DJGPP's timestamp API cannot set directory
+times on plain DOS, so the frontend reports those restores as partial. The
+reproducible
 `make dos-host-test` target validates frontend logic with a host build,
-including CP850 case aliases and injected write/close failures, but does not
-validate DOS APIs.
+including CP850 case aliases, hidden/system name flags, read-only file and
+directory restoration, and injected write/close failures, but does not
+validate DOS APIs. Its archive-edit fixtures also check byte-for-byte
+preservation and cleanup after write, close, and publication failures.
 `make dos-djgpp` is the actual cross-build target, but it skips here because
 the DJGPP compiler is unavailable; no DOS runtime fixture is available either.
 The full DOS CLI's path-based publication has no protection against a
