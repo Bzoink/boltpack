@@ -1356,6 +1356,24 @@ os2-16:
 cpm86:
 	@echo "  NOTE  CP/M-86 requires Aztec C 86; see comment in Makefile for build instructions"
 
+# Host-run policy fixture for the CP/M-86 frontend. This validates the C89
+# frontend logic, not CP/M-86 filesystem or runtime behavior.
+CPM86_HOST_DIR = build/cpm86-host
+CPM86_HOST_BIN = $(CPM86_HOST_DIR)/bpmini
+.PHONY: cpm86-host-test
+cpm86-host-test:
+	mkdir -p $(CPM86_HOST_DIR)
+	$(CC) $(filter-out $(BP_VER_DEFS),$(CFLAGS)) $(MINI_BP_VER_DEFS) -DBP_MINI \
+	    -DBP_CREATOR_OS=BP_OS_CPM86 -DBP_CREATOR_CPU=BP_CPU_8086 \
+	    -I$(COREDIR) -I$(MINI_COREDIR) -I$(MINI_SHARED) \
+	    -o $(CPM86_HOST_BIN) \
+	    $(MINI_COREDIR)/archiver.c $(MINI_COREDIR)/compress.c \
+	    $(MINI_COREDIR)/boltlz_decomp.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/boltlz.c \
+	    $(MINI_SHARED)/mini_common.c $(COREDIR)/bp_codepage.c \
+	    src/frontend/cpm86/main.c
+	python3 test/check_cpm86_host.py $(CPM86_HOST_BIN)
+
 # ---- mini-all: build all cross-compilable mini targets ------------------
 .PHONY: mini-all
 mini-all: mini-test dos16 win16 os2-16

@@ -422,6 +422,15 @@ case folding, Unicode normalization, reserved device names, trailing dots or
 spaces, truncation, and CP/M flat 8.3 projection in collision handling.
 `--force` does not authorize two distinct archive names to silently merge.
 
+The CP/M-86 writer uses a strict flat 8.3 projection: it rejects truncation,
+directories, unsupported characters, case-folded duplicates, and a source that
+aliases the archive output before opening the destination. It refuses an
+existing archive. Extraction materializes only exact uppercase 8.3 names;
+directories and nonmatching names return a partial result. The projection is
+covered by a C89 host frontend test that verifies archive creation, listing,
+extraction, collision refusal, and preservation of existing archive bytes. No
+CP/M-86 compiler or runtime is available here.
+
 **Acceptance:** representative CP437/850 names round-trip exactly through
 Linux and the relevant mini API; invalid UTF-8 fails; valid unmappable names
 have an explicit result; projected collisions cannot overwrite earlier files.

@@ -9,9 +9,10 @@
  *   - File names are 8.3 uppercase.
  *   - No mtime (set to zero in created archives; ignored on extract).
  *   - No recursive directory scanning; filenames taken directly from argv.
- *   - On extract: archive path components are stripped; name is folded to
- *     8.3 uppercase; duplicate names in the same archive produce a warning
- *     and the later entry is skipped.
+ *   - Archive creation accepts only flat CP/M 8.3 names, checks projected
+ *     names for collisions before opening the archive, and never truncates.
+ *   - Extraction only creates exact uppercase 8.3 files. Directories,
+ *     existing destinations, and unrepresentable names are reported partial.
  *   - No utime or stat mtime field; st_size is available via fseek/ftell.
  *
  * Compiler:  cc -DSIZEOF_INT=2 -DSIZEOF_LONG=4  -DBP_MINI
@@ -23,72 +24,19 @@
 
 #include "../../core/mini/archiver.h"
 #include "../mini_shared/mini_common.h"
+#include "cpm86_path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
 /* ---- constants --------------------------------------------------------- */
 
-#define BP_MAX_PATH  14   /* 8 + '.' + 3 + NUL = 13 chars on CP/M */
+#define BP_MAX_PATH  BP_CPM86_NAME_SIZE
 #define PROG_NAME    "BPMINI"
 #define BP_XSTR(x)   BP_STR(x)
 #define BP_STR(x)    #x
 #define BP_VER       BP_XSTR(BP_VERSION_MAJOR) "." BP_XSTR(BP_VERSION_MINOR)
-
-/* ---- 8.3 name utilities ------------------------------------------------ */
-
-/*
- * Fold an archive path to a flat CP/M 8.3 uppercase name.
- * Strips directory components and truncates base/ext to 8/3 chars.
- */
-static void to_8dot3(const char *arc_name, char *out)
-{
-    const char *base;
-    const char *dot;
-    const char *p;
-    int b_len;
-    int e_len;
-    int i;
-
-    /* Find the last directory separator */
-    base = arc_name;
-    for (p = arc_name; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
-        }
-    }
-
-    /* Find extension */
-    dot = NULL;
-    for (p = base; *p; p++) {
-        if (*p == '.') dot = p;
-    }
-
-    if (dot == NULL) {
-        /* No extension */
-        b_len = (int)(p - base);
-        if (b_len > 8) b_len = 8;
-        for (i = 0; i < b_len; i++) {
-            out[i] = (char)toupper((unsigned char)base[i]);
-        }
-        out[b_len] = '\0';
-    } else {
-        b_len = (int)(dot - base);
-        if (b_len > 8) b_len = 8;
-        for (i = 0; i < b_len; i++) {
-            out[i] = (char)toupper((unsigned char)base[i]);
-        }
-        out[b_len] = '.';
-        e_len = (int)strlen(dot + 1);
-        if (e_len > 3) e_len = 3;
-        for (i = 0; i < e_len; i++) {
-            out[b_len + 1 + i] = (char)toupper((unsigned char)dot[1 + i]);
-        }
-        out[b_len + 1 + e_len] = '\0';
-    }
-}
 
 /* ---- get file size without stat ---------------------------------------- */
 
@@ -144,8 +92,7 @@ static int already_extracted(const char *name)
 static void record_extracted(const char *name)
 {
     if (g_extracted_count < MAX_EXTRACTED) {
-        strncpy(g_extracted[g_extracted_count], name, BP_MAX_PATH - 1);
-        g_extracted[g_extracted_count][BP_MAX_PATH - 1] = '\0';
+        strcpy(g_extracted[g_extracted_count], name);
         g_extracted_count++;
     }
 }
@@ -164,24 +111,27 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
         return NULL; /* CP/M-86: no directories */
     }
 
-    if (strchr(e->name, '/') != NULL ||
-        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0) {
+    if (bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0 ||
+        !bp_cpm86_project_name(local_name, flat)) {
         fprintf(stderr, PROG_NAME ": name cannot be represented: %s\n", e->name);
+        g_extract_partial = 1;
         return NULL;
     }
-    to_8dot3(local_name, flat);
     if (strcmp(flat, local_name) != 0) {
         fprintf(stderr, PROG_NAME ": name is not uppercase 8.3: %s\n", e->name);
+        g_extract_partial = 1;
         return NULL;
     }
 
     if (already_extracted(flat)) {
         fprintf(stderr, PROG_NAME ": skip duplicate %s (from %s)\n",
                 flat, e->name);
+        g_extract_partial = 1;
         return NULL;
     }
     if (g_extracted_count >= MAX_EXTRACTED) {
         fprintf(stderr, PROG_NAME ": extraction name limit reached; skipping %s\n", flat);
+        g_extract_partial = 1;
         return NULL;
     }
 
@@ -191,11 +141,13 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     if (fp != NULL) {
         fclose(fp);
         fprintf(stderr, PROG_NAME ": file already exists: %s\n", flat);
+        g_extract_partial = 1;
         return NULL;
     }
     fp = fopen(flat, "wb");
     if (fp == NULL) {
         fprintf(stderr, PROG_NAME ": cannot create %s\n", flat);
+        g_extract_partial = 1;
         return NULL;
     }
 
@@ -212,10 +164,12 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
                            int status, void *user_data)
 {
+    int close_status;
     (void)user_data;
     if (out == NULL) return BP_ERR_INVALID_ARG;
-    if (fclose((FILE *)out->handle) != 0) return BP_ERR_IO;
-    if (status != BP_OK) (void)remove(g_extract_path);
+    close_status = fclose((FILE *)out->handle);
+    if (status != BP_OK || close_status != 0) (void)remove(g_extract_path);
+    if (close_status != 0) return BP_ERR_IO;
     else if (e->flags & BP_ENTRY_FLAG_MTIME_VALID) {
         fprintf(stderr, PROG_NAME ": timestamp not restored: %s\n", e->name);
         g_extract_partial = 1;
@@ -247,6 +201,31 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
     int i;
     int rc;
 
+    if (!bp_cpm86_create_names_safe(arc_path, argv, (unsigned int)argc)) {
+        fprintf(stderr,
+                PROG_NAME ": archive and source names must be distinct valid CP/M 8.3 names\n");
+        return 1;
+    }
+    for (i = 0; i < argc; i++) {
+        if (file_size_of(argv[i]) < 0) {
+            fprintf(stderr, PROG_NAME ": cannot read source file: %s\n", argv[i]);
+            return 1;
+        }
+    }
+
+    rc = bp_mini_compress_init();
+    if (rc != BP_OK) {
+        fprintf(stderr, PROG_NAME ": compress init: %s\n",
+                bp_mini_strerror(rc));
+        return 1;
+    }
+
+    fp = fopen(arc_path, "rb");
+    if (fp != NULL) {
+        fclose(fp);
+        fprintf(stderr, PROG_NAME ": archive already exists: %s\n", arc_path);
+        return 1;
+    }
     fp = fopen(arc_path, "wb");
     if (fp == NULL) {
         fprintf(stderr, PROG_NAME ": cannot create %s\n", arc_path);
@@ -254,18 +233,11 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
     }
     bp_io_from_file(&arc_io, fp);
 
-    rc = bp_mini_compress_init();
-    if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": compress init: %s\n",
-                bp_mini_strerror(rc));
-        fclose(fp);
-        return 1;
-    }
-
     rc = bp_mini_archive_create(&ar, &arc_io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, PROG_NAME ": create: %s\n", bp_mini_strerror(rc));
         fclose(fp);
+        remove(arc_path);
         return 1;
     }
 
@@ -277,13 +249,16 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         bp_uint64 mtime;
         char arc_name[BP_MAX_PATH];
 
-        /* CP/M: filenames are flat; normalise to 8.3 in the archive too */
-        to_8dot3(argv[i], arc_name);
+        if (!bp_cpm86_project_name(argv[i], arc_name)) {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
 
         sz = file_size_of(argv[i]);
         if (sz < 0) {
             fprintf(stderr, PROG_NAME ": cannot size %s\n", argv[i]);
-            continue;
+            rc = BP_ERR_IO;
+            break;
         }
         fsize.lo = (bp_uint32)(unsigned long)sz;
         fsize.hi = 0;
@@ -295,13 +270,14 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         in = fopen(argv[i], "rb");
         if (in == NULL) {
             fprintf(stderr, PROG_NAME ": cannot open %s\n", argv[i]);
-            continue;
+            rc = BP_ERR_IO;
+            break;
         }
 
         bp_io_from_file(&file_io, in);
         rc = bp_mini_add_local_entry(&ar, arc_name, BP_TYPE_DATA,
                                      BP_OS_CPM86, &file_io, fsize, mtime, 0);
-        fclose(in);
+        if (fclose(in) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
         if (rc != BP_OK) {
             fprintf(stderr, PROG_NAME ": error adding %s: %s\n",
@@ -312,10 +288,11 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 
     if (rc == BP_OK) rc = bp_mini_archive_finalize(&ar);
     bp_mini_archive_close(&ar);
-    fclose(fp);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, PROG_NAME ": finalize: %s\n", bp_mini_strerror(rc));
+        remove(arc_path);
         return 1;
     }
     return 0;
@@ -468,11 +445,11 @@ static void usage(void)
           "Options:\n"
           "  -b8k / -b16k / -b32k           block size (create only)\n"
           "  -m0                            store, no compression\n"
-          "  -m1                            BoltLite compression (default)\n"
-          "Compression:\n"
-          "  create:   store (0), BoltLite (1)\n"
-          "  extract:  store (0), BoltLite (1), boltlz (2)\n",
+          "  -m1                            BoltLite compression (default)\n",
           stderr);
+    fputs("Compression:\n"
+          "  create:   store (0), BoltLite (1)\n"
+          "  extract:  store (0), BoltLite (1), boltlz (2)\n", stderr);
 }
 
 /* ---- main -------------------------------------------------------------- */
