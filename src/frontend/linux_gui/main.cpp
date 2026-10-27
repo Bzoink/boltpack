@@ -4102,7 +4102,8 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
 {
     int choice = fl_choice("Reset GUI settings to defaults?\n"
                            "This restores the default compression mode,\n"
-                           "Fluff and zstd threading, window size and position,\n"
+                           "compression profile, Fluff and zstd threading,\n"
+                           "window size and position,\n"
                            "and file-list columns.",
                            "Cancel", "Reset", NULL);
     if (choice != 1) return;
@@ -4111,6 +4112,7 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
     g_compression_level = 1;
     g_fluff_multithread = 0;
     g_zstd_multithread  = 0;
+    g_interchange_profile = 0;
 
     g_have_persisted_col_widths = false;
     memset(g_persisted_col_widths, 0, sizeof(g_persisted_col_widths));

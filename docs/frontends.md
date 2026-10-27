@@ -2178,6 +2178,14 @@ Like the Linux FLTK frontend, the Windows create dialog exposes a
 fast-fluff/OpenMP path, so the checkbox feeds `bp_set_fast_fluff()` rather
 than only changing GUI state.
 
+The create dialog also offers Interchange Profile 1, stored in `gui.conf` as
+`interchange_profile`. It writes BoltLite archives with 16 KiB blocks under
+the mini-compatible entry-count, entry-size, and serialized-size limits.
+Archive creation writes a sibling stage and only replaces the selected file
+after finalization, flush, and close succeed. Existing destinations are
+rechecked before publication; Windows `ReplaceFile` preserves destination
+metadata when replacing an existing archive.
+
 #### Unsigned test builds on Windows
 
 The FLTK GUI binaries and NSIS installers produced by the standard Makefile
