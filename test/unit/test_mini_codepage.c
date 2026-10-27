@@ -11,20 +11,22 @@ int main(void)
     const char *filename_local;
     unsigned char expected_byte;
     char lower_case[2], upper_case[2];
-#if BP_CREATOR_OS == BP_OS_OS2
+#if BP_MINI_CODEPAGE == BP_CP_850
     expected = "\xC3\xB8"; /* CP850 0x9B is U+00F8. */
     expected_byte = 0x9B;
     filename_utf8 = "caf\xC3\xB8.txt";
     filename_local = "caf\x9B.txt";
     lower_case[0] = (char)0x9B; /* ø */
     upper_case[0] = (char)0x9D; /* Ø */
-#else
+#elif BP_MINI_CODEPAGE == BP_CP_437
     expected = "\xC2\xA2"; /* CP437 0x9B is U+00A2. */
     expected_byte = 0x9B;
     filename_utf8 = "caf\xC3\xA9.txt";
     filename_local = "caf\x82.txt";
     lower_case[0] = (char)0x82; /* é */
     upper_case[0] = (char)0x90; /* É */
+#else
+#error test_mini_codepage supports only the configured CP437 and CP850 fixtures
 #endif
     lower_case[1] = upper_case[1] = '\0';
     local[0] = (char)expected_byte;
