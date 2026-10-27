@@ -460,9 +460,12 @@ of a full-writer profile archive. The Linux and Windows CLIs expose the profile
 for create and add; Windows has cross-build evidence but still needs runtime
 qualification of option behavior and emitted archives. The full OS/2 CLI now
 also exposes create/add profile selection; its Watcom cross-build passes, and
-OS/2 runtime qualification remains unavailable. Other full frontends have not
-yet exposed a user-selectable profile option. Per-frontend evidence is tracked
-in [interoperability-matrix.md](interoperability-matrix.md).
+OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
+same profile option; its strict C89 host build and create/add/test smoke pass,
+but a macOS target build and runtime profile round trip remain outstanding.
+Other full frontends have not yet exposed a user-selectable profile option.
+Per-frontend evidence is tracked in
+[interoperability-matrix.md](interoperability-matrix.md).
 
 ### Required validation
 
