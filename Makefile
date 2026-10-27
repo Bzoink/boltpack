@@ -1163,6 +1163,19 @@ cross-all: all musl arm arm64 riscv \
 
 asan: $(ASAN_TARGET)
 
+# Optional cross-runtime checks for environments with QEMU-i386, Open Watcom,
+# and DOSBox. These complement the host suite without making those tools
+# mandatory for every `make test` run.
+.PHONY: linuxmini-interoperability-test dos16-interoperability-test
+linuxmini-interoperability-test: modern linuxmini
+	BP_TEST_LINUXMINI_RUNNER=qemu-i386 python3 test/check_linuxmini_interop.py
+	python3 test/check_extract_race.py --boltpack build/linux/boltpack
+	BP_TEST_RUNNER=qemu-i386 python3 test/check_extract_race.py \
+	    --boltpack $(LINUXMINI_EXE) --mini
+
+dos16-interoperability-test: modern dos16 unit-test-dos16
+	python3 test/check_dos16_interop.py
+
 test: modern unit-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
@@ -1171,6 +1184,8 @@ test: modern unit-test
 	$(MAKE) CC=$(CC) x68k-host-test
 	$(MAKE) CC=$(CC) plan9-host-test
 	$(MAKE) CC=$(CC) macosx-host-test
+	$(MAKE) CC=$(CC) dos-host-test
+	$(MAKE) CC=$(CC) cpm86-host-test
 	@echo "=== All test suites passed ==="
 
 fuzz: $(ASAN_TARGET)
