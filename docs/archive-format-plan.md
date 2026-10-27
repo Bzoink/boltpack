@@ -754,14 +754,13 @@ portable metadata, resource forks, and native metadata; another verifies the
 discard-stream contract. A Linux CLI fixture round-trips timestamps at
 2,147,483,647, 2,147,483,648, and 4,294,967,295 seconds, covering both sides
 of the signed 2038 boundary and the unsigned 32-bit seconds boundary.
-All six checks in the timestamp fixture passed independently. The latest
-complete `make CC=gcc test` run passed with 263 archive-format and 154 CLI
-integration checks. Archive-edit tests carry resource forks and both native
-and portable metadata through copy, append, integrity verification, and
-complete-group deletion while checking primary timestamp and mode flags. The
-timestamp fixture adds six CLI checks. The standard target also runs dry-run
-archive verification. It also
-runs `check_symlink_atomic.py`: Linux stages symlinks beside their final paths,
+Archive-edit tests carry resource forks and both native and portable metadata
+through copy, append, integrity verification, and complete-group deletion
+while checking primary timestamp and mode flags. On 2026-10-27,
+`make CC=gcc test` passed with 263 archive-format and 160 CLI integration
+checks, including the timestamp boundaries above and dry-run archive
+verification. It also runs `check_symlink_atomic.py`: Linux stages symlinks
+beside their final paths,
 applies valid mtimes with no-follow operations, and publishes only after
 timestamp success. It verifies no-clobber behavior; failure injection confirms
 an existing link is preserved and the stage removed if time restoration fails.
