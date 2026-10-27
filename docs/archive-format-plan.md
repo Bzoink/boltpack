@@ -21,7 +21,12 @@ OS/2 CLI stage regular-file output until checksums pass. Linux uses
 directory-relative operations; EMX OS/2 checks existing components with
 `lstat`, while Watcom OS/2 relies on pathname APIs. The Windows CLI now writes
 and restores portable FAT flags, while deferring directory flags until
-children finish. This plan remains incomplete: other frontends and wrappers
+children finish. The Linux FLTK GUI now uses the same directory-relative
+no-follow traversal, stages regular files and symlinks beside their
+destinations, commits after checksum verification, and restores file and
+deferred directory mode/time metadata. Unsupported metadata and resource forks
+produce a partial result. This frontend has build evidence but still needs
+interactive runtime tests. This plan remains incomplete: other frontends and wrappers
 still need comparable metadata and extraction lifecycle coverage. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization

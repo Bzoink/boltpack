@@ -2117,9 +2117,12 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     if (ctx.root_fd < 0) return BP_ERR_IO;
 #endif
     rc = bp_archive_extract_all_ex(aio, extract_open, extract_done, NULL, &ctx);
-    if (rc == BP_OK && ctx.open_error != BP_OK) rc = ctx.open_error;
-    dir_rc = finish_directories(&ctx, rc == BP_OK);
-    if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx.open_error != BP_OK)
+        rc = ctx.open_error;
+    dir_rc = finish_directories(
+        &ctx, (rc == BP_OK || rc == BP_ERR_PARTIAL) &&
+              ctx.open_error == BP_OK);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
 #ifdef __linux__
     close(ctx.root_fd);
@@ -2587,9 +2590,12 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                                    &ctx);
     fclose(fp);
 
-    if (rc == BP_OK && ctx.open_error != BP_OK) rc = ctx.open_error;
-    dir_rc = finish_directories(&ctx, rc == BP_OK);
-    if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx.open_error != BP_OK)
+        rc = ctx.open_error;
+    dir_rc = finish_directories(
+        &ctx, (rc == BP_OK || rc == BP_ERR_PARTIAL) &&
+              ctx.open_error == BP_OK);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
 #ifdef __linux__
     if (ctx.root_fd >= 0) close(ctx.root_fd);
