@@ -113,7 +113,8 @@ relative `openat` calls and reject symlink components. Staged files and final
 commits use the same open parent handle. Deterministic tests cover the full
 Linux and Linux mini implementations' parent substitution, concurrent
 destination creation, write failure, and close failure; failed stages are
-removed without publishing output. Other frontends still need equivalent
+removed without publishing output, and forced replacement preserves the
+existing file when close fails. Other frontends still need equivalent
 protection. A process
 able to rename an already opened directory outside the extraction tree is a
 separate concurrent-mutation limitation. The checked-in classic Mac 68k core

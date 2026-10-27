@@ -182,16 +182,23 @@ def main():
         assert not list(failure_out.rglob(".boltpack-*")), "failed temporary file remains"
 
         close_out = root / "close-out"
-        close_out.mkdir()
+        close_target = close_out / "src" / "file.txt"
+        close_target.parent.mkdir(parents=True)
+        if not args.mini:
+            close_target.write_bytes(b"existing content survives close failure\n")
         env = os.environ.copy()
         env.update(LD_PRELOAD=str(library), BP_TEST_FAIL_CLOSE="1",
                    BP_TEST_MARKER=str(root / "close-failed"))
         extract_cmd = ([str(binary), "x", "archive.blt", str(close_out)] if args.mini else
-                       [str(binary), "x", "-o", str(close_out), "archive.blt"])
+                       [str(binary), "x", "--force", "-o", str(close_out), "archive.blt"])
         result = run_target(extract_cmd, cwd=root, env=env, capture_output=True)
         assert (root / "close-failed").exists(), "close-failure interposer did not trigger"
         assert result.returncode != 0, "close failure was not reported"
-        assert not (close_out / "src/file.txt").exists(), "close-failed output was committed"
+        if args.mini:
+            assert not close_target.exists(), "close-failed output was committed"
+        else:
+            assert close_target.read_bytes() == b"existing content survives close failure\n", \
+                "close failure changed the existing destination"
         assert not list(close_out.rglob(".boltpack-*")), "close-failed temporary file remains"
         print("Extraction resists path races and cleans up write/close failures")
 
