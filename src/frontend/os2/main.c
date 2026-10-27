@@ -4,8 +4,9 @@
  * Target:   IBM OS/2 Warp 3/4 (32-bit), ArcaOS, eComStation.
  * Compiler: Open Watcom v2 (os2 target) or os2-gcc (GCC with EMX/kLIBC).
  *
- * File I/O uses the standard ANSI C runtime (fopen/fread/fwrite/fseek/ftell)
- * provided by kLIBC or Open Watcom's OS/2 C runtime.
+ * Archive reads and in-place append use the standard ANSI C runtime
+ * (fopen/fread/fwrite/fseek/ftell). Create/delete stages and extraction
+ * staging use OS/2 file handles for exclusive creation and publication.
  * Directory traversal uses the native OS/2 API (DosFindFirst/DosFindNext).
  * OS/2 FAT/HPFS attributes and portable FAT metadata are preserved; HPFS
  * extended attributes such as ".TYPE" are not transferred.
@@ -124,6 +125,58 @@ static void bp_io_from_file(bp_io_t *io, FILE *fp)
     io->seek   = file_seek;
     io->tell   = file_tell;
     io->handle = fp;
+}
+
+typedef struct {
+    HFILE handle;
+} os2_archive_io_t;
+
+static long os2_archive_read(void *handle, void *buffer, bp_uint32 count)
+{
+    os2_archive_io_t *file = (os2_archive_io_t *)handle;
+    ULONG received = 0;
+    APIRET rc = DosRead(file->handle, buffer, (ULONG)count, &received);
+    return rc == NO_ERROR ? (long)received : -1L;
+}
+
+static long os2_archive_write(void *handle, const void *buffer, bp_uint32 count)
+{
+    os2_archive_io_t *file = (os2_archive_io_t *)handle;
+    ULONG written = 0;
+    APIRET rc = DosWrite(file->handle, (PVOID)buffer, (ULONG)count, &written);
+    return rc == NO_ERROR ? (long)written : -1L;
+}
+
+static int os2_archive_seek(void *handle, bp_off_t offset, int origin)
+{
+    os2_archive_io_t *file = (os2_archive_io_t *)handle;
+    ULONG method;
+    ULONG position = 0;
+    if (origin == SEEK_SET) method = FILE_BEGIN;
+    else if (origin == SEEK_CUR) method = FILE_CURRENT;
+    else if (origin == SEEK_END) method = FILE_END;
+    else return -1;
+    return DosSetFilePtr(file->handle, (LONG)offset, method,
+                         &position) == NO_ERROR ? 0 : -1;
+}
+
+static bp_off_t os2_archive_tell(void *handle)
+{
+    os2_archive_io_t *file = (os2_archive_io_t *)handle;
+    ULONG position = 0;
+    if (DosSetFilePtr(file->handle, 0L, FILE_CURRENT, &position) != NO_ERROR ||
+        position > 0x7FFFFFFFUL)
+        return (bp_off_t)-1;
+    return (bp_off_t)position;
+}
+
+static void bp_io_from_os2_handle(bp_io_t *io, os2_archive_io_t *file)
+{
+    io->read = os2_archive_read;
+    io->write = os2_archive_write;
+    io->seek = os2_archive_seek;
+    io->tell = os2_archive_tell;
+    io->handle = file;
 }
 
 static int os2_restore_append_tail(FILE *fp, bp_uint64 tail_off,
@@ -1010,6 +1063,62 @@ static int os2_restore_backup(const char *backup, const char *target)
     return DosMove((PSZ)backup, (PSZ)target) == NO_ERROR ? 0 : -1;
 }
 
+static int os2_publish_archive(const char *temporary, const char *target)
+{
+    static unsigned long sequence = 0;
+    FILESTATUS3 status;
+    char backup[BP_MAX_PATH];
+    const char *slash = strrchr(target, '\\');
+    const char *forward = strrchr(target, '/');
+    size_t prefix;
+    unsigned int attempt;
+    int has_backup = 0;
+    APIRET rc;
+
+    if (forward != NULL && (slash == NULL || forward > slash)) slash = forward;
+    prefix = slash != NULL ? (size_t)(slash - target + 1) : 0;
+    if (prefix + 13U >= sizeof(backup)) return BP_ERR_NAME_TOO_LONG;
+
+    rc = DosQueryPathInfo((PSZ)target, FIL_STANDARD, &status, sizeof(status));
+    if (rc == NO_ERROR) {
+        if (status.attrFile & FILE_DIRECTORY) return BP_ERR_IO;
+    } else if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) {
+        return DosMove((PSZ)temporary, (PSZ)target) == NO_ERROR ?
+               BP_OK : BP_ERR_IO;
+    } else {
+        return BP_ERR_IO;
+    }
+
+    for (attempt = 0; attempt < 128U; attempt++) {
+        ULONG id = sequence++ & 0xFFFFFFUL;
+        memcpy(backup, target, prefix);
+        sprintf(backup + prefix, "BO%06lX.BAK", id);
+        rc = DosQueryPathInfo((PSZ)backup, FIL_STANDARD, &status,
+                              sizeof(status));
+        if (rc == NO_ERROR) continue;
+        if (rc != ERROR_FILE_NOT_FOUND && rc != ERROR_PATH_NOT_FOUND)
+            return BP_ERR_IO;
+        rc = DosMove((PSZ)target, (PSZ)backup);
+        if (rc == NO_ERROR) { has_backup = 1; break; }
+    }
+    if (!has_backup) return BP_ERR_IO;
+
+    rc = DosMove((PSZ)temporary, (PSZ)target);
+    if (rc != NO_ERROR) {
+        if (os2_restore_backup(backup, target) != 0)
+            fprintf(stderr,
+                    "boltpack: original archive remains at recovery path: %s\n",
+                    backup);
+        return BP_ERR_IO;
+    }
+    if (DosDelete((PSZ)backup) != NO_ERROR) {
+        fprintf(stderr, "boltpack: cannot remove replaced-archive backup: %s\n",
+                backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
 static int os2_commit_staged(os2_staged_output_t *output, int force)
 {
     static unsigned long sequence = 0;
@@ -1558,61 +1667,108 @@ static int cmd_list(const char *archive_name)
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
 {
-    FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i; clock_t start;
+    bp_io_t aio;
+    bp_archive_t ar;
+    os2_archive_io_t stage_file;
+    int stage_handle;
+    int rc, i;
+    clock_t start;
+    char temporary[BP_MAX_PATH];
+    bp_uint64 total_orig, total_comp;
+    bp_uint32 file_count, dir_count;
+
     if (argc < 2) { fprintf(stderr, "boltpack: create requires archive and files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     g_unknown_source_times = 0;
-    fp = fopen(argv[0], "w+b");
-    if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
-    bp_io_from_file(&aio, fp);
+    temporary[0] = '\0';
+    stage_handle = os2_make_temp_path(argv[0], temporary, sizeof(temporary));
+    if (stage_handle < 0) {
+        fprintf(stderr, "boltpack: cannot create archive staging file\n");
+        return 1;
+    }
+    stage_file.handle = (HFILE)stage_handle;
+    bp_io_from_os2_handle(&aio, &stage_file);
     rc = bp_archive_create(&ar, &aio, block_size, method);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        goto create_discard;
+    }
     start = clock();
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH]; strcpy(buf, clean_path(argv[i])); normalise_seps(buf);
         rc = add_path(&ar, argv[i], buf);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", argv[i], bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar);
+            goto create_discard;
         }
     }
     rc = bp_archive_finalize(&ar);
-    bp_archive_close(&ar); fclose(fp);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc)); return 1; }
+    total_orig.lo = total_orig.hi = 0;
+    total_comp.lo = total_comp.hi = 0;
+    file_count = dir_count = 0;
+    if (rc == BP_OK) {
+        bp_uint32 j;
+        for (j = 0; j < ar.entries_written; j++) {
+            if (ar.entry_list[j].entry_type == BP_TYPE_DIR) dir_count++;
+            else file_count++;
+            total_orig = bp_u64_add(total_orig, ar.entry_list[j].original_size);
+            total_comp = bp_u64_add(total_comp, ar.entry_list[j].compressed_size);
+        }
+    }
+    bp_archive_close(&ar);
+    if (rc == BP_OK && DosResetBuffer(stage_file.handle) != NO_ERROR)
+        rc = BP_ERR_IO;
+    if (DosClose(stage_file.handle) != NO_ERROR && rc == BP_OK)
+        rc = BP_ERR_IO;
+    stage_file.handle = (HFILE)-1;
+    stage_handle = -1;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: finalize or close failed: %s\n",
+                bp_strerror(rc));
+        goto create_discard;
+    }
+    rc = os2_publish_archive(temporary, argv[0]);
+    if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n",
+                bp_strerror(rc));
+        goto create_discard;
+    }
     if (g_unknown_source_times != 0) {
         fprintf(stderr, "boltpack: %lu timestamp(s) were stored as unknown; set BP_TZ_OFFSET (minutes east of UTC)\n",
                 (unsigned long)g_unknown_source_times);
     }
     if (g_verbosity < VERB_SILENT) {
         double elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
-        bp_uint64 to = {0,0}, tc = {0,0}; bp_uint32 j, fc = 0, dc = 0;
         char nb[32], sb[64];
-        for (j = 0; j < ar.entries_written; j++) {
-            if (ar.entry_list[j].entry_type == BP_TYPE_DIR) dc++;
-            else fc++;
-            to = bp_u64_add(to, ar.entry_list[j].original_size);
-            tc = bp_u64_add(tc, ar.entry_list[j].compressed_size);
-        }
-        format_size64(to, nb, sizeof(nb));
+        format_size64(total_orig, nb, sizeof(nb));
         printf("%lu file%s, %lu director%s, %s",
-               (unsigned long)fc, fc == 1 ? "" : "s",
-               (unsigned long)dc, dc == 1 ? "y" : "ies", nb);
-        if (!bp_u64_is_zero(to) && !bp_u64_is_zero(tc)) {
-            double od = (double)to.lo + (double)to.hi * 4294967296.0;
-            double cd = (double)tc.lo + (double)tc.hi * 4294967296.0;
-            char cb[32]; format_size64(tc, cb, sizeof(cb));
+               (unsigned long)file_count, file_count == 1 ? "" : "s",
+               (unsigned long)dir_count, dir_count == 1 ? "y" : "ies", nb);
+        if (!bp_u64_is_zero(total_orig) && !bp_u64_is_zero(total_comp)) {
+            double od = (double)total_orig.lo + (double)total_orig.hi * 4294967296.0;
+            double cd = (double)total_comp.lo + (double)total_comp.hi * 4294967296.0;
+            char cb[32]; format_size64(total_comp, cb, sizeof(cb));
             printf(", %.0f%% (%s)", od > 0.0 ? cd / od * 100.0 : 0.0, cb);
         }
         if (elapsed > 0.0) {
-            double od = (double)to.lo + (double)to.hi * 4294967296.0;
+            double od = (double)total_orig.lo + (double)total_orig.hi * 4294967296.0;
             printf(", %.2fs", elapsed);
             format_speed(od / elapsed, sb, sizeof(sb));
             printf(", %s", sb);
         }
         printf("\n");
     }
-    return g_unknown_source_times != 0 ? 1 : 0;
+    return rc == BP_ERR_PARTIAL || g_unknown_source_times != 0 ? 1 : 0;
+
+create_discard:
+    if (stage_file.handle != (HFILE)-1) {
+        (void)DosClose(stage_file.handle);
+        stage_file.handle = (HFILE)-1;
+    }
+    if (temporary[0] != '\0') (void)DosDelete((PSZ)temporary);
+    return 1;
 }
 
 /* ---- cmd_add ---------------------------------------------------------- */
@@ -1798,33 +1954,66 @@ static int cmd_test(const char *archive_name)
 
 static int cmd_delete(int argc, char **argv)
 {
-    const char **del; int del_count;
-    FILE *sf, *df; bp_io_t sio, dio;
-    char tmp[BP_MAX_PATH]; bp_uint32 deleted = 0; int rc;
+    const char **del;
+    int del_count;
+    FILE *sf;
+    bp_io_t sio, dio;
+    os2_archive_io_t stage_file;
+    char temporary[BP_MAX_PATH];
+    int stage_handle;
+    bp_uint32 deleted = 0;
+    int rc;
 
     if (argc < 2) { fprintf(stderr, "boltpack: delete requires archive and files\n"); return 1; }
     del = (const char **)&argv[1]; del_count = argc - 1;
 
     sf = fopen(argv[0], "rb");
     if (!sf) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
-    sprintf(tmp, "%s.bp_tmp", argv[0]);
-    df = fopen(tmp, "w+b");
-    if (!df) { fprintf(stderr, "boltpack: cannot create temp file\n"); fclose(sf); return 1; }
+    temporary[0] = '\0';
+    stage_handle = os2_make_temp_path(argv[0], temporary, sizeof(temporary));
+    if (stage_handle < 0) {
+        fprintf(stderr, "boltpack: cannot create archive staging file\n");
+        fclose(sf);
+        return 1;
+    }
+    stage_file.handle = (HFILE)stage_handle;
     bp_io_from_file(&sio, sf);
-    bp_io_from_file(&dio, df);
+    bp_io_from_os2_handle(&dio, &stage_file);
     rc = bp_archive_delete(&sio, &dio, del, (bp_uint32)del_count, &deleted);
-    fclose(sf); fclose(df);
+    if (fclose(sf) != 0 && rc == BP_OK) rc = BP_ERR_IO;
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp); return 1;
+        goto delete_discard;
     }
-    if (!deleted) { fprintf(stderr, "boltpack: no matching entries found\n"); remove(tmp); return 1; }
-    if (remove(argv[0]) != 0 || rename(tmp, argv[0]) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n"); return 1;
+    if (!deleted) {
+        fprintf(stderr, "boltpack: no matching entries found\n");
+        goto delete_discard;
+    }
+    if (DosResetBuffer(stage_file.handle) != NO_ERROR) rc = BP_ERR_IO;
+    if (DosClose(stage_file.handle) != NO_ERROR && rc == BP_OK)
+        rc = BP_ERR_IO;
+    stage_file.handle = (HFILE)-1;
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot close deleted archive stage\n");
+        goto delete_discard;
+    }
+    rc = os2_publish_archive(temporary, argv[0]);
+    if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: cannot replace archive: %s\n",
+                bp_strerror(rc));
+        goto delete_discard;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%lu entr%s deleted\n", (unsigned long)deleted, deleted == 1 ? "y" : "ies");
-    return 0;
+    return rc == BP_ERR_PARTIAL ? 1 : 0;
+
+delete_discard:
+    if (stage_file.handle != (HFILE)-1) {
+        (void)DosClose(stage_file.handle);
+        stage_file.handle = (HFILE)-1;
+    }
+    if (temporary[0] != '\0') (void)DosDelete((PSZ)temporary);
+    return 1;
 }
 
 /* ---- main ------------------------------------------------------------- */
