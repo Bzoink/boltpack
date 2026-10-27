@@ -572,6 +572,10 @@ MACOS68K_CFLAGS   = -Wall -Wextra -Wno-unused-function -O2 \
                     -include src/frontend/macos9/68k/compat/MacCompat.h
 MACOS68K_BUILDDIR = build/macos9-68k
 MACOS68K_FRONTEND = src/frontend/macos9/68k/Source
+# Retro68 executables need the Boost shared libraries installed alongside this
+# toolchain in the development image. Override this path for other installs.
+MACOS68K_BOOST_LIBDIR ?= /opt/boost1_92/lib
+MACOS68K_ENV = LD_LIBRARY_PATH=$(MACOS68K_BOOST_LIBDIR)$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
 
 MACOS68K_REZ      = $(RETRO68_ROOT)/bin/Rez
 MACOS68K_RINCLUDES = $(RETRO68_ROOT)/RIncludes
@@ -580,12 +584,12 @@ MACOS68K_MULTIVERSAL_RINCLUDES = $(RETRO68_ROOT)/multiversal/RIncludes
 .PHONY: macos9-68k
 macos9-68k:
 	mkdir -p $(MACOS68K_BUILDDIR)
-	@if ! printf 'int main(void){return 0;}\n' | $(MACOS68K_CC) -x c -o /dev/null - >/dev/null 2>&1; then \
+	@if ! printf 'int main(void){return 0;}\n' | $(MACOS68K_ENV) $(MACOS68K_CC) -x c -o /dev/null - >/dev/null 2>&1; then \
 	    rm -f $(MACOS68K_BUILDDIR)/.rsrc/BoltPack; \
 	    echo '  SKIP  macos9-68k (Retro68 compiler cannot link a test program)'; \
 	    exit 0; \
 	fi
-	$(MACOS68K_CC) $(MACOS68K_CFLAGS) \
+	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -595,7 +599,7 @@ macos9-68k:
 	    $(MACOS68K_FRONTEND)/main.c \
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MACOS68K_BUILDDIR)/BoltPack
-	$(MACOS68K_REZ) -I $(MACOS68K_RINCLUDES) -I $(MACOS68K_MULTIVERSAL_RINCLUDES) \
+	$(MACOS68K_ENV) $(MACOS68K_REZ) -I $(MACOS68K_RINCLUDES) -I $(MACOS68K_MULTIVERSAL_RINCLUDES) \
 	    $(MACOS68K_FRONTEND)/boltpack.r \
 	    -o $(MACOS68K_BUILDDIR)/boltpack_gui.rsrc
 	python3 scripts/merge_rsrc.py \
