@@ -371,8 +371,16 @@ make FRONTEND=dos
 
 This uses the host compiler to build `build/dos/boltpack`; it is useful for
 checking the frontend's C89 source and host-side behavior, but it is not a DOS
-binary. `make dos-host-test` runs its staged-extraction and projected-name
-fixtures. `make dos-djgpp` builds the DOS executable when the
+binary. `make dos-host-test` runs its staged-extraction, projected-name, and
+profile create/append fixtures. The optional mini-reader check is:
+
+```sh
+python3 test/check_dos_profile.py --boltpack build/dos-host-test/boltpack \
+  --linux-boltpack build/linux/boltpack \
+  --mini-boltpack build/linux32mini/bpmini
+```
+
+It runs the mini reader through `qemu-i386`. `make dos-djgpp` builds the DOS executable when the
 `i586-pc-msdosdjgpp-gcc` toolchain is available; this environment does not
 have that compiler. A DOS runtime test remains a separate check.
 
@@ -446,6 +454,7 @@ Filenames are stored as-is (ASCII / codepage). Non-ASCII names may not round-tri
 | --------- | --------------------------------------------- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`      | Store only (no compression)                   |
+| `--interchange-profile-1` | Create/add with Stored or BoltLite, 16 KiB blocks, and mini-compatible limits |
 | `-F`      | Use fluff LZ77 + FSE/tANS compression            |
 | `-1`      | Use BoltLite compression                          |
 | `-q`      | Quiet (progress line only)                    |
@@ -453,6 +462,11 @@ Filenames are stored as-is (ASCII / codepage). Non-ASCII names may not round-tri
 | `-o PATH` | Extract to directory                          |
 | `-f`      | Force overwrite                               |
 | `-n`      | Dry run                                       |
+
+The profile flag applies only to `c` and `a`. It selects BoltLite unless `-0`
+is supplied, permits an explicit `-1` BoltLite selection, and refuses other
+codecs or block sizes. Append validates the existing archive before changing
+the staged copy.
 
 ---
 
