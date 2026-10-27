@@ -44,6 +44,10 @@ listed as implemented remains unqualified; do not infer it from the core format.
   framing before extraction or archive editing.
 - Portable metadata envelopes are bounded to 256 bytes. Duplicate or orphaned
   portable records and duplicate resource forks are rejected.
+- Archive-edit tests copy and append a complete group containing a primary
+  file, resource fork, native metadata, and portable FAT metadata, then verify
+  integrity and that deletion removes the entire group while preserving the
+  primary's timestamp and mode flags.
 - The mini writer and reader enforce the serialized-size limit, including file
   table and footer overhead. Host tests exercise write overflow, finalization
   overhead, and oversized header rejection.
@@ -67,7 +71,7 @@ listed as implemented remains unqualified; do not infer it from the core format.
   option. There is no Windows runtime in this environment, so option behavior,
   profile round trips, and reparse-point race checks remain unqualified.
 - On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
-  including 260 archive-format checks and 154 CLI integration checks. The
+  including 263 archive-format checks and 154 CLI integration checks. The
   archive checks include independently laid-out blocked and single-blob
   archives through both cores, and explicit rejection of versions 1–5 by full
   and mini info/test readers. The standard target also runs `check_symlink_atomic.py`,

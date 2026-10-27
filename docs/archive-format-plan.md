@@ -751,7 +751,10 @@ creation failures through frontend state because they do not use streams.
 the core validates its bytes and checksums without invoking completion or
 writing output. Two archive-format unit checks cover skipped primary data,
 portable metadata, resource forks, and native metadata; another verifies the
-discard-stream contract. `make CC=gcc test` passes with 260 archive-format and
+discard-stream contract. Archive-edit tests carry resource forks and both
+native and portable metadata through copy, append, integrity verification,
+and complete-group deletion while checking primary timestamp and mode flags.
+`make CC=gcc test` passes with 263 archive-format and
 154 CLI integration checks, including dry-run archive verification. It also
 runs `check_symlink_atomic.py`: Linux stages symlinks beside their final paths,
 applies valid mtimes with no-follow operations, and publishes only after
