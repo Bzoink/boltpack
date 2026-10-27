@@ -209,9 +209,16 @@ setup, and close. A failed extraction leaves an existing destination file
 untouched. It restores only format-6 timestamps marked valid, including epoch
 zero, preserves the extracted file's access time, and defers explicit directory
 times until children finish. Symlinks, resource forks, and native sidecar
-metadata are skipped with a partial result. The Cocoa path still uses pathname
-checks, so concurrent parent substitution remains possible; case and Unicode
-normalization collision preflight and target runtime validation are open.
+metadata are skipped with a partial result. On macOS 10.10 and later, the
+Cocoa GUI pins the chosen destination root and traverses archive paths with
+directory-relative `openat`/`O_NOFOLLOW` operations; stage creation and
+publication stay relative to the held parent directory. This blocks parent
+symlink substitution during normal traversal. A concurrent actor can still
+rename an already opened directory outside the extraction tree. On macOS 10.9,
+staged pathname checks remain as a compatibility fallback and the GUI reports
+the parent-substitution limitation as partial. Case and Unicode normalization
+collision preflight runs before output changes and refuses file/directory
+prefix conflicts; target runtime validation remains open.
 
 BoltPack is not widely used, so earlier archive versions need not be supported.
 Use that freedom to define a clear new contract. Basic transfer correctness is

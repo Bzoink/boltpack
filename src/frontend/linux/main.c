@@ -1544,7 +1544,7 @@ typedef struct {
 } extract_ctx_t;
 
 #ifdef BP_USE_DIRFD_EXTRACTION
-#include "extract_paths.h"
+#include "../posix/extract_paths.h"
 
 static int restore_file_metadata_fd(int fd, const char *name, bp_uint16 flags,
                                     bp_uint64 mtime, extract_ctx_t *ctx)

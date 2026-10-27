@@ -57,7 +57,7 @@
 #include <linux/fs.h>
 #endif
 
-#include "../linux/extract_paths.h"
+#include "../posix/extract_paths.h"
 
 /* BoltPack core (C linkage) */
 extern "C" {

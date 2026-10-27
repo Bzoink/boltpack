@@ -65,6 +65,7 @@ static int extract_open_parent(int root_fd, const char *name, char *leaf, size_t
     return extract_open_directory(root_fd, path, 1);
 }
 
+#ifndef BP_EXTRACT_PATHS_NO_NOREPLACE
 /* renameat2 preserves the no-clobber guarantee on filesystems without hard
  * links. Older kernels/filesystems fall back to atomic link-and-unlink. */
 static int extract_commit_noreplace(int parent_fd, const char *temporary,
@@ -78,5 +79,6 @@ static int extract_commit_noreplace(int parent_fd, const char *temporary,
     if (linkat(parent_fd, temporary, parent_fd, destination, 0) != 0) return -1;
     return unlinkat(parent_fd, temporary, 0);
 }
+#endif
 
 #endif
