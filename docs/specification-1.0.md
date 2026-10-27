@@ -148,7 +148,11 @@ field. Extractors MUST report times their destination API cannot represent.
 - `header_size` **MUST** equal `4 + name_len + 38` for format version 6.
 - `name_len` MUST NOT be zero (empty names forbidden).
 - `name` MUST be valid UTF-8, without embedded NULs; readers MUST reject invalid sequences.
-- `name` MUST NOT contain `..` components or absolute paths (security check).
+- `name` MUST be a canonical relative path: no absolute or drive prefix,
+  backslashes, empty components, `.` components, or `..` components. Directory
+  entries MUST end in exactly one `/`; file and symlink entries MUST NOT.
+  Supplementary entries MUST use the exact subject spelling. Readers reject
+  noncanonical names before extraction or archive editing.
 - Primary entries (files, directories, and symbolic links) MUST have unique
   UTF-8 names after removing trailing `/` bytes. Supplementary entries may
   repeat the exact name of their subject as specified below.
@@ -1287,6 +1291,31 @@ if (compressed_size > (original_size * 99 / 100)) {
 ```
 
 This heuristic avoids decompression overhead for poorly-compressible data.
+
+### 9.4 BoltPack Interchange Profile 1
+
+This optional profile defines a practical archive subset for transfer to the
+smallest mini readers. A profile-conforming archive:
+
+1. Uses archive format 6 and only Stored (method 0) or BoltLite (method 1).
+2. Uses blocked data no larger than 32 KiB per block. Writers SHOULD use 16 KiB
+   blocks by default. A single-blob entry is allowed only when it is no larger
+   than the same limit.
+3. Has at most 65,535 physical entries, counting directories, resource forks,
+   metadata, and symlinks, and a total serialized size no larger than
+   2,147,483,647 bytes, including the header, file table, and footer.
+4. Has no individual uncompressed entry larger than 4,294,967,295 bytes.
+5. Uses canonical relative UTF-8 paths as specified in §2.3. Destination APIs
+   may support a smaller subset and MUST report an unrepresentable or
+   colliding name before extracting that entry.
+
+BoltLZ, Fluff, and zstd are optional extensions outside this profile. A target
+that implements only the profile MUST return `BP_ERR_UNSUPPORTED_METHOD` for
+those codecs. The mini core enforces the entry count, block size, per-entry
+size, and serialized archive-size limits. Full writers may produce larger or
+extended archives; callers must apply these limits before claiming Profile 1
+conformance. Filesystem path limits and working-memory limits are separate
+capabilities and must be documented by each frontend.
 
 ---
 

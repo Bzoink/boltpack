@@ -12,8 +12,10 @@ filesystem results on every OS are not achievable: CP/M has no directories,
 legacy filesystems cannot represent every Unicode name, and some systems have
 no equivalent for a resource fork or a POSIX permission bit.
 
-The format-6 core, timestamp validity flag, UTF-8 validation, and file-table
-consistency checks are implemented. Mini frontends have explicit name
+The format-6 core, timestamp validity flag, UTF-8 and canonical path validation,
+and file-table consistency checks are implemented in both full and mini cores.
+Supplementary metadata and resource forks must follow one exact file or
+directory subject, and resource forks are unique within that group. Mini frontends have explicit name
 conversion. The Linux CLI, Linux mini, Windows CLI, full Atari CLI, and full
 OS/2 CLI stage regular-file output until checksums pass. Linux uses
 directory-relative operations; EMX OS/2 checks existing components with
@@ -355,6 +357,16 @@ filename encodings, path model, timestamp range/resolution/timezone handling,
 POSIX modes, FAT flags, links, and platform metadata. Distinguish compiled,
 host-tested, emulator-tested, and hardware-tested support.
 
+The mini writer and reader now enforce the 2,147,483,647-byte serialized-size
+limit, including table and footer bytes. The writer rejects a crossing write
+and checks final table overhead before writing the table; readers reject an
+oversized declared archive before extraction. Both cores reject absolute,
+drive-prefixed, backslash, empty, `.` and `..` path components, and require
+primary directory names to end in `/`. Host fixtures cover these rules. Full
+writers do not yet expose a named profile mode that guarantees the same size
+and codec subset; that remains a Phase 5 gap. Per-frontend evidence is tracked
+in [interoperability-matrix.md](interoperability-matrix.md).
+
 ### Required validation
 
 | Area | Fixtures and expected checks |
@@ -384,9 +396,9 @@ classic-Mac core sources, DLL bindings, frontends, documentation, and release
 notes together at the format-6 cutover; every shipped reader must reject
 unsupported versions and report incomplete transfers accurately.
 
-No runtime changes or new conformance claims are made by this plan review.
 Implementation is complete only when each claimed capability has a recorded
-result on its target or an explicitly narrower support claim.
+result on its target or an explicitly narrower support claim. Phase 4 remains
+optional; Phases 0-3 and the full basic profile are still the completion gate.
 
 Portable ACL mapping, hard-link identity, device nodes, and sparse-file layout
 are outside the first delivery. Numeric ownership and full filesystem backup

@@ -1280,8 +1280,10 @@ dos16:
 	@echo "  OK    $(DOS16_EXE)"
 
 # ---- win16: Open Watcom, 16-bit Windows 3.x compact model ---------------
-WIN16_CORE  = -bt=windows -mc -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_WIN16
-WIN16_FRONT = -bt=windows -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_WIN16
+# The format-6 validator and metadata support exceed a single 64 KiB code
+# segment. Use the large code model for Win16 while retaining 16-bit data.
+WIN16_CORE  = -bt=windows -ml -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_WIN16
+WIN16_FRONT = -bt=windows -ml -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_WIN16
 WIN16_BDIR   = build/win16
 WIN16_EXE    = $(WIN16_BDIR)/bpmini.exe
 

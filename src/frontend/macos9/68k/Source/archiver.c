@@ -133,23 +133,11 @@ void bp_packed_entry_dispose(bp_packed_entry_t *packed)
  */
 int bp_name_is_safe(const char *name)
 {
-    const char *p;
-
-    if (name == NULL || name[0] == '\0') return 0;
-    if (name[0] == '/') return 0;                    /* absolute path */
-    if (name[1] == ':') return 0;                    /* drive letter */
-    if (strchr(name, '\\') != NULL) return 0;        /* backslash */
-
-    p = name;
-    while (*p) {
-        if (p[0] == '.' && p[1] == '.' &&
-            (p[2] == '/' || p[2] == '\0') &&
-            (p == name || *(p - 1) == '/')) {
-            return 0;                                /* ".." component */
-        }
-        p++;
-    }
-    return 1;
+    size_t length;
+    if (name == NULL) return 0;
+    length = strlen(name);
+    if (length == 0 || length > (size_t)BP_MAX_NAME_LEN) return 0;
+    return bp_archive_name_valid(name, (bp_uint32)length);
 }
 
 /*
@@ -635,6 +623,7 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
     }
     name_len = (bp_uint16)strlen(name);
     if (!bp_archive_name_valid(name, (bp_uint32)name_len) ||
+        !bp_archive_name_type_valid(name, (bp_uint32)name_len, entry_type) ||
         (!(flags & BP_ENTRY_FLAG_MTIME_VALID) && !bp_u64_is_zero(mtime)))
         return BP_ERR_INVALID_ARG;
 
@@ -1387,7 +1376,7 @@ int bp_archive_finalize(bp_archive_t *ar)
     if (ar == NULL) return BP_ERR_INVALID_ARG;
 
     {
-        bp_metadata_group_t group = { NULL, 0, 0, NULL };
+        bp_metadata_group_t group = { NULL, 0, 0, NULL, 0 };
         for (i = 0; i < ar->entries_written; i++) {
             bp_entry_t *entry = &ar->entry_list[i];
             char *name = entry->name;
@@ -1728,6 +1717,10 @@ static int read_table_entry(bp_io_t *io, bp_entry_t *entry, bp_uint16 version)
     }
     if (tail >= BP_TABLE_REC_TAIL_V6)
         entry->flags = bp_read_le16(buf + 41);
+    if (!bp_archive_name_type_valid(entry->name, entry->name_len,
+                                    entry->entry_type)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
         !bp_u64_is_zero(entry->mtime)) {
         free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
@@ -1783,6 +1776,10 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     entry->mtime           = bp_read_le64(buf + 28);
     entry->flags           = bp_read_le16(buf + 36);
 
+    if (!bp_archive_name_type_valid(entry->name, entry->name_len,
+                                    entry->entry_type)) {
+        free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
+    }
     if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
         !bp_u64_is_zero(entry->mtime)) {
         free(entry->name); entry->name = NULL; return BP_ERR_CORRUPT;
@@ -1818,7 +1815,7 @@ static int verify_table_entries(bp_io_t *io, bp_uint16 version,
     bp_uint32 count, i;
     bp_uint64 table_off, table_size, next;
     int rc;
-    bp_metadata_group_t group = { NULL, 0, 0, NULL };
+    bp_metadata_group_t group = { NULL, 0, 0, NULL, 0 };
 
     rc = read_footer(io, &table_off, &table_size);
     if (rc != BP_OK) return rc;
