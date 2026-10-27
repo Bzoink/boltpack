@@ -549,10 +549,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     if (!bp_name_is_safe(entry->name)) return NULL;
 
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), QL_CP) != 0) {
-        strncpy(local_name, entry->name, sizeof(local_name) - 1);
-        local_name[sizeof(local_name) - 1] = '\0';
-    }
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                         QL_CP) != 0) return NULL;
 
     if (ctx->out_dir && ctx->out_dir[0]) {
         size_t odn = strlen(ctx->out_dir);

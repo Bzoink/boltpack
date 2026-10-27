@@ -8,6 +8,7 @@
  */
 
 #ifdef __linux__
+#define _GNU_SOURCE
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #else
@@ -44,6 +45,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <utime.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 #ifdef BOLTPACK_FAST_FLUFF
 #include "../../core/fluff_fast.h"
@@ -113,6 +117,7 @@ static int            g_add_fd       = -1;   /* raw fd of the archive being appe
 static off_t          g_add_tail_off =  0;   /* byte offset of the saved tail */
 static unsigned char *g_add_tail     = NULL; /* malloc'd tail bytes */
 static size_t         g_add_tail_sz  =  0;   /* size of tail backup */
+static unsigned char  g_add_header[BP_HEADER_SIZE];
 
 static void sig_add_restore_handler(int sig)
 {
@@ -120,6 +125,8 @@ static void sig_add_restore_handler(int sig)
         (void)lseek(g_add_fd, g_add_tail_off, SEEK_SET);
         (void)write(g_add_fd, g_add_tail, g_add_tail_sz);
         (void)ftruncate(g_add_fd, g_add_tail_off + (off_t)g_add_tail_sz);
+        (void)lseek(g_add_fd, 0, SEEK_SET);
+        (void)write(g_add_fd, g_add_header, BP_HEADER_SIZE);
     }
     g_add_fd     = -1;
     g_add_tail   = NULL;
@@ -407,6 +414,9 @@ typedef struct {
     bp_io_t io; /* first member: callbacks return &io */
     char *temporary;
     char *destination;
+#ifdef __linux__
+    int parent_fd;
+#endif
 } bp_extract_output_t;
 
 typedef struct {
@@ -1523,7 +1533,39 @@ typedef struct {
     int         open_error;
     bp_restore_dir_t *dirs;
     int         slash_warned;  /* printed the leading-'/' warning once */
+#ifdef __linux__
+    int         root_fd;
+#endif
 } extract_ctx_t;
+
+#ifdef __linux__
+#include "extract_paths.h"
+
+static int restore_file_metadata_fd(int fd, const char *name, bp_uint16 flags,
+                                    bp_uint64 mtime, extract_ctx_t *ctx)
+{
+    if (flags & BP_ENTRY_FLAG_MODE_VALID) {
+        mode_t mode = (mode_t)(flags & BP_ENTRY_FLAG_MODE_MASK);
+        if (mode & 06000) {
+            fprintf(stderr, "boltpack: not restoring set-ID bits on %s\n", name);
+            ctx->partial_count++;
+            mode &= (mode_t)~06000;
+        }
+        if (fchmod(fd, mode) != 0) return BP_ERR_IO;
+    }
+    if (flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        bp_off_t seconds = bp_u64_to_off(mtime);
+        time_t t = (time_t)seconds;
+        struct timespec times[2];
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+            (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
+        times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
+        times[1].tv_sec = t; times[1].tv_nsec = 0;
+        if (futimens(fd, times) != 0) return BP_ERR_IO;
+    }
+    return BP_OK;
+}
+#endif
 
 static int restore_file_metadata(const char *path, bp_uint16 flags,
                                  bp_uint64 mtime, extract_ctx_t *ctx)
@@ -1581,7 +1623,14 @@ static int finish_directories(extract_ctx_t *ctx, int apply)
         bp_restore_dir_t *node = ctx->dirs;
         ctx->dirs = node->next;
         if (apply) {
+#ifdef __linux__
+            int fd = extract_open_directory(ctx->root_fd, node->path, 0);
+            int r = fd < 0 ? BP_ERR_IO :
+                    restore_file_metadata_fd(fd, node->path, node->flags, node->mtime, ctx);
+            if (fd >= 0) close(fd);
+#else
             int r = restore_file_metadata(node->path, node->flags, node->mtime, ctx);
+#endif
             if (r != BP_OK) {
                 fprintf(stderr, "boltpack: cannot restore attributes: %s\n", node->path);
                 if (rc == BP_OK) rc = r;
@@ -1608,6 +1657,7 @@ static const char *extract_entry_name(const bp_entry_t *entry,
     return name;
 }
 
+#ifndef __linux__
 /* Reject existing symlinks in archive-controlled directory components.
  * This prevents traversal through a pre-existing link, but is not a defense
  * against another process replacing a directory between this check and use. */
@@ -1869,6 +1919,183 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     return rc;
 }
 
+#else /* __linux__: use directory-relative operations for extraction */
+
+static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    const char *name = extract_entry_name(entry, ctx);
+    bp_extract_output_t *output;
+    char leaf[4096], temporary[64];
+    FILE *fp;
+    int parent_fd, fd, tries;
+    static unsigned long temporary_counter;
+
+    if (!bp_name_is_safe(name)) {
+        fprintf(stderr, "boltpack: skipping entry with unsafe name: %s\n", entry->name);
+        ctx->unsafe_count++;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_DIR) {
+        ctx->dir_count++;
+        if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", entry->name);
+        if (!ctx->dry_run) {
+            fd = extract_open_directory(ctx->root_fd, name, 1);
+            if (fd < 0) {
+                fprintf(stderr, "boltpack: unsafe or inaccessible directory: %s\n", name);
+                ctx->open_error = BP_ERR_IO;
+            } else {
+                int r;
+                close(fd);
+                r = queue_directory(ctx, name, entry);
+                if (r != BP_OK && ctx->open_error == BP_OK) ctx->open_error = r;
+            }
+        }
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC || entry->entry_type == BP_TYPE_META) {
+        ctx->partial_count++;
+        if (g_verbosity == VERB_DEFAULT)
+            printf("   skipping: %s [%s - not supported on this platform]\n",
+                   entry->name, entry->entry_type == BP_TYPE_RSRC ? "resource fork" : "metadata");
+        return NULL;
+    }
+    ctx->file_count++;
+    if (g_verbosity == VERB_DEFAULT)
+        printf(entry->entry_type == BP_TYPE_SYMLINK ? "    linking: %s\n" : " extracting: %s\n",
+               entry->name);
+    if (ctx->dry_run) return NULL;
+
+    output = (bp_extract_output_t *)calloc(1, sizeof(*output));
+    if (output == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+    output->parent_fd = -1;
+    if (entry->entry_type == BP_TYPE_SYMLINK) {
+        fp = tmpfile();
+        if (fp == NULL) { free(output); ctx->open_error = BP_ERR_IO; return NULL; }
+        bp_io_from_file(&output->io, fp);
+        return &output->io;
+    }
+
+    parent_fd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
+    if (parent_fd < 0) {
+        fprintf(stderr, "boltpack: unsafe or inaccessible directory: %s\n", name);
+        free(output); ctx->open_error = BP_ERR_IO; return NULL;
+    }
+    output->parent_fd = parent_fd;
+    if (!ctx->force) {
+        struct stat st;
+        if (fstatat(parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) {
+            fprintf(stderr, "boltpack: file exists or cannot be inspected: %s\n", name);
+            close(parent_fd); free(output); ctx->open_error = BP_ERR_IO; return NULL;
+        }
+    }
+    output->destination = (char *)malloc(strlen(leaf) + 1);
+    output->temporary = (char *)malloc(sizeof(temporary));
+    if (output->destination == NULL || output->temporary == NULL) {
+        close(parent_fd); free(output->destination); free(output->temporary); free(output);
+        ctx->open_error = BP_ERR_NOMEM; return NULL;
+    }
+    strcpy(output->destination, leaf);
+    fd = -1;
+    for (tries = 0; tries < 256; tries++) {
+        sprintf(temporary, ".boltpack-%08lx-%08lx", (unsigned long)getpid(), ++temporary_counter);
+        fd = openat(parent_fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temporary file for %s\n", name);
+        close(parent_fd); free(output->destination); free(output->temporary); free(output);
+        ctx->open_error = BP_ERR_IO; return NULL;
+    }
+    strcpy(output->temporary, temporary);
+    fp = fdopen(fd, "wb");
+    if (fp == NULL) {
+        close(fd); unlinkat(parent_fd, temporary, 0); close(parent_fd);
+        free(output->destination); free(output->temporary); free(output);
+        ctx->open_error = BP_ERR_IO; return NULL;
+    }
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
+}
+
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    bp_extract_output_t *output = (bp_extract_output_t *)out;
+    FILE *fp = (FILE *)out->handle;
+    const char *name = extract_entry_name(entry, ctx);
+    int rc = BP_OK;
+
+    if (status != BP_OK) {
+        fclose(fp);
+        if (output->temporary != NULL) unlinkat(output->parent_fd, output->temporary, 0);
+        if (output->parent_fd >= 0) close(output->parent_fd);
+        free(output->temporary); free(output->destination); free(output);
+        return BP_OK;
+    }
+    if (entry->entry_type == BP_TYPE_SYMLINK) {
+        char target[4096], leaf[4096];
+        long len = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
+        int parent_fd = -1;
+        if (len <= 0 || len >= (long)sizeof(target)) rc = BP_ERR_CORRUPT;
+        else {
+            rewind(fp);
+            if (fread(target, 1, (size_t)len, fp) != (size_t)len ||
+                memchr(target, '\0', (size_t)len) != NULL) rc = BP_ERR_CORRUPT;
+            else {
+                target[len] = '\0';
+                if (!bp_symlink_target_is_safe(name, target)) {
+                    fprintf(stderr, "boltpack: skipping symlink with unsafe target: %s -> %s\n",
+                            entry->name, target);
+                    ctx->unsafe_count++;
+                } else {
+                    parent_fd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
+                    if (parent_fd < 0 || symlinkat(target, parent_fd, leaf) != 0) rc = BP_ERR_IO;
+                    else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+                        bp_off_t seconds = bp_u64_to_off(entry->mtime);
+                        time_t t = (time_t)seconds;
+                        struct timespec times[2];
+                        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+                            (bp_off_t)t != seconds) rc = BP_ERR_OVERFLOW;
+                        else {
+                            times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
+                            times[1].tv_sec = t; times[1].tv_nsec = 0;
+                            if (utimensat(parent_fd, leaf, times, AT_SYMLINK_NOFOLLOW) != 0) rc = BP_ERR_IO;
+                        }
+                    }
+                }
+            }
+        }
+        if (parent_fd >= 0) close(parent_fd);
+        if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        free(output);
+        return rc;
+    }
+
+    if (fflush(fp) != 0) rc = BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = restore_file_metadata_fd(fileno(fp), name, entry->flags, entry->mtime, ctx);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK) {
+        if (ctx->force) {
+            if (renameat(output->parent_fd, output->temporary,
+                         output->parent_fd, output->destination) != 0) rc = BP_ERR_IO;
+        } else {
+            if (extract_commit_noreplace(output->parent_fd, output->temporary,
+                                         output->destination) != 0) rc = BP_ERR_IO;
+        }
+    }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot finish extracting %s\n", name);
+        unlinkat(output->parent_fd, output->temporary, 0);
+    }
+    close(output->parent_fd);
+    free(output->temporary); free(output->destination); free(output);
+    return rc;
+}
+#endif /* __linux__ */
+
 #ifdef BOLTPACK_NET
 /*
  * Extract an already-open archive using the frontend's existing callbacks.
@@ -1883,11 +2110,20 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
+#ifdef __linux__
+    ctx.root_fd = -1;
+    if (out_dir != NULL && mkdirs(out_dir) != 0) return BP_ERR_IO;
+    ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (ctx.root_fd < 0) return BP_ERR_IO;
+#endif
     rc = bp_archive_extract_all_ex(aio, extract_open, extract_done, NULL, &ctx);
     if (rc == BP_OK && ctx.open_error != BP_OK) rc = ctx.open_error;
     dir_rc = finish_directories(&ctx, rc == BP_OK);
     if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
+#ifdef __linux__
+    close(ctx.root_fd);
+#endif
     return rc;
 }
 #endif
@@ -2332,6 +2568,17 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = dry_run;
+#ifdef __linux__
+    ctx.root_fd = -1;
+    if (!dry_run) {
+        ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (ctx.root_fd < 0) {
+            fprintf(stderr, "boltpack: cannot open output directory: %s\n", out_dir ? out_dir : ".");
+            fclose(fp);
+            return 1;
+        }
+    }
+#endif
 
     start = wall_time_seconds();
 
@@ -2344,6 +2591,9 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     dir_rc = finish_directories(&ctx, rc == BP_OK);
     if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
+#ifdef __linux__
+    if (ctx.root_fd >= 0) close(ctx.root_fd);
+#endif
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
@@ -2657,6 +2907,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     bp_uint64 tail_sz;
     unsigned char *tail_buf;
     size_t tail_bytes;
+    unsigned char original_header[BP_HEADER_SIZE];
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -2677,9 +2928,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     /*
      * Save the critical tail (file table + footer) so we can restore the
      * archive to its original state if the append fails or is interrupted.
-     * We cap the backup at 256 MB; if the table is larger than that we
-     * proceed without a backup (same behaviour as before this fix, but
-     * that is only possible for archives with millions of entries).
+     * Refuse the append when the bounded backup cannot be made.
      */
     tail_buf   = NULL;
     tail_bytes = 0;
@@ -2690,6 +2939,11 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         qfp = fopen(archive_name, "rb");
         if (qfp == NULL) {
             fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+            return 1;
+        }
+        if (fread(original_header, 1, BP_HEADER_SIZE, qfp) != BP_HEADER_SIZE) {
+            fprintf(stderr, "boltpack: cannot back up archive header\n");
+            fclose(qfp);
             return 1;
         }
         bp_io_from_file(&qio, qfp);
@@ -2713,6 +2967,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                     bp_strerror(rc));
             return 1;
         }
+        if (tail_buf == NULL) {
+            fprintf(stderr, "boltpack: cannot safely back up archive table for append\n");
+            return 1;
+        }
     }
 
     /* Open archive for in-place append. */
@@ -2729,6 +2987,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         g_add_tail_off = (off_t)bp_u64_to_off(tail_off);
         g_add_tail    = tail_buf;
         g_add_tail_sz = tail_bytes;
+        memcpy(g_add_header, original_header, BP_HEADER_SIZE);
         signal(SIGINT,  sig_add_restore_handler);
         signal(SIGTERM, sig_add_restore_handler);
     }
@@ -2762,6 +3021,11 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     fin_rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
 
+    if (fin_rc != BP_OK) {
+        fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
+        goto add_fail_restore;
+    }
+
     /* Disarm signal handler; restore path not needed on success. */
     if (tail_buf != NULL) {
         signal(SIGINT,  SIG_DFL);
@@ -2772,12 +3036,6 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     }
     free(tail_buf);
     fclose(fp);
-
-    if (fin_rc != BP_OK) {
-        fprintf(stderr, "boltpack: finalize failed: %s\n",
-                bp_strerror(fin_rc));
-        return 1;
-    }
 
     if (g_verbosity < VERB_SILENT) {
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
@@ -2792,12 +3050,14 @@ add_fail_restore:
         g_add_fd      = -1;
         g_add_tail    = NULL;
         g_add_tail_sz = 0;
-        if (fseeko(fp, (off_t)bp_u64_to_off(tail_off), SEEK_SET) == 0) {
-            (void)fwrite(tail_buf, 1, tail_bytes, fp);
-            fflush(fp);
-            (void)ftruncate(fileno(fp),
-                            (off_t)bp_u64_to_off(tail_off) + (off_t)tail_bytes);
-        } else {
+        if (fflush(fp) != 0 ||
+            fseeko(fp, (off_t)bp_u64_to_off(tail_off), SEEK_SET) != 0 ||
+            fwrite(tail_buf, 1, tail_bytes, fp) != tail_bytes ||
+            fseeko(fp, 0, SEEK_SET) != 0 ||
+            fwrite(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
+            fflush(fp) != 0 ||
+            ftruncate(fileno(fp),
+                      (off_t)bp_u64_to_off(tail_off) + (off_t)tail_bytes) != 0) {
             fprintf(stderr,
                     "boltpack: warning: could not restore archive after error; "
                     "archive may be corrupt\n");

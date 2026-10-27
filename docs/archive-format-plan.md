@@ -14,12 +14,17 @@ no equivalent for a resource fork or a POSIX permission bit.
 The format-6 core, timestamp validity flag, UTF-8 validation, and file-table
 consistency checks are implemented. Mini frontends have explicit name
 conversion, and the Linux CLI uses verified temporary files for extraction.
-This plan is not complete: portable FAT attribute capture and restoration, consistent loss reporting,
+This plan is not complete: portable FAT attribute support across platforms, consistent loss reporting,
 full platform name handling, and safe extraction lifecycle handling across all
-frontends remain outstanding. DOS16 and Win16 now require an explicit fixed
+frontends remain outstanding. DOS16, Win16, and OS/2-16 now require an explicit fixed
 timezone offset for timestamp conversion; other DOS-derived frontends still
-need review. Linux rejects existing symlink directory
-components during extraction, but this check is not race-free. The checked-in
+need review. The Linux CLI and Linux mini resolve archive-controlled directories
+with directory-relative `openat` calls and reject symlink components. Staged
+files and final commits use the same open parent handle. Deterministic tests
+cover parent substitution, concurrent destination creation, and write failure.
+Other frontends still need equivalent protection. A process able to rename an
+already opened directory outside the extraction tree is a separate
+concurrent-mutation limitation. The checked-in
 classic Mac 68k core copies now match the format-6 core. The evidence and phased tasks below describe
 the original format-5 review, not a claim that each issue is still unchanged.
 
@@ -30,12 +35,22 @@ attributes. The OS/2 changes require verification with a working OS/2 compiler
 and runtime.
 
 The portable metadata envelope and FAT validity/value masks are specified and
-both cores validate its bounded payload during extraction and testing. The
-mini core currently reports portable metadata as skipped; platform adapters do
-not yet capture or restore FAT attributes using the envelope. Subject grouping,
-duplicate-primary detection, precedence, and archive-edit group handling remain
-to be implemented. The mini extractor now checks all table and inline entry
-headers before opening an output file.
+both cores validate its bounded payload during extraction and testing. They
+reject orphaned or duplicate portable envelopes and verify the subject type.
+DOS16, Win16, and OS/2-16 capture portable FAT flags for files and directories
+and defer directory restoration until children are extracted. DOS16 and Win16
+report directory times as unrestored; OS/2-16 attempts to restore them. The
+directory queue is limited to 256 entries. DOS16 has a DOSBox nested-directory
+round-trip test; Win16 and OS/2-16 still need target-system testing. Other
+platform adapters remain outstanding.
+Both cores reject duplicate primary names (including trailing-slash aliases) and invalid portable metadata
+groups when reading and before finalizing a new archive. Copy, append, and
+deletion tests cover a file and its portable metadata group. Linux and Windows
+in-place append now require a bounded table backup and restore it on
+finalization failure; the Linux regression checks byte-for-byte restoration.
+Destination-specific collisions, native/portable precedence, and other
+archive-edit cases remain outstanding. The mini extractor checks all table and
+inline entry headers before opening an output file.
 
 BoltPack is not widely used, so earlier archive versions need not be supported.
 Use that freedom to define a clear new contract. Basic transfer correctness is
@@ -170,11 +185,15 @@ for table and inline names. Validate destination paths again after conversion
 or mapping; a lexically safe archive name alone does not prevent writing
 through an existing filesystem symlink or reparse point outside the root.
 
-Extend the conversion API to distinguish exact conversion, unrepresentable
-characters, invalid input, and insufficient space. Never silently fall back
-to raw bytes or substitute `_` on an exact-preservation path. The current
-Shift-JIS approximation and EBCDIC gaps need either complete mappings or an
-explicit unsupported result for affected names.
+The conversion API now distinguishes unrepresentable characters, invalid
+input, and insufficient space. Shift-JIS double-byte characters outside the
+implemented half-width range return an explicit unsupported result. DOS,
+Atari, Amiga, and OS/2 archive creation refuses names that cannot be converted;
+legacy extraction callbacks refuse unrepresentable names rather than passing
+UTF-8 bytes into a local filesystem API. Windows CLI conversion already uses
+strict ACP conversion. Remaining encoding work includes broader target tests,
+normalization and case-fold collision detection, and checking every source
+filename API against its configured codepage.
 
 Select the source codepage from the actual filename API and active environment.
 DOS-style Win16/OS2-16 paths require the appropriate OEM/local codepage, not an

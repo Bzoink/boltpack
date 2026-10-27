@@ -156,7 +156,44 @@ typedef struct {
     char dest[BP_MAX_PATH];
     char current_path[BP_MAX_PATH];
     int name_error;
+    bp_mini_directory_queue_t directories;
 } extract_ctx_t;
+
+static int on_extract_directory(const bp_mini_entry_t *e, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    char path[BP_MAX_PATH], local_name[BP_MAX_PATH], *p;
+    if (!bp_mini_name_is_safe(e->name) ||
+        bp_mini_utf8_to_local(e->name, local_name, sizeof(local_name)) != 0 ||
+        !bp_mini_name_is_safe(local_name) ||
+        (ctx->dest[0] && strlen(ctx->dest) + strlen(local_name) + 2 >= sizeof(path))) {
+        fprintf(stderr, PROG_NAME ": cannot represent archive directory: %s\n", e->name);
+        ctx->name_error = 1;
+        return BP_ERR_PARTIAL;
+    }
+#ifdef __WATCOMC__
+    join_sep(path, BP_MAX_PATH, ctx->dest, '\\', local_name);
+#else
+    if (ctx->dest[0]) snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, local_name);
+    else snprintf(path, BP_MAX_PATH, "%s", local_name);
+#endif
+    for (p = path; *p; p++) if (*p == '/') *p = '\\';
+    make_parents(path);
+#ifdef __WATCOMC__
+    {
+        unsigned attr;
+        (void)mkdir(path);
+        if (_dos_getfileattr(path, &attr) != 0 || !(attr & _A_SUBDIR)) {
+            fprintf(stderr, PROG_NAME ": cannot create directory: %s\n", path);
+            return BP_ERR_IO;
+        }
+    }
+#else
+    return BP_ERR_PARTIAL;
+#endif
+    strcpy(ctx->current_path, path);
+    return bp_mini_directory_add(&ctx->directories, path, e);
+}
 
 static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 {
@@ -174,27 +211,6 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     }
     if (ctx->dest[0] && strlen(ctx->dest) + strlen(local_name) + 2 >= sizeof(path)) {
         ctx->name_error = 1;
-        return NULL;
-    }
-
-    if (e->entry_type == BP_TYPE_DIR) {
-#ifdef __WATCOMC__
-        join_sep(path, BP_MAX_PATH, ctx->dest, '\\', local_name);
-#else
-        if (ctx->dest[0]) {
-            snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, local_name);
-        } else {
-            snprintf(path, BP_MAX_PATH, "%s", local_name);
-        }
-#endif
-        {
-            char *p;
-            for (p = path; *p; p++) if (*p == '/') *p = '\\';
-        }
-        make_parents(path);
-#ifdef __WATCOMC__
-        mkdir(path);
-#endif
         return NULL;
     }
 
@@ -298,10 +314,83 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
         set_mtime(ctx->current_path, e->mtime);
 #endif
     if (status != BP_OK) (void)remove(ctx->current_path);
+    else if (e->flags & BP_ENTRY_FLAG_MODE_VALID) {
+        fprintf(stderr, PROG_NAME ": POSIX file mode not restored: %s\n", ctx->current_path);
+        if (rc == BP_OK) rc = BP_ERR_PARTIAL;
+    }
     return rc;
 }
 
 /* ---- test callback ----------------------------------------------------- */
+
+static int on_extract_metadata(const bp_mini_entry_t *entry,
+                               const bp_portable_metadata_t *metadata, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    (void)entry;
+    if (!metadata->has_fat) return metadata->has_unknown ? BP_ERR_PARTIAL : BP_OK;
+    if (metadata->subject_type == BP_TYPE_DIR) {
+        int rc = bp_mini_directory_set_fat(&ctx->directories, ctx->current_path,
+                                           metadata->fat_valid, metadata->fat_value);
+        if (rc != BP_OK) return rc;
+        return metadata->has_unknown ? BP_ERR_PARTIAL : BP_OK;
+    }
+#ifdef __WATCOMC__
+    {
+        unsigned old_attr, desired, actual;
+        if (_dos_getfileattr(ctx->current_path, &old_attr) != 0) return BP_ERR_PARTIAL;
+        desired = (old_attr & ~(unsigned)metadata->fat_valid) | metadata->fat_value;
+        if (_dos_setfileattr(ctx->current_path, desired) != 0 ||
+            _dos_getfileattr(ctx->current_path, &actual) != 0 ||
+            (actual & metadata->fat_valid) != metadata->fat_value) {
+            bp_wstr(2, PROG_NAME ": cannot restore FAT attributes: ");
+            bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    return metadata->has_unknown ? BP_ERR_PARTIAL : BP_OK;
+#else
+    (void)ctx;
+    return BP_ERR_PARTIAL;
+#endif
+}
+
+static int finish_directory(const bp_mini_directory_t *directory, void *user_data)
+{
+    int result = BP_OK;
+    (void)user_data;
+    if (directory->flags & BP_ENTRY_FLAG_MODE_VALID) {
+        fprintf(stderr, PROG_NAME ": POSIX directory mode not restored: %s\n", directory->path);
+        result = BP_ERR_PARTIAL;
+    }
+#ifdef __WATCOMC__
+    /* DOS handle-based file time calls cannot open directories. */
+    if (directory->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        fprintf(stderr, PROG_NAME ": directory time not restored: %s\n", directory->path);
+        result = BP_ERR_PARTIAL;
+    }
+    if (directory->fat_valid) {
+        unsigned old_attr, desired, actual;
+        int attr_result = BP_OK;
+        if (_dos_getfileattr(directory->path, &old_attr) != 0) attr_result = BP_ERR_PARTIAL;
+        else {
+            desired = (old_attr & ~(unsigned)directory->fat_valid) | directory->fat_value;
+            if (_dos_setfileattr(directory->path, desired & BP_META_FAT_MASK) != 0 ||
+                _dos_getfileattr(directory->path, &actual) != 0 ||
+                (actual & directory->fat_valid) != directory->fat_value)
+                attr_result = BP_ERR_PARTIAL;
+        }
+        if (attr_result != BP_OK) {
+            fprintf(stderr, PROG_NAME ": directory attributes not fully restored: %s\n", directory->path);
+            result = BP_ERR_PARTIAL;
+        }
+    }
+#else
+    if ((directory->flags & BP_ENTRY_FLAG_MTIME_VALID) || directory->fat_valid)
+        result = BP_ERR_PARTIAL;
+#endif
+    return result;
+}
 
 static void on_test(const bp_mini_entry_t *e, int result, void *user_data)
 {
@@ -443,19 +532,52 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
         write(1, "  ", 2); bp_wuint3(1, pct); write(1, "%\n", 2);
     }
 
+    if (rc == BP_OK) {
+        unsigned attr;
+        if (_dos_getfileattr(fs_path, &attr) != 0) {
+            bp_wstr(2, PROG_NAME ": cannot read FAT attributes: ");
+            bp_wstr(2, fs_path); write(2, "\n", 1);
+            g_time_partial = 1;
+        } else {
+            rc = bp_mini_add_fat_metadata(ar, arc_name, BP_TYPE_DATA,
+                                          BP_META_FAT_MASK, (bp_uint8)(attr & BP_META_FAT_MASK));
+        }
+    }
     return rc;
 }
 
 static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
-                         bp_uint8 platform)
+                         const char *fs_path, bp_uint8 platform)
 {
-    bp_uint64 z;
-    z.lo = 0; z.hi = 0;
+    bp_uint64 z, mtime;
+    bp_uint16 flags = 0;
+    struct find_t found;
+    unsigned attr;
+    long offset;
+    int rc;
+    z.lo = 0; z.hi = 0; mtime = z;
+    if (bp_dos_timezone(&offset) == 0 &&
+        _dos_findfirst(fs_path, _A_NORMAL | _A_RDONLY | _A_HIDDEN | _A_SYSTEM | _A_SUBDIR, &found) == 0 &&
+        (found.attrib & _A_SUBDIR) &&
+        bp_dos_local_to_utc(found.wr_date, found.wr_time, offset, &mtime) == 0)
+        flags = BP_ENTRY_FLAG_MTIME_VALID;
+    else {
+        mtime = z;
+        g_time_partial = 1;
+        fprintf(stderr, PROG_NAME ": unknown directory time (set BP_TZ_OFFSET): %s\n", fs_path);
+    }
     if (g_verbose) {
         write(1, "  a  ", 5); bp_wstr(1, arc_name); write(1, "/\n", 2);
     }
-    return bp_mini_add_local_entry(ar, arc_name, BP_TYPE_DIR, platform,
-                                   NULL, z, z, 0);
+    rc = bp_mini_add_local_entry(ar, arc_name, BP_TYPE_DIR, platform, NULL, z, mtime, flags);
+    if (rc != BP_OK) return rc;
+    if (_dos_getfileattr(fs_path, &attr) != 0) {
+        g_time_partial = 1;
+        fprintf(stderr, PROG_NAME ": cannot read directory attributes: %s\n", fs_path);
+        return BP_OK;
+    }
+    return bp_mini_add_fat_metadata(ar, arc_name, BP_TYPE_DIR,
+                                    BP_META_FAT_MASK, (bp_uint8)(attr & BP_META_FAT_MASK));
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
@@ -466,10 +588,18 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     char *child_fs;
     char *child_arc;
     unsigned int ret;
+    unsigned attr;
     int rc;
     int plen;
 
     rc      = BP_OK;
+    if (_dos_getfileattr(fs_path, &attr) != 0) return BP_ERR_IO;
+    if (!(attr & _A_SUBDIR)) return add_one_file(ar, arc_prefix, fs_path, platform);
+    if (arc_prefix[0]) {
+        rc = add_dir_entry(ar, arc_prefix, fs_path, platform);
+        if (rc != BP_OK) return rc;
+    }
+
     pattern   = (char *)malloc(BP_MAX_PATH);
     child_fs  = (char *)malloc(BP_MAX_PATH);
     child_arc = (char *)malloc(BP_MAX_PATH);
@@ -490,13 +620,8 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     ret = _dos_findfirst(pattern, _A_NORMAL | _A_RDONLY | _A_HIDDEN |
                                   _A_SYSTEM | _A_SUBDIR, &ff);
     if (ret != 0) {
-        free(pattern); free(child_fs); free(child_arc);
-        return add_one_file(ar, arc_prefix, fs_path, platform);
-    }
-
-    if (arc_prefix[0]) {
-        rc = add_dir_entry(ar, arc_prefix, platform);
-        if (rc != BP_OK) goto done;
+        rc = (ret == 2 || ret == 18) ? BP_OK : BP_ERR_IO;
+        goto done;
     }
 
     do {
@@ -700,12 +825,19 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_extract_all_ex(&arc_io,
+        rc = bp_mini_archive_extract_all_with_directories(&arc_io,
                                          on_extract_open,
                                          on_extract_done,
+                                         on_extract_directory,
+                                         on_extract_metadata,
                                          &ctx);
     }
     if (rc == BP_OK && ctx.name_error) rc = BP_ERR_PARTIAL;
+    {
+        int dir_rc = bp_mini_directory_finish(&ctx.directories, rc == BP_OK || rc == BP_ERR_PARTIAL,
+                                               finish_directory, &ctx);
+        if (dir_rc != BP_OK && (rc == BP_OK || rc == BP_ERR_PARTIAL)) rc = dir_rc;
+    }
 
 #ifdef __WATCOMC__
     close(fd);

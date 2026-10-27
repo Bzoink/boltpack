@@ -13,20 +13,6 @@
 #include <string.h>
 #include <stdio.h>
 
-/* DOS and the Win16 DOS API use an OEM codepage. OS/2 defaults to CP850;
- * CP/M is ASCII-only unless an explicit codepage is selected at build time. */
-#ifndef BP_MINI_CODEPAGE
-# if defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_OS2
-#  define BP_MINI_CODEPAGE BP_CP_850
-# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_CPM86
-#  define BP_MINI_CODEPAGE (-1)
-# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_LINUX
-#  define BP_MINI_CODEPAGE BP_CP_UTF8
-# else
-#  define BP_MINI_CODEPAGE BP_CP_437
-# endif
-#endif
-
 int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size)
 {
     size_t i, n;
@@ -82,6 +68,91 @@ int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
                                           file_io, file_size, mtime, flags);
     free(utf8);
     return rc;
+}
+
+typedef struct {
+    bp_uint8 bytes[BP_META_FAT_SIZE];
+    unsigned pos;
+} bp_mini_meta_source_t;
+
+static long bp_mini_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    bp_mini_meta_source_t *source = (bp_mini_meta_source_t *)handle;
+    unsigned remaining = BP_META_FAT_SIZE - source->pos;
+    if (count > remaining) count = remaining;
+    memcpy(buffer, source->bytes + source->pos, (size_t)count);
+    source->pos += (unsigned)count;
+    return (long)count;
+}
+
+int bp_mini_add_fat_metadata(bp_mini_archive_t *ar, const char *name,
+                             bp_uint8 subject_type, bp_uint8 valid, bp_uint8 value)
+{
+    bp_mini_meta_source_t source;
+    bp_io_t io;
+    int rc = bp_metadata_fat_encode(source.bytes, sizeof(source.bytes),
+                                    subject_type, valid, value);
+    if (rc != BP_OK) return rc;
+    source.pos = 0;
+    io.read = bp_mini_meta_read; io.write = NULL; io.seek = NULL; io.tell = NULL;
+    io.handle = &source;
+    return bp_mini_add_local_entry(ar, name, BP_TYPE_META, BP_META_PORTABLE, &io,
+                                   bp_u64_from_u32(BP_META_FAT_SIZE),
+                                   bp_u64_from_u32(0), 0);
+}
+
+/* A small bound limits heap use on constrained systems. Longer paths are
+ * inserted first, so parents are finalized only after their descendants. */
+int bp_mini_directory_add(bp_mini_directory_queue_t *queue, const char *path,
+                          const bp_mini_entry_t *entry)
+{
+    bp_mini_directory_t *node, **at;
+    size_t n;
+    if (queue == NULL || path == NULL || entry == NULL) return BP_ERR_INVALID_ARG;
+    if (queue->count >= 256U) return BP_ERR_OVERFLOW;
+    n = strlen(path);
+    node = (bp_mini_directory_t *)calloc(1, sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->path = (char *)malloc(n + 1);
+    if (node->path == NULL) { free(node); return BP_ERR_NOMEM; }
+    memcpy(node->path, path, n + 1);
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    at = &queue->head;
+    while (*at != NULL && strlen((*at)->path) >= n) at = &(*at)->next;
+    node->next = *at; *at = node; queue->count++;
+    return BP_OK;
+}
+
+int bp_mini_directory_set_fat(bp_mini_directory_queue_t *queue, const char *path,
+                              bp_uint8 valid, bp_uint8 value)
+{
+    bp_mini_directory_t *node;
+    if (queue == NULL || path == NULL) return BP_ERR_INVALID_ARG;
+    for (node = queue->head; node != NULL; node = node->next) {
+        if (strcmp(node->path, path) == 0) {
+            node->fat_valid = valid; node->fat_value = value;
+            return BP_OK;
+        }
+    }
+    return BP_ERR_CORRUPT;
+}
+
+int bp_mini_directory_finish(bp_mini_directory_queue_t *queue, int apply,
+                             bp_mini_directory_apply_fn apply_fn, void *user_data)
+{
+    int result = BP_OK;
+    if (queue == NULL || (apply && apply_fn == NULL)) return BP_ERR_INVALID_ARG;
+    while (queue->head != NULL) {
+        bp_mini_directory_t *node = queue->head;
+        int rc = BP_OK;
+        queue->head = node->next;
+        if (apply) rc = apply_fn(node, user_data);
+        if (rc != BP_OK && (result == BP_OK || result == BP_ERR_PARTIAL)) result = rc;
+        free(node->path); free(node);
+    }
+    queue->count = 0;
+    return result;
 }
 
 int bp_mini_name_is_safe(const char *name)

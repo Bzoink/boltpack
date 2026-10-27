@@ -357,9 +357,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         /* Store as UTF-8 in the archive */
         if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8),
-                             DOS_CODEPAGE) != 0) {
-            strcpy(dir_arc_utf8, dir_arc);
-        }
+                             DOS_CODEPAGE) != 0) return BP_ERR_INVALID_ARG;
 
         rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_DOS,
                                   NULL, bp_u64_from_u32(0), bp_u64_from_u32((bp_uint32)st.st_mtime));
@@ -388,7 +386,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         /* Store as UTF-8 in the archive */
         if (bp_local_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8),
                              DOS_CODEPAGE) != 0) {
-            strcpy(arcname_utf8, arcname);
+            fclose(fp);
+            return BP_ERR_INVALID_ARG;
         }
 
         rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_DOS,
@@ -491,10 +490,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     /* Convert UTF-8 archive name to local codepage for filesystem and display */
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
-                         DOS_CODEPAGE) != 0) {
-        strncpy(local_name, entry->name, BP_MAX_PATH - 1);
-        local_name[BP_MAX_PATH - 1] = '\0';
-    }
+                         DOS_CODEPAGE) != 0) return NULL;
 
     if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
         return NULL;

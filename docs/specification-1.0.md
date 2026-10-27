@@ -149,6 +149,9 @@ field. Extractors MUST report times their destination API cannot represent.
 - `name_len` MUST NOT be zero (empty names forbidden).
 - `name` MUST be valid UTF-8, without embedded NULs; readers MUST reject invalid sequences.
 - `name` MUST NOT contain `..` components or absolute paths (security check).
+- Primary entries (files, directories, and symbolic links) MUST have unique
+  UTF-8 names after removing trailing `/` bytes. Supplementary entries may
+  repeat the exact name of their subject as specified below.
 - `name_len > 65493` → entry is invalid: the fixed header plus name must fit in `u16`.
 - If `entry_type == 4` (directory), `original_size` and `compressed_size` MUST both be zero.
 
@@ -186,7 +189,8 @@ For example, `42 50 4d 54 01 00 01 00 01 00 02 00 27 21` represents
 one file FAT record with all four attributes known, read-only and archive set.
 Portable metadata follows its subject or other supplementary entries for that
 subject, with the exact same archive name. It must not be applied unless that
-subject was successfully extracted. When both native and portable values exist,
+subject was successfully extracted. A subject has at most one portable
+envelope. When both native and portable values exist,
 native values for the matching platform take precedence per attribute; portable
 values are fallback for attributes not supplied by native metadata.
 

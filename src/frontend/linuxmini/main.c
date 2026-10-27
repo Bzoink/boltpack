@@ -18,7 +18,8 @@
  * Licensed under the BSD 2-Clause License
  */
 
-#define _POSIX_C_SOURCE 200112L
+#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 
 #include "../../core/mini/archiver.h"
 #include "../mini_shared/mini_common.h"
@@ -32,7 +33,9 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <utime.h>
+#include "../linux/extract_paths.h"
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -45,6 +48,7 @@
 /* ---- globals ----------------------------------------------------------- */
 
 static int g_verbose = 1;
+static int g_create_partial = 0;
 
 /* ---- platform I/O ------------------------------------------------------ */
 
@@ -68,18 +72,16 @@ static void make_parents(const char *path)
     }
 }
 
-static int set_mtime(const char *path, bp_uint64 mtime)
+static int set_mtime_fd(int fd, bp_uint64 mtime)
 {
     bp_off_t seconds = bp_u64_to_off(mtime);
     time_t t = (time_t)seconds;
-    struct stat st;
-    struct utimbuf ut;
+    struct timespec times[2];
     if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
         (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
-    if (stat(path, &st) != 0) return BP_ERR_IO;
-    ut.actime = st.st_atime;
-    ut.modtime = t;
-    return utime(path, &ut) == 0 ? BP_OK : BP_ERR_IO;
+    times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
+    times[1].tv_sec = t; times[1].tv_nsec = 0;
+    return futimens(fd, times) == 0 ? BP_OK : BP_ERR_IO;
 }
 
 /* ---- list callback ----------------------------------------------------- */
@@ -111,81 +113,176 @@ static int on_list(const bp_mini_entry_t *e, void *user_data)
 
 /* ---- extract callbacks ------------------------------------------------- */
 
+typedef struct mini_restore_dir_s {
+    struct mini_restore_dir_s *next;
+    char *path;
+    bp_uint16 flags;
+    bp_uint64 mtime;
+} mini_restore_dir_t;
+
 typedef struct {
     char dest[BP_MAX_PATH];
-    char current_path[BP_MAX_PATH];
+    int root_fd;
+    mini_restore_dir_t *dirs;
+    unsigned dir_count;
+    int error;
+    int partial;
 } extract_ctx_t;
+
+typedef struct {
+    bp_io_t io;
+    int parent_fd;
+    char *temporary;
+    char *destination;
+} mini_extract_output_t;
+
+static int queue_directory(extract_ctx_t *ctx, const char *path, const bp_mini_entry_t *e)
+{
+    mini_restore_dir_t *node, **at;
+    size_t n = strlen(path);
+    if (ctx->dir_count >= 1024U) return BP_ERR_OVERFLOW;
+    node = (mini_restore_dir_t *)malloc(sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->path = (char *)malloc(n + 1);
+    if (node->path == NULL) { free(node); return BP_ERR_NOMEM; }
+    memcpy(node->path, path, n + 1);
+    node->flags = e->flags;
+    node->mtime = e->mtime;
+    at = &ctx->dirs;
+    while (*at != NULL && strlen((*at)->path) >= n) at = &(*at)->next;
+    node->next = *at; *at = node; ctx->dir_count++;
+    return BP_OK;
+}
+
+static int finish_directories(extract_ctx_t *ctx, int apply)
+{
+    int rc = BP_OK;
+    while (ctx->dirs != NULL) {
+        mini_restore_dir_t *node = ctx->dirs;
+        ctx->dirs = node->next;
+        if (apply) {
+            int fd = extract_open_directory(ctx->root_fd, node->path, 0);
+            if (fd < 0) rc = BP_ERR_IO;
+            else {
+                if (node->flags & BP_ENTRY_FLAG_MODE_VALID) {
+                    if (node->flags & 06000U) {
+                        fprintf(stderr, PROG_NAME ": set-ID bits not restored: %s\n", node->path);
+                        ctx->partial = 1;
+                    }
+                    if (fchmod(fd, (mode_t)(node->flags & 01777U)) != 0) rc = BP_ERR_IO;
+                }
+                if ((node->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                    set_mtime_fd(fd, node->mtime) != BP_OK) rc = BP_ERR_IO;
+                close(fd);
+            }
+        }
+        free(node->path); free(node);
+    }
+    return rc;
+}
 
 static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-    char path[BP_MAX_PATH];
+    mini_extract_output_t *output;
+    char leaf[BP_MAX_PATH], temporary[64];
+    int parent_fd, fd, tries;
     FILE *fp;
-    struct stat st;
+    static unsigned long temporary_counter;
 
-    if (!bp_mini_name_is_safe(e->name)) return NULL;
-    if (ctx->dest[0] && strlen(ctx->dest) + strlen(e->name) + 2 >= sizeof(path))
-        return NULL;
-
+    if (!bp_mini_name_is_safe(e->name)) { ctx->partial = 1; return NULL; }
     if (e->entry_type == BP_TYPE_DIR) {
-        int n;
-        if (ctx->dest[0]) {
-            n = snprintf(path, BP_MAX_PATH, "%s/%s", ctx->dest, e->name);
+        fd = extract_open_directory(ctx->root_fd, e->name, 1);
+        if (fd < 0) {
+            fprintf(stderr, PROG_NAME ": unsafe or inaccessible directory: %s\n", e->name);
+            ctx->error = BP_ERR_IO;
         } else {
-            n = snprintf(path, BP_MAX_PATH, "%s", e->name);
+            int dir_rc;
+            close(fd);
+            dir_rc = queue_directory(ctx, e->name, e);
+            if (dir_rc != BP_OK && ctx->error == BP_OK) ctx->error = dir_rc;
         }
-        (void)n;
-        make_parents(path);
-        mkdir(path, 0755);
         return NULL;
     }
-
-    if (ctx->dest[0]) {
-        snprintf(path, BP_MAX_PATH, "%s/%s", ctx->dest, e->name);
-    } else {
-        snprintf(path, BP_MAX_PATH, "%s", e->name);
-    }
-
-    make_parents(path);
-
     if (g_verbose) {
         printf("  x  "); print_utf8_safe(e->name, e->name_len); putchar('\n');
     }
-
-    if (lstat(path, &st) == 0) {
-        fprintf(stderr, PROG_NAME ": file already exists: %s\n", path);
+    parent_fd = extract_open_parent(ctx->root_fd, e->name, leaf, sizeof(leaf));
+    if (parent_fd < 0) {
+        fprintf(stderr, PROG_NAME ": unsafe or inaccessible directory: %s\n", e->name);
+        ctx->error = BP_ERR_IO;
         return NULL;
     }
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, PROG_NAME ": cannot create %s\n", path);
-        return NULL;
-    }
-
     {
-        static bp_io_t io;
-        strcpy(ctx->current_path, path);
-        bp_io_from_file(&io, fp);
-        return &io;
+        struct stat st;
+        if (fstatat(parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) {
+            fprintf(stderr, PROG_NAME ": file exists or cannot be inspected: %s\n", e->name);
+            close(parent_fd);
+            return NULL;
+        }
     }
+    output = (mini_extract_output_t *)calloc(1, sizeof(*output));
+    if (output == NULL) { close(parent_fd); ctx->error = BP_ERR_NOMEM; return NULL; }
+    output->parent_fd = parent_fd;
+    output->destination = (char *)malloc(strlen(leaf) + 1);
+    output->temporary = (char *)malloc(sizeof(temporary));
+    if (output->destination == NULL || output->temporary == NULL) {
+        close(parent_fd); free(output->destination); free(output->temporary); free(output);
+        ctx->error = BP_ERR_NOMEM; return NULL;
+    }
+    strcpy(output->destination, leaf);
+    fd = -1;
+    for (tries = 0; tries < 256; tries++) {
+        sprintf(temporary, ".boltpack-%08lx-%08lx", (unsigned long)getpid(), ++temporary_counter);
+        fd = openat(parent_fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) {
+        fprintf(stderr, PROG_NAME ": cannot create temporary file for %s\n", e->name);
+        close(parent_fd); free(output->destination); free(output->temporary); free(output);
+        ctx->error = BP_ERR_IO; return NULL;
+    }
+    strcpy(output->temporary, temporary);
+    fp = fdopen(fd, "wb");
+    if (fp == NULL) {
+        close(fd); unlinkat(parent_fd, temporary, 0); close(parent_fd);
+        free(output->destination); free(output->temporary); free(output);
+        ctx->error = BP_ERR_IO; return NULL;
+    }
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
 }
 
 static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
                            int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
-    if (out == NULL) return BP_ERR_INVALID_ARG;
-    if (fclose((FILE *)out->handle) != 0) return BP_ERR_IO;
-    if (status != BP_OK) {
-        (void)remove(ctx->current_path);
-        return BP_OK;
+    mini_extract_output_t *output = (mini_extract_output_t *)out;
+    FILE *fp = (FILE *)out->handle;
+    int rc = BP_OK;
+    if (status == BP_OK) {
+        if (fflush(fp) != 0) rc = BP_ERR_IO;
+        if (rc == BP_OK && (e->flags & BP_ENTRY_FLAG_MODE_VALID)) {
+            if (e->flags & 06000U) {
+                fprintf(stderr, PROG_NAME ": set-ID bits not restored: %s\n", e->name);
+                ctx->partial = 1;
+            }
+            if (fchmod(fileno(fp), (mode_t)(e->flags & 01777U)) != 0) rc = BP_ERR_IO;
+        }
+        if (rc == BP_OK && (e->flags & BP_ENTRY_FLAG_MTIME_VALID))
+            rc = set_mtime_fd(fileno(fp), e->mtime);
     }
-    if ((e->flags & BP_ENTRY_FLAG_MODE_VALID) &&
-        chmod(ctx->current_path, (mode_t)(e->flags & 01777U)) != 0)
-        return BP_ERR_IO;
-    if (e->flags & BP_ENTRY_FLAG_MTIME_VALID)
-        return set_mtime(ctx->current_path, e->mtime);
-    return BP_OK;
+    if (fclose(fp) != 0 && rc == BP_OK && status == BP_OK) rc = BP_ERR_IO;
+    if (status == BP_OK && rc == BP_OK &&
+        extract_commit_noreplace(output->parent_fd, output->temporary, output->destination) != 0)
+        rc = BP_ERR_IO;
+    if (status != BP_OK || rc != BP_OK) {
+        if (rc != BP_OK) fprintf(stderr, PROG_NAME ": cannot finish extracting %s\n", e->name);
+        (void)unlinkat(output->parent_fd, output->temporary, 0);
+    }
+    close(output->parent_fd);
+    free(output->temporary); free(output->destination); free(output);
+    return rc;
 }
 
 /* ---- test callback ----------------------------------------------------- */
@@ -214,18 +311,27 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     bp_uint64 mtime;
     FILE *fp;
     bp_io_t file_io;
+    bp_uint16 flags;
     int rc;
 
     if (stat(fs_path, &st) != 0) {
         fprintf(stderr, PROG_NAME ": cannot stat %s\n", fs_path);
         return BP_ERR_IO;
     }
+    if (st.st_size < 0) return BP_ERR_OVERFLOW;
 
     fsize.lo = (bp_uint32)(unsigned long)st.st_size;
     fsize.hi = 0;
 
-    mtime.lo = (bp_uint32)(unsigned long)st.st_mtime;
-    mtime.hi = 0;
+    flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    if (st.st_mtime < 0) {
+        fprintf(stderr, PROG_NAME ": pre-1970 timestamp not representable: %s\n", fs_path);
+        mtime = bp_u64_from_u32(0);
+        g_create_partial = 1;
+    } else {
+        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+        flags |= BP_ENTRY_FLAG_MTIME_VALID;
+    }
 
     fp = fopen(fs_path, "rb");
     if (fp == NULL) {
@@ -239,8 +345,8 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     }
 
     bp_io_from_file(&file_io, fp);
-    rc = bp_mini_archive_add_entry(ar, arc_name, BP_TYPE_DATA, platform,
-                                   &file_io, fsize, mtime);
+    rc = bp_mini_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA, platform,
+                                      &file_io, fsize, mtime, flags);
     fclose(fp);
 
     if (rc != BP_OK) {
@@ -251,7 +357,7 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
 }
 
 static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
-                         bp_uint8 platform)
+                         bp_uint8 platform, const struct stat *st)
 {
     bp_uint64 z;
     z.lo = 0; z.hi = 0;
@@ -260,8 +366,19 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
         printf("  a  %s/\n", arc_name);
     }
 
-    return bp_mini_archive_add_entry_ex(ar, arc_name, BP_TYPE_DIR, platform,
-                                        NULL, z, z, 0);
+    {
+        bp_uint16 flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st->st_mode & BP_ENTRY_FLAG_MODE_MASK);
+        bp_uint64 mtime = z;
+        if (st->st_mtime >= 0) {
+            mtime = bp_off_to_u64((bp_off_t)st->st_mtime);
+            flags |= BP_ENTRY_FLAG_MTIME_VALID;
+        } else {
+            fprintf(stderr, PROG_NAME ": pre-1970 directory timestamp not representable: %s\n", arc_name);
+            g_create_partial = 1;
+        }
+        return bp_mini_archive_add_entry_ex(ar, arc_name, BP_TYPE_DIR, platform,
+                                             NULL, z, mtime, flags);
+    }
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
@@ -285,7 +402,7 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
 
     /* It's a directory */
     if (arc_prefix[0]) {
-        rc = add_dir_entry(ar, arc_prefix, platform);
+        rc = add_dir_entry(ar, arc_prefix, platform, &st);
         if (rc != BP_OK) return rc;
     }
 
@@ -394,7 +511,7 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
                (unsigned)ar.entries_written,
                ar.entries_written == 1 ? "y" : "ies");
     }
-    return (rc == BP_OK) ? 0 : 1;
+    return (rc == BP_OK && !g_create_partial) ? 0 : 1;
 }
 
 /* ---- cmd_extract ------------------------------------------------------- */
@@ -415,7 +532,26 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
     memset(&ctx, 0, sizeof(ctx));
     if (dest) {
+        if (strlen(dest) >= sizeof(ctx.dest)) {
+            fprintf(stderr, PROG_NAME ": output directory is too long\n");
+            fclose(fp);
+            return 1;
+        }
         strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
+    }
+    if (ctx.dest[0]) {
+        make_parents(ctx.dest);
+        if (mkdir(ctx.dest, 0755) != 0 && errno != EEXIST) {
+            fprintf(stderr, PROG_NAME ": cannot create output directory: %s\n", ctx.dest);
+            fclose(fp);
+            return 1;
+        }
+    }
+    ctx.root_fd = open(ctx.dest[0] ? ctx.dest : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (ctx.root_fd < 0) {
+        fprintf(stderr, PROG_NAME ": cannot open output directory: %s\n", ctx.dest);
+        fclose(fp);
+        return 1;
     }
 
     rc = bp_mini_compress_init();
@@ -427,6 +563,13 @@ static int cmd_extract(const char *arc_path, const char *dest)
     }
 
     fclose(fp);
+    if (rc == BP_OK && ctx.error != BP_OK) rc = ctx.error;
+    {
+        int dir_rc = finish_directories(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
+        if (rc == BP_OK && dir_rc != BP_OK) rc = dir_rc;
+    }
+    if (rc == BP_OK && ctx.partial) rc = BP_ERR_PARTIAL;
+    close(ctx.root_fd);
 
     if (rc != BP_OK) {
         fprintf(stderr, PROG_NAME ": extract failed: %s\n",

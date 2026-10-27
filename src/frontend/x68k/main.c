@@ -316,8 +316,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         /* Convert Shift-JIS archive name to UTF-8 for storage */
         strncpy(arcname_sjis, arcname, sizeof(arcname_sjis) - 1);
         arcname_sjis[sizeof(arcname_sjis) - 1] = '\0';
-        if (bp_local_to_utf8(arcname_sjis, arcname_utf8, sizeof(arcname_utf8), X68K_CP) != 0)
-            strcpy(arcname_utf8, arcname_sjis);
+        if (bp_local_to_utf8(arcname_sjis, arcname_utf8, sizeof(arcname_utf8), X68K_CP) != 0) {
+            fclose(fp);
+            return BP_ERR_INVALID_ARG;
+        }
 
         if (g_verbosity == VERB_DEFAULT) { printf("compressing: %s", arcname_sjis); fflush(stdout); }
 
@@ -399,10 +401,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (!bp_name_is_safe(entry->name)) return NULL;
 
     /* Convert UTF-8 archive name to SJIS */
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), X68K_CP) != 0) {
-        strncpy(local_name, entry->name, sizeof(local_name) - 1);
-        local_name[sizeof(local_name) - 1] = '\0';
-    }
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                         X68K_CP) != 0) return NULL;
 
     /* Build output path with backslashes */
     if (ctx->out_dir) {

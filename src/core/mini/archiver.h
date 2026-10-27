@@ -15,6 +15,7 @@
 #define BP_MINI_ARCHIVER_H
 
 #include "../bp_types.h"
+#include "../bp_metadata.h"
 
 /* Maximum file name length in bytes (same as full archiver) */
 #define BP_MAX_NAME_LEN  65493U
@@ -145,6 +146,17 @@ typedef int (*bp_mini_extract_done_status_fn)(const bp_mini_entry_t *entry,
                                                bp_io_t *out, int status,
                                                void *user_data);
 
+/* Portable metadata is delivered only after validation and a successful
+ * subject outcome. Directory metadata must be deferred by the frontend. */
+typedef int (*bp_mini_metadata_fn)(const bp_mini_entry_t *entry,
+                                    const bp_portable_metadata_t *metadata,
+                                    void *user_data);
+
+/* Return BP_OK only if this directory was successfully selected or created.
+ * BP_ERR_PARTIAL skips the subject and its metadata; other errors abort. */
+typedef int (*bp_mini_extract_directory_fn)(const bp_mini_entry_t *entry,
+                                            void *user_data);
+
 /*
  * Extract all entries.  Per-entry capability checks:
  *   method > BP_METHOD_BOLTLZ  -> prints warning, skips entry.
@@ -160,6 +172,19 @@ int bp_mini_archive_extract_all(bp_io_t *io,
  * extraction continues and the overall result is BP_ERR_PARTIAL. */
 int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
                                    bp_mini_extract_done_status_fn done_fn,
+                                   void *user_data);
+
+int bp_mini_archive_extract_all_with_metadata(bp_io_t *io,
+                                   bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   bp_mini_metadata_fn metadata_fn,
+                                   void *user_data);
+
+int bp_mini_archive_extract_all_with_directories(bp_io_t *io,
+                                   bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   bp_mini_extract_directory_fn directory_fn,
+                                   bp_mini_metadata_fn metadata_fn,
                                    void *user_data);
 
 /* ---- Test ------------------------------------------------------------- */

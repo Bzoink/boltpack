@@ -488,6 +488,20 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
 
     if (ar == NULL) return BP_ERR_INVALID_ARG;
 
+    {
+        bp_metadata_group_t group = { NULL, 0, 0, NULL };
+        for (i = 0; i < ar->entries_written; i++) {
+            bp_mini_entry_t *entry = &ar->entry_list[i];
+            char *name = entry->name;
+            rc = bp_metadata_group_record(&group, &name, entry->entry_type, entry->platform, 0);
+            if (rc != BP_OK) {
+                bp_metadata_group_close(&group);
+                return rc == BP_ERR_CORRUPT ? BP_ERR_INVALID_ARG : rc;
+            }
+        }
+        bp_metadata_group_close(&group);
+    }
+
     table_start = mini_io_tell(ar->io);
     if (table_start < 0) return BP_ERR_IO;
 
@@ -829,29 +843,36 @@ static int mini_read_inline_meta(bp_io_t *io, bp_uint64 entry_offset,
 
 /* Validate all table/header pairs and resource limits before opening output. */
 static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
-                                  bp_uint16 version, bp_uint64 table_offset)
+                                  bp_uint16 version, bp_uint64 table_offset,
+                                  int check_capabilities)
 {
     bp_uint32 i;
     bp_uint64 next = bp_u64_from_u32(BP_HEADER_SIZE);
     bp_off_t table_start = mini_io_tell(io);
+    bp_metadata_group_t group = { NULL, 0, 0, NULL };
     for (i = 0; i < count; i++) {
         bp_mini_entry_t entry;
         bp_off_t resume;
         bp_uint8 method, checksum_type;
         bp_uint32 block_size, checksum;
         int rc = mini_read_table_record(io, &entry, version);
-        if (rc != BP_OK) return rc;
+        if (rc != BP_OK) { bp_metadata_group_close(&group); return rc; }
         resume = mini_io_tell(io);
         if (resume < 0 || bp_u64_cmp(entry.offset, next) != 0) {
-            free(entry.name); return BP_ERR_CORRUPT;
+            free(entry.name); bp_metadata_group_close(&group); return BP_ERR_CORRUPT;
         }
         rc = mini_read_inline_meta(io, entry.offset, &method, &block_size,
                                    &checksum, &checksum_type, &entry);
-        if (rc == BP_OK && method > BP_METHOD_BOLTLZ) rc = BP_ERR_UNSUPPORTED_METHOD;
-        if (rc == BP_OK && (entry.original_size.hi != 0 ||
+        if (rc == BP_OK && check_capabilities && method > BP_METHOD_BOLTLZ) rc = BP_ERR_UNSUPPORTED_METHOD;
+        if (rc == BP_OK && check_capabilities && (entry.original_size.hi != 0 ||
                             block_size > BP_MINI_MAX_BLOCK_SIZE)) rc = BP_ERR_OVERFLOW;
         if (rc == BP_OK && entry.entry_type > BP_TYPE_DIR) rc = BP_ERR_CORRUPT;
-        if (rc == BP_OK && entry.entry_type == BP_TYPE_SYMLINK) rc = BP_ERR_PARTIAL;
+        if (rc == BP_OK && entry.entry_type == BP_TYPE_DIR &&
+            (!bp_u64_is_zero(entry.original_size) || !bp_u64_is_zero(entry.compressed_size)))
+            rc = BP_ERR_CORRUPT;
+        if (rc == BP_OK && bp_u64_is_zero(entry.original_size) && checksum != 0)
+            rc = BP_ERR_CHECKSUM;
+        if (rc == BP_OK && check_capabilities && entry.entry_type == BP_TYPE_SYMLINK) rc = BP_ERR_PARTIAL;
         if (rc == BP_OK && entry.entry_type == BP_TYPE_META &&
             entry.platform == BP_META_PORTABLE && entry.original_size.lo > BP_META_MAX_SIZE)
             rc = BP_ERR_CORRUPT;
@@ -859,10 +880,13 @@ static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
         next = bp_u64_add(next, entry.compressed_size);
         if (bp_u64_cmp(next, entry.offset) < 0 || bp_u64_cmp(next, table_offset) > 0)
             rc = BP_ERR_CORRUPT;
+        if (rc == BP_OK)
+            rc = bp_metadata_group_record(&group, &entry.name, entry.entry_type, entry.platform, 1);
         free(entry.name);
-        if (rc != BP_OK) return rc;
-        if (mini_io_seek(io, resume, 0) != 0) return BP_ERR_IO;
+        if (rc != BP_OK) { bp_metadata_group_close(&group); return rc; }
+        if (mini_io_seek(io, resume, 0) != 0) { bp_metadata_group_close(&group); return BP_ERR_IO; }
     }
+    bp_metadata_group_close(&group);
     if (bp_u64_cmp(next, table_offset) != 0) return BP_ERR_CORRUPT;
     return mini_io_seek(io, table_start, 0) == 0 ? BP_OK : BP_ERR_IO;
 }
@@ -1156,6 +1180,8 @@ int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info)
 static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
                                  bp_mini_extract_done_fn done_fn,
                                  bp_mini_extract_done_status_fn status_fn,
+                                 bp_mini_metadata_fn metadata_fn,
+                                 bp_mini_extract_directory_fn directory_fn,
                                  void *user_data)
 {
     bp_uint64  table_offset;
@@ -1169,6 +1195,8 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
     mini_extract_bufs_t bufs = {NULL, NULL, 0, 0};
     int        rc;
     int        partial = 0;
+    bp_uint8   subject_type = 0xFF;
+    int        subject_ready = 0;
 
     rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
@@ -1196,7 +1224,7 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
     if (entry_count != header_count) return BP_ERR_CORRUPT;
     if (entry_count > BP_MINI_MAX_ENTRIES) return BP_ERR_OVERFLOW;
 
-    rc = mini_preflight_extract(io, entry_count, dummy_version, table_offset);
+    rc = mini_preflight_extract(io, entry_count, dummy_version, table_offset, 1);
     if (rc != BP_OK) return rc;
 
     for (i = 0; i < entry_count; i++) {
@@ -1216,6 +1244,11 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
         if (rc != BP_OK) {
             mini_bufs_free(&bufs);
             return rc;
+        }
+        if (entry.entry_type == BP_TYPE_DATA || entry.entry_type == BP_TYPE_DIR ||
+            entry.entry_type == BP_TYPE_SYMLINK) {
+            subject_type = entry.entry_type;
+            subject_ready = 0;
         }
 
         /* Save position in table so we can return after seeking into data */
@@ -1292,14 +1325,19 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
             if (metadata == NULL) { free(entry.name); mini_bufs_free(&bufs); return BP_ERR_NOMEM; }
             bp_metadata_sink_init(metadata);
         }
-        if (skip_metadata) {
+        if (skip_metadata && !(portable && metadata_fn != NULL)) {
 #ifndef BP_MINI_QUIET
             fprintf(stderr, "bpmini: metadata not restored: %s\n", entry.name);
 #endif
             partial = 1;
         }
         out = NULL;
-        if (!skip_metadata && open_fn != NULL) {
+        if (entry.entry_type == BP_TYPE_DIR && directory_fn != NULL) {
+            rc = directory_fn(&entry, user_data);
+            if (rc == BP_OK) subject_ready = 1;
+            else if (rc == BP_ERR_PARTIAL) partial = 1;
+            else { free(metadata); free(entry.name); mini_bufs_free(&bufs); return rc; }
+        } else if (!skip_metadata && open_fn != NULL) {
             out = open_fn(&entry, user_data);
         }
         if (!skip_metadata && entry.entry_type != BP_TYPE_DIR && out == NULL)
@@ -1333,9 +1371,18 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
         if (portable) {
             rc = bp_metadata_parse(metadata->data, metadata->length, &parsed);
             free(metadata);
-            if (rc == BP_ERR_CORRUPT) {
-                free(entry.name); mini_bufs_free(&bufs); return rc;
+            if (rc == BP_ERR_CORRUPT ||
+                (parsed.supported_version && parsed.subject_type != subject_type)) {
+                free(entry.name); mini_bufs_free(&bufs); return BP_ERR_CORRUPT;
             }
+            if (rc == BP_ERR_PARTIAL) partial = 1;
+            if (metadata_fn != NULL && parsed.supported_version && subject_ready) {
+                rc = metadata_fn(&entry, &parsed, user_data);
+                if (rc == BP_ERR_PARTIAL) partial = 1;
+                else if (rc != BP_OK) {
+                    free(entry.name); mini_bufs_free(&bufs); return rc;
+                }
+            } else partial = 1;
         }
 
         if (out && status_fn) {
@@ -1345,6 +1392,7 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
             } else if (rc != BP_OK) {
                 free(entry.name); mini_bufs_free(&bufs); return rc;
             }
+            if (entry.entry_type == BP_TYPE_DATA) subject_ready = 1;
         } else if (out && done_fn) {
             done_fn(&entry, out, user_data);
         }
@@ -1362,7 +1410,7 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
 int bp_mini_archive_extract_all(bp_io_t *io, bp_mini_extract_fn open_fn,
                                 bp_mini_extract_done_fn done_fn, void *user_data)
 {
-    return mini_extract_all_impl(io, open_fn, done_fn, NULL, user_data);
+    return mini_extract_all_impl(io, open_fn, done_fn, NULL, NULL, NULL, user_data);
 }
 
 int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
@@ -1370,7 +1418,29 @@ int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
                                    void *user_data)
 {
     if (done_fn == NULL) return BP_ERR_INVALID_ARG;
-    return mini_extract_all_impl(io, open_fn, NULL, done_fn, user_data);
+    return mini_extract_all_impl(io, open_fn, NULL, done_fn, NULL, NULL, user_data);
+}
+
+int bp_mini_archive_extract_all_with_metadata(bp_io_t *io,
+                                   bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   bp_mini_metadata_fn metadata_fn,
+                                   void *user_data)
+{
+    if (done_fn == NULL || metadata_fn == NULL) return BP_ERR_INVALID_ARG;
+    return mini_extract_all_impl(io, open_fn, NULL, done_fn, metadata_fn, NULL, user_data);
+}
+
+int bp_mini_archive_extract_all_with_directories(bp_io_t *io,
+                                   bp_mini_extract_fn open_fn,
+                                   bp_mini_extract_done_status_fn done_fn,
+                                   bp_mini_extract_directory_fn directory_fn,
+                                   bp_mini_metadata_fn metadata_fn,
+                                   void *user_data)
+{
+    if (done_fn == NULL || directory_fn == NULL || metadata_fn == NULL)
+        return BP_ERR_INVALID_ARG;
+    return mini_extract_all_impl(io, open_fn, NULL, done_fn, metadata_fn, directory_fn, user_data);
 }
 
 /* ---- bp_mini_archive_test ---------------------------------------------- */
@@ -1388,6 +1458,7 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
     mini_extract_bufs_t bufs = {NULL, NULL, 0, 0};
     int        rc;
     int        overall = BP_OK;
+    bp_uint8   subject_type = 0xFF;
 
     rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
@@ -1415,6 +1486,9 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
     entry_count = bp_read_le32(tbl_hdr + 4);
     if (entry_count != header_count) return BP_ERR_CORRUPT;
 
+    rc = mini_preflight_extract(io, entry_count, dummy_version, table_offset, 0);
+    if (rc != BP_OK) return rc;
+
     for (i = 0; i < entry_count; i++) {
         bp_mini_entry_t entry;
         bp_uint8  method;
@@ -1432,6 +1506,8 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
             mini_bufs_free(&bufs);
             return rc;
         }
+        if (entry.entry_type == BP_TYPE_DATA || entry.entry_type == BP_TYPE_DIR ||
+            entry.entry_type == BP_TYPE_SYMLINK) subject_type = entry.entry_type;
 
         table_resume = mini_io_tell(io);
 
@@ -1481,8 +1557,11 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
             result = mini_extract_data(io, portable ? &metadata->io : NULL,
                                        entry.original_size, block_size,
                                        method, checksum, &bufs, dummy_version);
-            if (result == BP_OK && portable)
+            if (result == BP_OK && portable) {
                 result = bp_metadata_parse(metadata->data, metadata->length, &parsed);
+                if (parsed.supported_version && parsed.subject_type != subject_type)
+                    result = BP_ERR_CORRUPT;
+            }
         }
 
         free(metadata);

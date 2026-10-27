@@ -313,7 +313,7 @@ The frontend is structurally identical to `dos16/main.c`. Differences:
 - `mkdir` is available; hierarchical extraction works as on DOS 16.
 - Compiler: Watcom C 16-bit (`wcc -bt=windows`), Borland C 3.x, or MSVC 1.5.
 
-The DOS16 and Win16 frontends interpret FAT timestamps using the environment
+The DOS16, Win16, and OS/2-16 frontends interpret FAT timestamps using the environment
 variable `BP_TZ_OFFSET`, an integer number of minutes east of UTC. For example,
 `set BP_TZ_OFFSET=60` specifies UTC+01:00 and `set BP_TZ_OFFSET=-300` specifies
 UTC-05:00. This is a fixed offset, so select the offset appropriate to the
@@ -325,6 +325,39 @@ extraction reports when an odd second was rounded down. After setting a file's
 time, these frontends read it back and report incomplete metadata if the
 filesystem or emulator did not retain it. For example, DOSBox 0.74-3 can
 acknowledge a timestamp change without applying it on a mounted host directory.
+
+DOS16, Win16, and OS/2-16 save the read-only, hidden, system, and archive FAT
+flags for files and directories in portable metadata entries. They restore
+flags only after successful extraction, finalizing directories after their
+children with a queue limited to 256 directories. DOS16 and Win16 report
+known directory timestamps as unrestored; OS/2-16 attempts to restore them.
+They report failure when the destination does not retain attributes. Nested
+directory transfer has been tested with DOSBox; Win16 and OS/2-16 require
+target-system testing. Other frontends that do not support this metadata report
+a partial extraction.
+
+Mini builds include only the configured local codepage conversion table. The
+shared converter reports invalid UTF-8, unrepresentable text, and insufficient
+space separately; unsupported names are refused instead of replaced. The
+default is CP437 for DOS16 and Win16, CP850 for OS/2-16, UTF-8 for Linux mini,
+and ASCII for CP/M-86; `BP_MINI_CODEPAGE` can select another supported encoding
+at build time.
+
+Linux mini records POSIX mode bits and modification times for regular files
+and directories. It restores directory metadata after its children, using a
+queue limited to 1,024 directories. Set-ID bits and pre-1970 source timestamps
+are reported as incomplete. Linux mini opens archive-controlled directories
+relative to an open extraction root without following symlinks, stages files
+until their checksums pass, and commits them without overwriting an existing
+destination. A process able to rename an already-open directory outside the
+extraction tree remains a separate concurrent-mutation limitation.
+
+Mini preflight and finalization retain a bounded hash table plus one name
+reference per primary entry to detect duplicate names and trailing-slash aliases. A constrained
+system can return an out-of-memory error before extraction or finalization;
+the 65,535-entry format limit is not a guarantee that every 16-bit system can
+hold that many names in memory. Case folding and other filesystem-specific
+name collisions require further destination checks.
 
 **Compiler flags (Watcom):**
 

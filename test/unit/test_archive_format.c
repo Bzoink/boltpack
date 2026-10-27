@@ -21,6 +21,7 @@
 #include "mini/compress.h"
 #include "bp_metadata.h"
 #include "../../src/frontend/mini_shared/dos_time.h"
+#include "../../src/frontend/mini_shared/mini_common.h"
 
 /* ======================================================================== */
 /* Memory-backed bp_io_t                                                     */
@@ -763,6 +764,9 @@ typedef struct {
     int count;
     int done_status;
     int report_partial;
+    int metadata_count;
+    int directory_count;
+    int directory_result;
 } MiniInteropState;
 
 static int mini_interop_list(const bp_mini_entry_t *entry, void *user_data)
@@ -789,6 +793,115 @@ static int mini_interop_done(const bp_mini_entry_t *entry, bp_io_t *out,
     (void)out;
     s->done_status = status;
     return s->report_partial ? BP_ERR_PARTIAL : BP_OK;
+}
+
+static int mini_metadata_test(const bp_mini_entry_t *entry,
+                              const bp_portable_metadata_t *metadata, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    (void)entry;
+    if (!metadata->has_fat || metadata->fat_valid != 0x27 || metadata->fat_value != 0x21)
+        return BP_ERR_CORRUPT;
+    s->metadata_count++;
+    return BP_OK;
+}
+
+static bp_io_t *mini_skip_test(const bp_mini_entry_t *entry, void *user_data)
+{
+    (void)entry; (void)user_data;
+    return NULL;
+}
+
+static int mini_directory_test(const bp_mini_entry_t *entry, void *user_data)
+{
+    MiniInteropState *s = (MiniInteropState *)user_data;
+    (void)entry;
+    s->directory_count++;
+    return s->directory_result;
+}
+
+static void test_mini_directory_outcomes(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_archive_t ar;
+    StringSrc input;
+    MiniInteropState state;
+    bp_uint8 metadata[BP_META_FAT_SIZE];
+    bp_uint64 zero = bp_u64_from_u32(0);
+    int rc;
+    UNIT_SECTION("Mini directory metadata outcomes");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP; io = make_mem_io(&mem);
+    rc = bp_metadata_fat_encode(metadata, sizeof(metadata), BP_TYPE_DIR, 0x27, 0x21);
+    if (rc == BP_OK) rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR", BP_TYPE_DIR, BP_OS_DOS,
+                                                   NULL, zero, zero, 0);
+    source = make_string_io(&input, metadata, sizeof(metadata));
+    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&ar, "DIR", BP_TYPE_META, BP_META_PORTABLE,
+                                                   &source, bp_u64_from_u32(sizeof(metadata)), zero, 0);
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "directory metadata fixture written");
+    memset(&state, 0, sizeof(state));
+    rc = bp_mini_archive_extract_all_with_directories(&io, mini_interop_open,
+              mini_interop_done, mini_directory_test, mini_metadata_test, &state);
+    UNIT_CHECK(rc == BP_OK && state.directory_count == 1 && state.metadata_count == 1,
+               "verified metadata is delivered for a successful directory");
+    memset(&state, 0, sizeof(state)); state.directory_result = BP_ERR_PARTIAL;
+    rc = bp_mini_archive_extract_all_with_directories(&io, mini_interop_open,
+              mini_interop_done, mini_directory_test, mini_metadata_test, &state);
+    UNIT_CHECK(rc == BP_ERR_PARTIAL && state.directory_count == 1 && state.metadata_count == 0,
+               "skipped directory never receives metadata");
+    memset(&state, 0, sizeof(state)); state.directory_result = BP_ERR_IO;
+    rc = bp_mini_archive_extract_all_with_directories(&io, mini_interop_open,
+              mini_interop_done, mini_directory_test, mini_metadata_test, &state);
+    UNIT_CHECK(rc == BP_ERR_IO && state.directory_count == 1 && state.metadata_count == 0,
+               "directory creation failure aborts before metadata");
+    free(mem.buf);
+}
+
+typedef struct {
+    char order[128];
+    int count;
+    int fat_seen;
+} MiniDirectoryQueueState;
+
+static int mini_directory_queue_apply(const bp_mini_directory_t *directory, void *user_data)
+{
+    MiniDirectoryQueueState *state = (MiniDirectoryQueueState *)user_data;
+    if (state->count) strcat(state->order, "|");
+    strcat(state->order, directory->path);
+    state->count++;
+    if (directory->fat_valid == 0x27 && directory->fat_value == 0x21) state->fat_seen++;
+    return strcmp(directory->path, "parent/child") == 0 ? BP_ERR_PARTIAL : BP_OK;
+}
+
+static void test_mini_directory_queue(void)
+{
+    bp_mini_directory_queue_t queue;
+    bp_mini_entry_t entry;
+    MiniDirectoryQueueState state;
+    int rc;
+    UNIT_SECTION("Mini deferred directory metadata");
+    memset(&queue, 0, sizeof(queue)); memset(&entry, 0, sizeof(entry));
+    memset(&state, 0, sizeof(state));
+    rc = bp_mini_directory_add(&queue, "parent", &entry);
+    if (rc == BP_OK) rc = bp_mini_directory_add(&queue, "parent/child", &entry);
+    if (rc == BP_OK) rc = bp_mini_directory_add(&queue, "sibling", &entry);
+    if (rc == BP_OK) rc = bp_mini_directory_set_fat(&queue, "parent/child", 0x27, 0x21);
+    UNIT_CHECK(rc == BP_OK && queue.count == 3, "directory metadata is queued");
+    UNIT_CHECK(bp_mini_directory_set_fat(&queue, "missing", 0x27, 0x21) == BP_ERR_CORRUPT,
+               "metadata cannot attach to a missing directory");
+    rc = bp_mini_directory_finish(&queue, 1, mini_directory_queue_apply, &state);
+    UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 3 && state.fat_seen == 1 &&
+               strcmp(state.order, "parent/child|sibling|parent") == 0 && queue.count == 0,
+               "children are finalized before parents and partial results do not stop cleanup");
+    rc = bp_mini_directory_add(&queue, "discarded", &entry);
+    if (rc == BP_OK) rc = bp_mini_directory_finish(&queue, 0, NULL, &state);
+    UNIT_CHECK(rc == BP_OK && queue.count == 0 && state.count == 3,
+               "failed extraction discards deferred metadata without applying it");
 }
 
 static void test_format6_full_mini_interop(void)
@@ -995,11 +1108,12 @@ static void test_portable_metadata_archive(void)
     UNIT_SECTION("Portable metadata archive validation");
     mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
     if (!mem.buf) exit(2);
-    for (malformed = 0; malformed < 2; malformed++) {
+    for (malformed = 0; malformed < 6; malformed++) {
         mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP;
         io = make_mem_io(&mem);
         bp_metadata_fat_encode(bytes, sizeof(bytes), BP_TYPE_DATA, 0x27, 0x21);
-        if (malformed) bytes[10] = 3;
+        if (malformed == 1) bytes[10] = 3;
+        if (malformed == 3) bytes[5] = BP_TYPE_DIR;
         rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
         source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
         if (rc == BP_OK)
@@ -1011,9 +1125,57 @@ static void test_portable_metadata_archive(void)
             rc = bp_archive_add_entry_ex(&ar, "FILE.TXT", BP_TYPE_META,
                                          BP_META_PORTABLE, &source,
                                          bp_u64_from_u32(sizeof(bytes)), bp_u64_from_u32(0), 0);
+        if (malformed == 4 && rc == BP_OK) {
+            source = make_string_io(&input, bytes, sizeof(bytes));
+            rc = bp_archive_add_entry_ex(&ar, "FILE.TXT", BP_TYPE_META,
+                                         BP_OS_DOS, &source,
+                                         bp_u64_from_u32(sizeof(bytes)), bp_u64_from_u32(0), 0);
+        }
+        if (malformed == 5 && rc == BP_OK) {
+            source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+            rc = bp_archive_add_entry(&ar, "DUPE.TXT", BP_TYPE_DATA,
+                                      BP_OS_LINUX, &source,
+                                      bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+        }
         if (rc == BP_OK) rc = bp_archive_finalize(&ar);
         bp_archive_close(&ar);
         UNIT_CHECK(rc == BP_OK, "portable metadata fixture written");
+        if ((malformed == 2 || malformed == 4 || malformed == 5) && rc == BP_OK) {
+            long pos;
+            int replacements = 0;
+            bp_uint64 table_off = bp_read_le64(mem.buf + mem.size - BP_FOOTER_SIZE);
+            bp_uint64 table_size = bp_read_le64(mem.buf + mem.size - BP_FOOTER_SIZE + 8);
+            unsigned first = (unsigned)table_off.lo + BP_TABLE_HDR_V3;
+            unsigned second = first + 2U + bp_read_le16(mem.buf + first) + BP_TABLE_REC_TAIL_V6;
+            if (malformed == 2) {
+                unsigned n = bp_read_le16(mem.buf + second);
+                unsigned tail = second + 2U + n;
+                bp_uint64 inline_offset = bp_read_le64(mem.buf + tail + 26);
+                memcpy(mem.buf + second + 2, "SOME.TXT", 8);
+                memcpy(mem.buf + inline_offset.lo + 4, "SOME.TXT", 8);
+                replacements = 2;
+            } else if (malformed == 4) {
+                unsigned third = second + 2U + bp_read_le16(mem.buf + second) + BP_TABLE_REC_TAIL_V6;
+                unsigned n = bp_read_le16(mem.buf + third);
+                unsigned tail = third + 2U + n;
+                bp_uint64 inline_offset = bp_read_le64(mem.buf + tail + 26);
+                mem.buf[tail + 17] = BP_META_PORTABLE;
+                mem.buf[inline_offset.lo + 4 + n + 27] = BP_META_PORTABLE;
+                replacements = 2;
+            } else {
+                for (pos = 0; pos + 8 <= mem.size; pos++) {
+                    if (memcmp(mem.buf + pos, "DUPE.TXT", 8) == 0) {
+                        memcpy(mem.buf + pos, "FILE.TXT", 8);
+                        replacements++;
+                    }
+                }
+            }
+            bp_write_le32(mem.buf + BP_HEADER_TABLE_CRC_OFF,
+                          bp_crc32(0, mem.buf + table_off.lo, table_size.lo));
+            bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                          bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+            UNIT_CHECK(replacements == 2, "independent duplicate fixture mutates header and table");
+        }
         rc = bp_archive_test(&io, NULL, NULL);
         UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
                    "full archive test validates portable metadata framing");
@@ -1026,7 +1188,7 @@ static void test_portable_metadata_archive(void)
         rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
                                         full_metadata_test_done, NULL, &state);
         UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK) &&
-                   state.count == (malformed ? 1 : 2),
+                   state.count == ((malformed == 2 || malformed == 4 || malformed == 5) ? 0 : (malformed ? 1 : 2)),
                    "full extraction validates metadata before opening its output");
         if (!malformed) {
             memset(&state, 0, sizeof(state));
@@ -1045,7 +1207,139 @@ static void test_portable_metadata_archive(void)
                                              mini_interop_done, &state);
         UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_ERR_PARTIAL),
                    "mini extraction rejects malformed or reports skipped metadata");
+        if (!malformed) {
+            MemIO copied, deleted_mem;
+            bp_io_t copied_io, deleted_io;
+            bp_archive_t copied_ar;
+            bp_uint32 deleted_count = 0;
+            const char *delete_names[1];
+            ListState listed;
+            memset(&state, 0, sizeof(state));
+            state.output.buf = output; state.output.cap = sizeof(output);
+            state.io = make_mem_io(&state.output);
+            rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
+                                    mini_interop_done, mini_metadata_test, &state);
+            UNIT_CHECK(rc == BP_OK && state.metadata_count == 1,
+                       "mini delivers validated FAT metadata after successful file extraction");
+            memset(&state, 0, sizeof(state));
+            rc = bp_mini_archive_extract_all_with_metadata(&io, mini_skip_test,
+                                    mini_interop_done, mini_metadata_test, &state);
+            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 0,
+                       "mini does not apply metadata when the subject was skipped");
+
+            copied.buf = (unsigned char *)malloc(MEM_IO_CAP);
+            deleted_mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+            if (!copied.buf || !deleted_mem.buf) exit(2);
+            copied.pos = copied.size = 0; copied.cap = MEM_IO_CAP;
+            deleted_mem.pos = deleted_mem.size = 0; deleted_mem.cap = MEM_IO_CAP;
+            copied_io = make_mem_io(&copied);
+            deleted_io = make_mem_io(&deleted_mem);
+            rc = bp_archive_create(&copied_ar, &copied_io, BP_BLOCK_8K, BP_METHOD_STORED);
+            if (rc == BP_OK) rc = bp_archive_copy_from(&copied_ar, &io);
+            source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+            if (rc == BP_OK)
+                rc = bp_archive_add_entry(&copied_ar, "NEXT.TXT", BP_TYPE_DATA,
+                                          BP_OS_LINUX, &source,
+                                          bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+            if (rc == BP_OK) rc = bp_archive_finalize(&copied_ar);
+            bp_archive_close(&copied_ar);
+            if (rc == BP_OK) rc = bp_archive_test(&copied_io, NULL, NULL);
+            memset(&listed, 0, sizeof(listed));
+            if (rc == BP_OK) rc = bp_archive_list(&copied_io, list_cb, &listed);
+            UNIT_CHECK(rc == BP_OK && listed.count == 3 &&
+                       listed.entries[1].entry_type == BP_TYPE_META &&
+                       (listed.entries[0].flags & BP_ENTRY_FLAG_MTIME_VALID),
+                       "archive copy and append preserve metadata group and flags");
+            delete_names[0] = "FILE.TXT";
+            rc = bp_archive_delete(&copied_io, &deleted_io, delete_names, 1, &deleted_count);
+            if (rc == BP_OK) rc = bp_archive_test(&deleted_io, NULL, NULL);
+            memset(&listed, 0, sizeof(listed));
+            if (rc == BP_OK) rc = bp_archive_list(&deleted_io, list_cb, &listed);
+            UNIT_CHECK(rc == BP_OK && deleted_count == 2 && listed.count == 1 &&
+                       strcmp(listed.entries[0].name, "NEXT.TXT") == 0,
+                       "deletion removes both subject and its metadata");
+            free(copied.buf); free(deleted_mem.buf);
+        }
     }
+    free(mem.buf);
+}
+
+static void test_duplicate_writer_names(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_archive_t full;
+    bp_mini_archive_t mini;
+    StringSrc input;
+    int rc;
+    UNIT_SECTION("Duplicate primary names");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP; io = make_mem_io(&mem);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_archive_add_entry(&full, "SAME", BP_TYPE_DATA, BP_OS_LINUX,
+                                               &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_archive_add_entry(&full, "SAME", BP_TYPE_DATA, BP_OS_LINUX,
+                                               &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_archive_finalize(&full);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "full writer refuses duplicate primary names");
+    bp_archive_close(&full);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_mini_archive_add_entry(&mini, "SAME", BP_TYPE_DATA, BP_OS_DOS,
+                                                     &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_mini_archive_add_entry(&mini, "SAME", BP_TYPE_DATA, BP_OS_DOS,
+                                                     &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "mini writer refuses duplicate primary names");
+    bp_mini_archive_close(&mini);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_archive_add_entry_ex(&full, "ORPHAN", BP_TYPE_META,
+                              BP_META_PORTABLE, &source, bp_u64_from_u32(FILE1_LEN),
+                              bp_u64_from_u32(0), 0);
+    if (rc == BP_OK) rc = bp_archive_finalize(&full);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "full writer refuses orphan portable metadata");
+    bp_archive_close(&full);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_mini_archive_add_entry_ex(&mini, "ORPHAN", BP_TYPE_META,
+                              BP_META_PORTABLE, &source, bp_u64_from_u32(FILE1_LEN),
+                              bp_u64_from_u32(0), 0);
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "mini writer refuses orphan portable metadata");
+    bp_mini_archive_close(&mini);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_archive_create(&full, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_archive_add_entry(&full, "SAME", BP_TYPE_DATA, BP_OS_LINUX,
+                              &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_archive_add_entry(&full, "SAME/", BP_TYPE_DIR, BP_OS_LINUX,
+                              NULL, bp_u64_from_u32(0), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_archive_finalize(&full);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "full writer rejects directory trailing-slash alias");
+    bp_archive_close(&full);
+
+    mem.pos = mem.size = 0; io = make_mem_io(&mem);
+    rc = bp_mini_archive_create(&mini, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) rc = bp_mini_archive_add_entry(&mini, "SAME", BP_TYPE_DATA, BP_OS_DOS,
+                              &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_mini_archive_add_entry(&mini, "SAME/", BP_TYPE_DIR, BP_OS_DOS,
+                              NULL, bp_u64_from_u32(0), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
+    UNIT_CHECK(rc == BP_ERR_INVALID_ARG, "mini writer rejects directory trailing-slash alias");
+    bp_mini_archive_close(&mini);
     free(mem.buf);
 }
 
@@ -1065,9 +1359,12 @@ int main(void)
     test_previous_versions_rejected();
     test_format6_flags_and_names();
     test_format6_full_mini_interop();
+    test_mini_directory_outcomes();
+    test_mini_directory_queue();
     test_dos_time_interop();
     test_portable_metadata();
     test_portable_metadata_archive();
+    test_duplicate_writer_names();
 
     UNIT_SECTION("Archive format: Stored method");
     test_list_method("list (Stored)", BP_METHOD_STORED);

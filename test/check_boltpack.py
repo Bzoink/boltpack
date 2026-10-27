@@ -739,6 +739,28 @@ def test_extract_symlink_parent() -> None:
               "symlink parent: file is not written outside destination")
 
 
+def test_duplicate_source_names() -> None:
+    section("Duplicate source names")
+    with tempfile.TemporaryDirectory(prefix="bp_duplicate_") as tmp:
+        with open(os.path.join(tmp, "same.txt"), "wb") as fh:
+            fh.write(b"duplicate")
+        result = run_bp("c", "--single-thread", "duplicate.bolt", "same.txt", "same.txt", cwd=tmp)
+        check(result.returncode != 0, "duplicate names: create reports an error")
+        check(not os.path.exists(os.path.join(tmp, "duplicate.bolt")),
+              "duplicate names: no invalid archive is committed")
+        result = run_bp("c", "--single-thread", "existing.bolt", "same.txt", cwd=tmp)
+        check(result.returncode == 0, "duplicate append: create original archive")
+        archive = os.path.join(tmp, "existing.bolt")
+        with open(archive, "rb") as fh:
+            before = fh.read()
+        result = run_bp("a", "--single-thread", "existing.bolt", "same.txt", cwd=tmp)
+        check(result.returncode != 0, "duplicate append: reports an error")
+        with open(archive, "rb") as fh:
+            check(fh.read() == before, "duplicate append: original archive is restored")
+        result = run_bp("t", "existing.bolt", cwd=tmp)
+        check(result.returncode == 0, "duplicate append: original archive remains valid")
+
+
 def test_compression_fallback() -> None:
     section("Compression fallback: incompressible data stored as-is")
 
@@ -802,6 +824,7 @@ def main() -> int:
         test_fast_boltlz_threaded_roundtrip,
         test_format6_metadata_roundtrip,
         test_extract_symlink_parent,
+        test_duplicate_source_names,
         test_compression_fallback,
     ]
 

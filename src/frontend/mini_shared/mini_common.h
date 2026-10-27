@@ -46,6 +46,32 @@ int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
                             bp_uint8 entry_type, bp_uint8 platform,
                             bp_io_t *file_io, bp_uint64 file_size,
                             bp_uint64 mtime, bp_uint16 flags);
+int bp_mini_add_fat_metadata(bp_mini_archive_t *ar, const char *name,
+                             bp_uint8 subject_type, bp_uint8 valid, bp_uint8 value);
+
+typedef struct bp_mini_directory_s {
+    struct bp_mini_directory_s *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    bp_uint8 fat_valid;
+    bp_uint8 fat_value;
+} bp_mini_directory_t;
+
+typedef struct {
+    bp_mini_directory_t *head;
+    unsigned count;
+} bp_mini_directory_queue_t;
+
+typedef int (*bp_mini_directory_apply_fn)(const bp_mini_directory_t *directory,
+                                           void *user_data);
+
+int bp_mini_directory_add(bp_mini_directory_queue_t *queue, const char *path,
+                          const bp_mini_entry_t *entry);
+int bp_mini_directory_set_fat(bp_mini_directory_queue_t *queue, const char *path,
+                              bp_uint8 valid, bp_uint8 value);
+int bp_mini_directory_finish(bp_mini_directory_queue_t *queue, int apply,
+                             bp_mini_directory_apply_fn apply_fn, void *user_data);
 
 /* Convert unsigned long n to decimal in buf[11]; returns pointer to first digit.
  * buf must be at least 11 bytes. */
