@@ -1179,6 +1179,8 @@ dos16-interoperability-test: modern dos16 unit-test-dos16
 test: modern unit-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
+	@echo "=== symlink timestamp and publication ==="
+	python3 test/check_symlink_atomic.py --boltpack build/linux/boltpack --cc "$(CC)"
 	@echo "=== legacy CLI profile interoperability ==="
 	$(MAKE) CC=$(CC) ql-host-test
 	$(MAKE) CC=$(CC) x68k-host-test

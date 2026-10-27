@@ -1603,6 +1603,42 @@ static int restore_file_metadata(const char *path, bp_uint16 flags,
     return BP_OK;
 }
 
+/* Restore the timestamp on a staged symlink itself, never its target. */
+#if defined(AT_SYMLINK_NOFOLLOW) && defined(UTIME_OMIT)
+#define BP_SYMLINK_PATH_FD AT_FDCWD
+#else
+#define BP_SYMLINK_PATH_FD (-1)
+#endif
+static int restore_symlink_mtime_at(int parent_fd, const char *path,
+                                    bp_uint16 flags, bp_uint64 mtime,
+                                    extract_ctx_t *ctx)
+{
+    (void)ctx;
+    if (!(flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+#if defined(AT_SYMLINK_NOFOLLOW) && defined(UTIME_OMIT)
+    {
+        bp_off_t seconds = bp_u64_to_off(mtime);
+        time_t t = (time_t)seconds;
+        struct timespec times[2];
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+            (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
+        times[0].tv_sec = 0;
+        times[0].tv_nsec = UTIME_OMIT;
+        times[1].tv_sec = t;
+        times[1].tv_nsec = 0;
+        if (utimensat(parent_fd, path, times, AT_SYMLINK_NOFOLLOW) != 0)
+            return BP_ERR_IO;
+    }
+#else
+    (void)parent_fd;
+    (void)path;
+    (void)mtime;
+    fprintf(stderr, "boltpack: symlink time not restored\n");
+    ctx->partial_count++;
+#endif
+    return BP_OK;
+}
+
 /* Inserting longer paths first ensures children precede their parents. */
 static int queue_directory(extract_ctx_t *ctx, const char *path,
                            const bp_entry_t *entry)
@@ -1854,55 +1890,64 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     }
 
     if (entry->entry_type == BP_TYPE_SYMLINK) {
-        char target[4096];
-        char path[4096];
+        char target[4096], path[4096], stage[4096], stage_leaf[64];
         long len;
+        int target_safe = 0, staged = 0, tries;
+        static unsigned long stage_counter;
 
         len = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
         if (len > 0 && len < (long)sizeof(target)) {
             rewind(fp);
             if (fread(target, 1, (size_t)len, fp) == (size_t)len) {
-                target[len] = '\0';
-                if (!bp_symlink_target_is_safe(name, target)) {
-                    fprintf(stderr,
-                            "boltpack: skipping symlink with unsafe target: "
-                            "%s -> %s\n", entry->name, target);
-                    ctx->unsafe_count++;
-                } else {
-                    if (ctx->out_dir) {
-                        path_join(path, sizeof(path), ctx->out_dir, name);
-                    } else {
-                        snprintf(path, sizeof(path), "%s", name);
-                    }
-                    if (!extract_parent_is_safe(ctx, name, 0) ||
-                        mkdirs_for_file(path) != 0 || symlink(target, path) != 0) {
-                        rc = BP_ERR_IO;
-                    } else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-#if defined(AT_SYMLINK_NOFOLLOW) && defined(UTIME_OMIT)
-                        bp_off_t seconds = bp_u64_to_off(entry->mtime);
-                        time_t t = (time_t)seconds;
-                        struct timespec times[2];
-                        if (seconds < 0 ||
-                            bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
-                            (bp_off_t)t != seconds) {
-                            rc = BP_ERR_OVERFLOW;
-                        } else {
-                            times[0].tv_sec = 0;
-                            times[0].tv_nsec = UTIME_OMIT;
-                            times[1].tv_sec = t;
-                            times[1].tv_nsec = 0;
-                            if (utimensat(AT_FDCWD, path, times, AT_SYMLINK_NOFOLLOW) != 0)
-                                rc = BP_ERR_IO;
-                        }
-#else
-                        fprintf(stderr, "boltpack: symlink time not restored: %s\n", path);
-                        ctx->partial_count++;
-#endif
-                    }
+                if (memchr(target, '\0', (size_t)len) != NULL) rc = BP_ERR_CORRUPT;
+                else {
+                    target[len] = '\0';
+                    if (!bp_symlink_target_is_safe(name, target)) {
+                        fprintf(stderr,
+                                "boltpack: skipping symlink with unsafe target: "
+                                "%s -> %s\n", entry->name, target);
+                        ctx->unsafe_count++;
+                    } else target_safe = 1;
                 }
             } else rc = BP_ERR_IO;
         } else rc = BP_ERR_CORRUPT;
         if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        if (rc == BP_OK && target_safe) {
+            const char *slash;
+            size_t prefix_len;
+            if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, name);
+            else if (strlen(name) >= sizeof(path)) rc = BP_ERR_OVERFLOW;
+            else strcpy(path, name);
+            if (rc == BP_OK && (!extract_parent_is_safe(ctx, name, 0) ||
+                                mkdirs_for_file(path) != 0)) rc = BP_ERR_IO;
+            slash = rc == BP_OK ? strrchr(path, '/') : NULL;
+            prefix_len = slash != NULL ? (size_t)(slash - path) + 1U : 0U;
+            if (rc == BP_OK && prefix_len + sizeof(stage_leaf) > sizeof(stage))
+                rc = BP_ERR_OVERFLOW;
+            for (tries = 0; rc == BP_OK && tries < 256; tries++) {
+                sprintf(stage_leaf, ".boltpack-link-%08lx-%08lx",
+                        (unsigned long)getpid(), ++stage_counter);
+                if (prefix_len != 0) memcpy(stage, path, prefix_len);
+                strcpy(stage + prefix_len, stage_leaf);
+                if (symlink(target, stage) == 0) { staged = 1; break; }
+                if (errno != EEXIST) { rc = BP_ERR_IO; break; }
+            }
+            if (rc == BP_OK && !staged) rc = BP_ERR_IO;
+            if (rc == BP_OK)
+                rc = restore_symlink_mtime_at(BP_SYMLINK_PATH_FD, stage, entry->flags,
+                                              entry->mtime, ctx);
+            if (rc == BP_OK) {
+                if (ctx->force) {
+                    if (rename(stage, path) != 0) rc = BP_ERR_IO;
+                    else staged = 0;
+                } else {
+                    if (link(stage, path) != 0) rc = BP_ERR_IO;
+                    else if (unlink(stage) != 0) rc = BP_ERR_IO;
+                    else staged = 0;
+                }
+            }
+            if (staged) unlink(stage);
+        }
         free(output);
         return rc;
     }
@@ -2044,9 +2089,11 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         return BP_OK;
     }
     if (entry->entry_type == BP_TYPE_SYMLINK) {
-        char target[4096], leaf[4096];
+        char target[4096], leaf[4096], temporary[64];
         long len = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
         int parent_fd = -1;
+        int target_safe = 0, staged = 0, tries;
+        static unsigned long stage_counter;
         if (len <= 0 || len >= (long)sizeof(target)) rc = BP_ERR_CORRUPT;
         else {
             rewind(fp);
@@ -2058,26 +2105,40 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                     fprintf(stderr, "boltpack: skipping symlink with unsafe target: %s -> %s\n",
                             entry->name, target);
                     ctx->unsafe_count++;
-                } else {
-                    parent_fd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
-                    if (parent_fd < 0 || symlinkat(target, parent_fd, leaf) != 0) rc = BP_ERR_IO;
-                    else if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-                        bp_off_t seconds = bp_u64_to_off(entry->mtime);
-                        time_t t = (time_t)seconds;
-                        struct timespec times[2];
-                        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
-                            (bp_off_t)t != seconds) rc = BP_ERR_OVERFLOW;
-                        else {
-                            times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
-                            times[1].tv_sec = t; times[1].tv_nsec = 0;
-                            if (utimensat(parent_fd, leaf, times, AT_SYMLINK_NOFOLLOW) != 0) rc = BP_ERR_IO;
-                        }
-                    }
-                }
+                } else target_safe = 1;
             }
         }
-        if (parent_fd >= 0) close(parent_fd);
         if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        if (rc == BP_OK && target_safe) {
+            parent_fd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
+            if (parent_fd < 0) rc = BP_ERR_IO;
+            for (tries = 0; rc == BP_OK && tries < 256; tries++) {
+                sprintf(temporary, ".boltpack-link-%08lx-%08lx",
+                        (unsigned long)getpid(), ++stage_counter);
+                if (symlinkat(target, parent_fd, temporary) == 0) {
+                    staged = 1;
+                    break;
+                }
+                if (errno != EEXIST) { rc = BP_ERR_IO; break; }
+            }
+            if (rc == BP_OK && !staged) rc = BP_ERR_IO;
+            if (rc == BP_OK)
+                rc = restore_symlink_mtime_at(parent_fd, temporary,
+                                              entry->flags, entry->mtime, ctx);
+            if (rc == BP_OK) {
+                if (ctx->force) {
+                    if (renameat(parent_fd, temporary, parent_fd, leaf) != 0)
+                        rc = BP_ERR_IO;
+                    else staged = 0;
+                } else {
+                    if (extract_commit_noreplace(parent_fd, temporary, leaf) != 0)
+                        rc = BP_ERR_IO;
+                    else staged = 0;
+                }
+            }
+            if (staged) unlinkat(parent_fd, temporary, 0);
+        }
+        if (parent_fd >= 0) close(parent_fd);
         free(output);
         return rc;
     }

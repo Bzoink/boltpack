@@ -753,9 +753,14 @@ writing output. Two archive-format unit checks cover skipped primary data,
 portable metadata, resource forks, and native metadata; another verifies the
 discard-stream contract. `make CC=gcc test` passes with 260 archive-format and
 154 CLI integration checks, including dry-run archive verification. It also
-runs the QL, X68000, Plan 9, and macOS POSIX host profile fixtures, plus the
-full DOS lifecycle and CP/M-86 projection fixtures. These host checks do not
-replace target-specific verification of directory and dry-run outcomes.
+runs `check_symlink_atomic.py`: Linux stages symlinks beside their final paths,
+applies valid mtimes with no-follow operations, and publishes only after
+timestamp success. It verifies no-clobber behavior; failure injection confirms
+an existing link is preserved and the stage removed if time restoration fails.
+The suite also runs the QL, X68000, Plan 9, and macOS POSIX host profile
+fixtures, plus the full DOS lifecycle and CP/M-86 projection fixtures. These
+host checks do not replace target-specific verification of directory and
+dry-run outcomes.
 Where the emulator tools are installed,
 `make CC=gcc linuxmini-interoperability-test` runs Linux mini under QEMU-i386
 and checks both Linux extractors' path-race and write/close failure handling;
