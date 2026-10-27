@@ -647,7 +647,10 @@ Profile append validates existing inline headers against the table before
 changing the archive. The Linux, Windows, Atari, OS/2, and macOS CLIs expose
 this as `--interchange-profile-1` for create and add. The QL CLI now exposes
 the profile for create and add; its host-built fixture checks both codecs and
-verifies create/append output with QL, full, and mini readers. RISC OS now
+verifies create/append output with QL, full, and mini readers. The X68000 CLI
+now exposes it for create/add; its host-built DOS-call fixture checks both
+codecs and verifies create/append output with X68000, full, and mini readers.
+The Human68k target compiler and runtime remain unavailable. RISC OS now
 exposes create/add profile selection; a host syntax check passes, but its
 target compiler and runtime are unavailable. QDOS target build and runtime
 qualification also remain unavailable. The Linux and Windows
@@ -669,8 +672,8 @@ its compression sheet, and the Haiku BeAPI GUI now offers it in the Compression
 menu. The DLL profile wrapper cross-builds, but the .NET GUI
 has no managed build or Windows runtime qualification; the Cocoa GUI has no
 macOS target build or runtime qualification. Haiku's target cross-build and
-runtime qualification remain outstanding. Plan 9, X68000, and classic Mac
-frontends still lack a profile option. GUI profile code and target
+runtime qualification remain outstanding. Plan 9 and classic Mac frontends
+still lack a profile option. GUI profile code and target
 qualification remain incomplete.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).

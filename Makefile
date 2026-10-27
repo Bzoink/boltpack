@@ -1015,7 +1015,7 @@ X68K_CC ?= m68k-x680x-human-gcc
 X68K_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
 X68K_BUILDDIR=build/x68k
 
-.PHONY: x68k
+.PHONY: x68k x68k-host-test
 x68k:
 	$(call check_cc,$(X68K_CC) $(X68K_CFLAGS) -c,x68k)
 	mkdir -p $(X68K_BUILDDIR)
@@ -1029,6 +1029,21 @@ x68k:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(X68K_BUILDDIR)/boltpack.x \
 	    $(COREDIR)/fluff.c
+
+# Host-build the ANSI-C X68000 CLI with filesystem-call stubs to exercise
+# Interchange Profile 1 output where the Human68k toolchain is unavailable.
+X68K_HOST_DIR = build/x68k-host
+X68K_HOST_BIN = $(X68K_HOST_DIR)/boltpack
+x68k-host-test:
+	mkdir -p $(X68K_HOST_DIR)
+	$(CC) -D_DEFAULT_SOURCE -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -Itest/x68k_host -Isrc/core src/core/archiver.c src/core/compress.c \
+	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+	    src/frontend/x68k/main.c test/x68k_host/dos_stub.c src/core/boltlz.c \
+	    -o $(X68K_HOST_BIN)
+	$(MAKE) CC=$(CC) all linuxmini
+	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
 
 
 
@@ -1125,6 +1140,9 @@ asan: $(ASAN_TARGET)
 test: modern unit-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
+	@echo "=== legacy CLI profile interoperability ==="
+	$(MAKE) CC=$(CC) ql-host-test
+	$(MAKE) CC=$(CC) x68k-host-test
 	@echo "=== All test suites passed ==="
 
 fuzz: $(ASAN_TARGET)
