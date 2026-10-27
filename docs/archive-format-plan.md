@@ -186,9 +186,18 @@ original file identity, size, and high-resolution mtime/ctime before replacing
 it. Delete also checks identity, size, and mtime before publication.
 Failure-injection tests prove that failed publication leaves the original
 archive byte-for-byte intact and removes the stage. These replacements do not
-preserve ACLs or extended attributes. Windows and OS/2 CLI append still use bounded tail
-backups and in-place updates, so process interruption or power loss can still
-damage the only archive copy. Atari append uses a sibling stage.
+preserve ACLs or extended attributes. The Windows CLI now stages append and
+deletion beside the target and publishes through `ReplaceFile`, with an old
+archive recovery file if publication fails. It copies the original archive
+for append, refuses reparse-point and multiply linked targets, and checks the
+file identity before publication. Native target metadata is delegated to
+Windows replacement behavior and still needs runtime verification. A native
+Windows smoke script covers append/delete integrity, hidden attributes, and
+conditional hard-link/reparse-point refusal fixtures, but has not run here.
+OS/2 CLI
+append still uses a bounded tail backup and in-place update, so interruption
+or power loss can damage the only archive copy. Atari append uses a sibling
+stage.
 Total Commander WCX append copies the original to an exclusive sibling stage,
 finalizes the updated archive there, and atomically replaces the original only
 after successful close. WCX deletion also writes an exclusive sibling stage
