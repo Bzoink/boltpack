@@ -1579,7 +1579,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             if (!ctx->dry_run) ctx->partial_count++;
             return NULL;
         }
-        if (ctx->dry_run) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
 
         mex = (meta_extract_t *)malloc(sizeof(meta_extract_t));
         if (!mex) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
@@ -1601,7 +1601,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_RSRC) {
         bp_uint32 rsrc_sz;
 
-        if (ctx->dry_run) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
 
         if (entry->original_size.hi != 0 || entry->original_size.lo == 0 ||
             entry->original_size.lo > MACOS_RSRC_MAX) {
@@ -1632,7 +1632,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->file_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s\n", entry->name);
-        if (ctx->dry_run) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
         if (!ctx->force) {
             struct stat st_buf;
             if (lstat(path, &st_buf) == 0) {
@@ -1660,7 +1660,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT)
         printf(" extracting: %s\n", entry->name);
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     if (!ctx->force) {
         struct stat st_buf;

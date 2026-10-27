@@ -435,7 +435,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT) printf(" extracting: %s\n", local_name);
-    if (ctx->dry_run) return NULL;
+    if (ctx->dry_run) return bp_archive_dry_run_stream();
 
     if (!ctx->force) {
         FILE *chk = fopen(qdos_path, "rb");

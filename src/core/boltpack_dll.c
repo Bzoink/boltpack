@@ -62,6 +62,11 @@ BP_EXPORT int bp_dll_archive_extract_all_ex(bp_io_t *io,
                                      progress_fn, user_data);
 }
 
+BP_EXPORT bp_io_t *bp_dll_archive_dry_run_stream(void)
+{
+    return bp_archive_dry_run_stream();
+}
+
 BP_EXPORT int bp_dll_archive_test_progress(bp_io_t *io,
     bp_test_fn fn, void *user_data,
     bp_progress_fn progress_fn, void *progress_data)

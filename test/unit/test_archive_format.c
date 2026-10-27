@@ -1132,8 +1132,10 @@ typedef struct {
     bp_uint16 flags;
     int count;
     int done_status;
+    int done_count;
     int report_partial;
     int skip_data;
+    int dry_run;
     int metadata_count;
     int directory_count;
     int directory_result;
@@ -1802,6 +1804,7 @@ static bp_io_t *full_metadata_test_open(const bp_entry_t *entry, void *user_data
 {
     MiniInteropState *s = (MiniInteropState *)user_data;
     s->count++;
+    if (s->dry_run) return bp_archive_dry_run_stream();
     if (s->skip_data && entry->entry_type == BP_TYPE_DATA) return NULL;
     return &s->io;
 }
@@ -1811,6 +1814,7 @@ static int full_metadata_test_done(const bp_entry_t *entry, bp_io_t *out,
 {
     MiniInteropState *s = (MiniInteropState *)user_data;
     (void)entry; (void)out;
+    s->done_count++;
     if (status == BP_OK && s->report_partial) return BP_ERR_PARTIAL;
     return status;
 }
@@ -2023,6 +2027,15 @@ static void test_portable_metadata_archive(void)
                                         full_metadata_test_done, NULL, &state);
         UNIT_CHECK(rc == BP_ERR_PARTIAL && state.count == 1,
                    "resource forks and native metadata are not delivered for a skipped subject");
+
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        state.dry_run = 1;
+        rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                        full_metadata_test_done, NULL, &state);
+        UNIT_CHECK(rc == BP_OK && state.count == 3 && state.done_count == 0,
+                   "dry-run discard streams verify grouped data without completion callbacks");
     }
     free(mem.buf);
 }
