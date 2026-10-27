@@ -126,8 +126,7 @@ def main():
         source = root / "src"
         source.mkdir()
         (source / "file.txt").write_bytes(b"anchored output\n")
-        create_cmd = ([str(binary), "c", "archive.blt", "src"] if args.mini else
-                      [str(binary), "c", "--single-thread", "archive.blt", "src"])
+        create_cmd = [str(binary), "c", "archive.blt", "src"]
         run_target(create_cmd, cwd=root, capture_output=True, check=True)
         out = root / "out"
         outside = root / "outside"
