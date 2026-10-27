@@ -1954,6 +1954,11 @@ because each wrapper `main.c` includes the shared Amiga frontend directly.
 
 These frontends define `BP_CREATOR_OS` and `BP_CREATOR_CPU`, then `#include "../linux/main.c"` directly. All POSIX I/O, directory recursion, symlink handling, and `BP_TYPE_META` permission archiving are identical to the Linux frontend. No additional metadata handling is added.
 
+Extraction uses directory-relative no-follow operations on Linux, FreeBSD,
+NetBSD, and OpenBSD builds. Other thin wrappers retain path-based
+symlink checks and the corresponding parent-substitution race; these target
+branches still require native build and runtime qualification.
+
 | Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
 | ------------ | ------------------------------ | ---------------- | --------------- | ---------------------------- | ----------------------------------------------------- |
 | FreeBSD      | `src/frontend/freebsd/main.c`  | `BP_OS_FREEBSD`  | `BP_CPU_X86_64` | `freebsd-gcc`                | Override CPU with `-DBP_CREATOR_CPU=` for other ports |

@@ -85,13 +85,15 @@ stage can leave an orphan temporary file while the original remains intact.
 These edit paths have Watcom cross-build evidence, but still need OS/2 runtime
 qualification.
 DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
-timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
-with directory-relative `openat` calls and reject symlink components. Staged
-files and final commits use the same open parent handle. Deterministic tests
-cover parent substitution, concurrent destination creation, and write failure.
-Other frontends still need equivalent protection. A process able to rename an
-already opened directory outside the extraction tree is a separate
-concurrent-mutation limitation. The checked-in
+timestamp conversion; other DOS-derived frontends still need review. The Linux
+CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
+shared POSIX wrapper, resolve archive-controlled directories with directory-
+relative `openat` calls and reject symlink components. Staged files and final
+commits use the same open parent handle. Deterministic tests cover the Linux
+implementation's parent substitution, concurrent destination creation, and
+write failure. Other frontends still need equivalent protection. A process
+able to rename an already opened directory outside the extraction tree is a
+separate concurrent-mutation limitation. The checked-in
 classic Mac 68k core copies now match the format-6 core. The evidence and phased tasks below describe
 the original format-5 review, not a claim that each issue is still unchanged.
 
