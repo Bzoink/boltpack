@@ -70,7 +70,7 @@ enum {
     BP_ERR_CORRUPT           = -6,  /* Structural corruption (bad block size, impossible offset, etc.) */
     BP_ERR_TRUNCATED         = -7,  /* Unexpected end of file */
     BP_ERR_OVERFLOW          = -8,  /* File or archive exceeds platform limits (e.g., >2 GB on 32-bit I/O) */
-    BP_ERR_NAME_TOO_LONG     = -9,  /* File name exceeds 65535 bytes */
+    BP_ERR_NAME_TOO_LONG     = -9,  /* File name exceeds 65493 encoded bytes */
     BP_ERR_UNSUPPORTED_METHOD= -10, /* Unknown compression method */
     BP_ERR_COMPRESS          = -11, /* Compression backend call failed */
     BP_ERR_DECOMPRESS        = -12, /* Decompression backend call failed */
