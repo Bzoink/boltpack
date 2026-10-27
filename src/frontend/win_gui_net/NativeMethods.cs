@@ -22,6 +22,11 @@ namespace BoltPack
             return (double)lo + (double)hi * 4294967296.0;
         }
 
+        public ulong ToUlong()
+        {
+            return ((ulong)hi << 32) | lo;
+        }
+
         public static BpUint64 FromUlong(ulong v)
         {
             BpUint64 r;
@@ -47,7 +52,8 @@ namespace BoltPack
         public uint dir_count;
         public BpUint64 total_original;
         public BpUint64 total_compressed;
-        public byte method;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+        public uint[] method_counts;
     }
 
     /* Mirror of bp_io_t */
@@ -110,7 +116,15 @@ namespace BoltPack
     public delegate void BpExtractDoneDelegate(ref BpEntry entry, IntPtr outIo, IntPtr userData);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int BpExtractDoneStatusDelegate(ref BpEntry entry,
+        IntPtr outIo, int status, IntPtr userData);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void BpTestDelegate(ref BpEntry entry, int result, IntPtr userData);
+
+    /* bp_write_fn returns C long, which is 32-bit on both Windows ABIs. */
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int BpWriteDelegate(IntPtr handle, IntPtr buffer, uint count);
 
     static class NativeMethods
     {
@@ -131,6 +145,11 @@ namespace BoltPack
             BpProgressDelegate progressFn, IntPtr userData);
 
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int bp_dll_archive_extract_all_ex(ref BpIo io,
+            BpExtractOpenDelegate openFn, BpExtractDoneStatusDelegate doneFn,
+            BpProgressDelegate progressFn, IntPtr userData);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
         public static extern int bp_dll_archive_test_progress(ref BpIo io,
             BpTestDelegate fn, IntPtr userData,
             BpProgressDelegate progressFn, IntPtr progressData);
@@ -139,10 +158,27 @@ namespace BoltPack
         public static extern int bp_dll_archive_create(IntPtr archive, IntPtr io,
             uint blockSize, byte method);
 
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr bp_dll_archive_alloc();
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void bp_dll_archive_free(IntPtr archive);
+
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern int bp_dll_archive_add_entry(IntPtr archive, string name,
             byte entryType, byte platform, IntPtr fileIo,
             BpUint64 fileSize, BpUint64 mtime);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int bp_dll_archive_add_entry_ex(IntPtr archive,
+            [In, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U1)] byte[] nameUtf8,
+            byte entryType, byte platform, IntPtr fileIo,
+            BpUint64 fileSize, BpUint64 mtime, ushort flags);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int bp_dll_archive_add_fat_metadata(IntPtr archive,
+            [In, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U1)] byte[] nameUtf8,
+            byte subjectType, byte valid, byte value);
 
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
         public static extern int bp_dll_archive_finalize(IntPtr archive);
@@ -156,22 +192,48 @@ namespace BoltPack
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern IntPtr bp_dll_fopen(string path, string mode);
 
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl,
+            CharSet = CharSet.Unicode, EntryPoint = "bp_dll_fopen_w")]
+        public static extern IntPtr bp_dll_fopen_w(string path, string mode);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl,
+            CharSet = CharSet.Unicode)]
+        public static extern IntPtr bp_dll_fopen_w_exclusive(string path);
+
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
         public static extern void bp_dll_fclose(IntPtr fp);
 
         [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int bp_dll_fclose_checked(IntPtr fp);
+
+        [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
         public static extern void bp_dll_fseek_start(IntPtr fp);
+
+        [DllImport("kernel32.dll", CallingConvention = CallingConvention.Winapi,
+            CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "MoveFileExW")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool MoveFileEx(string existingName, string newName,
+            uint flags);
 
         /* Constants matching bp_types.h */
         public const int BP_OK = 0;
+        public const int BP_ERR_IO = -1;
+        public const int BP_ERR_NOMEM = -2;
         public const int BP_ERR_CHECKSUM = -5;
+        public const int BP_ERR_CORRUPT = -6;
+        public const int BP_ERR_PARTIAL = -16;
         public const int BP_ERR_ABORTED = -13;
         public const byte BP_TYPE_DATA = 0;
         public const byte BP_TYPE_RSRC = 1;
         public const byte BP_TYPE_META = 2;
         public const byte BP_TYPE_SYMLINK = 3;
         public const byte BP_TYPE_DIR = 4;
+        public const byte BP_META_PORTABLE = 0xFE;
         public const byte BP_OS_WINDOWS = 0x09;
+        public const ushort BP_ENTRY_FLAG_MTIME_VALID = 0x4000;
+        public const ushort BP_ENTRY_FLAG_MODE_VALID = 0x8000;
+        public const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+        public const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
         public const byte BP_METHOD_STORED = 0;
         public const byte BP_METHOD_BOLTLITE = 1;
         public const byte BP_METHOD_BOLTLZ = 2;

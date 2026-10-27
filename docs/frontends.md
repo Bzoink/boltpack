@@ -1962,12 +1962,19 @@ calls into `boltpack_core.dll` via P/Invoke. The DLL wrapper in
 | `bp_dll_archive_info`        | `bp_archive_info`        |
 | `bp_dll_archive_list`        | `bp_archive_list`        |
 | `bp_dll_archive_extract_all` | `bp_archive_extract_all` |
+| `bp_dll_archive_extract_all_ex` | `bp_archive_extract_all_ex` |
 | `bp_dll_archive_create`      | `bp_archive_create`      |
 | `bp_dll_archive_add_entry`   | `bp_archive_add_entry`   |
+| `bp_dll_archive_add_entry_ex` | `bp_archive_add_entry_ex` |
+| `bp_dll_archive_add_fat_metadata` | portable FAT metadata writer |
+| `bp_dll_archive_alloc/free`  | correctly sized managed archive context |
 | `bp_dll_archive_finalize`    | `bp_archive_finalize`    |
 | `bp_dll_archive_close`       | `bp_archive_close`       |
 | `bp_dll_fopen`               | `fopen` with mode string |
+| `bp_dll_fopen_w`             | `_wfopen` with Unicode paths |
+| `bp_dll_fopen_w_exclusive`   | exclusive Unicode sibling-stage creation |
 | `bp_dll_fclose`              | `fclose`                 |
+| `bp_dll_fclose_checked`      | flush, commit, and checked close |
 | `bp_dll_fseek_start`         | `fseek` with `SEEK_SET`  |
 | `bp_dll_compress_init`       | `bp_compress_init`       |
 
@@ -2146,6 +2153,23 @@ A managed C# GUI that calls the archiver through `boltpack_core.dll` via
 P/Invoke. This provides a modern Windows experience with visual styles while
 reusing the same C89 archiver core.
 
+Archive names are decoded and encoded as strict UTF-8; disk paths use the
+Unicode CRT entry points. Extraction preflights Windows path components,
+reserved names, case-insensitive and normalization collisions, existing
+reparse points, and file/directory-prefix conflicts. Regular files use
+exclusive sibling stages and are published only after checksum verification
+and successful close. The GUI restores representable UTC modification times
+and portable FAT flags, defers directory metadata until children finish, and
+reports unsupported links, resource forks, POSIX modes, and metadata as
+partial. Archive creation also uses an exclusive sibling stage, captures
+portable FAT flags and explicit timestamp validity, and replaces the selected
+archive only after successful finalization and close. Path-based checks retain
+a race with concurrent parent substitution.
+
+The Win32 and Win64 DLL variants cross-build, but the .NET project has not been
+compiled or run in this environment because no .NET compiler or Windows runtime
+is available.
+
 | File               | Purpose                                                 |
 | ------------------ | ------------------------------------------------------- |
 | `MainForm.cs`      | Main window, menu, ListView, drag-and-drop, pack/unpack |
@@ -2165,10 +2189,9 @@ reusing the same C89 archiver core.
 | Keyboard shortcuts | Ctrl+O, Ctrl+E, Ctrl+W, Ctrl+N, Ctrl+Q, F1                  |
 | Linking            | Dynamic to `boltpack_core.dll` via P/Invoke                 |
 
-P/Invoke mirror structs: `BpUint64` (with `ToDouble()` / `FromUlong()`),
-`BpArchiveInfo`, `BpIo`, `BpEntry`, `BpProgress`. Delegate types:
-`BpListDelegate`, `BpProgressDelegate`. All functions use `Cdecl` calling
-convention.
+P/Invoke mirror structs: `BpUint64`, `BpArchiveInfo`, `BpIo`, `BpEntry`, and
+`BpProgress`. Delegate types include list, progress, status-aware extraction,
+and managed output writing. All functions use the `Cdecl` calling convention.
 
 ---
 
