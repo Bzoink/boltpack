@@ -16,6 +16,7 @@
  * ====================================================================== */
 
 /* CP437 -- DOS US */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_437
 static const unsigned short cp437_to_unicode[128] = {
     0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, /* 80 */
     0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5, /* 88 */
@@ -34,8 +35,10 @@ static const unsigned short cp437_to_unicode[128] = {
     0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248, /* F0 */
     0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0  /* F8 */
 };
+#endif
 
 /* CP850 -- DOS Western Europe */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_850
 static const unsigned short cp850_to_unicode[128] = {
     0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, /* 80 */
     0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5, /* 88 */
@@ -54,8 +57,10 @@ static const unsigned short cp850_to_unicode[128] = {
     0x00AD, 0x00B1, 0x2017, 0x00BE, 0x00B6, 0x00A7, 0x00F7, 0x00B8, /* F0 */
     0x00B0, 0x00A8, 0x00B7, 0x00B9, 0x00B3, 0x00B2, 0x25A0, 0x00A0  /* F8 */
 };
+#endif
 
 /* Windows-1252 */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_1252
 static const unsigned short cp1252_to_unicode[128] = {
     0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, /* 80 */
     0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F, /* 88 */
@@ -74,8 +79,10 @@ static const unsigned short cp1252_to_unicode[128] = {
     0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7, /* F0 */
     0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF  /* F8 */
 };
+#endif
 
 /* MacRoman */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_MACROMAN
 static const unsigned short macroman_to_unicode[128] = {
     0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, /* 80 */
     0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8, /* 88 */
@@ -94,8 +101,10 @@ static const unsigned short macroman_to_unicode[128] = {
     0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, /* F0 */
     0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7  /* F8 */
 };
+#endif
 
 /* ISO 8859-1 -- identity for 0x80-0xFF (codepoints == byte values) */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_8859_1
 static const unsigned short iso8859_1_to_unicode[128] = {
     0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, /* 80 */
     0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F, /* 88 */
@@ -114,8 +123,10 @@ static const unsigned short iso8859_1_to_unicode[128] = {
     0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7, /* F0 */
     0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF  /* F8 */
 };
+#endif
 
 /* Atari ST -- Western European (factory ROM character set) */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_ATARIST
 static const unsigned short atarist_to_unicode[128] = {
     0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, /* 80 */
     0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5, /* 88 */
@@ -134,6 +145,7 @@ static const unsigned short atarist_to_unicode[128] = {
     0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248, /* F0 */
     0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x00B3, 0x00AF  /* F8 */
 };
+#endif
 
 /* ======================================================================
  * Table lookup helper
@@ -142,15 +154,78 @@ static const unsigned short atarist_to_unicode[128] = {
 static const unsigned short *get_table(int codepage)
 {
     switch (codepage) {
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_437
     case BP_CP_437:      return cp437_to_unicode;
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_850
     case BP_CP_850:      return cp850_to_unicode;
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_1252
     case BP_CP_1252:     return cp1252_to_unicode;
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_MACROMAN
     case BP_CP_MACROMAN: return macroman_to_unicode;
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_8859_1
     case BP_CP_8859_1:   return iso8859_1_to_unicode;
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_ATARIST
     case BP_CP_ATARIST:   return atarist_to_unicode;
+#endif
     default:             return NULL;
     }
 }
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_UTF8
+static int bp_cp_valid_utf8(const char *src)
+{
+    size_t i = 0;
+    while (src[i] != '\0') {
+        unsigned char a = (unsigned char)src[i];
+        if (a < 0x80) { i++; continue; }
+        if (a >= 0xC2 && a <= 0xDF) {
+            unsigned char b = (unsigned char)src[i + 1];
+            if (b == 0 || (b & 0xC0) != 0x80) return 0;
+            i += 2;
+        } else if (a >= 0xE0 && a <= 0xEF) {
+            unsigned char b = (unsigned char)src[i + 1];
+            unsigned char c;
+            if (b == 0 || (b & 0xC0) != 0x80 || src[i + 2] == '\0') return 0;
+            c = (unsigned char)src[i + 2];
+            if ((c & 0xC0) != 0x80 || (a == 0xE0 && b < 0xA0) ||
+                (a == 0xED && b >= 0xA0)) return 0;
+            i += 3;
+        } else if (a >= 0xF0 && a <= 0xF4) {
+            unsigned char b = (unsigned char)src[i + 1];
+            unsigned char c, d;
+            if (b == 0 || (b & 0xC0) != 0x80 || src[i + 2] == '\0' ||
+                src[i + 3] == '\0') return 0;
+            c = (unsigned char)src[i + 2]; d = (unsigned char)src[i + 3];
+            if ((c & 0xC0) != 0x80 || (d & 0xC0) != 0x80 ||
+                (a == 0xF0 && b < 0x90) || (a == 0xF4 && b > 0x8F)) return 0;
+            i += 4;
+        } else return 0;
+    }
+    return 1;
+}
+#endif
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
+/* Classify a supplementary-plane sequence without reading past a NUL. */
+static int bp_cp_four_byte(const char *src)
+{
+    unsigned char a = (unsigned char)src[0], b, c, d;
+    if (a < 0xF0 || a > 0xF4 || src[1] == '\0') return BP_CP_INVALID;
+    b = (unsigned char)src[1];
+    if ((b & 0xC0) != 0x80 || (a == 0xF0 && b < 0x90) ||
+        (a == 0xF4 && b > 0x8F) || src[2] == '\0') return BP_CP_INVALID;
+    c = (unsigned char)src[2];
+    if ((c & 0xC0) != 0x80 || src[3] == '\0') return BP_CP_INVALID;
+    d = (unsigned char)src[3];
+    if ((d & 0xC0) != 0x80) return BP_CP_INVALID;
+    return BP_CP_UNREPRESENTABLE;
+}
+#endif
 
 /* ======================================================================
  * local -> UTF-8
@@ -163,13 +238,18 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage)
 
     if (src == NULL || dst == NULL || dst_size < 1) return -1;
 
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_UTF8
     /* UTF-8 pass-through */
     if (codepage == BP_CP_UTF8) {
-        if ((int)strlen(src) >= dst_size) return -1;
+        if (!bp_cp_valid_utf8(src)) return BP_CP_INVALID;
+        if (strlen(src) >= (size_t)dst_size) return BP_CP_NO_SPACE;
         strcpy(dst, src);
         return 0;
     }
 
+#endif
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
     /* Shift-JIS: multi-byte encoding; handled separately */
     if (codepage == BP_CP_SJIS) {
         int si2, di2;
@@ -178,33 +258,27 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage)
             unsigned char c2 = (unsigned char)src[si2];
             if (c2 < 0x80) {
                 /* ASCII: pass through */
-                if (di2 + 1 >= dst_size) return -1;
+                if (di2 + 1 >= dst_size) return BP_CP_NO_SPACE;
                 dst[di2++] = (char)c2;
                 si2++;
             } else if (c2 >= 0xA1 && c2 <= 0xDF) {
                 /* Half-width katakana: U+FF61..U+FF9F (3-byte UTF-8) */
                 unsigned short u2 = (unsigned short)(0xFF61 + (c2 - 0xA1));
-                if (di2 + 3 >= dst_size) return -1;
+                if (di2 + 3 >= dst_size) return BP_CP_NO_SPACE;
                 dst[di2++] = (char)(0xE0 | (u2 >> 12));
                 dst[di2++] = (char)(0x80 | ((u2 >> 6) & 0x3F));
                 dst[di2++] = (char)(0x80 | (u2 & 0x3F));
                 si2++;
-            } else if ((c2 >= 0x81 && c2 <= 0x9F) || (c2 >= 0xE0 && c2 <= 0xEF)) {
-                /* Double-byte lead: consume trail byte, emit '?' */
-                if (di2 + 1 >= dst_size) return -1;
-                dst[di2++] = '?';
-                si2++;  /* skip lead */
-                if (src[si2] != '\0') si2++;  /* skip trail */
             } else {
-                /* Other high bytes: emit '?' */
-                if (di2 + 1 >= dst_size) return -1;
-                dst[di2++] = '?';
-                si2++;
+                /* Double-byte Shift-JIS is not supported by this table. */
+                return BP_CP_UNREPRESENTABLE;
             }
         }
         dst[di2] = '\0';
         return 0;
     }
+
+#endif
 
     tbl = get_table(codepage);
     if (tbl == NULL) return -1;
@@ -216,19 +290,19 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage)
 
         if (c < 0x80) {
             /* ASCII -- direct copy */
-            if (di + 1 >= dst_size) return -1;
+            if (di + 1 >= dst_size) return BP_CP_NO_SPACE;
             dst[di++] = (char)c;
         } else {
             u = tbl[c - 0x80];
             if (u < 0x0080) {
-                if (di + 1 >= dst_size) return -1;
+                if (di + 1 >= dst_size) return BP_CP_NO_SPACE;
                 dst[di++] = (char)u;
             } else if (u < 0x0800) {
-                if (di + 2 >= dst_size) return -1;
+                if (di + 2 >= dst_size) return BP_CP_NO_SPACE;
                 dst[di++] = (char)(0xC0 | (u >> 6));
                 dst[di++] = (char)(0x80 | (u & 0x3F));
             } else {
-                if (di + 3 >= dst_size) return -1;
+                if (di + 3 >= dst_size) return BP_CP_NO_SPACE;
                 dst[di++] = (char)(0xE0 | (u >> 12));
                 dst[di++] = (char)(0x80 | ((u >> 6) & 0x3F));
                 dst[di++] = (char)(0x80 | (u & 0x3F));
@@ -251,13 +325,18 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
 
     if (src == NULL || dst == NULL || dst_size < 1) return -1;
 
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_UTF8
     /* UTF-8 pass-through */
     if (codepage == BP_CP_UTF8) {
-        if ((int)strlen(src) >= dst_size) return -1;
+        if (!bp_cp_valid_utf8(src)) return BP_CP_INVALID;
+        if (strlen(src) >= (size_t)dst_size) return BP_CP_NO_SPACE;
         strcpy(dst, src);
         return 0;
     }
 
+#endif
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
     /* Shift-JIS: multi-byte; handle separately */
     if (codepage == BP_CP_SJIS) {
         int si2, di2;
@@ -265,7 +344,7 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
         for (si2 = 0; src[si2] != '\0'; ) {
             unsigned char c2 = (unsigned char)src[si2];
             unsigned short u2;
-            if (di2 + 1 >= dst_size) return -1;
+            if (di2 + 1 >= dst_size) return BP_CP_NO_SPACE;
             if (c2 < 0x80) {
                 dst[di2++] = (char)c2;
                 si2++;
@@ -277,6 +356,7 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                     ((unsigned char)src[si2 + 1] & 0xC0) != 0x80) return -1;
                 u2 = (unsigned short)(((c2 & 0x1F) << 6) |
                      ((unsigned char)src[si2 + 1] & 0x3F));
+                if (u2 < 0x80) return BP_CP_INVALID;
                 si2 += 2;
             } else if ((c2 & 0xF0) == 0xE0) {
                 if (src[si2 + 1] == '\0' || src[si2 + 2] == '\0' ||
@@ -285,24 +365,27 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                 u2 = (unsigned short)(((c2 & 0x0F) << 12) |
                      (((unsigned char)src[si2 + 1] & 0x3F) << 6) |
                      ((unsigned char)src[si2 + 2] & 0x3F));
+                if (u2 < 0x800 || (u2 >= 0xD800 && u2 <= 0xDFFF))
+                    return BP_CP_INVALID;
                 si2 += 3;
+            } else if ((c2 >= 0x81 && c2 <= 0x9F) ||
+                       (c2 >= 0xE0 && c2 <= 0xEF)) {
+                return BP_CP_UNREPRESENTABLE;
             } else {
-                /* ASCII continuation or 4-byte: fall through */
-                dst[di2++] = '?';
-                si2++;
-                continue;
+                return BP_CP_INVALID;
             }
             /* Half-width katakana U+FF61-U+FF9F -> single SJIS byte 0xA1-0xDF */
             if (u2 >= 0xFF61 && u2 <= 0xFF9F) {
                 dst[di2++] = (char)(0xA1 + (u2 - 0xFF61));
             } else {
-                /* Not representable in SJIS without full table: use '?' */
-                dst[di2++] = '?';
+                return BP_CP_UNREPRESENTABLE;
             }
         }
         dst[di2] = '\0';
         return 0;
     }
+
+#endif
 
     tbl = get_table(codepage);
     if (tbl == NULL) return -1;
@@ -312,7 +395,7 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
         unsigned char c = (unsigned char)src[si];
         unsigned short u;
 
-        if (di + 1 >= dst_size) return -1;
+        if (di + 1 >= dst_size) return BP_CP_NO_SPACE;
 
         if (c < 0x80) {
             /* ASCII */
@@ -327,6 +410,7 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                 ((unsigned char)src[si + 1] & 0xC0) != 0x80) return -1;
             u = ((unsigned short)(c & 0x1F) << 6)
               | ((unsigned short)((unsigned char)src[si + 1]) & 0x3F);
+            if (u < 0x80) return BP_CP_INVALID;
             si += 2;
         } else if ((c & 0xF0) == 0xE0) {
             if (src[si + 1] == '\0' || src[si + 2] == '\0' ||
@@ -335,14 +419,16 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
             u = ((unsigned short)(c & 0x0F) << 12)
               | (((unsigned short)((unsigned char)src[si + 1]) & 0x3F) << 6)
               | ((unsigned short)((unsigned char)src[si + 2]) & 0x3F);
+            if (u < 0x800 || (u >= 0xD800 && u <= 0xDFFF))
+                return BP_CP_INVALID;
             si += 3;
         } else {
-            /* 4-byte UTF-8 (outside BMP) -- no single-byte codepage has
-             * these, so replace with underscore and skip. */
-            dst[di++] = '_';
-            si++;
-            while (((unsigned char)src[si] & 0xC0) == 0x80) si++;
-            continue;
+            /* Four-byte characters have no single-byte mapping. */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
+            return bp_cp_four_byte(src + si);
+#else
+            return BP_CP_UNREPRESENTABLE;
+#endif
         }
 
         /* If codepoint falls in 0x80-0xFF and equals its byte value
@@ -353,8 +439,8 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                 goto found;
             }
         }
-        /* Not found in codepage -- replace with underscore */
-        dst[di++] = '_';
+        /* No exact representation in this codepage. */
+        return BP_CP_UNREPRESENTABLE;
     found:
         ;
     }

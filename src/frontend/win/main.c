@@ -138,6 +138,7 @@ static HANDLE         g_add_handle   = INVALID_HANDLE_VALUE;
 static __int64        g_add_tail_off = 0;
 static unsigned char *g_add_tail     = NULL;
 static size_t         g_add_tail_sz  = 0;
+static unsigned char  g_add_header[BP_HEADER_SIZE];
 
 static BOOL WINAPI ctrl_add_restore_handler(DWORD ctrl_type)
 {
@@ -156,6 +157,9 @@ static BOOL WINAPI ctrl_add_restore_handler(DWORD ctrl_type)
         li.QuadPart = g_add_tail_off + (__int64)g_add_tail_sz;
         SetFilePointerEx(g_add_handle, li, NULL, FILE_BEGIN);
         SetEndOfFile(g_add_handle);
+        li.QuadPart = 0;
+        SetFilePointerEx(g_add_handle, li, NULL, FILE_BEGIN);
+        WriteFile(g_add_handle, g_add_header, BP_HEADER_SIZE, &written, NULL);
     }
     g_add_handle  = INVALID_HANDLE_VALUE;
     g_add_tail    = NULL;
@@ -2401,6 +2405,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     unsigned char *tail_buf;
     size_t tail_bytes;
     HANDLE win_handle;
+    unsigned char original_header[BP_HEADER_SIZE];
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -2421,7 +2426,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     /*
      * Save the critical tail (file table + footer) so we can restore the
      * archive to its original state if the append fails or is interrupted.
-     * Cap at 256 MB; beyond that we proceed without backup.
+     * Refuse the append when the bounded backup cannot be made.
      */
     tail_buf   = NULL;
     tail_bytes = 0;
@@ -2432,6 +2437,11 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         qfp = fopen(archive_name, "rb");
         if (qfp == NULL) {
             fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+            return 1;
+        }
+        if (fread(original_header, 1, BP_HEADER_SIZE, qfp) != BP_HEADER_SIZE) {
+            fprintf(stderr, "boltpack: cannot back up archive header\n");
+            fclose(qfp);
             return 1;
         }
         bp_io_from_file(&qio, qfp);
@@ -2456,6 +2466,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                     bp_strerror(rc));
             return 1;
         }
+        if (tail_buf == NULL) {
+            fprintf(stderr, "boltpack: cannot safely back up archive table for append\n");
+            return 1;
+        }
     }
 
     /* Open archive for in-place append. */
@@ -2470,11 +2484,17 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     win_handle = INVALID_HANDLE_VALUE;
     if (tail_buf != NULL) {
         win_handle = (HANDLE)_get_osfhandle(_fileno(fp));
-        if (win_handle != INVALID_HANDLE_VALUE) {
+        if (win_handle == INVALID_HANDLE_VALUE) {
+            free(tail_buf);
+            fclose(fp);
+            fprintf(stderr, "boltpack: cannot protect archive during append\n");
+            return 1;
+        } else {
             g_add_handle  = win_handle;
             g_add_tail_off = (__int64)bp_u64_to_off(tail_off);
             g_add_tail    = tail_buf;
             g_add_tail_sz = tail_bytes;
+            memcpy(g_add_header, original_header, BP_HEADER_SIZE);
             SetConsoleCtrlHandler(ctrl_add_restore_handler, TRUE);
         }
     }
@@ -2508,6 +2528,11 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     fin_rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
 
+    if (fin_rc != BP_OK) {
+        fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
+        goto add_fail_restore_win;
+    }
+
     /* Disarm ctrl handler. */
     if (win_handle != INVALID_HANDLE_VALUE) {
         SetConsoleCtrlHandler(ctrl_add_restore_handler, FALSE);
@@ -2517,12 +2542,6 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     }
     free(tail_buf);
     fclose(fp);
-
-    if (fin_rc != BP_OK) {
-        fprintf(stderr, "boltpack: finalize failed: %s\n",
-                bp_strerror(fin_rc));
-        return 1;
-    }
 
     if (g_verbosity < VERB_SILENT) {
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
@@ -2538,12 +2557,13 @@ add_fail_restore_win:
         g_add_tail_sz = 0;
     }
     if (tail_buf != NULL) {
-        if (_fseeki64(fp, (__int64)bp_u64_to_off(tail_off), SEEK_SET) == 0) {
-            (void)fwrite(tail_buf, 1, tail_bytes, fp);
-            fflush(fp);
-            _chsize_s(_fileno(fp),
-                      (__int64)bp_u64_to_off(tail_off) + (__int64)tail_bytes);
-        } else {
+        if (fflush(fp) != 0 ||
+            _fseeki64(fp, (__int64)bp_u64_to_off(tail_off), SEEK_SET) != 0 ||
+            fwrite(tail_buf, 1, tail_bytes, fp) != tail_bytes ||
+            _fseeki64(fp, 0, SEEK_SET) != 0 ||
+            fwrite(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
+            fflush(fp) != 0 ||
+            _chsize_s(_fileno(fp), (__int64)bp_u64_to_off(tail_off) + (__int64)tail_bytes) != 0) {
             fprintf(stderr,
                     "boltpack: warning: could not restore archive after error; "
                     "archive may be corrupt\n");

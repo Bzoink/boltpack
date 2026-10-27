@@ -26,10 +26,28 @@
 #define BP_CP_8859_1     5   /* ISO 8859-1 (Latin-1)                       */
 #define BP_CP_ATARIST    6   /* Atari ST (Western European, factory ROM)    */
 #define BP_CP_SJIS       7   /* Shift-JIS (Japanese; X68000 Human68k)       */
+/* Mini builds use one configured local encoding to conserve 16-bit space. */
+#ifndef BP_MINI_CODEPAGE
+# if defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_OS2
+#  define BP_MINI_CODEPAGE BP_CP_850
+# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_CPM86
+#  define BP_MINI_CODEPAGE (-1)
+# elif defined(BP_CREATOR_OS) && BP_CREATOR_OS == BP_OS_LINUX
+#  define BP_MINI_CODEPAGE BP_CP_UTF8
+# else
+#  define BP_MINI_CODEPAGE BP_CP_437
+# endif
+#endif
+
 /* NOTE: BP_CP_SJIS supports ASCII and half-width katakana (U+FF61-U+FF9F).
  * Full JIS X 0208 double-byte (kanji/hiragana/katakana) mapping is not yet
- * implemented; double-byte sequences are approximated as '?' on conversion.
+ * implemented; double-byte sequences return BP_CP_UNREPRESENTABLE.
  * TODO: extend with complete JIS X 0208 table for full kanji support. */
+
+/* Nonzero results remain compatible with existing callers. */
+#define BP_CP_INVALID         (-1)
+#define BP_CP_UNREPRESENTABLE (-2)
+#define BP_CP_NO_SPACE        (-3)
 
 /* ---- Conversion functions ---------------------------------------------- */
 
@@ -41,7 +59,8 @@
  * dst_size: size of dst buffer in bytes
  * codepage: one of BP_CP_* constants
  *
- * Returns 0 on success, -1 on error (buffer too small or bad codepage).
+ * Returns 0 on success, BP_CP_UNREPRESENTABLE if unsupported, BP_CP_NO_SPACE
+ * if the buffer is too small, or BP_CP_INVALID for invalid input or codepage.
  * If codepage is BP_CP_UTF8, src is copied verbatim.
  */
 int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage);
@@ -54,8 +73,9 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage);
  * dst_size: size of dst buffer in bytes
  * codepage: one of BP_CP_* constants
  *
- * Characters not representable in the target codepage are replaced
- * with '_'.  Returns 0 on success, -1 on error.
+ * Returns 0 for an exact conversion, BP_CP_UNREPRESENTABLE if a character
+ * cannot be represented, BP_CP_NO_SPACE if the buffer is too small, or
+ * BP_CP_INVALID for invalid input or codepage.
  */
 int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage);
 

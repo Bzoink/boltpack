@@ -525,7 +525,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", dir_arc);
 
         if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8), OS2_CP) != 0)
-            strcpy(dir_arc_utf8, dir_arc);
+            return BP_ERR_INVALID_ARG;
 
         rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_OS2,
                                   NULL, bp_u64_from_u32(0),
@@ -558,8 +558,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             printf("compressing: %s", arcname); fflush(stdout);
         }
 
-        if (bp_local_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8), OS2_CP) != 0)
-            strcpy(arcname_utf8, arcname);
+        if (bp_local_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8), OS2_CP) != 0) {
+            fclose(fp);
+            return BP_ERR_INVALID_ARG;
+        }
 
         rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_OS2,
                                   &fio, fsize, bp_u64_from_u32(mtime));
@@ -611,9 +613,7 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
         ctx->file_count++;
     ctx->total_orig = bp_u64_add(ctx->total_orig, entry->original_size);
     ctx->total_comp = bp_u64_add(ctx->total_comp, entry->compressed_size);
-    if (bp_utf8_to_local(entry->name, dn, sizeof(dn), OS2_CP) != 0) {
-        strncpy(dn, entry->name, sizeof(dn) - 1); dn[sizeof(dn) - 1] = '\0';
-    }
+    if (bp_utf8_to_local(entry->name, dn, sizeof(dn), OS2_CP) != 0) strcpy(dn, "<unrepresentable>");
     format_number(bp_u64_to_u32(entry->original_size),  ob, sizeof(ob));
     format_number(bp_u64_to_u32(entry->compressed_size), cb, sizeof(cb));
     printf("%10s %10s  %s  %s\n", ob, cb, type, dn);
@@ -647,10 +647,8 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type != BP_TYPE_META) ctx->subject_ok = 0;
     if (!bp_name_is_safe(entry->name)) return NULL;
 
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), OS2_CP) != 0) {
-        strncpy(local_name, entry->name, sizeof(local_name) - 1);
-        local_name[sizeof(local_name) - 1] = '\0';
-    }
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                         OS2_CP) != 0) return NULL;
     if (ctx->out_dir && strlen(ctx->out_dir) + strlen(local_name) + 2 >= sizeof(path))
         return NULL;
     if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);

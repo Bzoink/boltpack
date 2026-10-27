@@ -1386,6 +1386,20 @@ int bp_archive_finalize(bp_archive_t *ar)
 
     if (ar == NULL) return BP_ERR_INVALID_ARG;
 
+    {
+        bp_metadata_group_t group = { NULL, 0, 0, NULL };
+        for (i = 0; i < ar->entries_written; i++) {
+            bp_entry_t *entry = &ar->entry_list[i];
+            char *name = entry->name;
+            rc = bp_metadata_group_record(&group, &name, entry->entry_type, entry->platform, 0);
+            if (rc != BP_OK) {
+                bp_metadata_group_close(&group);
+                return rc == BP_ERR_CORRUPT ? BP_ERR_INVALID_ARG : rc;
+            }
+        }
+        bp_metadata_group_close(&group);
+    }
+
     table_start = io_tell(ar->io);
     if (table_start < 0) return BP_ERR_IO;
 
@@ -1804,6 +1818,7 @@ static int verify_table_entries(bp_io_t *io, bp_uint16 version,
     bp_uint32 count, i;
     bp_uint64 table_off, table_size, next;
     int rc;
+    bp_metadata_group_t group = { NULL, 0, 0, NULL };
 
     rc = read_footer(io, &table_off, &table_size);
     if (rc != BP_OK) return rc;
@@ -1818,16 +1833,16 @@ static int verify_table_entries(bp_io_t *io, bp_uint16 version,
         int matches;
 
         rc = read_table_entry(io, &table, version);
-        if (rc != BP_OK) return rc;
+        if (rc != BP_OK) { bp_metadata_group_close(&group); return rc; }
         resume = io_tell(io);
         if (resume < 0 || bp_u64_cmp(table.offset, next) != 0 ||
             bp_u64_cmp(table.offset, table_off) >= 0) {
-            free(table.name); return BP_ERR_CORRUPT;
+            free(table.name); bp_metadata_group_close(&group); return BP_ERR_CORRUPT;
         }
         rc = io_seek(io, bp_u64_to_off(table.offset), 0);
-        if (rc != 0) { free(table.name); return BP_ERR_IO; }
+        if (rc != 0) { free(table.name); bp_metadata_group_close(&group); return BP_ERR_IO; }
         rc = read_entry_header(io, &header);
-        if (rc != BP_OK) { free(table.name); return rc; }
+        if (rc != BP_OK) { free(table.name); bp_metadata_group_close(&group); return rc; }
         matches = table.name_len == header.name_len &&
                   memcmp(table.name, header.name, table.name_len) == 0 &&
                   table.header_size == header.header_size &&
@@ -1845,10 +1860,18 @@ static int verify_table_entries(bp_io_t *io, bp_uint16 version,
         if (bp_u64_cmp(next, end) < 0 || bp_u64_cmp(next, table_off) > 0)
             matches = 0;
         free(header.name);
+        if (matches) {
+            rc = bp_metadata_group_record(&group, &table.name,
+                                          table.entry_type, table.platform, 1);
+            if (rc != BP_OK) {
+                free(table.name); bp_metadata_group_close(&group); return rc;
+            }
+        }
         free(table.name);
-        if (!matches) return BP_ERR_CORRUPT;
-        if (io_seek(io, resume, 0) != 0) return BP_ERR_IO;
+        if (!matches) { bp_metadata_group_close(&group); return BP_ERR_CORRUPT; }
+        if (io_seek(io, resume, 0) != 0) { bp_metadata_group_close(&group); return BP_ERR_IO; }
     }
+    bp_metadata_group_close(&group);
     if (io_tell(io) < 0 ||
         bp_u64_cmp(bp_off_to_u64(io_tell(io)),
                    bp_u64_add(table_off, table_size)) != 0)
@@ -2319,6 +2342,7 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
     bp_uint64 archive_orig_total;
     bp_uint64 archive_orig_done;
     int partial = 0;
+    bp_uint8 subject_type = 0xFF;
 
     if (io == NULL || open_fn == NULL) return BP_ERR_INVALID_ARG;
 
@@ -2347,6 +2371,8 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
 
         rc = read_entry_header(io, &entry);
         if (rc != BP_OK) return rc;
+        if (entry.entry_type == BP_TYPE_DATA || entry.entry_type == BP_TYPE_DIR ||
+            entry.entry_type == BP_TYPE_SYMLINK) subject_type = entry.entry_type;
 
         portable = entry.entry_type == BP_TYPE_META && entry.platform == BP_META_PORTABLE;
         if (portable && (entry.original_size.hi != 0 ||
@@ -2378,6 +2404,9 @@ static int bp_archive_extract_impl(bp_io_t *io, bp_extract_fn open_fn,
         if (portable) {
             rc = bp_metadata_parse(metadata.data, metadata.length, &parsed);
             if (rc == BP_ERR_CORRUPT) { free(entry.name); return rc; }
+            if (parsed.supported_version && parsed.subject_type != subject_type) {
+                free(entry.name); return BP_ERR_CORRUPT;
+            }
             if (rc != BP_OK) partial = 1;
             if (parsed.supported_version) out = open_fn(&entry, user_data);
             if (out == NULL) partial = 1;
@@ -2432,6 +2461,7 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
     int rc;
     bp_uint64 archive_orig_total;
     bp_uint64 archive_orig_done;
+    bp_uint8 subject_type = 0xFF;
 
     if (io == NULL) return BP_ERR_INVALID_ARG;
 
@@ -2459,6 +2489,8 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
 
         rc = read_entry_header(io, &entry);
         if (rc != BP_OK) return rc;
+        if (entry.entry_type == BP_TYPE_DATA || entry.entry_type == BP_TYPE_DIR ||
+            entry.entry_type == BP_TYPE_SYMLINK) subject_type = entry.entry_type;
 
         if (progress_fn) {
             bp_progress_t p;
@@ -2500,6 +2532,8 @@ int bp_archive_test_progress(bp_io_t *io, bp_test_fn fn, void *user_data,
         if (entry_rc == BP_OK && portable) {
             rc = bp_metadata_parse(metadata.data, metadata.length, &parsed);
             if (rc == BP_ERR_CORRUPT) entry_rc = rc;
+            else if (parsed.supported_version && parsed.subject_type != subject_type)
+                entry_rc = BP_ERR_CORRUPT;
             else if (rc != BP_OK) entry_rc = BP_ERR_PARTIAL;
         }
 

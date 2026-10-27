@@ -200,6 +200,8 @@ $(BUILDDIR)/core/fluff_fast.o: $(COREDIR)/fluff_fast.c $(BUILDDIR)/.config | $(B
 $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/frontend
 	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
+$(BUILDDIR)/frontend/main.o: $(FRONTDIR)/extract_paths.h
+
 # boltlz vendored codec: compiled with warnings suppressed (lib code, strict
 # C89 port kept in src/core; the C89 port already suppresses the fallthrough
 # case labels via the -w flag below so no -Wimplicit-fallthrough noise).
@@ -1902,6 +1904,8 @@ unit-test: $(UNIT_BUILD_DIR)/test_checksum \
            $(UNIT_BUILD_DIR)/test_fluff \
            $(UNIT_BUILD_DIR)/test_compress \
            $(UNIT_BUILD_DIR)/test_codepage \
+           $(UNIT_BUILD_DIR)/test_mini_cp437 \
+           $(UNIT_BUILD_DIR)/test_mini_cp850 \
            $(UNIT_BUILD_DIR)/test_archive_format \
            $(UNIT_BUILD_DIR)/mini_test_compress \
            $(BOLTLZ_BUILD_DIR)/test_boltlz
@@ -1996,38 +2000,62 @@ $(UNIT_BUILD_DIR)/test_codepage_asan: \
 	    $(UNIT_TEST_DIR)/test_codepage.c \
 	    $(COREDIR)/bp_codepage.c
 
+# --- configured mini codepage profiles ---
+$(UNIT_BUILD_DIR)/test_mini_cp437: $(UNIT_TEST_DIR)/test_mini_codepage.c \
+    $(COREDIR)/bp_codepage.c $(COREDIR)/bp_codepage.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_CFLAGS) -DBP_MINI -DBP_CREATOR_OS=BP_OS_DOS -o $@ \
+	    $(UNIT_TEST_DIR)/test_mini_codepage.c $(COREDIR)/bp_codepage.c
+
+$(UNIT_BUILD_DIR)/test_mini_cp850: $(UNIT_TEST_DIR)/test_mini_codepage.c \
+    $(COREDIR)/bp_codepage.c $(COREDIR)/bp_codepage.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_CFLAGS) -DBP_MINI -DBP_CREATOR_OS=BP_OS_OS2 -o $@ \
+	    $(UNIT_TEST_DIR)/test_mini_codepage.c $(COREDIR)/bp_codepage.c
+
 # --- test_archive_format ---
+ARCHIVE_TEST_HEADERS = $(COREDIR)/archiver.h $(COREDIR)/bp_types.h \
+    $(COREDIR)/bp_metadata.h $(COREDIR)/archive_name.h \
+    $(COREDIR)/compress.h $(COREDIR)/boltlite.h $(COREDIR)/fluff.h \
+    $(COREDIR)/bp_codepage.h $(COREDIR)/mini/archiver.h $(COREDIR)/mini/compress.h \
+    $(BOLTLZDIR)/boltlz.h src/frontend/mini_shared/dos_time.h \
+    src/frontend/mini_shared/mini_common.h
+
 $(UNIT_BUILD_DIR)/test_archive_format: \
     $(UNIT_TEST_DIR)/test_archive_format.c \
+    $(ARCHIVE_TEST_HEADERS) \
     $(COREDIR)/archiver.c \
     $(COREDIR)/compress.c \
     $(COREDIR)/boltlite.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
     $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+    src/frontend/mini_shared/mini_common.c \
     $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -DBP_MINI -O2 $(FLUFF_NATIVE_FLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c \
-	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c
+	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+	    src/frontend/mini_shared/mini_common.c
 
 $(UNIT_BUILD_DIR)/test_archive_format_asan: \
     $(UNIT_TEST_DIR)/test_archive_format.c \
+    $(ARCHIVE_TEST_HEADERS) \
     $(COREDIR)/archiver.c \
     $(COREDIR)/compress.c \
     $(COREDIR)/boltlite.c \
     $(COREDIR)/fluff.c \
     $(COREDIR)/bp_codepage.c \
     $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+    src/frontend/mini_shared/mini_common.c \
     $(BOLTLZDIR)/boltlz.c \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) -DBP_MINI $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_archive_format.c \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c \
-	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c
+	    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c $(COREDIR)/mini/boltlz_decomp.c \
+	    src/frontend/mini_shared/mini_common.c
 
 # --- mini_test_compress (full-core API on Linux; Open Watcom variant below) ---
 $(UNIT_BUILD_DIR)/mini_test_compress: \

@@ -2,6 +2,8 @@
 #ifndef BP_METADATA_H
 #define BP_METADATA_H
 #include "bp_types.h"
+#include <stdlib.h>
+#include <string.h>
 
 #define BP_META_MAX_SIZE 256U
 #define BP_META_FAT_MASK 0x27U
@@ -16,6 +18,89 @@ typedef struct {
     int has_unknown;
     int supported_version;
 } bp_portable_metadata_t;
+
+typedef struct bp_metadata_seen_s {
+    struct bp_metadata_seen_s *next;
+    char *name;
+    size_t normalized_len;
+    int owned;
+} bp_metadata_seen_t;
+
+/* Ownership of primary names is transferred to this tracker. */
+typedef struct {
+    char *name;
+    bp_uint8 type;
+    int portable_seen;
+    bp_metadata_seen_t **seen;
+} bp_metadata_group_t;
+
+#define BP_GROUP_BUCKETS 64U
+
+static void bp_metadata_group_close(bp_metadata_group_t *group)
+{
+    unsigned i;
+    if (group->seen != NULL) {
+        for (i = 0; i < BP_GROUP_BUCKETS; i++) {
+            bp_metadata_seen_t *node = group->seen[i];
+            while (node != NULL) {
+                bp_metadata_seen_t *next = node->next;
+                if (node->owned) free(node->name);
+                free(node);
+                node = next;
+            }
+        }
+        free(group->seen);
+    }
+    group->name = NULL;
+    group->seen = NULL;
+}
+
+static int bp_metadata_group_record(bp_metadata_group_t *group, char **name,
+                                    bp_uint8 type, bp_uint8 platform, int take_ownership)
+{
+    if (type == BP_TYPE_DATA || type == BP_TYPE_DIR || type == BP_TYPE_SYMLINK) {
+        const unsigned char *p;
+        size_t length = strlen(*name), i;
+        bp_uint32 hash = 2166136261UL;
+        unsigned bucket;
+        bp_metadata_seen_t *node;
+        while (length > 0 && (*name)[length - 1] == '/') length--;
+        p = (const unsigned char *)*name;
+        for (i = 0; i < length; i++)
+            hash = (hash ^ p[i]) * 16777619UL;
+        bucket = (unsigned)(hash % BP_GROUP_BUCKETS);
+        if (group->seen == NULL) {
+            group->seen = (bp_metadata_seen_t **)calloc(BP_GROUP_BUCKETS, sizeof(*group->seen));
+            if (group->seen == NULL) return BP_ERR_NOMEM;
+        }
+        for (node = group->seen[bucket]; node != NULL; node = node->next)
+            if (node->normalized_len == length && memcmp(node->name, *name, length) == 0)
+                return BP_ERR_CORRUPT;
+        node = (bp_metadata_seen_t *)malloc(sizeof(*node));
+        if (node == NULL) return BP_ERR_NOMEM;
+        node->name = *name;
+        node->normalized_len = length;
+        node->owned = take_ownership;
+        node->next = group->seen[bucket];
+        group->seen[bucket] = node;
+        group->name = *name;
+        if (take_ownership) *name = NULL;
+        group->type = type;
+        group->portable_seen = 0;
+        return BP_OK;
+    }
+    if (group->name == NULL || strcmp(group->name, *name) != 0) {
+        group->name = NULL;
+        if (type == BP_TYPE_META && platform == BP_META_PORTABLE) return BP_ERR_CORRUPT;
+        return BP_OK;
+    }
+    if (type == BP_TYPE_META && platform == BP_META_PORTABLE) {
+        if ((group->type != BP_TYPE_DATA && group->type != BP_TYPE_DIR) ||
+            group->portable_seen) return BP_ERR_CORRUPT;
+        group->portable_seen = 1;
+    }
+    return BP_OK;
+}
 
 typedef struct {
     bp_io_t io;

@@ -248,25 +248,26 @@ static void test_sjis(void)
                          BP_CP_SJIS, kata_a_local, 1, kata_a_utf8);
 }
 
-/* --- UTF-8 outside target codepage -> substitution --------------------- */
+/* --- UTF-8 outside target codepage ------------------------------------- */
 
 static void test_out_of_range_substitution(void)
 {
-    /*
-     * U+4E2D (CJK: middle) = UTF-8 0xE4 0xB8 0xAD.
-     * This codepoint has no representation in ISO-8859-1, so it must
-     * be substituted (bp_utf8_to_local uses '_' for unmappable chars).
-     */
     const char cjk_utf8[4] = { (char)0xE4, (char)0xB8, (char)0xAD, '\0' };
+    const char overlong[3] = { (char)0xC0, (char)0xAF, '\0' };
     char out[OUT_SIZE];
     int rc;
 
-    UNIT_SECTION("Codepage: CJK -> ISO-8859-1 substitution");
-
+    UNIT_SECTION("Codepage: strict conversion errors");
     rc = bp_utf8_to_local(cjk_utf8, out, OUT_SIZE, BP_CP_8859_1);
-    UNIT_CHECK(rc == 0, "bp_utf8_to_local returns 0 for unmappable char");
-    UNIT_CHECK(out[0] == '_',
-               "unmappable CJK in ISO-8859-1 becomes '_'");
+    UNIT_CHECK(rc == BP_CP_UNREPRESENTABLE,
+               "unmappable CJK is refused without substitution");
+    rc = bp_utf8_to_local(overlong, out, OUT_SIZE, BP_CP_8859_1);
+    UNIT_CHECK(rc == BP_CP_INVALID, "overlong UTF-8 is rejected");
+    rc = bp_utf8_to_local("\xF0\x9F\x98\x80", out, OUT_SIZE, BP_CP_8859_1);
+    UNIT_CHECK(rc == BP_CP_UNREPRESENTABLE,
+               "valid supplementary character is classified as unmappable");
+    rc = bp_local_to_utf8(overlong, out, OUT_SIZE, BP_CP_UTF8);
+    UNIT_CHECK(rc == BP_CP_INVALID, "UTF-8 passthrough rejects malformed input");
 }
 
 /* --- Buffer too small --------------------------------------------------- */
@@ -285,12 +286,10 @@ static void test_buffer_too_small(void)
 
     rc = bp_local_to_utf8(src_local, tiny, 1, BP_CP_8859_1);
     /*
-     * The API contract says -1 on error (buffer too small).
-     * Accept either -1 or a truncated (empty) result -- the important thing
-     * is that no memory is written past the buffer.
+     * The API reports a distinct result when the destination is too small.
      */
-    UNIT_CHECK(rc == -1 || (rc == 0 && tiny[0] == '\0'),
-               "tiny buffer: returns -1 or empty string, not overflow");
+    UNIT_CHECK(rc == BP_CP_NO_SPACE,
+               "tiny buffer returns the distinct no-space result");
 }
 
 /* --- Empty string ------------------------------------------------------- */
