@@ -348,13 +348,18 @@ at build time.
 Before DOS16, Win16, or OS/2-16 extraction creates output, it scans the full
 archive name table and checks the converted local paths for case-folded
 collisions, including parent-directory aliases and file/directory conflicts.
+DOS16 also requires every archive and output-root component to fit the
+conservative 8.3 profile and rejects DOS device names and invalid filename
+characters before creating output.
 The preflight uses ASCII folding on every codepage and the mapped Latin letter
 pairs for CP437 and CP850. For other configured codepages, non-ASCII names are
 refused because a complete target case map is unavailable. The bounded index
 holds at most 128 distinct projected path prefixes and 4 KiB of exact/folded
 keys; exceeding either limit refuses extraction before filesystem changes.
-DOSBox verifies the DOS16 refusal path for a Linux-created archive containing
-case-only directory aliases. Win16 and OS/2-16 still need runtime qualification.
+DOSBox verifies the DOS16 refusal paths for Linux-created archives containing
+case-only directory aliases, long filenames, and DOS-invalid characters; it
+also verifies long output-root refusal. Win16 and OS/2-16 still need runtime
+qualification.
 
 Linux mini records POSIX mode bits and modification times for regular files
 and directories. It restores directory metadata after its children, using a

@@ -33,7 +33,17 @@ def main():
         (root / "CASE" / "Dir" / "ONE.TXT").write_bytes(b"upper tree\n")
         (root / "CASE" / "dir" / "TWO.TXT").write_bytes(b"lower tree\n")
         (root / "CASEOUT").mkdir()
+        (root / "LONGSRC").mkdir()
+        (root / "LONGSRC" / "LongerName.txt").write_bytes(b"long DOS name\n")
+        (root / "LONGOUT").mkdir()
+        (root / "CHARSRC").mkdir()
+        (root / "CHARSRC" / "Bad?.txt").write_bytes(b"invalid DOS character\n")
+        (root / "CHAROUT").mkdir()
         subprocess.run([str(LINUX), "c", "CASE.BLT", "CASE"], cwd=root,
+                       capture_output=True, check=True)
+        subprocess.run([str(LINUX), "c", "LONG.BLT", "LONGSRC"], cwd=root,
+                       capture_output=True, check=True)
+        subprocess.run([str(LINUX), "c", "BADCHAR.BLT", "CHARSRC"], cwd=root,
                        capture_output=True, check=True)
         env = os.environ.copy()
         env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", TZ="UTC")
@@ -47,6 +57,12 @@ def main():
             "if errorlevel 1 echo FAIL > TREE.BAD",
             "bpmini x TREE.BLT TREEOUT > TREEX.TXT",
             "if errorlevel 1 echo PARTIAL > TREEX.BAD",
+            "bpmini x LONG.BLT LONGOUT > LONG.TXT",
+            "if errorlevel 1 echo PARTIAL > LONG.BAD",
+            "bpmini x BADCHAR.BLT CHAROUT > BADCHAR.TXT",
+            "if errorlevel 1 echo PARTIAL > BADCHAR.BAD",
+            "bpmini x TEST.BLT LONGROOTX > ROOT.TXT",
+            "if errorlevel 1 echo PARTIAL > ROOT.BAD",
             "set BP_TZ_OFFSET=",
             "bpmini c UNKNOWN.BLT INPUT.TXT > UNKNOWN.TXT",
             "if errorlevel 1 echo PARTIAL > UNKNOWN.BAD",
@@ -65,6 +81,15 @@ def main():
         assert not marked("CREATE.BAD"), (root / "CREATE.TXT").read_text(errors="replace")
         assert marked("UNKNOWN.BAD"), "missing timezone was not reported"
         assert not marked("TREE.BAD"), (root / "TREE.TXT").read_text(errors="replace")
+        assert marked("LONG.BAD"), "DOS16 accepted a filename requiring an 8.3 alias"
+        assert list((root / "LONGOUT").iterdir()) == [], \
+            "long DOS16 name modified the destination before refusal"
+        assert marked("BADCHAR.BAD"), "DOS16 accepted a DOS-invalid filename character"
+        assert list((root / "CHAROUT").iterdir()) == [], \
+            "invalid DOS16 name modified the destination before refusal"
+        assert marked("ROOT.BAD"), "DOS16 accepted an output root outside the 8.3 profile"
+        assert not (root / "LONGROOTX").exists(), \
+            "DOS16 created an output root that needs long filename support"
         assert (root / "TREEOUT/SRC/SUB/A.TXT").read_bytes() == b"nested\n"
         assert (root / "TREEOUT/SRC/B.TXT").read_bytes() == b"sibling\n"
         extracted = root / "OUT" / "INPUT.TXT"
