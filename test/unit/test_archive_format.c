@@ -2040,6 +2040,115 @@ static void test_portable_metadata_archive(void)
     free(mem.buf);
 }
 
+static void test_archive_edit_preserves_complete_groups(void)
+{
+    MemIO original, copied, deleted;
+    bp_io_t original_io, copied_io, deleted_io, source;
+    bp_archive_t original_ar, copied_ar;
+    StringSrc input;
+    ListState listed;
+    bp_uint8 resource_data[4] = { 1, 2, 3, 4 };
+    bp_uint8 native_meta[10] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    bp_uint8 portable_meta[BP_META_FAT_SIZE];
+    bp_uint32 deleted_count = 0;
+    const char *delete_names[1];
+    int rc;
+
+    UNIT_SECTION("Archive edits preserve complete supplementary groups");
+    original.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    copied.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    deleted.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!original.buf || !copied.buf || !deleted.buf) exit(2);
+    original.pos = original.size = 0; original.cap = MEM_IO_CAP;
+    copied.pos = copied.size = 0; copied.cap = MEM_IO_CAP;
+    deleted.pos = deleted.size = 0; deleted.cap = MEM_IO_CAP;
+    original_io = make_mem_io(&original);
+    copied_io = make_mem_io(&copied);
+    deleted_io = make_mem_io(&deleted);
+
+    bp_metadata_fat_encode(portable_meta, sizeof(portable_meta),
+                           BP_TYPE_DATA, 0x27, 0x21);
+    rc = bp_archive_create(&original_ar, &original_io,
+                           BP_BLOCK_8K, BP_METHOD_STORED);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&original_ar, "GROUP.TXT", BP_TYPE_DATA,
+                                     BP_OS_LINUX, &source,
+                                     bp_u64_from_u32(FILE1_LEN),
+                                     bp_u64_from_u32(0),
+                                     BP_ENTRY_FLAG_MTIME_VALID |
+                                     BP_ENTRY_FLAG_MODE_VALID | 0640U);
+    source = make_string_io(&input, resource_data, sizeof(resource_data));
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&original_ar, "GROUP.TXT", BP_TYPE_RSRC,
+                                     BP_OS_MACOS9, &source,
+                                     bp_u64_from_u32(sizeof(resource_data)),
+                                     bp_u64_from_u32(0), 0);
+    source = make_string_io(&input, native_meta, sizeof(native_meta));
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&original_ar, "GROUP.TXT", BP_TYPE_META,
+                                     BP_OS_MACOS9, &source,
+                                     bp_u64_from_u32(sizeof(native_meta)),
+                                     bp_u64_from_u32(0), 0);
+    source = make_string_io(&input, portable_meta, sizeof(portable_meta));
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry_ex(&original_ar, "GROUP.TXT", BP_TYPE_META,
+                                     BP_META_PORTABLE, &source,
+                                     bp_u64_from_u32(sizeof(portable_meta)),
+                                     bp_u64_from_u32(0), 0);
+    source = make_string_io(&input, FILE2_DATA, FILE2_LEN);
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry(&original_ar, "KEEP.TXT", BP_TYPE_DATA,
+                                  BP_OS_LINUX, &source,
+                                  bp_u64_from_u32(FILE2_LEN),
+                                  bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_archive_finalize(&original_ar);
+    bp_archive_close(&original_ar);
+    UNIT_CHECK(rc == BP_OK, "complete group fixture written");
+    if (rc == BP_OK) {
+        rc = bp_archive_create(&copied_ar, &copied_io,
+                               BP_BLOCK_8K, BP_METHOD_STORED);
+        if (rc == BP_OK) rc = bp_archive_copy_from(&copied_ar, &original_io);
+        source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+        if (rc == BP_OK)
+            rc = bp_archive_add_entry(&copied_ar, "NEXT.TXT", BP_TYPE_DATA,
+                                      BP_OS_LINUX, &source,
+                                      bp_u64_from_u32(FILE1_LEN),
+                                      bp_u64_from_u32(0));
+        if (rc == BP_OK) rc = bp_archive_finalize(&copied_ar);
+        bp_archive_close(&copied_ar);
+        if (rc == BP_OK) rc = bp_archive_test(&copied_io, NULL, NULL);
+        memset(&listed, 0, sizeof(listed));
+        if (rc == BP_OK) rc = bp_archive_list(&copied_io, list_cb, &listed);
+        UNIT_CHECK(rc == BP_OK && listed.count == 6 &&
+                   listed.entries[0].entry_type == BP_TYPE_DATA &&
+                   (listed.entries[0].flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                   (listed.entries[0].flags & BP_ENTRY_FLAG_MODE_VALID) &&
+                   listed.entries[1].entry_type == BP_TYPE_RSRC &&
+                   listed.entries[2].entry_type == BP_TYPE_META &&
+                   listed.entries[2].platform == BP_OS_MACOS9 &&
+                   listed.entries[3].entry_type == BP_TYPE_META &&
+                   listed.entries[3].platform == BP_META_PORTABLE &&
+                   strcmp(listed.entries[4].name, "KEEP.TXT") == 0 &&
+                   strcmp(listed.entries[5].name, "NEXT.TXT") == 0,
+                   "copy and append preserve resource, native, portable metadata and flags");
+
+        delete_names[0] = "GROUP.TXT";
+        rc = bp_archive_delete(&copied_io, &deleted_io, delete_names, 1,
+                               &deleted_count);
+        if (rc == BP_OK) rc = bp_archive_test(&deleted_io, NULL, NULL);
+        memset(&listed, 0, sizeof(listed));
+        if (rc == BP_OK) rc = bp_archive_list(&deleted_io, list_cb, &listed);
+        UNIT_CHECK(rc == BP_OK && deleted_count == 4 && listed.count == 2 &&
+                   strcmp(listed.entries[0].name, "KEEP.TXT") == 0 &&
+                   strcmp(listed.entries[1].name, "NEXT.TXT") == 0,
+                   "delete removes the subject and all three supplementary records");
+    }
+    free(original.buf);
+    free(copied.buf);
+    free(deleted.buf);
+}
+
 static void test_duplicate_writer_names(void)
 {
     MemIO mem;
@@ -2385,6 +2494,7 @@ int main(void)
     test_mini_projected_name_index();
     test_portable_metadata();
     test_portable_metadata_archive();
+    test_archive_edit_preserves_complete_groups();
     test_mini_local_directory_names();
     test_duplicate_writer_names();
     test_full_interchange_profile();
