@@ -2688,7 +2688,7 @@ The core API is pure C89 and compiles on any platform with a C89 compiler. No po
 | SCO OpenServer | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
 | QNX Neutrino   | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
 | NeXTSTEP       | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| z/OS (USS)     | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | Latin-1 (approx.)  | Unix permissions                             |
+| z/OS (USS)     | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | Unqualified; filename bytes pass through without conversion | Unix permissions |
 | Linux FLTK     | GUI (FLTK)        | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
 | Win32 GUI      | GUI (Win32)       | `<stdio.h>` (Win32)    | `FindFirstFile`         | ANSI CP ↔ UTF-8    | —                                            |
 | WinForms .NET  | GUI (WinForms)    | DLL via P/Invoke       | `Directory.GetFiles`    | UTF-16 native      | —                                            |

@@ -479,9 +479,11 @@ make FRONTEND=hurd BUILDDIR=build/hurd TARGET=build/hurd/boltpack
 
 ### Platforms without a build target
 
-Plan 9, z/OS, and OpenVMS frontends are present, but this repository does not
-ship platform Makefiles or a complete documented manual link command for them.
-The build commands in this guide apply only to targets defined by the root
+Plan 9 and OpenVMS frontends are present, but this repository does not ship
+platform Makefiles or complete documented manual link commands for them. The
+z/OS manual build command is documented under the z/OS frontend in
+`frontends.md`; it has not been target-built or runtime-qualified here. The
+build commands in this guide apply only to targets defined by the root
 `Makefile`.
 - Build on real z/OS host or Hercules emulator
 - Binary will not be portable to non-mainframe systems
@@ -559,7 +561,9 @@ $ LINK archiver.obj, fluff.obj, ... /EXE=boltpack.exe
 
 **AIX:** Very picky about symbol visibility; may need `#pragma` in frontend code
 
-**z/OS:** Requires EBCDIC conversion utilities; see `src/frontend/zos/main.c`
+**z/OS:** Filename encoding and compiler execution mode are unqualified; see
+the z/OS frontend notes in `frontends.md` before relying on filename
+interoperability.
 
 **OpenVMS:** File naming and linker syntax completely different; expert knowledge needed
 
