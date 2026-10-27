@@ -18,7 +18,8 @@ listed as implemented remains unqualified; do not infer it from the core format.
 | Non-Linux POSIX wrappers using `linux/main.c` | Same compiled core as their build target | Shared lexical checks; target build does not use Linux `openat` branch, so symlink race protection is weaker | POSIX mode/time fields; foreign metadata is reported unsupported | Individual target runtime tests and builds remain. Do not treat Linux host evidence as target evidence. |
 | macOS CLI and Cocoa GUI | Full core codecs supported by each build | Source-specific path handling; no common destination collision preflight or staged regular-file commit | macOS CLI captures resource forks, Unix mode, and Finder info; GUI coverage differs | macOS target runtime validation and safe extraction work remain. |
 | Haiku, Amiga-family, RISC OS, Plan 9, QL, X68000, and classic Mac frontends | Frontend-specific codec/build limits | Name conversion and collision behavior vary by adapter; not qualified as a common profile | Native metadata exists in selected adapters; cross-platform fallback coverage varies | Per-target audit, build evidence, and extraction round trips remain to be recorded. |
-| Linux/Windows/Haiku/Atari/Amiga/macOS desktop GUIs and Total Commander WCX | Use the shared format-6 core | GUI/plugin extraction callbacks are not yet on the same staged, collision-preflight path as the hardened CLIs | Some restore only timestamps; portable/native metadata coverage varies | GUI and plugin extraction lifecycle, overwrite, name projection, and target tests remain. |
+| Linux FLTK GUI | Full core codecs enabled by the GUI build | Canonical names, directory-relative `openat` traversal with `O_NOFOLLOW`, sibling staging, atomic publication; flattened extraction reserves distinct names | Restores file mode/time and defers directory mode/time until children finish; unsupported metadata/resource forks return partial | `make linux-gui` builds on Linux; interactive extraction and filesystem behavior still need runtime coverage. |
+| Windows/Haiku/Atari/Amiga/macOS desktop GUIs and Total Commander WCX | Use the shared format-6 core | GUI/plugin extraction callbacks are not yet on the same staged, collision-preflight path as the hardened CLIs | Some restore only timestamps; portable/native metadata coverage varies | GUI and plugin extraction lifecycle, overwrite, name projection, and target tests remain. |
 
 ## Core evidence
 
@@ -31,10 +32,13 @@ listed as implemented remains unqualified; do not infer it from the core format.
 - The mini writer and reader enforce the serialized-size limit, including file
   table and footer overhead. Host tests exercise write overflow, finalization
   overhead, and oversized header rejection.
-- `make CC=gcc test`, DOSBox, Atari/OS/2/Windows cross-builds, and the relevant
-  target runtime checks should be recorded separately. The current work log is
-  the authoritative source for which exact commands have been rerun after the
-  latest changes.
+- On 2026-10-27, `make CC=gcc test` passed: 175 archive-format checks and 121
+  integration checks, with all other host suites green. `make linux-gui` also
+  built successfully. A Linux CLI fixture with a valid portable FAT record
+  returned partial while restoring the directory's Unix mode and epoch time.
+- GUI interaction was not runtime-tested: Xvfb starts but this environment
+  cannot open its display. Atari, OS/2, and Windows evidence remains
+  cross-build-only; target runtime checks are still outstanding.
 
 This matrix is intentionally not a support promise for every OS listed in
 `frontends.md`. Completion requires either the listed capability to be

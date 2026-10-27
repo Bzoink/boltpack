@@ -33,6 +33,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <climits>
+#include <algorithm>
+#include <new>
 #include <vector>
 #include <string>
 #include <thread>
@@ -44,10 +47,13 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
-#include <utime.h>
+#include <time.h>
+
+#include "../linux/extract_paths.h"
 
 /* BoltPack core (C linkage) */
 extern "C" {
@@ -1905,16 +1911,37 @@ enum ExtractMode {
     EXTRACT_FILES_ONLY   = 1
 };
 
+struct ExtractDirectoryRestore {
+    std::string name;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+};
+
+struct ExtractOutput {
+    bp_io_t io; /* first member: callbacks return &io */
+    int parent_fd;
+    std::string temporary;
+    std::string destination;
+    bool is_symlink;
+
+    ExtractOutput() : parent_fd(-1), is_symlink(false) {}
+};
+
 struct ExtractCtx {
     std::string           dest_dir;
     ProgressCtx          *progress;
     std::set<std::string> filter; /* empty = extract all; non-empty = only these names */
     ExtractMode           mode;
-    std::map<void *, std::string> resolved_paths;
-    std::set<std::string> reserved_flat_paths;
+    std::set<std::string> reserved_flat_names;
+    std::vector<ExtractDirectoryRestore> directories;
+    int root_fd;
+    int force;
+    int open_error;
+    unsigned int partial_count;
 
     ExtractCtx()
-        : progress(NULL), mode(EXTRACT_KEEP_FOLDERS)
+        : progress(NULL), mode(EXTRACT_KEEP_FOLDERS), root_fd(-1), force(1),
+          open_error(BP_OK), partial_count(0)
     {
     }
 };
@@ -1985,40 +2012,147 @@ static std::string path_with_suffix(const std::string &filename, unsigned int in
     return base + suffix + ext;
 }
 
-static std::string join_dest_path(const std::string &dir, const std::string &name)
-{
-    if (dir.empty())
-        return name;
-    if (dir[dir.size() - 1] == '/' || dir[dir.size() - 1] == '\\')
-        return dir + name;
-    return dir + "/" + name;
-}
-
-static std::string reserve_flattened_path(ExtractCtx *ctx, const std::string &entry_name)
+static std::string reserve_flattened_name(ExtractCtx *ctx, const std::string &entry_name)
 {
     std::string filename = leaf_name(entry_name);
-    std::string path;
     unsigned int index;
+    struct stat st;
+    int stat_rc;
 
     if (filename.empty())
         filename = "unnamed";
 
-    path = join_dest_path(ctx->dest_dir, filename);
-    if (ctx->reserved_flat_paths.find(path) == ctx->reserved_flat_paths.end() &&
-        access(path.c_str(), 0) != 0) {
-        ctx->reserved_flat_paths.insert(path);
-        return path;
-    }
-
-    for (index = 1;; index++) {
-        std::string candidate = join_dest_path(ctx->dest_dir,
-                                               path_with_suffix(filename, index));
-        if (ctx->reserved_flat_paths.find(candidate) == ctx->reserved_flat_paths.end() &&
-            access(candidate.c_str(), 0) != 0) {
-            ctx->reserved_flat_paths.insert(candidate);
-            return candidate;
+    if (ctx->reserved_flat_names.find(filename) == ctx->reserved_flat_names.end()) {
+        stat_rc = fstatat(ctx->root_fd, filename.c_str(), &st, AT_SYMLINK_NOFOLLOW);
+        if (stat_rc == 0) {
+            /* Existing output names are kept by selecting a deterministic suffix. */
+        } else if (errno != ENOENT) {
+            return std::string();
+        } else {
+            ctx->reserved_flat_names.insert(filename);
+            return filename;
         }
     }
+
+    for (index = 1; index <= 65535U; index++) {
+        std::string candidate = path_with_suffix(filename, index);
+        if (ctx->reserved_flat_names.find(candidate) != ctx->reserved_flat_names.end())
+            continue;
+        stat_rc = fstatat(ctx->root_fd, candidate.c_str(), &st, AT_SYMLINK_NOFOLLOW);
+        if (stat_rc == 0) continue;
+        if (errno != ENOENT) return std::string();
+        ctx->reserved_flat_names.insert(candidate);
+        return candidate;
+    }
+    return std::string();
+}
+
+static int extract_open_root(ExtractCtx *ctx)
+{
+    if (ctx == NULL) return BP_ERR_INVALID_ARG;
+    if (ctx->dest_dir.empty()) ctx->dest_dir = ".";
+    if (mkdirs(ctx->dest_dir.c_str()) != 0) return BP_ERR_IO;
+    ctx->root_fd = open(ctx->dest_dir.c_str(),
+                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    return ctx->root_fd < 0 ? BP_ERR_IO : BP_OK;
+}
+
+static int extract_queue_directory(ExtractCtx *ctx, const bp_entry_t *entry)
+{
+    ExtractDirectoryRestore directory;
+    if (ctx->directories.size() >= 65535U) return BP_ERR_OVERFLOW;
+    try {
+        directory.name = entry->name;
+        directory.mtime = entry->mtime;
+        directory.flags = entry->flags;
+        ctx->directories.push_back(directory);
+    } catch (...) {
+        return BP_ERR_NOMEM;
+    }
+    return BP_OK;
+}
+
+static int extract_restore_fd(int fd, const std::string &name,
+                              bp_uint16 flags, bp_uint64 mtime,
+                              ExtractCtx *ctx)
+{
+    if (flags & BP_ENTRY_FLAG_MODE_VALID) {
+        mode_t mode = (mode_t)(flags & BP_ENTRY_FLAG_MODE_MASK);
+        if (mode & 06000) {
+            mode &= (mode_t)~06000;
+            ctx->partial_count++;
+        }
+        if (fchmod(fd, mode) != 0) return BP_ERR_IO;
+    }
+    if (flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        bp_off_t seconds = bp_u64_to_off(mtime);
+        time_t t = (time_t)seconds;
+        struct timespec times[2];
+        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+            (bp_off_t)t != seconds) return BP_ERR_OVERFLOW;
+        times[0].tv_sec = 0;
+        times[0].tv_nsec = UTIME_OMIT;
+        times[1].tv_sec = t;
+        times[1].tv_nsec = 0;
+        if (futimens(fd, times) != 0) return BP_ERR_IO;
+    }
+    (void)name;
+    return BP_OK;
+}
+
+static int extract_finish_directories(ExtractCtx *ctx, int apply)
+{
+    int result = BP_OK;
+    std::sort(ctx->directories.begin(), ctx->directories.end(),
+              [](const ExtractDirectoryRestore &a,
+                 const ExtractDirectoryRestore &b) {
+                  return a.name.size() > b.name.size();
+              });
+    if (apply) {
+        for (size_t i = 0; i < ctx->directories.size(); i++) {
+            const ExtractDirectoryRestore &directory = ctx->directories[i];
+            int fd = extract_open_directory(ctx->root_fd,
+                                            directory.name.c_str(), 0);
+            int rc = fd < 0 ? BP_ERR_IO :
+                extract_restore_fd(fd, directory.name, directory.flags,
+                                   directory.mtime, ctx);
+            if (fd >= 0) close(fd);
+            if (rc != BP_OK && result == BP_OK) result = rc;
+        }
+    }
+    ctx->directories.clear();
+    return result;
+}
+
+static int extract_make_temporary(int parent_fd, std::string *name,
+                                  FILE **stream)
+{
+    static std::atomic<unsigned long> counter(0);
+    char candidate[64];
+    int fd, tries;
+    for (tries = 0; tries < 256; tries++) {
+        snprintf(candidate, sizeof(candidate), ".boltpack-gui-%08lx-%08lx",
+                 (unsigned long)getpid(), ++counter);
+        fd = openat(parent_fd, candidate,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) return BP_ERR_IO;
+    *stream = fdopen(fd, "wb");
+    if (*stream == NULL) {
+        close(fd);
+        unlinkat(parent_fd, candidate, 0);
+        return BP_ERR_IO;
+    }
+    try {
+        *name = candidate;
+    } catch (...) {
+        fclose(*stream);
+        *stream = NULL;
+        unlinkat(parent_fd, candidate, 0);
+        return BP_ERR_NOMEM;
+    }
+    return BP_OK;
 }
 
 static int extract_progress_cb(const bp_progress_t *p, void *user_data)
@@ -2027,71 +2161,284 @@ static int extract_progress_cb(const bp_progress_t *p, void *user_data)
     return progress_cb(p, ectx->progress);
 }
 
+static void extract_dispose_output(ExtractOutput *output, FILE *fp,
+                                   int remove_temporary)
+{
+    if (fp != NULL) fclose(fp);
+    if (output->parent_fd >= 0) {
+        if (remove_temporary && !output->temporary.empty())
+            unlinkat(output->parent_fd, output->temporary.c_str(), 0);
+        close(output->parent_fd);
+    }
+    delete output;
+}
+
+static int extract_make_temporary_symlink(int parent_fd, const char *target,
+                                          std::string *name)
+{
+    static std::atomic<unsigned long> counter(0);
+    char candidate[64];
+    int tries;
+    for (tries = 0; tries < 256; tries++) {
+        snprintf(candidate, sizeof(candidate), ".boltpack-gui-link-%08lx-%08lx",
+                 (unsigned long)getpid(), ++counter);
+        if (symlinkat(target, parent_fd, candidate) == 0) {
+            try {
+                *name = candidate;
+            } catch (...) {
+                unlinkat(parent_fd, candidate, 0);
+                return BP_ERR_NOMEM;
+            }
+            return BP_OK;
+        }
+        if (errno != EEXIST) return BP_ERR_IO;
+    }
+    return BP_ERR_IO;
+}
+
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
     std::string ename(entry->name ? entry->name : "");
-    std::string path;
+    std::string output_name;
+    ExtractOutput *output;
+    FILE *fp;
+    char leaf[4096];
 
-    if (!entry->name || !bp_name_is_safe(entry->name)) return NULL;
+    if (!entry->name || !bp_name_is_safe(entry->name)) {
+        ctx->open_error = BP_ERR_CORRUPT;
+        return NULL;
+    }
 
     if (entry->entry_type == BP_TYPE_DIR) {
-        if (!ctx->filter.empty())
+        if (!ctx->filter.empty() &&
+            (ctx->mode == EXTRACT_FILES_ONLY ||
+             !extract_filter_matches(ctx, ename)))
             return NULL;
-        path = join_dest_path(ctx->dest_dir, ename);
-        mkdirs(path.c_str());
+        int fd = extract_open_directory(ctx->root_fd, ename.c_str(), 1);
+        if (fd < 0) {
+            ctx->open_error = BP_ERR_IO;
+            return NULL;
+        }
+        close(fd);
+        int rc = extract_queue_directory(ctx, entry);
+        if (rc != BP_OK && ctx->open_error == BP_OK) ctx->open_error = rc;
         return NULL;
     }
 
-    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC) {
+        if (extract_filter_matches(ctx, ename)) ctx->partial_count++;
         return NULL;
+    }
 
-    if (!extract_filter_matches(ctx, ename))
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_SYMLINK) {
+        if (extract_filter_matches(ctx, ename)) ctx->partial_count++;
         return NULL;
+    }
+
+    if (!extract_filter_matches(ctx, ename)) return NULL;
 
     if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY)
-        path = reserve_flattened_path(ctx, ename);
+        output_name = reserve_flattened_name(ctx, ename);
     else
-        path = join_dest_path(ctx->dest_dir, ename);
+        output_name = ename;
+    if (output_name.empty()) {
+        ctx->open_error = BP_ERR_IO;
+        return NULL;
+    }
 
-    mkdirs_for_file(path.c_str());
-    FILE *fp = fopen(path.c_str(), "wb");
-    if (!fp) return NULL;
+    output = new (std::nothrow) ExtractOutput();
+    if (output == NULL) {
+        ctx->open_error = BP_ERR_NOMEM;
+        return NULL;
+    }
+    try {
+        output->destination = output_name;
+    } catch (...) {
+        delete output;
+        ctx->open_error = BP_ERR_NOMEM;
+        return NULL;
+    }
+    output->is_symlink = entry->entry_type == BP_TYPE_SYMLINK;
 
-    bp_io_t *io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    ctx->resolved_paths[io->handle] = path;
-    return io;
+    if (output->is_symlink) {
+        fp = tmpfile();
+        if (fp == NULL) {
+            delete output;
+            ctx->open_error = BP_ERR_IO;
+            return NULL;
+        }
+    } else {
+        output->parent_fd = extract_open_parent(ctx->root_fd,
+                                               output_name.c_str(),
+                                               leaf, sizeof(leaf));
+        if (output->parent_fd < 0) {
+            delete output;
+            ctx->open_error = BP_ERR_IO;
+            return NULL;
+        }
+        if (!ctx->force) {
+            struct stat st;
+            if (fstatat(output->parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
+                errno != ENOENT) {
+                close(output->parent_fd);
+                delete output;
+                ctx->open_error = BP_ERR_IO;
+                return NULL;
+            }
+        }
+        try {
+            output->destination = leaf;
+        } catch (...) {
+            close(output->parent_fd);
+            delete output;
+            ctx->open_error = BP_ERR_NOMEM;
+            return NULL;
+        }
+        int rc = extract_make_temporary(output->parent_fd,
+                                       &output->temporary, &fp);
+        if (rc != BP_OK) {
+            close(output->parent_fd);
+            delete output;
+            ctx->open_error = rc;
+            return NULL;
+        }
+    }
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
 }
 
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
+    ExtractOutput *output = (ExtractOutput *)out;
+    FILE *fp = (FILE *)out->handle;
 
-    if (out) {
-        std::string path;
-        std::map<void *, std::string>::iterator it = ctx->resolved_paths.find(out->handle);
-
-        if (it != ctx->resolved_paths.end()) {
-            path = it->second;
-            ctx->resolved_paths.erase(it);
-        } else {
-            path = join_dest_path(ctx->dest_dir, entry->name ? entry->name : "");
-        }
-
-        fclose((FILE *)out->handle);
-
-        /* restore mtime */
-        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) && !path.empty()) {
-            struct utimbuf ut;
-            ut.actime  = (time_t)bp_u64_to_ulong(entry->mtime);
-            ut.modtime = (time_t)bp_u64_to_ulong(entry->mtime);
-            utime(path.c_str(), &ut);
-        }
-
-        free(out);
+    if (status != BP_OK) {
+        extract_dispose_output(output, fp, 1);
+        return BP_OK;
     }
+
+    if (output->is_symlink) {
+        char target[4096];
+        long length = fseek(fp, 0, SEEK_END) == 0 ? ftell(fp) : -1;
+        int rc = BP_OK;
+        if (length <= 0 || length >= (long)sizeof(target)) {
+            rc = BP_ERR_CORRUPT;
+        } else {
+            rewind(fp);
+            if (fread(target, 1, (size_t)length, fp) != (size_t)length ||
+                memchr(target, '\0', (size_t)length) != NULL) {
+                rc = BP_ERR_CORRUPT;
+            } else {
+                target[length] = '\0';
+                if (fclose(fp) != 0) rc = BP_ERR_IO;
+                fp = NULL;
+                if (rc == BP_OK &&
+                    !bp_symlink_target_is_safe(output->destination.c_str(), target)) {
+                    ctx->partial_count++;
+                } else if (rc == BP_OK) {
+                    char leaf[4096];
+                    output->parent_fd = extract_open_parent(ctx->root_fd,
+                                                           output->destination.c_str(),
+                                                           leaf, sizeof(leaf));
+                    if (output->parent_fd < 0) rc = BP_ERR_IO;
+                    else {
+                        try {
+                            output->destination = leaf;
+                        } catch (...) {
+                            rc = BP_ERR_NOMEM;
+                        }
+                        if (rc == BP_OK && !ctx->force) {
+                            struct stat st;
+                            if (fstatat(output->parent_fd, leaf, &st,
+                                        AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+                                rc = BP_ERR_IO;
+                        }
+                        if (rc == BP_OK)
+                            rc = extract_make_temporary_symlink(output->parent_fd,
+                                                               target,
+                                                               &output->temporary);
+                        if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+                            bp_off_t seconds = bp_u64_to_off(entry->mtime);
+                            time_t t = (time_t)seconds;
+                            struct timespec times[2];
+                            if (seconds < 0 ||
+                                bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+                                (bp_off_t)t != seconds) {
+                                rc = BP_ERR_OVERFLOW;
+                            } else {
+                                times[0].tv_sec = 0;
+                                times[0].tv_nsec = UTIME_OMIT;
+                                times[1].tv_sec = t;
+                                times[1].tv_nsec = 0;
+                                if (utimensat(output->parent_fd,
+                                              output->temporary.c_str(), times,
+                                              AT_SYMLINK_NOFOLLOW) != 0)
+                                    rc = BP_ERR_IO;
+                            }
+                        }
+                        if (rc == BP_OK) {
+                            if (ctx->force) {
+                                if (renameat(output->parent_fd,
+                                             output->temporary.c_str(),
+                                             output->parent_fd,
+                                             output->destination.c_str()) != 0)
+                                    rc = BP_ERR_IO;
+                            } else if (extract_commit_noreplace(
+                                           output->parent_fd,
+                                           output->temporary.c_str(),
+                                           output->destination.c_str()) != 0) {
+                                rc = BP_ERR_IO;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (fp != NULL && fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        extract_dispose_output(output, NULL, rc != BP_OK);
+        return rc;
+    }
+
+    int rc = fflush(fp) == 0 ? BP_OK : BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = extract_restore_fd(fileno(fp), output->destination, entry->flags,
+                                entry->mtime, ctx);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK) {
+        if (ctx->force) {
+            if (renameat(output->parent_fd, output->temporary.c_str(),
+                         output->parent_fd, output->destination.c_str()) != 0)
+                rc = BP_ERR_IO;
+        } else if (extract_commit_noreplace(output->parent_fd,
+                                             output->temporary.c_str(),
+                                             output->destination.c_str()) != 0) {
+            rc = BP_ERR_IO;
+        }
+    }
+    extract_dispose_output(output, NULL, rc != BP_OK);
+    return rc;
+}
+
+static int extract_run(bp_io_t *archive_io, ExtractCtx *ctx,
+                       bp_progress_fn progress_fn)
+{
+    int rc, dir_rc;
+    rc = extract_open_root(ctx);
+    if (rc != BP_OK) return rc;
+    rc = bp_archive_extract_all_ex(archive_io, extract_open_cb,
+                                   extract_done_cb, progress_fn, ctx);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx->open_error != BP_OK)
+        rc = ctx->open_error;
+    dir_rc = extract_finish_directories(
+        ctx, (rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx->open_error == BP_OK);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
+    if (rc == BP_OK && ctx->partial_count != 0) rc = BP_ERR_PARTIAL;
+    close(ctx->root_fd);
+    ctx->root_fd = -1;
+    return rc;
 }
 
 #ifdef BOLTPACK_NET
@@ -2106,13 +2453,12 @@ static int gui_extract_io(bp_io_t *aio, const char *out_dir, int force,
                           void *ud)
 {
     ExtractCtx ctx;
-    (void)force;
     (void)ud;
     ctx.dest_dir = (out_dir && *out_dir) ? out_dir : ".";
     ctx.progress = NULL;
     ctx.mode     = EXTRACT_KEEP_FOLDERS;
-    return bp_archive_extract_all(aio, extract_open_cb, extract_done_cb,
-                                  NULL, &ctx);
+    ctx.force    = force;
+    return extract_run(aio, &ctx, NULL);
 }
 #endif
 
@@ -2130,8 +2476,7 @@ static void extract_worker(ExtractWork *w)
     bp_io_t io;
     bp_io_from_file(&io, fp);
 
-    w->result = bp_archive_extract_all(&io, extract_open_cb, extract_done_cb,
-                                       extract_progress_cb, &w->ectx);
+    w->result = extract_run(&io, &w->ectx, extract_progress_cb);
     fclose(fp);
     w->ectx.progress->finished.store(true);
 }
@@ -2158,6 +2503,7 @@ static void do_extract()
     work.archive_path       = g_archive_path;
     work.ectx.dest_dir      = dest;
     work.ectx.progress      = create_progress_window("Extracting...");
+    work.ectx.force         = 1;
     work.result              = BP_OK;
 
     std::thread worker(extract_worker, &work);
