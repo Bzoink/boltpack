@@ -337,6 +337,65 @@ static void test_header_bytes(void)
     free(mem.buf);
 }
 
+/* This 170-byte archive is laid out from docs/specification-1.0.md sections
+ * 2.2, 2.3, 4, and 5, not emitted by bp_archive_create().  It contains one
+ * Stored entry named "x" with payload "A".  The four CRC-32 values are the
+ * standard IEEE CRC-32 values for the payload, block, table, and header. */
+static const unsigned char FORMAT6_GOLDEN_ARCHIVE[] = {
+    0x42, 0x4F, 0x4C, 0x54, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x27, 0x66, 0x0B, 0x30, 0x24, 0xCC, 0xE3, 0x16,
+    0x2B, 0x00, 0x01, 0x00, 0x78, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x9E, 0xD9,
+    0xD3, 0x00, 0x01, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x8B, 0x9E, 0xD9, 0xD3, 0x41,
+    0x54, 0x42, 0x4C, 0x54, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x78, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2B, 0x00, 0x8B, 0x9E, 0xD9, 0xD3,
+    0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x4C, 0x4F, 0x42
+};
+
+static void test_independent_format6_golden_archive(void)
+{
+    MemIO mem;
+    bp_io_t io;
+    ListState listed;
+    TestState tested;
+    int rc;
+
+    UNIT_SECTION("Archive format 6: independent golden archive");
+    mem.buf = (unsigned char *)FORMAT6_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    io = make_mem_io(&mem);
+
+    memset(&listed, 0, sizeof(listed));
+    rc = bp_archive_list(&io, list_cb, &listed);
+    UNIT_CHECK(rc == BP_OK && listed.count == 1,
+               "reader accepts independently specified format-6 table");
+    if (rc == BP_OK && listed.count == 1) {
+        UNIT_CHECK(strcmp(listed.names[0], "x") == 0 &&
+                   listed.entries[0].entry_type == BP_TYPE_DATA &&
+                   listed.entries[0].method == BP_METHOD_STORED &&
+                   listed.entries[0].original_size.lo == 1 &&
+                   listed.entries[0].compressed_size.lo == 13 &&
+                   listed.entries[0].checksum == 0xD3D99E8BU &&
+                   listed.entries[0].flags == 0,
+                   "golden record fields decode with unknown timestamp");
+    }
+
+    memset(&tested, 0, sizeof(tested));
+    tested.all_ok = 1;
+    rc = bp_archive_test(&io, test_cb, &tested);
+    UNIT_CHECK(rc == BP_OK && tested.all_ok && tested.entry_count == 1,
+               "golden Stored payload passes independent CRC fixtures");
+}
+
 /* ======================================================================== */
 /* Test: archive list for a given method                                     */
 /* ======================================================================== */
@@ -867,6 +926,40 @@ static int mini_interop_done(const bp_mini_entry_t *entry, bp_io_t *out,
     (void)out;
     s->done_status = status;
     return s->report_partial ? BP_ERR_PARTIAL : BP_OK;
+}
+
+static void test_mini_independent_format6_golden_archive(void)
+{
+    MemIO mem;
+    bp_io_t io;
+    MiniInteropState state;
+    unsigned char output[8];
+    int rc;
+
+    UNIT_SECTION("Mini core: independent format-6 golden archive");
+    mem.buf = (unsigned char *)FORMAT6_GOLDEN_ARCHIVE;
+    mem.pos = 0;
+    mem.size = (long)sizeof(FORMAT6_GOLDEN_ARCHIVE);
+    mem.cap = mem.size;
+    io = make_mem_io(&mem);
+
+    memset(&state, 0, sizeof(state));
+    state.output.buf = output;
+    state.output.cap = sizeof(output);
+    state.io = make_mem_io(&state.output);
+    rc = bp_mini_archive_list(&io, mini_interop_list, &state);
+    UNIT_CHECK(rc == BP_OK && state.count == 1 && state.flags == 0,
+               "mini list accepts independently specified format-6 table");
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_OK,
+               "mini test verifies independent Stored payload and CRCs");
+
+    state.count = 0;
+    state.done_status = 99;
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                        mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_OK && state.done_status == BP_OK &&
+               state.output.size == 1 && output[0] == 'A',
+               "mini extracts and checks independent Stored payload");
 }
 
 static int mini_metadata_test(const bp_mini_entry_t *entry,
@@ -1737,9 +1830,11 @@ int main(void)
     }
 
     test_header_bytes();
+    test_independent_format6_golden_archive();
     test_previous_versions_rejected();
     test_format6_flags_and_names();
     test_format6_full_mini_interop();
+    test_mini_independent_format6_golden_archive();
     test_mini_archive_size_limit();
     test_mini_directory_outcomes();
     test_mini_directory_queue();
