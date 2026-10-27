@@ -81,13 +81,18 @@ static void make_parents(const char *path)
 }
 
 #ifndef __WATCOMC__
-static void set_mtime(const char *path, bp_uint64 mtime)
+static int set_mtime(const char *path, bp_uint64 mtime)
 {
+    struct stat st;
     struct utimbuf ut;
-    if (mtime.hi == 0 && mtime.lo == 0) return;
-    ut.actime  = (time_t)mtime.lo;
+    if (mtime.hi != 0) return -1;
+    if (stat(path, &st) != 0) return -1;
+    ut.actime  = st.st_atime;
     ut.modtime = (time_t)mtime.lo;
-    utime(path, &ut);
+    if (ut.modtime < (time_t)0 ||
+        (unsigned long)ut.modtime != (unsigned long)mtime.lo)
+        return -1;
+    return utime(path, &ut);
 }
 #endif
 
@@ -286,19 +291,34 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
     int time_result;
     if (out == NULL) return BP_ERR_INVALID_ARG;
     fd = (int)(long)out->handle;
-    if (status == BP_OK && (e->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+    if (close(fd) != 0) {
+        (void)remove(ctx->current_path);
+        return BP_ERR_IO;
+    }
+    if (status != BP_OK) {
+        (void)remove(ctx->current_path);
+        return BP_OK;
+    }
+    if (e->flags & BP_ENTRY_FLAG_MTIME_VALID) {
         time_result = bp_dos_timezone(&tz_offset) == 0 ?
                       bp_dos_utc_to_local(e->mtime, tz_offset, &dos_date, &dos_time) : -1;
         if (time_result < 0) {
             bp_wstr(2, PROG_NAME ": cannot restore time (set BP_TZ_OFFSET): ");
             bp_wstr(2, ctx->current_path); write(2, "\n", 1);
             rc = BP_ERR_PARTIAL;
-        } else if (_dos_setftime(fd, dos_date, dos_time) != 0) rc = BP_ERR_IO;
-        else if (_dos_getftime(fd, &actual_date, &actual_time) != 0 ||
-                 actual_date != dos_date || actual_time != dos_time) {
-            bp_wstr(2, PROG_NAME ": filesystem did not retain time: ");
-            bp_wstr(2, ctx->current_path); write(2, "\n", 1);
-            rc = BP_ERR_PARTIAL;
+        } else {
+            int time_fd = open(ctx->current_path, O_RDWR | O_BINARY);
+            if (time_fd < 0 || _dos_setftime(time_fd, dos_date, dos_time) != 0) {
+                bp_wstr(2, PROG_NAME ": cannot restore time: ");
+                bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+                rc = BP_ERR_PARTIAL;
+            } else if (_dos_getftime(time_fd, &actual_date, &actual_time) != 0 ||
+                       actual_date != dos_date || actual_time != dos_time) {
+                bp_wstr(2, PROG_NAME ": filesystem did not retain time: ");
+                bp_wstr(2, ctx->current_path); write(2, "\n", 1);
+                rc = BP_ERR_PARTIAL;
+            }
+            if (time_fd >= 0 && close(time_fd) != 0) rc = BP_ERR_PARTIAL;
         }
         if (rc == BP_OK && time_result > 0) {
             bp_wstr(2, PROG_NAME ": time rounded to two seconds: ");
@@ -306,15 +326,21 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
             rc = BP_ERR_PARTIAL;
         }
     }
-    if (close(fd) != 0) rc = BP_ERR_IO;
 #else
     if (out == NULL) return BP_ERR_INVALID_ARG;
-    if (fclose((FILE *)out->handle) != 0) rc = BP_ERR_IO;
-    if (status == BP_OK && (e->flags & BP_ENTRY_FLAG_MTIME_VALID))
-        set_mtime(ctx->current_path, e->mtime);
+    if (fclose((FILE *)out->handle) != 0) {
+        (void)remove(ctx->current_path);
+        return BP_ERR_IO;
+    }
+    if (status != BP_OK) {
+        (void)remove(ctx->current_path);
+        return BP_OK;
+    }
+    if ((e->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        set_mtime(ctx->current_path, e->mtime) != 0)
+        rc = BP_ERR_PARTIAL;
 #endif
-    if (status != BP_OK) (void)remove(ctx->current_path);
-    else if (e->flags & BP_ENTRY_FLAG_MODE_VALID) {
+    if (e->flags & BP_ENTRY_FLAG_MODE_VALID) {
         fprintf(stderr, PROG_NAME ": POSIX file mode not restored: %s\n", ctx->current_path);
         if (rc == BP_OK) rc = BP_ERR_PARTIAL;
     }

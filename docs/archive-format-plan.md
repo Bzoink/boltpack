@@ -94,7 +94,12 @@ replacement race. Watcom cross-build evidence passes, but OS/2 runtime and
 interruption tests remain unavailable. The 32-bit Watcom build's addressable
 archive size remains below 2 GiB.
 DOS16, Win16, and OS/2-16 also require an explicit fixed timezone offset for
-timestamp conversion; other DOS-derived frontends still need review. The Linux
+timestamp conversion; other DOS-derived frontends still need review. Their
+mini extraction callbacks now remove output after a data or close failure.
+DOS16 and Win16 close the verified output before reopening it to restore a
+timestamp; OS/2-16 applies timestamps only after close succeeds. The 16-bit
+targets cross-build, while only the DOS16 core unit program has DOSBox runtime
+evidence, not a filesystem extraction round trip. The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
 shared POSIX wrapper, resolve archive-controlled directories with directory-
 relative `openat` calls and reject symlink components. Staged files and final

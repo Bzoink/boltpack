@@ -274,10 +274,13 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
     int rc = BP_OK;
 
     if (out == NULL) return BP_ERR_INVALID_ARG;
-    if (fclose((FILE *)out->handle) != 0) rc = BP_ERR_IO;
+    if (fclose((FILE *)out->handle) != 0) {
+        (void)remove(ctx->current_path);
+        return BP_ERR_IO;
+    }
     if (status != BP_OK) {
         (void)remove(ctx->current_path);
-        return rc;
+        return BP_OK;
     }
     if (e->flags & BP_ENTRY_FLAG_MTIME_VALID) {
         rc = set_mtime_os2(ctx->current_path, e->mtime);
