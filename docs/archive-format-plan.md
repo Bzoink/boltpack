@@ -13,12 +13,17 @@ no equivalent for a resource fork or a POSIX permission bit.
 
 The format-6 core, timestamp validity flag, UTF-8 validation, and file-table
 consistency checks are implemented. Mini frontends have explicit name
-conversion, and the Linux CLI uses verified temporary files for extraction.
-This plan is not complete: portable FAT attribute support across platforms, consistent loss reporting,
-full platform name handling, and safe extraction lifecycle handling across all
-frontends remain outstanding. DOS16, Win16, and OS/2-16 now require an explicit fixed
-timezone offset for timestamp conversion; other DOS-derived frontends still
-need review. The Linux CLI and Linux mini resolve archive-controlled directories
+conversion. The Linux CLI, Linux mini, and Windows CLI stage regular-file
+outputs until checksums pass; the Linux frontends also use directory-relative
+operations to reject symlink components. The Windows CLI now writes and
+restores portable FAT flags, while deferring directory flags until children
+finish. This plan is not complete: metadata coverage and safe extraction lifecycle
+handling across the remaining frontends remain outstanding. The Windows CLI
+refuses case-insensitive destination collisions and common reserved or
+trailing-dot/space names; other destination mappings and Unicode normalization
+remain open. The Windows CLI has cross-build evidence but still needs Windows
+runtime tests. DOS16, Win16, and OS/2-16 now require an explicit fixed timezone
+offset for timestamp conversion; other DOS-derived frontends still need review. The Linux CLI and Linux mini resolve archive-controlled directories
 with directory-relative `openat` calls and reject symlink components. Staged
 files and final commits use the same open parent handle. Deterministic tests
 cover parent substitution, concurrent destination creation, and write failure.
@@ -190,10 +195,13 @@ input, and insufficient space. Shift-JIS double-byte characters outside the
 implemented half-width range return an explicit unsupported result. DOS,
 Atari, Amiga, and OS/2 archive creation refuses names that cannot be converted;
 legacy extraction callbacks refuse unrepresentable names rather than passing
-UTF-8 bytes into a local filesystem API. Windows CLI conversion already uses
-strict ACP conversion. Remaining encoding work includes broader target tests,
-normalization and case-fold collision detection, and checking every source
-filename API against its configured codepage.
+UTF-8 bytes into a local filesystem API. Windows CLI conversion uses strict ACP
+conversion and tracks projected paths during extraction. It refuses
+case-insensitive collisions, reserved device names, invalid path characters,
+and trailing dots or spaces, even when `--force` is set. Remaining encoding
+work includes broader target tests, Unicode normalization and non-Windows
+collision checks, and checking every source filename API against its configured
+codepage.
 
 Select the source codepage from the actual filename API and active environment.
 DOS-style Win16/OS2-16 paths require the appropriate OEM/local codepage, not an
@@ -227,9 +235,13 @@ an original access time from mtime. Set-ID modes require an explicit restore
 policy rather than automatic privilege restoration from an archive.
 
 Use the basic FAT metadata record from Phase 0 across DOS, Win16, Win32,
-OS/2, and Atari adapters. Use each target's native attribute API; Win16/DOS
-and Atari cannot simply reuse a Win32 `SetFileAttributes` call. Cover CLI,
-GUI, DLL/.NET, and Total Commander paths, with shared helpers where practical.
+OS/2, and Atari adapters. The Windows CLI captures and restores the four
+portable FAT flags for files and directories, using `GetFileAttributesA` and
+`SetFileAttributesA`; it also restores directory times after child extraction.
+Regular file output is staged until its checksum passes. This is cross-compiled
+but has no Windows runtime test yet. Win16, DOS, and Atari use their target APIs.
+Cover GUI, DLL/.NET, and Total Commander paths, with shared helpers where
+practical.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level
