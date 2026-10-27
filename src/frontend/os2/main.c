@@ -51,8 +51,11 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <io.h>
 #if defined(__EMX__)
 #  include <sys/stat.h>
+#  include <sys/types.h>
+#  include <unistd.h>
 #endif
 
 /* ---- constants -------------------------------------------------------- */
@@ -79,6 +82,7 @@
 #define OS2_DIR_QUEUE_BYTES_MAX 32768UL
 #define OS2_NAME_SET_MAX 1024U
 #define OS2_NAME_SET_BYTES_MAX 32768UL
+#define OS2_APPEND_TAIL_MAX (256UL * 1024UL * 1024UL)
 
 /* ---- verbosity -------------------------------------------------------- */
 
@@ -120,6 +124,45 @@ static void bp_io_from_file(bp_io_t *io, FILE *fp)
     io->seek   = file_seek;
     io->tell   = file_tell;
     io->handle = fp;
+}
+
+static int os2_restore_append_tail(FILE *fp, bp_uint64 tail_off,
+                                   bp_uint64 tail_size,
+                                   const unsigned char *tail,
+                                   size_t tail_bytes,
+                                   const unsigned char *header)
+{
+    bp_uint64 archive_size;
+    bp_off_t tail_position, end_position;
+#if !defined(__EMX__)
+    long os_handle;
+#endif
+
+    archive_size = bp_u64_add(tail_off, tail_size);
+    tail_position = bp_u64_to_off(tail_off);
+    end_position = bp_u64_to_off(archive_size);
+    if (tail_position < 0 || end_position < 0 ||
+        tail_size.hi != 0 || tail_size.lo != (bp_uint32)tail_bytes)
+        return -1;
+
+    if (fflush(fp) != 0 ||
+        fseek(fp, (long)tail_position, SEEK_SET) != 0 ||
+        fwrite(tail, 1, tail_bytes, fp) != tail_bytes ||
+        fseek(fp, 0L, SEEK_SET) != 0 ||
+        fwrite(header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
+        fflush(fp) != 0)
+        return -1;
+
+#if defined(__EMX__)
+    if (ftruncate(fileno(fp), (off_t)end_position) != 0) return -1;
+#else
+    os_handle = _get_osfhandle(_fileno(fp));
+    if (os_handle == -1L) return -1;
+    if (DosResetBuffer((HFILE)os_handle) != NO_ERROR ||
+        DosSetFileSize((HFILE)os_handle, (ULONG)end_position) != NO_ERROR)
+        return -1;
+#endif
+    return 0;
 }
 
 /* ======================================================================
@@ -1576,16 +1619,66 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
 {
-    FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
+    FILE *fp;
+    bp_io_t aio;
+    bp_archive_t ar;
+    int rc, i;
+    bp_uint64 tail_off, tail_size, archive_size;
+    bp_off_t tail_position, end_position;
+    unsigned char original_header[BP_HEADER_SIZE];
+    unsigned char *tail_buf;
+    size_t tail_bytes;
+
     if (argc < 2) { fprintf(stderr, "boltpack: add requires archive and files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     g_unknown_source_times = 0;
     fp = fopen(argv[0], "r+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
+
+    /* Preserve the header and the table/footer that open_append replaces.
+     * Refuse unusually large tails so recovery memory stays bounded. */
+    tail_buf = NULL;
+    tail_bytes = 0;
+    if (fread(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE) {
+        fprintf(stderr, "boltpack: cannot back up archive header\n");
+        fclose(fp);
+        return 1;
+    }
     bp_io_from_file(&aio, fp);
+    rc = bp_archive_query_tail(&aio, &tail_off, &tail_size);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot read archive tail: %s\n",
+                bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+    tail_position = bp_u64_to_off(tail_off);
+    archive_size = bp_u64_add(tail_off, tail_size);
+    end_position = bp_u64_to_off(archive_size);
+    if (tail_size.hi != 0 || tail_size.lo == 0 ||
+        tail_size.lo > OS2_APPEND_TAIL_MAX ||
+        tail_position < 0 || end_position < 0) {
+        fprintf(stderr, "boltpack: archive tail is too large to back up safely\n");
+        fclose(fp);
+        return 1;
+    }
+    tail_bytes = (size_t)tail_size.lo;
+    tail_buf = (unsigned char *)malloc(tail_bytes);
+    if (tail_buf == NULL ||
+        fseek(fp, (long)tail_position, SEEK_SET) != 0 ||
+        fread(tail_buf, 1, tail_bytes, fp) != tail_bytes) {
+        fprintf(stderr, "boltpack: cannot back up archive table for append\n");
+        free(tail_buf);
+        fclose(fp);
+        return 1;
+    }
+
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        goto add_restore;
+    }
     for (i = 1; i < argc; i++) {
         char arcname[BP_MAX_PATH];
         strcpy(arcname, clean_path(argv[i]));
@@ -1593,11 +1686,18 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
         rc = add_path(&ar, argv[i], arcname);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", argv[i], bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar);
+            goto add_restore;
         }
     }
-    rc = bp_archive_finalize(&ar); bp_archive_close(&ar); fclose(fp);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc)); return 1; }
+    rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: finalize: %s\n", bp_strerror(rc));
+        goto add_restore;
+    }
+    free(tail_buf);
+    fclose(fp);
     if (g_unknown_source_times != 0) {
         fprintf(stderr, "boltpack: %lu timestamp(s) were stored as unknown; set BP_TZ_OFFSET (minutes east of UTC)\n",
                 (unsigned long)g_unknown_source_times);
@@ -1605,6 +1705,15 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
     return g_unknown_source_times != 0 ? 1 : 0;
+
+add_restore:
+    if (os2_restore_append_tail(fp, tail_off, tail_size, tail_buf,
+                                tail_bytes, original_header) != 0)
+        fprintf(stderr,
+                "boltpack: warning: could not restore archive after error; archive may be corrupt\n");
+    free(tail_buf);
+    fclose(fp);
+    return 1;
 }
 
 /* ---- cmd_extract ------------------------------------------------------ */
