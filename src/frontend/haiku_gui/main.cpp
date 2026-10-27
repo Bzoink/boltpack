@@ -83,7 +83,8 @@ enum {
     MSG_LEVEL_FAST = 'LVLF',
     MSG_LEVEL_NORM = 'LVLN',
     MSG_LEVEL_BEST = 'LVLB',
-    MSG_FLUFF_MT   = 'CFMT'
+    MSG_FLUFF_MT   = 'CFMT',
+    MSG_INTERCHANGE_PROFILE = 'IPR1'
 };
 
 /* ====================================================================== */
@@ -162,6 +163,7 @@ static const char *format_methods(const bp_uint32 *counts)
 static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1;
 static int g_fluff_multithread  = 0;
+static int g_interchange_profile = 0;
 
 static const int s_method_default_level[] = { 1, 1, 1, 2 };
 
@@ -486,6 +488,7 @@ private:
     BMenuItem      *fMethodItems[4];
     BMenuItem      *fLevelItems[3];
     BMenuItem      *fFastFluffItem;
+    BMenuItem      *fInterchangeProfileItem;
 
     BFilePanel     *fOpenPanel;
     BFilePanel     *fExtractPanel;
@@ -514,6 +517,7 @@ BPWindow::BPWindow()
     for (i = 0; i < 3; i++)
         fLevelItems[i] = NULL;
     fFastFluffItem = NULL;
+    fInterchangeProfileItem = NULL;
 
     /* Menu bar */
     fMenuBar = new BMenuBar("menubar");
@@ -566,6 +570,11 @@ BPWindow::BPWindow()
 
     compMenu->AddItem(methodMenu);
     compMenu->AddItem(levelMenu);
+    compMenu->AddSeparatorItem();
+    fInterchangeProfileItem = new BMenuItem(
+        "Interchange Profile 1 (mini-reader compatible)",
+        new BMessage(MSG_INTERCHANGE_PROFILE));
+    compMenu->AddItem(fInterchangeProfileItem);
 #ifdef BOLTPACK_FAST_FLUFF
     compMenu->AddSeparatorItem();
     fFastFluffItem = new BMenuItem("Use Multi-threaded Fluff",
@@ -779,39 +788,55 @@ void BPWindow::MessageReceived(BMessage *msg)
         case MSG_COMP_STORE:
             g_compression_method = BP_METHOD_STORED;
             g_compression_level = s_method_default_level[g_compression_method];
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
         case MSG_COMP_BOLTLITE:
             g_compression_method = BP_METHOD_BOLTLITE;
             g_compression_level = s_method_default_level[g_compression_method];
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
         case MSG_COMP_BOLTLZ:
             g_compression_method = BP_METHOD_BOLTLZ;
             g_compression_level = s_method_default_level[g_compression_method];
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
         case MSG_COMP_FLUFF:
             g_compression_method = BP_METHOD_FLUFF;
             g_compression_level = s_method_default_level[g_compression_method];
+            g_interchange_profile = 0;
+            UpdateCompressionMenu();
+            break;
+
+        case MSG_INTERCHANGE_PROFILE:
+            g_interchange_profile = g_interchange_profile ? 0 : 1;
+            if (g_interchange_profile) {
+                g_compression_method = BP_METHOD_BOLTLITE;
+                g_compression_level = s_method_default_level[g_compression_method];
+            }
             UpdateCompressionMenu();
             break;
 
         case MSG_LEVEL_FAST:
             g_compression_level = 0;
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
         case MSG_LEVEL_NORM:
             g_compression_level = 1;
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
         case MSG_LEVEL_BEST:
             g_compression_level = 2;
+            g_interchange_profile = 0;
             UpdateCompressionMenu();
             break;
 
@@ -994,6 +1019,8 @@ void BPWindow::UpdateCompressionMenu()
         fFastFluffItem->SetMarked(g_fluff_multithread != 0);
         fFastFluffItem->SetEnabled(fluffEnabled);
     }
+    if (fInterchangeProfileItem)
+        fInterchangeProfileItem->SetMarked(g_interchange_profile != 0);
 }
 
 void BPWindow::UpdateArchiveStatus()
@@ -1554,9 +1581,11 @@ void BPWindow::DoCreate(const std::vector<std::string> &paths,
     bp_archive_t ar;
     memset(&ar, 0, sizeof(ar));
 
-    int rc = bp_archive_create(&ar, &outIo,
-        level_to_block_size(g_compression_method, g_compression_level),
-        (bp_uint8)g_compression_method);
+    int rc = g_interchange_profile
+        ? bp_archive_create_profile(&ar, &outIo, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &outIo,
+            level_to_block_size(g_compression_method, g_compression_level),
+            (bp_uint8)g_compression_method);
     if (rc != BP_OK) {
         fclose(outFp);
         remove(outPath);
@@ -1566,17 +1595,21 @@ void BPWindow::DoCreate(const std::vector<std::string> &paths,
         return;
     }
     /* Fast preset selects Fast; Normal and Best select Balanced. */
-    if (g_compression_method == BP_METHOD_BOLTLZ)
-        ar.method_level = (bp_uint8)(g_compression_level == 0 ? 1 : 2);
-    else
-        ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
+    if (!g_interchange_profile) {
+        if (g_compression_method == BP_METHOD_BOLTLZ)
+            ar.method_level = (bp_uint8)(g_compression_level == 0 ? 1 : 2);
+        else
+            ar.method_level = (bp_uint8)fluff_gui_level(g_compression_level);
+    }
 
 #ifdef BOLTPACK_FAST_FLUFF
-    if (g_compression_method == BP_METHOD_FLUFF && g_fluff_multithread) {
+    if (!g_interchange_profile &&
+        g_compression_method == BP_METHOD_FLUFF && g_fluff_multithread) {
         int nthreads = fast_fluff_thread_count();
         if (nthreads > 1)
             bp_set_fast_fluff(&ar, nthreads);
-    } else if (g_compression_method == BP_METHOD_BOLTLZ) {
+    } else if (!g_interchange_profile &&
+               g_compression_method == BP_METHOD_BOLTLZ) {
         int nthreads = fast_fluff_thread_count();
         if (nthreads > 1)
             bp_set_fast_boltlz(&ar, nthreads);

@@ -2531,7 +2531,14 @@ that toggle to `bp_set_fast_fluff()`, and the `make haiku-gui` target links the
 matching OpenMP fast-fluff object so the menu item changes archive creation
 behavior rather than only UI state.
 
-Cross-compiled with `x86_64-unknown-haiku-g++`.
+The Compression menu also offers Interchange Profile 1 for archive creation.
+It selects BoltLite with 16 KiB blocks and mini-reader entry-count,
+entry-size, and serialized-size limits. Selecting a method or level disables
+the profile.
+
+The build target uses the `x86_64-unknown-haiku-gcc/g++` toolchain. It is not
+installed in this environment, so the current source changes have no Haiku
+cross-build or runtime evidence.
 
 ---
 
