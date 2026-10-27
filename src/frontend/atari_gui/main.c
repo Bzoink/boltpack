@@ -115,8 +115,9 @@ extern FILE *fdopen(int fd, const char *mode);
 #define MN_METHOD_BOLTLITE     (MENU_COMP_BOX + 4)
 #define MN_METHOD_BOLTLZ    (MENU_COMP_BOX + 5)
 #define MN_METHOD_FLUFF    (MENU_COMP_BOX + 6)
+#define MN_INTERCHANGE_PROFILE (MENU_COMP_BOX + 7)
 
-#define MENU_HELP_BOX (MENU_COMP_BOX + 7)
+#define MENU_HELP_BOX (MENU_COMP_BOX + 8)
 #define MN_HELP_ABOUT (MENU_HELP_BOX + 1)
 #define MN_DOC        (MENU_HELP_BOX + 2)
 
@@ -157,6 +158,7 @@ static FILE *archive_fp;
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
+static int current_interchange_profile;
 
 typedef struct {
     const char   *verb;
@@ -588,6 +590,9 @@ static void sync_compression_menu_checks(void)
     menu_objs[MN_METHOD_BOLTLITE].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_BOLTLZ].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_FLUFF].ob_state &= (short)~OS_CHECKED;
+    menu_objs[MN_INTERCHANGE_PROFILE].ob_state &= (short)~OS_CHECKED;
+    if (current_interchange_profile)
+        menu_objs[MN_INTERCHANGE_PROFILE].ob_state |= OS_CHECKED;
 
     switch (current_method) {
         case BP_METHOD_STORED:
@@ -619,8 +624,17 @@ static int select_compression_method(bp_uint8 method)
     }
 
     current_method = method;
+    current_interchange_profile = 0;
     sync_compression_menu_checks();
     return 1;
+}
+
+static void toggle_interchange_profile(void)
+{
+    current_interchange_profile = !current_interchange_profile;
+    if (current_interchange_profile)
+        current_method = BP_METHOD_BOLTLITE;
+    sync_compression_menu_checks();
 }
 
 static int ensure_selected_method_available(void)
@@ -985,11 +999,11 @@ static void build_menu(void)
     menu_objs[MENU_COMP_BOX].ob_type   = G_BOX;
     menu_objs[MENU_COMP_BOX].ob_next   = MENU_HELP_BOX;
     menu_objs[MENU_COMP_BOX].ob_head   = MN_CREATE;
-    menu_objs[MENU_COMP_BOX].ob_tail   = MN_METHOD_FLUFF;
+    menu_objs[MENU_COMP_BOX].ob_tail   = MN_INTERCHANGE_PROFILE;
     menu_objs[MENU_COMP_BOX].ob_x      = (short)(15 * font_w);
     menu_objs[MENU_COMP_BOX].ob_y      = 0;
-    menu_objs[MENU_COMP_BOX].ob_width  = (short)(22 * font_w);
-    menu_objs[MENU_COMP_BOX].ob_height = (short)(6 * (font_h + 2));
+    menu_objs[MENU_COMP_BOX].ob_width  = (short)(26 * font_w);
+    menu_objs[MENU_COMP_BOX].ob_height = (short)(7 * (font_h + 2));
     menu_objs[MENU_COMP_BOX].ob_spec.index = 0x00FF1100L;
 
     {
@@ -999,17 +1013,18 @@ static void build_menu(void)
             "  Stored           ",
             "  BoltLite             ",
             "  boltlz          ",
-            "  fluff            "
+            "  fluff            ",
+            "  Interchange Profile 1"
         };
         int idx;
-        for (idx = 0; idx < 6; idx++) {
+        for (idx = 0; idx < 7; idx++) {
             int obj = MN_CREATE + idx;
             menu_objs[obj].ob_type = G_STRING;
-            menu_objs[obj].ob_next = (obj < MN_METHOD_FLUFF) ? obj + 1 : MENU_COMP_BOX;
+            menu_objs[obj].ob_next = (obj < MN_INTERCHANGE_PROFILE) ? obj + 1 : MENU_COMP_BOX;
             menu_objs[obj].ob_spec.free_string = items[idx];
             menu_objs[obj].ob_x      = 0;
             menu_objs[obj].ob_y      = (short)(idx * (font_h + 2));
-            menu_objs[obj].ob_width  = (short)(22 * font_w);
+            menu_objs[obj].ob_width  = (short)(26 * font_w);
             menu_objs[obj].ob_height = font_h + 2;
             if (obj == MENU_COMP_SEP)
                 menu_objs[obj].ob_state = OS_DISABLED;
@@ -2577,14 +2592,18 @@ static void do_create_from_paths(char **paths, int path_count)
         return;
     }
 
-    start_progress_ui(&progress, "Creating archive", method_name(current_method),
+    start_progress_ui(&progress, "Creating archive",
+                      current_interchange_profile ? "Interchange 1" : method_name(current_method),
                       total_bytes, (unsigned long)gather_count);
 
     graf_mouse(BUSYBEE, NULL);
 
     outio = make_io(outfp);
     memset(&ar, 0, sizeof(ar));
-    rc = bp_archive_create(&ar, &outio, 0, current_method);
+    if (current_interchange_profile)
+        rc = bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1);
+    else
+        rc = bp_archive_create(&ar, &outio, 0, current_method);
     if (rc != BP_OK) {
         bp_archive_close(&ar);
         (void)fclose(outfp);
@@ -2719,6 +2738,10 @@ static void do_create_from_paths(char **paths, int path_count)
         atari_gui_name_index_clear(source_names);
         free(source_names);
     }
+
+    if (rc == BP_ERR_OVERFLOW && current_interchange_profile &&
+        create_error == NULL)
+        create_error = "Interchange Profile 1 size or entry limit exceeded";
 
     if (rc == BP_OK)
         rc = bp_archive_finalize(&ar);
@@ -2870,6 +2893,9 @@ static void handle_menu(short title, short item)
                 break;
             case MN_METHOD_FLUFF:
                 select_compression_method(BP_METHOD_FLUFF);
+                break;
+            case MN_INTERCHANGE_PROFILE:
+                toggle_interchange_profile();
                 break;
         }
     }

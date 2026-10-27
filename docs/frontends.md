@@ -2393,6 +2393,11 @@ read-only target.
 Created file and directory entries carry representable timestamps, native TOS
 attributes, and the portable FAT fallback, including empty directories.
 
+The Compression menu has an Interchange Profile 1 check item. Selecting it
+uses BoltLite with 16 KiB blocks and enforces the format's mini-reader entry
+count, entry-size, and serialized-size limits; selecting another codec returns
+to unrestricted full-format creation.
+
 Extraction preflights projected names and file/directory-prefix conflicts
 before creating output. The index is capped at 1,024 names and 32 KiB of keys,
 and full GEMDOS paths are limited to 125 bytes. It rejects unrepresentable or

@@ -150,7 +150,9 @@ names strictly to UTF-8, preflights 8.3 projected collisions within the same
 1,024-name/32-KiB bound, records directories including empty ones, and writes
 native plus portable FAT metadata for files and directories. Unsupported source links,
 unrepresentable names, resource forks, foreign metadata, and POSIX modes are
-reported or refused. Both GUI and CLI pass Atari cross-builds with warnings
+reported or refused. Its Compression menu includes Interchange Profile 1,
+which selects BoltLite with 16 KiB blocks and enforces mini-reader limits.
+Both GUI and CLI pass Atari cross-builds with warnings
 treated as errors. No Hatari emulator is installed for runtime round trips;
 the GUI's pathname checks retain a concurrent parent-substitution race.
 
@@ -536,8 +538,9 @@ OS/2 CLI also exposes create/add profile selection; its Watcom cross-build
 passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
-The Windows FLTK GUI also offers the profile for archive creation and network
-sending. Other full frontends have not yet exposed a user-selectable profile option.
+The Windows FLTK GUI offers the profile for archive creation and network
+sending; the Atari GEM GUI offers it for creation. Other full frontends have
+not yet exposed a user-selectable profile option.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
