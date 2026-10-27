@@ -2235,6 +2235,12 @@ static void test_mini_local_directory_names(void)
     bp_mini_archive_t mini;
     StringSrc input;
     ListState listed;
+    const char cp437_name[] = {
+        'f', 'o', 'l', 'd', 'e', 'r', '/', 'c', 'a', 'f', (char)0x82,
+        '.', 'T', 'X', 'T', '\0'
+    };
+    const char cp437_utf8_name[] = "folder/caf\xC3\xA9.TXT";
+    char projected_name[32];
     int rc;
 
     UNIT_SECTION("Mini local directory path spelling");
@@ -2263,6 +2269,18 @@ static void test_mini_local_directory_names(void)
                                      BP_OS_DOS, &source,
                                      bp_u64_from_u32(FILE1_LEN),
                                      bp_u64_from_u32(0), 0);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK)
+        rc = bp_mini_add_local_entry(&mini, cp437_name, BP_TYPE_DATA,
+                                     BP_OS_DOS, &source,
+                                     bp_u64_from_u32(FILE1_LEN),
+                                     bp_u64_from_u32(0), 0);
+    UNIT_CHECK(rc == BP_OK,
+               "mini local-entry helper accepts a CP437 filename");
+    UNIT_CHECK(bp_mini_utf8_to_local(cp437_utf8_name, projected_name,
+                                     sizeof(projected_name)) == 0 &&
+               memcmp(projected_name, cp437_name, sizeof(cp437_name)) == 0,
+               "mini destination projection round-trips CP437 filenames");
     if (rc == BP_OK) rc = bp_mini_archive_finalize(&mini);
     bp_mini_archive_close(&mini);
     UNIT_CHECK(rc == BP_OK,
@@ -2270,12 +2288,13 @@ static void test_mini_local_directory_names(void)
 
     memset(&listed, 0, sizeof(listed));
     if (rc == BP_OK) rc = bp_archive_list(&io, list_cb, &listed);
-    UNIT_CHECK(rc == BP_OK && listed.count == 3 &&
+    UNIT_CHECK(rc == BP_OK && listed.count == 4 &&
                strcmp(listed.names[0], "folder/") == 0 &&
                listed.entries[1].entry_type == BP_TYPE_META &&
                strcmp(listed.names[1], "folder/") == 0 &&
-               strcmp(listed.names[2], "folder/FILE.TXT") == 0,
-               "directory and portable metadata share the canonical slash path");
+               strcmp(listed.names[2], "folder/FILE.TXT") == 0 &&
+               strcmp(listed.names[3], cp437_utf8_name) == 0,
+               "mini local paths and metadata use canonical UTF-8 archive names");
     if (rc == BP_OK)
         UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_OK &&
                    bp_mini_archive_test(&io, NULL, NULL) == BP_OK,

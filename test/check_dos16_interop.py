@@ -39,11 +39,15 @@ def main():
         (root / "CHARSRC").mkdir()
         (root / "CHARSRC" / "Bad?.txt").write_bytes(b"invalid DOS character\n")
         (root / "CHAROUT").mkdir()
+        (root / "OEM_SRC").mkdir()
+        (root / "OEM_SRC" / "café.txt").write_bytes(b"CP437 filename\n")
         subprocess.run([str(LINUX), "c", "CASE.BLT", "CASE"], cwd=root,
                        capture_output=True, check=True)
         subprocess.run([str(LINUX), "c", "LONG.BLT", "LONGSRC"], cwd=root,
                        capture_output=True, check=True)
         subprocess.run([str(LINUX), "c", "BADCHAR.BLT", "CHARSRC"], cwd=root,
+                       capture_output=True, check=True)
+        subprocess.run([str(LINUX), "c", "--store", "OEM.BLT", "OEM_SRC"], cwd=root,
                        capture_output=True, check=True)
         env = os.environ.copy()
         env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", TZ="UTC")
@@ -61,6 +65,8 @@ def main():
             "if errorlevel 1 echo PARTIAL > LONG.BAD",
             "bpmini x BADCHAR.BLT CHAROUT > BADCHAR.TXT",
             "if errorlevel 1 echo PARTIAL > BADCHAR.BAD",
+            "bpmini t OEM.BLT > OEMTEST.TXT",
+            "if errorlevel 1 echo FAIL > OEMTEST.BAD",
             "bpmini x TEST.BLT LONGROOTX > ROOT.TXT",
             "if errorlevel 1 echo PARTIAL > ROOT.BAD",
             "set BP_TZ_OFFSET=",
@@ -87,6 +93,7 @@ def main():
         assert marked("BADCHAR.BAD"), "DOS16 accepted a DOS-invalid filename character"
         assert list((root / "CHAROUT").iterdir()) == [], \
             "invalid DOS16 name modified the destination before refusal"
+        assert not marked("OEMTEST.BAD"), (root / "OEMTEST.TXT").read_text(errors="replace")
         assert marked("ROOT.BAD"), "DOS16 accepted an output root outside the 8.3 profile"
         assert not (root / "LONGROOTX").exists(), \
             "DOS16 created an output root that needs long filename support"
