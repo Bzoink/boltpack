@@ -1312,9 +1312,13 @@ smallest mini readers. A profile-conforming archive:
 BoltLZ, Fluff, and zstd are optional extensions outside this profile. A target
 that implements only the profile MUST return `BP_ERR_UNSUPPORTED_METHOD` for
 those codecs. The mini core enforces the entry count, block size, per-entry
-size, and serialized archive-size limits. Full writers may produce larger or
-extended archives; callers must apply these limits before claiming Profile 1
-conformance. Filesystem path limits and working-memory limits are separate
+size, and serialized archive-size limits. The full writer API exposes
+`bp_archive_create_profile(..., BP_PROFILE_INTERCHANGE_1)` and
+`bp_archive_use_profile()` to apply the same limits during creation and
+append; profile append validates the existing archive before enabling the
+profile. The Linux CLI exposes this as `--interchange-profile-1` for create and
+add. Full writers without the profile selected may produce larger or extended
+archives. Filesystem path limits and working-memory limits are separate
 capabilities and must be documented by each frontend.
 
 ---

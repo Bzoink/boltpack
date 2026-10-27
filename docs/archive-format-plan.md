@@ -430,15 +430,21 @@ filename encodings, path model, timestamp range/resolution/timezone handling,
 POSIX modes, FAT flags, links, and platform metadata. Distinguish compiled,
 host-tested, emulator-tested, and hardware-tested support.
 
-The mini writer and reader now enforce the 2,147,483,647-byte serialized-size
-limit, including table and footer bytes. The writer rejects a crossing write
-and checks final table overhead before writing the table; readers reject an
-oversized declared archive before extraction. Both cores reject absolute,
-drive-prefixed, backslash, empty, `.` and `..` path components, and require
-primary directory names to end in `/`. Host fixtures cover these rules. Full
-writers do not yet expose a named profile mode that guarantees the same size
-and codec subset; that remains a Phase 5 gap. Per-frontend evidence is tracked
-in [interoperability-matrix.md](interoperability-matrix.md).
+The mini writer and reader enforce the 2,147,483,647-byte serialized-size
+limit, including table and footer bytes. The full writer now offers
+`BP_PROFILE_INTERCHANGE_1`, which selects BoltLite with 16 KiB blocks and
+checks codecs, block and per-entry sizes, physical entry count, and projected
+archive size during create, append, packed-entry commit, and archive copy.
+Profile append validates existing inline headers against the table before
+changing the archive. The Linux CLI exposes this as
+`--interchange-profile-1` for create and add. Readers reject oversized declared
+archives before extraction. Both cores reject absolute, drive-prefixed,
+backslash, empty, `.` and `..` path components, and require primary directory
+names to end in `/`. Host tests cover profile output, append, refusal of
+extended codecs, entry-size and serialized-size limits, and a mini-reader test
+of a full-writer profile archive. Other full frontends have not yet exposed a
+user-selectable profile option. Per-frontend evidence is tracked in
+[interoperability-matrix.md](interoperability-matrix.md).
 
 ### Required validation
 

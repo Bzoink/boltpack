@@ -150,6 +150,8 @@ def test_linux_help_and_long_form_cli() -> None:
           "help: hides advanced parallel-compression tuning from default page")
     check("help advanced" in help_text,
         "help: points users to advanced help")
+    check("--interchange-profile-1" in help_text,
+        "help: exposes the mini-compatible interchange profile")
 
     r = run_bp("help", "advanced")
     adv_text = (r.stdout + r.stderr).decode(errors="replace")
@@ -554,6 +556,50 @@ def test_append() -> None:
                         os.path.join(ext, "src1"), src1_digests)
 
 
+def test_interchange_profile() -> None:
+    section("Interchange Profile 1: create, append, and refusal")
+
+    with tempfile.TemporaryDirectory(prefix="bp_profile1_") as tmp:
+        make_file(os.path.join(tmp, "first.txt"), 1024, "text", 71)
+        make_file(os.path.join(tmp, "second.txt"), 2048, "text", 72)
+        make_file(os.path.join(tmp, "compressible.bin"), 65536, "ones", 73)
+
+        r = run_bp("c", "--interchange-profile-1", "profile.bolt",
+                   "first.txt", cwd=tmp)
+        check(r.returncode == 0, "profile: create exit 0")
+        r = run_bp("t", "profile.bolt", cwd=tmp)
+        check(r.returncode == 0, "profile: created archive passes integrity test")
+
+        r = run_bp("c", "--interchange-profile-1", "-0",
+                   "stored-profile.bolt", "first.txt", cwd=tmp)
+        check(r.returncode == 0, "profile: Stored codec is accepted")
+        r = run_bp("t", "stored-profile.bolt", cwd=tmp)
+        check(r.returncode == 0, "profile: Stored archive passes integrity test")
+
+        r = run_bp("a", "--interchange-profile-1", "profile.bolt",
+                   "second.txt", cwd=tmp)
+        check(r.returncode == 0, "profile: append exit 0")
+        r = run_bp("t", "profile.bolt", cwd=tmp)
+        check(r.returncode == 0, "profile: appended archive passes integrity test")
+
+        r = run_bp("c", "--interchange-profile-1", "-F", "rejected.bolt",
+                   "first.txt", cwd=tmp)
+        check(r.returncode != 0 and not os.path.exists(os.path.join(tmp, "rejected.bolt")),
+              "profile: refuses conflicting codec and creates no archive")
+
+        r = run_bp("c", "-2", "extended.bolt", "compressible.bin", cwd=tmp)
+        check(r.returncode == 0, "profile refusal fixture: extended-codec archive created")
+        extended_path = os.path.join(tmp, "extended.bolt")
+        with open(extended_path, "rb") as fh:
+            before = fh.read()
+        r = run_bp("a", "--interchange-profile-1", "extended.bolt",
+                   "second.txt", cwd=tmp)
+        with open(extended_path, "rb") as fh:
+            after = fh.read()
+        check(r.returncode != 0 and before == after,
+              "profile: refuses extended-codec append without changing archive bytes")
+
+
 def test_zstd_levels() -> None:
     section("zstd compression levels (-Z -l 1 vs -Z -l 9)")
 
@@ -818,6 +864,7 @@ def main() -> int:
         test_wrong_magic,
         test_symlink_roundtrip,
         test_append,
+        test_interchange_profile,
         test_fluff_levels,
         test_zstd_levels,
         test_fast_fluff_threaded_roundtrip,

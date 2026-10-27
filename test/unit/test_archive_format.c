@@ -92,6 +92,49 @@ static void mem_rewind(MemIO *m)
     m->pos = 0;
 }
 
+typedef struct {
+    bp_off_t pos;
+} SparseIO;
+
+static long sparse_read(void *handle, void *buf, bp_uint32 count)
+{
+    (void)handle; (void)buf; (void)count;
+    return 0;
+}
+
+static long sparse_write(void *handle, const void *buf, bp_uint32 count)
+{
+    SparseIO *s = (SparseIO *)handle;
+    (void)buf;
+    s->pos += (bp_off_t)count;
+    return (long)count;
+}
+
+static int sparse_seek(void *handle, bp_off_t offset, int origin)
+{
+    SparseIO *s = (SparseIO *)handle;
+    if (origin == 0) s->pos = offset;
+    else if (origin == 1) s->pos += offset;
+    else return -1;
+    return s->pos < 0 ? -1 : 0;
+}
+
+static bp_off_t sparse_tell(void *handle)
+{
+    return ((SparseIO *)handle)->pos;
+}
+
+static bp_io_t make_sparse_io(SparseIO *s)
+{
+    bp_io_t io;
+    io.read = sparse_read;
+    io.write = sparse_write;
+    io.seek = sparse_seek;
+    io.tell = sparse_tell;
+    io.handle = s;
+    return io;
+}
+
 /* ======================================================================== */
 /* String-backed "file" source (for adding entries from memory)              */
 /* ======================================================================== */
@@ -1500,6 +1543,187 @@ static void test_duplicate_writer_names(void)
     free(mem.buf);
 }
 
+static void test_full_interchange_profile(void)
+{
+    MemIO mem;
+    MemIO copied;
+    bp_io_t io, source;
+    bp_io_t sparse_io;
+    bp_io_t copied_io;
+    bp_archive_t ar;
+    bp_archive_t copied_ar;
+    StringSrc input;
+    SparseIO sparse;
+    ListState list;
+    bp_uint64 zero;
+    bp_uint64 too_large;
+    unsigned char *saved;
+    long saved_size;
+    bp_uint32 i;
+    bp_off_t before_extra;
+    char directory_name[16];
+    int limit_rc;
+    int finalize_rc;
+    int rc;
+
+    UNIT_SECTION("Full writer interchange profile");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+    zero = bp_u64_from_u32(0);
+
+    rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
+    UNIT_CHECK(rc == BP_OK && ar.method == BP_METHOD_BOLTLITE &&
+               ar.block_size == BP_BLOCK_16K,
+               "full profile selects BoltLite with 16 KiB blocks");
+    if (rc == BP_OK) {
+        rc = bp_archive_add_entry_ex(&ar, "folder/", BP_TYPE_DIR,
+                                     BP_OS_LINUX, NULL, zero, zero, 0);
+    }
+    source = make_string_io(&input, FILE2_DATA, FILE2_LEN);
+    if (rc == BP_OK) {
+        rc = bp_archive_add_entry_ex(&ar, "folder/data.bin", BP_TYPE_DATA,
+                                     BP_OS_LINUX, &source,
+                                     bp_u64_from_u32(FILE2_LEN), zero, 0);
+    }
+    too_large.hi = 1;
+    too_large.lo = 0;
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    if (rc == BP_OK) {
+        int size_rc;
+        size_rc = bp_archive_add_entry_ex(&ar, "oversized.bin", BP_TYPE_DATA,
+                                          BP_OS_LINUX, &source, too_large,
+                                          zero, 0);
+        UNIT_CHECK(size_rc == BP_ERR_OVERFLOW,
+                   "profile rejects entries above the 32-bit size limit before reading");
+    }
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "full profile writes a valid bounded archive");
+
+    mem_rewind(&mem);
+    memset(&list, 0, sizeof(list));
+    rc = bp_archive_list(&io, list_cb, &list);
+    UNIT_CHECK(rc == BP_OK && list.count == 2 &&
+               list.entries[1].method <= BP_METHOD_BOLTLITE &&
+               bp_read_le32(mem.buf + (size_t)list.entries[1].offset.lo +
+                            4U + list.entries[1].name_len + 22U) == BP_BLOCK_16K,
+               "full profile output uses mini-compatible entry methods and block sizes");
+    mem_rewind(&mem);
+    rc = bp_mini_archive_test(&io, NULL, NULL);
+    UNIT_CHECK(rc == BP_OK,
+               "mini reader verifies an archive emitted by the full profile writer");
+
+    copied.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!copied.buf) exit(2);
+    copied.pos = copied.size = 0; copied.cap = MEM_IO_CAP;
+    copied_io = make_mem_io(&copied);
+    rc = bp_archive_create_profile(&copied_ar, &copied_io,
+                                   BP_PROFILE_INTERCHANGE_1);
+    mem_rewind(&mem);
+    if (rc == BP_OK) rc = bp_archive_copy_from(&copied_ar, &io);
+    if (rc == BP_OK) rc = bp_archive_finalize(&copied_ar);
+    bp_archive_close(&copied_ar);
+    mem_rewind(&copied);
+    if (rc == BP_OK) rc = bp_mini_archive_test(&copied_io, NULL, NULL);
+    UNIT_CHECK(rc == BP_OK,
+               "profile copy preserves mini compatibility and validates source entries");
+    free(copied.buf);
+
+    rc = bp_archive_open_append(&ar, &io, BP_BLOCK_64K, BP_METHOD_BOLTLZ);
+    if (rc == BP_OK) rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+    if (rc == BP_OK) {
+        source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+        rc = bp_archive_add_entry_ex(&ar, "added.txt", BP_TYPE_DATA,
+                                     BP_OS_LINUX, &source,
+                                     bp_u64_from_u32(FILE1_LEN), zero, 0);
+    }
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "profile mode validates and preserves a conforming archive during append");
+
+    mem_rewind(&mem);
+    rc = bp_archive_test(&io, NULL, NULL);
+    UNIT_CHECK(rc == BP_OK, "profile archive remains readable after append");
+
+    mem.pos = mem.size = 0;
+    rc = create_test_archive(&mem, BP_METHOD_BOLTLZ);
+    saved_size = mem.size;
+    saved = (unsigned char *)malloc((size_t)saved_size);
+    if (!saved) exit(2);
+    memcpy(saved, mem.buf, (size_t)saved_size);
+    mem_rewind(&mem);
+    rc = bp_archive_open_append(&ar, &io, BP_BLOCK_16K, BP_METHOD_BOLTLITE);
+    if (rc == BP_OK) rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+    UNIT_CHECK(rc == BP_ERR_UNSUPPORTED_METHOD,
+               "profile append refuses an existing archive with an extended codec");
+    if (rc != BP_ERR_UNSUPPORTED_METHOD) bp_archive_close(&ar);
+    UNIT_CHECK(mem.size == saved_size &&
+               memcmp(mem.buf, saved, (size_t)saved_size) == 0,
+               "refused profile append leaves the archive bytes unchanged");
+    free(saved);
+
+    sparse.pos = 0;
+    sparse_io = make_sparse_io(&sparse);
+    rc = bp_archive_create_profile(&ar, &sparse_io,
+                                   BP_PROFILE_INTERCHANGE_1);
+    sparse.pos = (bp_off_t)BP_PROFILE1_MAX_ARCHIVE - 10;
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW,
+               "profile finalizer includes file-table and footer overhead in the size cap");
+    bp_archive_close(&ar);
+
+    sparse.pos = 0;
+    rc = bp_archive_create_profile(&ar, &sparse_io,
+                                   BP_PROFILE_INTERCHANGE_1);
+    sparse.pos = (bp_off_t)BP_PROFILE1_MAX_ARCHIVE - 40;
+    if (rc == BP_OK) {
+        rc = bp_archive_add_entry_ex(&ar, "d/", BP_TYPE_DIR, BP_OS_LINUX,
+                                     NULL, zero, zero, 0);
+    }
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW &&
+               sparse.pos == (bp_off_t)BP_PROFILE1_MAX_ARCHIVE - 40,
+               "profile writer rejects an entry whose serialized record crosses the size cap");
+    bp_archive_close(&ar);
+
+    sparse.pos = 0;
+    rc = bp_archive_create_profile(&ar, &sparse_io,
+                                   BP_PROFILE_INTERCHANGE_1);
+    sparse.pos = (bp_off_t)BP_PROFILE1_MAX_ARCHIVE - 130;
+    source = make_string_io(&input, FILE1_DATA, 1);
+    if (rc == BP_OK) {
+        rc = bp_archive_add_entry_ex(&ar, "x", BP_TYPE_DATA, BP_OS_LINUX,
+                                     &source, bp_u64_from_u32(1), zero, 0);
+    }
+    UNIT_CHECK(rc == BP_ERR_OVERFLOW &&
+               sparse.pos == (bp_off_t)BP_PROFILE1_MAX_ARCHIVE - 130 +
+                             BP_ENTRY_FIXED + 1,
+               "profile writer refuses the block before it crosses the serialized-size cap");
+    bp_archive_close(&ar);
+
+    sparse.pos = 0;
+    rc = bp_archive_create_profile(&ar, &sparse_io,
+                                   BP_PROFILE_INTERCHANGE_1);
+    for (i = 0; rc == BP_OK && i < BP_PROFILE1_MAX_ENTRIES; i++) {
+        sprintf(directory_name, "d%05lu/", (unsigned long)i);
+        rc = bp_archive_add_entry_ex(&ar, directory_name, BP_TYPE_DIR,
+                                     BP_OS_LINUX, NULL, zero, zero, 0);
+    }
+    UNIT_CHECK(rc == BP_OK && ar.entries_written == BP_PROFILE1_MAX_ENTRIES,
+               "profile writer accepts exactly 65,535 physical entries");
+    before_extra = sparse.pos;
+    limit_rc = bp_archive_add_entry_ex(&ar, "d65535/", BP_TYPE_DIR,
+                                      BP_OS_LINUX, NULL, zero, zero, 0);
+    UNIT_CHECK(limit_rc == BP_ERR_OVERFLOW && sparse.pos == before_extra,
+               "profile writer refuses entry 65,536 before writing it");
+    finalize_rc = rc == BP_OK ? bp_archive_finalize(&ar) : rc;
+    UNIT_CHECK(finalize_rc == BP_OK,
+               "maximum-entry profile archive finalizes within serialized-size limit");
+    bp_archive_close(&ar);
+    free(mem.buf);
+}
+
 int main(void)
 {
     int rc;
@@ -1524,6 +1748,7 @@ int main(void)
     test_portable_metadata();
     test_portable_metadata_archive();
     test_duplicate_writer_names();
+    test_full_interchange_profile();
 
     UNIT_SECTION("Archive format: Stored method");
     test_list_method("list (Stored)", BP_METHOD_STORED);

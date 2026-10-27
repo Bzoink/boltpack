@@ -45,6 +45,8 @@
 #define FAST_BOLTLZ_MAX_BATCH 64
 #endif /* BOLTPACK_FAST_FLUFF */
 
+static int read_entry_header(bp_io_t *io, bp_entry_t *entry);
+
 /* ---- helpers ----------------------------------------------------------- */
 
 static int io_write(bp_io_t *io, const void *buf, bp_uint32 count)
@@ -534,13 +536,136 @@ static int entry_list_grow(bp_archive_t *ar)
     return BP_OK;
 }
 
+static int profile_check_entry_values(bp_uint8 profile, bp_uint8 method,
+                                      bp_uint32 block_size,
+                                      bp_uint8 entry_type,
+                                      bp_uint64 original_size)
+{
+    if (profile == BP_PROFILE_NONE) return BP_OK;
+    if (profile != BP_PROFILE_INTERCHANGE_1) return BP_ERR_INVALID_ARG;
+    if (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLITE)
+        return BP_ERR_UNSUPPORTED_METHOD;
+    if (original_size.hi != 0) return BP_ERR_OVERFLOW;
+    if (entry_type == BP_TYPE_SYMLINK) {
+        if (original_size.lo > BP_PROFILE1_MAX_BLOCK) return BP_ERR_OVERFLOW;
+        return BP_OK;
+    }
+    if (entry_type == BP_TYPE_DIR)
+        return original_size.lo == 0 ? BP_OK : BP_ERR_CORRUPT;
+    if (original_size.lo == 0) return BP_OK;
+    if (block_size == 0) {
+        if (original_size.lo > BP_PROFILE1_MAX_BLOCK) return BP_ERR_OVERFLOW;
+    } else if (block_size > BP_PROFILE1_MAX_BLOCK) {
+        return BP_ERR_OVERFLOW;
+    }
+    return BP_OK;
+}
+
+static int profile_validate_archive_entry(bp_io_t *io,
+                                          const bp_entry_t *entry)
+{
+    bp_off_t saved_pos;
+    bp_entry_t header;
+    int rc;
+
+    if (io == NULL || entry == NULL) return BP_ERR_INVALID_ARG;
+    saved_pos = io_tell(io);
+    if (saved_pos < 0) return BP_ERR_IO;
+    rc = io_seek(io, bp_u64_to_off(entry->offset), 0);
+    if (rc != 0) return BP_ERR_IO;
+    rc = read_entry_header(io, &header);
+    if (rc == BP_OK) {
+        rc = profile_check_entry_values(BP_PROFILE_INTERCHANGE_1,
+                                        header.method, header.block_size,
+                                        header.entry_type,
+                                        header.original_size);
+        free(header.name);
+    }
+    if (io_seek(io, saved_pos, 0) != 0) return BP_ERR_IO;
+    return rc;
+}
+
+/* Check the final serialized size before a table is emitted.  `end_pos` is
+ * the position after all entry payloads; pending_name_len is nonzero when a
+ * just-written entry has not yet been added to ar->entry_list. */
+static int profile_check_projected_size(const bp_archive_t *ar,
+                                        bp_uint64 end_pos,
+                                        bp_uint16 pending_name_len)
+{
+    bp_uint64 total;
+    bp_uint64 next;
+    bp_uint32 count;
+
+    if (ar == NULL || ar->profile == BP_PROFILE_NONE) return BP_OK;
+    if (ar->profile != BP_PROFILE_INTERCHANGE_1) return BP_ERR_INVALID_ARG;
+
+    count = ar->entries_written;
+    if (pending_name_len != 0) {
+        if (count == 0xFFFFFFFFUL) return BP_ERR_OVERFLOW;
+        count++;
+    }
+    if (count > BP_PROFILE1_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+
+    total = bp_u64_add(end_pos,
+                       bp_u64_from_u32(BP_TABLE_HDR_V3 + BP_FOOTER_SIZE));
+    if (bp_u64_cmp(total, end_pos) < 0) return BP_ERR_OVERFLOW;
+    next = bp_u64_add(total, ar->profile_table_bytes);
+    if (bp_u64_cmp(next, total) < 0) return BP_ERR_OVERFLOW;
+    total = next;
+    if (pending_name_len != 0) {
+        bp_uint32 rec_size;
+        rec_size = 2U + (bp_uint32)pending_name_len + BP_TABLE_REC_TAIL_V6;
+        next = bp_u64_add(total, bp_u64_from_u32(rec_size));
+        if (bp_u64_cmp(next, total) < 0) return BP_ERR_OVERFLOW;
+        total = next;
+    }
+    if (total.hi != 0 || total.lo > BP_PROFILE1_MAX_ARCHIVE)
+        return BP_ERR_OVERFLOW;
+    return BP_OK;
+}
+
+static int profile_check_pending_write(bp_archive_t *ar, bp_io_t *dst_io,
+                                      bp_uint32 bytes,
+                                      bp_uint16 pending_name_len,
+                                      int record_entry)
+{
+    bp_off_t pos;
+    bp_uint64 end_pos;
+
+    if (ar == NULL || ar->profile == BP_PROFILE_NONE || !record_entry)
+        return BP_OK;
+    pos = io_tell(dst_io);
+    if (pos < 0) return BP_ERR_IO;
+    end_pos = bp_u64_add(bp_off_to_u64(pos), bp_u64_from_u32(bytes));
+    if (bp_u64_cmp(end_pos, bp_off_to_u64(pos)) < 0)
+        return BP_ERR_OVERFLOW;
+    return profile_check_projected_size(ar, end_pos, pending_name_len);
+}
+
 static int record_packed_entry(bp_archive_t *ar, bp_off_t entry_offset,
                                const bp_packed_entry_t *packed)
 {
     bp_entry_t *ent;
+    bp_off_t end_pos;
+    int rc;
 
     if (ar == NULL || packed == NULL || packed->name == NULL) {
         return BP_ERR_INVALID_ARG;
+    }
+
+    if (ar->profile != BP_PROFILE_NONE) {
+        rc = profile_check_entry_values(ar->profile, packed->method,
+                                        packed->block_size,
+                                        packed->entry_type,
+                                        packed->original_size);
+        if (rc != BP_OK) return rc;
+        if (ar->entries_written >= BP_PROFILE1_MAX_ENTRIES)
+            return BP_ERR_OVERFLOW;
+        end_pos = io_tell(ar->io);
+        if (end_pos < 0) return BP_ERR_IO;
+        rc = profile_check_projected_size(ar, bp_off_to_u64(end_pos),
+                                          packed->name_len);
+        if (rc != BP_OK) return rc;
     }
 
     ent = &ar->entry_list[ar->entries_written];
@@ -566,6 +691,13 @@ static int record_packed_entry(bp_archive_t *ar, bp_off_t entry_offset,
     ent->offset = bp_off_to_u64(entry_offset);
 
     ar->entries_written++;
+    if (ar->profile != BP_PROFILE_NONE) {
+        bp_uint32 rec_size;
+        rec_size = 2U + (bp_uint32)packed->name_len +
+                   BP_TABLE_REC_TAIL_V6;
+        ar->profile_table_bytes = bp_u64_add(ar->profile_table_bytes,
+                                             bp_u64_from_u32(rec_size));
+    }
     ar->archive_orig_total = bp_u64_add(ar->archive_orig_total,
                                         packed->original_size);
     ar->archive_comp_total = bp_u64_add(ar->archive_comp_total,
@@ -627,7 +759,18 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
         (!(flags & BP_ENTRY_FLAG_MTIME_VALID) && !bp_u64_is_zero(mtime)))
         return BP_ERR_INVALID_ARG;
 
+    if (ar->profile != BP_PROFILE_NONE) {
+        rc = profile_check_entry_values(ar->profile, ar->method,
+                                        ar->block_size, entry_type, file_size);
+        if (rc != BP_OK) return rc;
+        if (ar->entries_written >= BP_PROFILE1_MAX_ENTRIES)
+            return BP_ERR_OVERFLOW;
+    }
+
     hdr_size = (bp_uint16)(BP_ENTRY_FIXED + name_len);
+    rc = profile_check_pending_write(ar, dst_io, hdr_size,
+                                    name_len, record_entry);
+    if (rc != BP_OK) return rc;
 
     entry_offset = 0;
     if (record_entry) {
@@ -709,6 +852,10 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
             }
             adler = bp_checksum_typed(ck_type, adler, in_buf, symlink_size);
             total_comp = bp_u64_from_u32(symlink_size);
+
+            rc = profile_check_pending_write(ar, dst_io, symlink_size,
+                                             name_len, record_entry);
+            if (rc != BP_OK) { free(in_buf); return rc; }
 
             rc = write_buf(dst_io, in_buf, symlink_size);
             free(in_buf);
@@ -1141,6 +1288,11 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                     any_compressed_block = 1;
                 }
 
+                rc = profile_check_pending_write(
+                    ar, dst_io, BP_BLOCK_HDR_V3 + comp_len,
+                    name_len, record_entry);
+                if (rc != BP_OK) goto seq_done;
+
                 /* write block header (v3: 12 bytes, includes CRC of compressed data) */
                 bp_write_le32(blk_hdr + 0, comp_len);
                 bp_write_le32(blk_hdr + 4, chunk);
@@ -1391,6 +1543,8 @@ int bp_archive_finalize(bp_archive_t *ar)
 
     table_start = io_tell(ar->io);
     if (table_start < 0) return BP_ERR_IO;
+    rc = profile_check_projected_size(ar, bp_off_to_u64(table_start), 0);
+    if (rc != BP_OK) return rc;
 
     /* -- write file table (v3) ------------------------------------------- */
 
@@ -1943,6 +2097,7 @@ int bp_archive_open_append(bp_archive_t *ar, bp_io_t *io,
 
     memset(ar, 0, sizeof(*ar));
     ar->io = io;
+    ar->append_mode = 1;
     ar->block_size = block_size ? block_size : BP_BLOCK_DEFAULT;
     ar->method = method;
     ar->method_level = 0;
@@ -2020,6 +2175,79 @@ int bp_archive_open_append(bp_archive_t *ar, bp_io_t *io,
     if (rc != 0) { bp_archive_close(ar); return BP_ERR_IO; }
 
     return BP_OK;
+}
+
+int bp_archive_use_profile(bp_archive_t *ar, bp_uint8 profile)
+{
+    bp_off_t saved_pos;
+    bp_uint32 i;
+    int rc;
+
+    if (ar == NULL || ar->io == NULL) return BP_ERR_INVALID_ARG;
+    if (profile != BP_PROFILE_INTERCHANGE_1 ||
+        ar->profile != BP_PROFILE_NONE)
+        return BP_ERR_INVALID_ARG;
+    if (ar->entries_written > BP_PROFILE1_MAX_ENTRIES)
+        return BP_ERR_OVERFLOW;
+    if (ar->entries_written != 0 && !ar->append_mode)
+        return BP_ERR_INVALID_ARG;
+
+    saved_pos = io_tell(ar->io);
+    if (saved_pos < 0) return BP_ERR_IO;
+    if (ar->append_mode) {
+        rc = verify_table_entries(ar->io, BP_FORMAT_VERSION,
+                                  ar->entries_written);
+        if (rc != BP_OK) {
+            (void)io_seek(ar->io, saved_pos, 0);
+            return rc;
+        }
+        for (i = 0; i < ar->entries_written; i++) {
+            bp_entry_t *entry = &ar->entry_list[i];
+
+            rc = profile_validate_archive_entry(ar->io, entry);
+            if (rc != BP_OK) goto profile_restore;
+        }
+    }
+
+    ar->profile_table_bytes.lo = 0;
+    ar->profile_table_bytes.hi = 0;
+    for (i = 0; i < ar->entries_written; i++) {
+        bp_uint32 rec_size;
+        rec_size = 2U + (bp_uint32)ar->entry_list[i].name_len +
+                   BP_TABLE_REC_TAIL_V6;
+        ar->profile_table_bytes = bp_u64_add(ar->profile_table_bytes,
+                                             bp_u64_from_u32(rec_size));
+    }
+    ar->profile = profile;
+    rc = profile_check_projected_size(ar, bp_off_to_u64(saved_pos), 0);
+    if (rc != BP_OK) {
+        ar->profile = BP_PROFILE_NONE;
+        ar->profile_table_bytes.lo = 0;
+        ar->profile_table_bytes.hi = 0;
+        goto profile_restore;
+    }
+    ar->method = BP_METHOD_BOLTLITE;
+    ar->method_level = 0;
+    ar->block_size = BP_BLOCK_16K;
+    if (io_seek(ar->io, saved_pos, 0) != 0) return BP_ERR_IO;
+    return BP_OK;
+
+profile_restore:
+    (void)io_seek(ar->io, saved_pos, 0);
+    return rc;
+}
+
+int bp_archive_create_profile(bp_archive_t *ar, bp_io_t *io,
+                              bp_uint8 profile)
+{
+    int rc;
+
+    if (profile != BP_PROFILE_INTERCHANGE_1) return BP_ERR_INVALID_ARG;
+    rc = bp_archive_create(ar, io, BP_BLOCK_16K, BP_METHOD_BOLTLITE);
+    if (rc != BP_OK) return rc;
+    rc = bp_archive_use_profile(ar, profile);
+    if (rc != BP_OK) bp_archive_close(ar);
+    return rc;
 }
 
 /* ---- listing ----------------------------------------------------------- */
@@ -2710,6 +2938,7 @@ int bp_archive_commit_packed_entry(bp_archive_t *ar, bp_io_t *src_io,
     bp_uint8 *copybuf;
     bp_uint32 copybuf_sz;
     bp_off_t entry_offset;
+    bp_uint64 projected_end;
     int rc;
 
     if (ar == NULL || src_io == NULL || packed == NULL || packed->name == NULL) {
@@ -2721,6 +2950,23 @@ int bp_archive_commit_packed_entry(bp_archive_t *ar, bp_io_t *src_io,
 
     entry_offset = io_tell(ar->io);
     if (entry_offset < 0) return BP_ERR_IO;
+
+    if (ar->profile != BP_PROFILE_NONE) {
+        if (ar->entries_written >= BP_PROFILE1_MAX_ENTRIES)
+            return BP_ERR_OVERFLOW;
+        rc = profile_check_entry_values(ar->profile, packed->method,
+                                        packed->block_size,
+                                        packed->entry_type,
+                                        packed->original_size);
+        if (rc != BP_OK) return rc;
+        projected_end = bp_u64_add(bp_off_to_u64(entry_offset),
+                                   packed->serialized_size);
+        if (bp_u64_cmp(projected_end, bp_off_to_u64(entry_offset)) < 0)
+            return BP_ERR_OVERFLOW;
+        rc = profile_check_projected_size(ar, projected_end,
+                                          packed->name_len);
+        if (rc != BP_OK) return rc;
+    }
 
     rc = io_seek(src_io, 0, 0);
     if (rc != 0) return BP_ERR_IO;
@@ -2780,6 +3026,14 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
     rc = verify_table_crc(src_io, src_version);
     if (rc != BP_OK) return rc;
 
+    if (ar->profile != BP_PROFILE_NONE) {
+        rc = verify_table_entries(src_io, src_version, src_count);
+        if (rc != BP_OK) return rc;
+        if (ar->entries_written > BP_PROFILE1_MAX_ENTRIES ||
+            src_count > BP_PROFILE1_MAX_ENTRIES - ar->entries_written)
+            return BP_ERR_OVERFLOW;
+    }
+
     /* --- read source file table --- */
     {
         bp_uint32 tbl_count;
@@ -2811,6 +3065,7 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
     for (i = 0; i < src_count; i++) {
         bp_entry_t *e = &table[i];
         bp_uint64 entry_total;
+        bp_uint64 projected_end;
         bp_off_t dst_offset;
         bp_entry_t *ent;
 
@@ -2818,6 +3073,19 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
          * so the entry span needs no seek-and-read dance. */
         entry_total = bp_u64_add(bp_u64_from_u32(e->header_size),
                                  e->compressed_size);
+
+        if (ar->profile != BP_PROFILE_NONE) {
+            rc = profile_validate_archive_entry(src_io, e);
+            if (rc != BP_OK) goto fail;
+            dst_offset = io_tell(ar->io);
+            if (dst_offset < 0) { rc = BP_ERR_IO; goto fail; }
+            projected_end = bp_u64_add(bp_off_to_u64(dst_offset), entry_total);
+            if (bp_u64_cmp(projected_end, bp_off_to_u64(dst_offset)) < 0) {
+                rc = BP_ERR_OVERFLOW; goto fail;
+            }
+            rc = profile_check_projected_size(ar, projected_end, e->name_len);
+            if (rc != BP_OK) goto fail;
+        }
 
         rc = io_seek(src_io, bp_u64_to_off(e->offset), 0);
         if (rc != 0) { rc = BP_ERR_IO; goto fail; }
@@ -2853,6 +3121,13 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
         ent->checksum        = e->checksum;
         ent->checksum_type   = e->checksum_type;
         ar->entries_written++;
+
+        if (ar->profile != BP_PROFILE_NONE) {
+            bp_uint32 rec_size;
+            rec_size = 2U + (bp_uint32)e->name_len + BP_TABLE_REC_TAIL_V6;
+            ar->profile_table_bytes = bp_u64_add(ar->profile_table_bytes,
+                                                 bp_u64_from_u32(rec_size));
+        }
 
         ar->archive_orig_total = bp_u64_add(ar->archive_orig_total,
                                             e->original_size);

@@ -166,6 +166,12 @@ Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion n
 | `-n`              | Dry run                                       |
 | `-q` / `-qq`      | Quiet / silent                                |
 | `--single-thread` | Force sequential compression on modern builds  |
+| `--interchange-profile-1` | Create or append using mini-reader limits: BoltLite, 16 KiB blocks, 65,535 entries, 4 GiB minus one byte per entry, and 2 GiB minus one byte total |
+
+The profile option is valid only for `create` and `add`. Append checks the
+existing archive against the profile before modifying it. It refuses codec,
+block-size, or level overrides that conflict with the selected profile. It
+uses BoltLite by default; add `-0` to select Stored.
 
 ### Advanced Help
 

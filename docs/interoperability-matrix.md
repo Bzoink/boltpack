@@ -9,7 +9,7 @@ listed as implemented remains unqualified; do not infer it from the core format.
 
 | Frontend/build | Codecs and size limits | Names and destination safety | Time and attributes | Evidence and remaining work |
 | --- | --- | --- | --- | --- |
-| Full core + Linux CLI | Stored, BoltLite, BoltLZ, Fluff, zstd when compiled; 64-bit format sizes; configurable blocks | UTF-8 canonical relative paths; exact duplicate names rejected; extraction uses directory-relative operations and sibling staging | POSIX mode and time flags; foreign metadata/resource forks are reported as partial | Host unit and integration suites; Linux path-race tests. Unicode normalization is not needed on common Linux filesystems but other destinations need their own collision rules. |
+| Full core + Linux CLI | Stored, BoltLite, BoltLZ, Fluff, zstd when compiled; 64-bit format sizes; configurable blocks. `BP_PROFILE_INTERCHANGE_1` constrains writers to BoltLite/Stored, 32 KiB maximum blocks, 4,294,967,295 bytes per entry, 65,535 physical entries, and a 2,147,483,647-byte serialized archive; Linux CLI exposes `--interchange-profile-1` | UTF-8 canonical relative paths; exact duplicate names rejected; extraction uses directory-relative operations and sibling staging | POSIX mode and time flags; foreign metadata/resource forks are reported as partial | Host unit and integration suites; Linux path-race tests. Profile API tests cover creation, append, extended-codec refusal, size limits, and mini-reader verification. Unicode normalization is not needed on common Linux filesystems but other destinations need their own collision rules. |
 | Mini core + Linux mini | Stored, BoltLite, and BoltLZ when the build supports it; 32 KiB maximum block; 65,535 physical entries; 2,147,483,647-byte serialized archive limit | Shared UTF-8 and canonical path checks; Linux output uses directory-relative operations | POSIX mode/time restoration; unsupported foreign attributes are reported | Host archive-format tests. 16-bit DOSBox suite covers mini compression, not all metadata or filesystem behavior. |
 | Full Windows CLI | Stored, BoltLite, BoltLZ, Fluff, optional zstd; full-format sizes | Strict ACP projection, case-insensitive collision checks, reserved-name and trailing-dot/space refusal; staged output | Portable FAT attributes for files/directories and native Windows attributes; deferred directory restoration | Win32/Win64 cross-builds; runtime tests still required. Reparse-point and concurrent path mutation need target verification. |
 | Native Win32 GUI | Stored, BoltLite, BoltLZ, and Fluff in the GUI build | Strict UTF-8-to-ACP conversion, Windows component checks, case-insensitive projected-name collision refusal, and path-based reparse checks; Unicode normalization and parent-swap races are not covered | Stages regular files before commit; restores known times and portable FAT flags, defers directory metadata; POSIX modes, symlinks, and resource forks report partial | Win32 and Win64 cross-builds pass. No Windows runtime or reparse-point tests are available here. |
@@ -37,8 +37,14 @@ listed as implemented remains unqualified; do not infer it from the core format.
 - The mini writer and reader enforce the serialized-size limit, including file
   table and footer overhead. Host tests exercise write overflow, finalization
   overhead, and oversized header rejection.
-- On 2026-10-27, `make CC=gcc test` passed: 175 archive-format checks and 121
-  integration checks, with all other host suites green. `make linux-gui` also
+- The full writer API and Linux CLI can opt into Interchange Profile 1. The
+  full writer checks method, block size, entry size/count, projected table and
+  footer size, and existing archive conformance before profile append. A mini
+  reader verifies a profile archive emitted by the full writer.
+- On 2026-10-27, `make CC=gcc test` passed all unit and integration suites,
+  including 191 archive-format checks and 131 CLI integration checks. The run
+  exercised profile create, append, incompatible-option refusal, and
+  byte-preserving refusal of an extended-codec archive. `make linux-gui` also
   built successfully. A Linux CLI fixture with a valid portable FAT record
   returned partial while restoring the directory's Unix mode and epoch time.
 - GUI interaction was not runtime-tested: Xvfb starts but this environment
