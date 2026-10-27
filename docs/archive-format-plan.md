@@ -184,6 +184,11 @@ existing file when close fails. Other frontends still need equivalent
 protection. QNX retains the path-based fallback: its resource-manager model
 does not make multi-component `openat` traversal race-free, as detailed in the
 [QNX `openat` reference](https://qnx.com/developers/docs/8.0/com.qnx.doc.neutrino.lib_ref/topic/o/openat.html).
+A separate z/OS gap is filename encoding: the shared POSIX frontend passes
+name bytes through unchanged, and the documented compiler command does not
+select ASCII execution mode. z/OS Unicode and cross-platform filename
+interoperability must remain unclaimed until a native build and USS round trip
+qualify a specific compiler/runtime mode and its supported filename set.
 A process
 able to rename an already opened directory outside the extraction tree is a
 separate concurrent-mutation limitation. The checked-in classic Mac 68k core
