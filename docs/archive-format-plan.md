@@ -675,9 +675,13 @@ its compression sheet, and the Haiku BeAPI GUI now offers it in the Compression
 menu. The DLL profile wrapper cross-builds, but the .NET GUI
 has no managed build or Windows runtime qualification; the Cocoa GUI has no
 macOS target build or runtime qualification. Haiku's target cross-build and
-runtime qualification remain outstanding. Classic Mac frontends still lack a
-profile option. GUI profile code and target
-qualification remain incomplete.
+runtime qualification remain outstanding. The Retro68 Classic Mac 68k GUI
+source now offers Interchange Profile 1 and its checked-in core copies match
+the shared format-6 core. Its C sources pass target syntax checks, but the
+compiler cannot link its target smoke program and Rez cannot start because the
+installed binary requires unavailable Boost 1.91 libraries. The PowerPC Mac
+OS 9 GUI still lacks profile selection. GUI target qualification and the
+remaining unimplemented frontends are tracked in the matrix.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 
