@@ -26,6 +26,7 @@ BEGIN
         MENUITEM "Archive &Information",    IDM_INFO, GRAYED
         MENUITEM SEPARATOR
         MENUITEM "Create &New...\tCtrl+N",  IDM_CREATE
+        MENUITEM "Interchange Profile 1", IDM_INTERCHANGE_PROFILE
         MENUITEM SEPARATOR
         MENUITEM "E&xit",                   IDM_EXIT
     END

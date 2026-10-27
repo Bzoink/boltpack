@@ -21,6 +21,7 @@
 #define IDM_EXIT                1005
 #define IDM_DOC                 1006
 #define IDM_ABOUT               1007
+#define IDM_INTERCHANGE_PROFILE 1010
 
 /* Dialogs */
 #define IDD_ABOUT               200
