@@ -1273,6 +1273,7 @@ macOS uses UTF-8 natively. No filename conversion is required; `bp_local_to_utf8
 | Option     | Description                                   |
 | ---------- | --------------------------------------------- |
 | `-b SIZE`  | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
+| `--interchange-profile-1` | Create/add under the mini-compatible profile (BoltLite, 16 KiB by default) |
 | `-0`       | Store only (no compression)                   |
 | `-F`       | Use Fluff compression                         |
 | `-o PATH`  | Extract to directory                          |
@@ -1290,6 +1291,7 @@ macOS CLI surface.
 | ------------------- | -------------------------------------- |
 | `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
+| `--interchange-profile-1` | Create/add using mini-compatible limits; defaults to BoltLite and 16 KiB blocks |
 | `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
 | `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
 | `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
