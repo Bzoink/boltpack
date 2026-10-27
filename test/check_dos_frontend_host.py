@@ -184,6 +184,42 @@ def main():
 
         if args.linux_boltpack is not None:
             linux_boltpack = args.linux_boltpack.resolve()
+            no_lfn_env = os.environ.copy()
+            no_lfn_env["BP_DOS_TEST_NO_LFN"] = "1"
+
+            short_source = root / "no_lfn_short_source"
+            (short_source / "src").mkdir(parents=True)
+            (short_source / "src" / "SHORT.TXT").write_bytes(b"short name")
+            result = run([str(linux_boltpack), "c", "--single-thread",
+                          "short.blt", "src"], short_source)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            short_output = "OUT"
+            result = run([str(boltpack), "x", "-o", short_output,
+                          "short.blt"], short_source, env=no_lfn_env)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            assert (short_source / short_output / "src" / "SHORT.TXT").read_bytes() == b"short name"
+
+            long_source = root / "no_lfn_long_source"
+            (long_source / "src").mkdir(parents=True)
+            (long_source / "src" / "LongerName.txt").write_bytes(b"long name")
+            (long_source / "src" / "LONGER~1.TXT").write_bytes(b"literal alias")
+            result = run([str(linux_boltpack), "c", "--single-thread",
+                          "long-and-alias.blt", "src"], long_source)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            long_output = "OUT"
+            result = run([str(boltpack), "x", "-f", "-o", long_output,
+                          "long-and-alias.blt"], long_source, env=no_lfn_env)
+            assert result.returncode != 0
+            assert b"preflight" in result.stderr.lower()
+            assert not (long_source / long_output).exists()
+
+            long_root = "LONGOUTPUT"
+            result = run([str(boltpack), "x", "-o", long_root,
+                          "short.blt"], short_source, env=no_lfn_env)
+            assert result.returncode != 0
+            assert b"preflight" in result.stderr.lower()
+            assert not (short_source / long_root).exists()
+
             unicode_source = root / "unicode_source"
             (unicode_source / "src").mkdir(parents=True)
             (unicode_source / "src" / "é.txt").write_bytes(b"lowercase")

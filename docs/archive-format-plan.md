@@ -57,6 +57,9 @@ including CP850 case aliases, hidden/system name flags, read-only file and
 directory restoration, and injected write/close failures, but does not
 validate DOS APIs. Its archive-edit fixtures also check byte-for-byte
 preservation and cleanup after write, close, and publication failures.
+The fixture also simulates a volume without long filename support: it accepts
+short-name extraction and refuses archive names or output-root components
+that require generated 8.3 aliases before creating output.
 The full DOS CLI also exposes `--interchange-profile-1` for create/add; its
 host fixture checks BoltLite and Stored 16 KiB output, profile append,
 incompatible-option refusal, and byte-preserving refusal of a nonconforming
@@ -70,8 +73,10 @@ stops before `main` with a missing-DPMI error. The separate DOS16/DOSBox
 transfer fixture passes but does not qualify DJGPP filesystem APIs or FAT
 attribute behavior.
 The full DOS CLI's path-based publication has no protection against a
-concurrent parent-directory change. Generated short-name aliases on systems
-without long filename support are not modeled by its preflight. The Windows CLI
+concurrent parent-directory change. Its preflight queries DJGPP's LFN support
+for the destination volume and requires a conservative 8.3 profile when LFN is
+unavailable; non-DJGPP builds use that profile. The host fixture covers this
+refusal behavior, while native volume-query behavior remains unqualified. The Windows CLI
 refuses case-insensitive destination collisions and common reserved or
 trailing-dot/space names; other destination mappings and Unicode normalization
 remain open. The full Atari CLI now validates the base GEMDOS 8.3 ASCII path
