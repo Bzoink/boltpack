@@ -745,6 +745,33 @@ def test_symlink_roundtrip() -> None:
         check(r.returncode == 0, "symlink: extract exit 0")
 
 
+def test_posix_timestamp_boundaries() -> None:
+    section("Format 6: POSIX timestamp boundaries")
+
+    boundaries = (2147483647, 2147483648, 4294967295)
+    with tempfile.TemporaryDirectory(prefix="bp_time_bounds_") as tmp:
+        src = os.path.join(tmp, "src")
+        ext = os.path.join(tmp, "ext")
+        os.makedirs(src)
+        os.makedirs(ext)
+        for seconds in boundaries:
+            path = os.path.join(src, f"time-{seconds}.txt")
+            with open(path, "wb") as fh:
+                fh.write(b"timestamp boundary\n")
+            os.utime(path, (seconds, seconds))
+
+        result = run_bp("c", "-0", "time-bounds.bolt", "src", cwd=tmp)
+        check(result.returncode == 0, "timestamp boundaries: create exit 0")
+        result = run_bp("t", "time-bounds.bolt", cwd=tmp)
+        check(result.returncode == 0, "timestamp boundaries: integrity test exit 0")
+        result = run_bp("x", "-o", "ext", "time-bounds.bolt", cwd=tmp)
+        check(result.returncode == 0, "timestamp boundaries: extract exit 0")
+        for seconds in boundaries:
+            path = os.path.join(ext, "src", f"time-{seconds}.txt")
+            check(int(os.stat(path).st_mtime) == seconds,
+                  f"timestamp {seconds} round-trips exactly")
+
+
 def test_append() -> None:
     section("Append: add files to existing archive")
 
@@ -1110,6 +1137,7 @@ def main() -> int:
         test_corrupt_archive,
         test_wrong_magic,
         test_symlink_roundtrip,
+        test_posix_timestamp_boundaries,
         test_append,
         test_interchange_profile,
         test_fluff_levels,
