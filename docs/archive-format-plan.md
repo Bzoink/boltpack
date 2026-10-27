@@ -685,8 +685,10 @@ source now offers Interchange Profile 1 and its checked-in core copies match
 the shared format-6 core. Its C sources pass target syntax checks, but the
 compiler cannot link its target smoke program and Rez cannot start because the
 installed binary requires unavailable Boost 1.91 libraries. The PowerPC Mac
-OS 9 GUI still lacks profile selection. GUI target qualification and the
-remaining unimplemented frontends are tracked in the matrix.
+OS 9 GUI source now offers a create-time choice for the profile; its legacy
+CodeWarrior/MPW build and Mac OS 9 runtime remain unqualified. GUI target
+qualification and the remaining unimplemented frontends are tracked in the
+matrix.
 Per-frontend evidence is tracked in
 [interoperability-matrix.md](interoperability-matrix.md).
 

@@ -275,6 +275,32 @@ resource 'DLOG' (132) {
 
 
 /* ============================================================
+ * Archive profile dialog (rDlgProfile = 133) -> DITL 134
+ * ============================================================ */
+
+resource 'DITL' (134) {
+    {
+        {  50,  20,  72, 155 }, Button     { enabled, "Default" };
+        {  50, 170,  72, 370 }, Button     { enabled, "Interchange Profile 1" };
+        {  88, 137, 108, 237 }, Button     { enabled, "Cancel" };
+        {   8,  20,  34, 370 }, StaticText { disabled,
+            "Choose the format for this archive:" }
+    }
+};
+
+resource 'DLOG' (133) {
+    { 140, 80, 260, 490 },
+    movableDBoxProc,
+    invisible,
+    noGoAway,
+    0x0,
+    134,
+    "Archive Format",
+    centerParentWindow
+};
+
+
+/* ============================================================
  * STR# resources
  * ============================================================ */
 
