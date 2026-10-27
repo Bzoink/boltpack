@@ -295,10 +295,16 @@ and all OS/2 targets preflight case-mapped collisions. The final copy can leave
 a partial file if the process stops mid-copy, and path APIs leave a race with
 concurrent parent substitution. Watcom cross-compilation and linking of the
 OS/2 executable succeeds, but neither the Atari nor OS/2 adapter has target
-runtime evidence yet. Win16,
-DOS, and Atari mini frontends use their target APIs.
-Cover GUI, DLL/.NET, and Total Commander paths, with shared helpers where
-practical.
+runtime evidence yet. Win16, DOS, and Atari mini frontends use their target
+APIs. The native Win32 GUI now uses strict UTF-8-to-ACP projection, refuses
+reserved or colliding Windows names, checks archive-controlled directory
+components for reparse points, stages regular files until checksums pass,
+restores representable times and portable FAT attributes, and defers directory
+restoration. It reports POSIX modes, symlinks, and resource forks as partial.
+Its path-based checks have a race with concurrent parent substitution, and it
+has cross-build evidence but no Windows runtime qualification. The Windows
+FLTK GUI, DLL/.NET, and Total Commander paths still need equivalent lifecycle
+review; share helpers where practical.
 
 Native attributes take precedence on their matching platform; portable
 records are fallback information for other platforms. Specify field-level
