@@ -2291,10 +2291,11 @@ $(UNIT_BUILD_DIR):
 	mkdir -p $@
 
 # ============================================================================
-# unit-test-dos16: compile mini_test_compress with Open Watcom in 16-bit mode
+# unit-test-dos16: compile mini compression and codepage tests with Open Watcom
 # ============================================================================
 #
-# This confirms the mini compress layer compiles and runs inside DOSBox.
+# This confirms the mini compression layer and CP437 conversion compile and
+# run inside DOSBox.
 # Prerequisite: Open Watcom 2.0 at /opt/watcom and DOSBox on PATH.
 #
 # Build only (no run): make unit-build-dos16
@@ -2302,6 +2303,7 @@ $(UNIT_BUILD_DIR):
 
 UNIT_DOS16_BDIR = build/unit-test-dos16
 UNIT_DOS16_EXE  = $(UNIT_DOS16_BDIR)/minitst.exe
+UNIT_DOS16_CODEPAGE_EXE = $(UNIT_DOS16_BDIR)/minicp.exe
 
 .PHONY: unit-build-dos16 unit-test-dos16
 
@@ -2323,6 +2325,14 @@ unit-build-dos16:
 	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) \
 	    -fo=$(UNIT_DOS16_BDIR)/boltlite.obj \
 	    $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) \
+	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) \
+	    -fo=$(UNIT_DOS16_BDIR)/bp_codepage.obj \
+	    $(COREDIR)/bp_codepage.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) \
+	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) -i=$(UNIT_TEST_DIR) \
+	    -fo=$(UNIT_DOS16_BDIR)/mini_codepage.obj \
+	    $(UNIT_TEST_DIR)/test_mini_codepage.c
 	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
 	    system dos \
 	    file $(UNIT_DOS16_BDIR)/minitst.obj \
@@ -2333,7 +2343,16 @@ unit-build-dos16:
 	    libpath $(WATCOM_ROOT)/lib286/dos \
 	    library clibc \
 	    name $(UNIT_DOS16_EXE)
+	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
+	    system dos \
+	    file $(UNIT_DOS16_BDIR)/mini_codepage.obj \
+	    file $(UNIT_DOS16_BDIR)/bp_codepage.obj \
+	    libpath $(WATCOM_ROOT)/lib286 \
+	    libpath $(WATCOM_ROOT)/lib286/dos \
+	    library clibc \
+	    name $(UNIT_DOS16_CODEPAGE_EXE)
 	@echo "  OK    $(UNIT_DOS16_EXE)"
+	@echo "  OK    $(UNIT_DOS16_CODEPAGE_EXE)"
 
 unit-test-dos16: unit-build-dos16
 	rm -f $(UNIT_DOS16_BDIR)/RESULT.TXT
@@ -2341,10 +2360,13 @@ unit-test-dos16: unit-build-dos16
 	    -c "mount c $(abspath $(UNIT_DOS16_BDIR))" \
 	    -c "c:" \
 	    -c "minitst.exe > result.txt" \
+	    -c "minicp.exe > codepage.txt" \
 	    -c "exit"
 	@cat $(UNIT_DOS16_BDIR)/RESULT.TXT
 	@grep -Eq '^Results: [0-9]+ passed, 0 failed' \
 	    $(UNIT_DOS16_BDIR)/RESULT.TXT
+	@grep -Fq 'mini codepage mapping and refusal checks passed' \
+	    $(UNIT_DOS16_BDIR)/CODEPAGE.TXT
 
 # Experimental BoltLZ: isolated builds, unchanged BoltLZ baseline.
 BOLTLZ_CFLAGS ?= -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
