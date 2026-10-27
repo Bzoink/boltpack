@@ -158,12 +158,18 @@ and portable-metadata transfer, timezone conversion, cleanup after a corrupt
 block, and pre-output refusal of case-only directory aliases, long names,
 invalid DOS characters, and overlong output roots; it does not qualify Win16
 or OS/2-16 runtimes. The Linux
-CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the
-shared POSIX wrapper, resolve archive-controlled directories with directory-
-relative `openat` calls and reject symlink components. Staged files and final
-commits use the same open parent handle. Deterministic tests cover the full
-Linux and Linux mini implementations' parent substitution, concurrent
-destination creation, write failure, and close failure; failed stages are
+CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
+POSIX wrapper, resolve archive-controlled directories with directory-relative
+`openat` calls and reject symlink components. The GNU Hurd wrapper now opts
+into the POSIX.1-2008 implementation explicitly;
+`make hurd-host-test` compiles that
+wrapper with Linux feature branches disabled and exercises parent substitution,
+concurrent destination creation, write failure, and close failure on the host
+libc. This is host-shim evidence, not a GNU Hurd target build or runtime test.
+Staged files and final commits use the same open parent handle. Deterministic
+tests cover the full Linux, Linux mini, and Hurd-wrapper implementations'
+parent substitution, concurrent destination creation, write failure, and close
+failure; failed stages are
 removed without publishing output, and forced replacement preserves the
 existing file when close fails. Other frontends still need equivalent
 protection. A process
@@ -775,9 +781,10 @@ of the signed 2038 boundary and the unsigned 32-bit seconds boundary.
 Archive-edit tests carry resource forks and both native and portable metadata
 through copy, append, integrity verification, and complete-group deletion
 while checking primary timestamp and mode flags. On 2026-10-27,
-`make CC=gcc test` passed with 263 archive-format and 160 CLI integration
+`make CC=gcc test` passed with 265 archive-format and 160 CLI integration
 checks, including the timestamp boundaries above and dry-run archive
-verification. It also runs `check_symlink_atomic.py`: Linux stages symlinks
+verification. It also runs the Hurd wrapper host-shim race checks and
+`check_symlink_atomic.py`: Linux stages symlinks
 beside their final paths,
 applies valid mtimes with no-follow operations, and publishes only after
 timestamp success. It verifies no-clobber behavior; failure injection confirms
