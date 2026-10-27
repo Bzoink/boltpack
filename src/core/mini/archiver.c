@@ -924,8 +924,12 @@ static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
         rc = mini_read_inline_meta(io, entry.offset, &method, &block_size,
                                    &checksum, &checksum_type, &entry);
         if (rc == BP_OK && check_capabilities && method > BP_METHOD_BOLTLZ) rc = BP_ERR_UNSUPPORTED_METHOD;
-        if (rc == BP_OK && check_capabilities && (entry.original_size.hi != 0 ||
-                            block_size > BP_MINI_MAX_BLOCK_SIZE)) rc = BP_ERR_OVERFLOW;
+        if (rc == BP_OK && check_capabilities &&
+            (entry.original_size.hi != 0 ||
+             block_size > BP_MINI_MAX_BLOCK_SIZE ||
+             (block_size == 0 &&
+              entry.original_size.lo > BP_MINI_MAX_BLOCK_SIZE)))
+            rc = BP_ERR_OVERFLOW;
         if (rc == BP_OK && entry.entry_type > BP_TYPE_DIR) rc = BP_ERR_CORRUPT;
         if (rc == BP_OK && entry.entry_type == BP_TYPE_DIR &&
             (!bp_u64_is_zero(entry.original_size) || !bp_u64_is_zero(entry.compressed_size)))
@@ -1003,7 +1007,8 @@ static int mini_bufs_ensure(mini_extract_bufs_t *b,
 }
 
 static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
-                             bp_uint64 original_size, bp_uint32 block_size,
+                             bp_uint64 original_size, bp_uint64 compressed_size,
+                             bp_uint32 block_size,
                              bp_uint8 method, bp_uint32 expected_checksum,
                              mini_extract_bufs_t *bufs, bp_uint16 version)
 {
@@ -1018,9 +1023,52 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
     bp_uint8   blk_hdr[BP_BLOCK_HDR_V3];
     int        rc;
 
-    if (bp_u64_is_zero(original_size) || block_size == 0) {
+    if (bp_u64_is_zero(original_size)) {
         return (expected_checksum == bp_mini_checksum_seed(ck_type))
                ? BP_OK : BP_ERR_CHECKSUM;
+    }
+
+    if (block_size == 0) {
+        bp_uint32 single_size, comp_size, out_len;
+        long n;
+
+        /* Format 6's zero block size is one unframed compressed blob. Keep
+         * this mini path within its documented per-block memory limit. */
+        if (original_size.hi != 0 ||
+            original_size.lo > BP_MINI_MAX_BLOCK_SIZE)
+            return BP_ERR_OVERFLOW;
+        if (compressed_size.hi != 0 || compressed_size.lo == 0)
+            return BP_ERR_CORRUPT;
+        single_size = original_size.lo;
+        comp_size = compressed_size.lo;
+        in_buf_size = single_size + single_size / 16 + 64 + 3;
+        if (comp_size > in_buf_size) return BP_ERR_CORRUPT;
+
+        rc = mini_bufs_ensure(bufs, in_buf_size, single_size);
+        if (rc != BP_OK) return rc;
+        in_buf = bufs->in_buf;
+        out_buf = bufs->out_buf;
+        n = arc_io->read(arc_io->handle, in_buf, comp_size);
+        if (n != (long)comp_size) return BP_ERR_TRUNCATED;
+
+        if (comp_size == single_size) {
+            memcpy(out_buf, in_buf, single_size);
+            out_len = single_size;
+        } else {
+            out_len = single_size;
+            rc = bp_mini_decompress_block(in_buf, comp_size, out_buf,
+                                          &out_len, method);
+            if (rc != BP_OK) return rc;
+            if (out_len != single_size) return BP_ERR_DECOMPRESS;
+        }
+
+        adler = bp_mini_checksum_typed(ck_type, adler, out_buf, single_size);
+        if (adler != expected_checksum) return BP_ERR_CHECKSUM;
+        if (out_io != NULL) {
+            n = out_io->write(out_io->handle, out_buf, single_size);
+            if (n != (long)single_size) return BP_ERR_IO;
+        }
+        return BP_OK;
     }
 
     in_buf_size = block_size + block_size / 16 + 64 + 3;
@@ -1416,7 +1464,8 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
             entry.entry_type != BP_TYPE_SYMLINK &&
             !bp_u64_is_zero(entry.original_size)) {
             rc = mini_extract_data(io, portable ? &metadata->io : out,
-                                   entry.original_size, block_size,
+                                   entry.original_size, entry.compressed_size,
+                                   block_size,
                                    method, checksum, &bufs, dummy_version);
             if (rc != BP_OK) {
                 if (out && status_fn) (void)status_fn(&entry, out, rc, user_data);
@@ -1615,7 +1664,8 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
             result = BP_ERR_OVERFLOW;
         } else {
             result = mini_extract_data(io, portable ? &metadata->io : NULL,
-                                       entry.original_size, block_size,
+                                       entry.original_size, entry.compressed_size,
+                                       block_size,
                                        method, checksum, &bufs, dummy_version);
             if (result == BP_OK && portable) {
                 result = bp_metadata_parse(metadata->data, metadata->length, &parsed);
