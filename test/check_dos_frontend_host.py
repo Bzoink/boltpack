@@ -169,7 +169,10 @@ def main():
         assert b"preflight" in result.stderr.lower()
         assert not collision_output.exists()
 
-        for index, invalid_name in enumerate(("NUL.txt", "NUL .txt", "trailing.", "trailing ")):
+        for index, invalid_name in enumerate((
+                "NUL.txt", "NUL .txt", "trailing.", "trailing ",
+                "question?.txt", "star*.txt", "pipe|.txt", 'quote".txt',
+                "colon:name.txt", "angle<.txt")):
             invalid_source = root / ("invalid_" + str(index))
             (invalid_source / "src").mkdir(parents=True)
             (invalid_source / "src" / invalid_name).write_bytes(b"invalid DOS name")
