@@ -1593,6 +1593,204 @@ done:
     return rc;
 }
 
+#define CREATE_NAME_HASH_CAP 131071U
+#define CREATE_NAME_MAX_NODES 65535U
+#define CREATE_NAME_MAX_BYTES (16U * 1024U * 1024U)
+
+typedef struct {
+    WCHAR *key;
+    unsigned long hash;
+    int kind;       /* 1 = directory, 2 = file */
+    int primary;
+} CreateNameSlot;
+
+typedef struct {
+    CreateNameSlot *slots;
+    unsigned int node_count;
+    unsigned int primary_count;
+    size_t key_bytes;
+} CreateNameIndex;
+
+static int win_gui_create_names_init(CreateNameIndex *index)
+{
+    memset(index, 0, sizeof(*index));
+    index->slots = (CreateNameSlot *)calloc(CREATE_NAME_HASH_CAP,
+                                            sizeof(CreateNameSlot));
+    return index->slots == NULL ? BP_ERR_NOMEM : BP_OK;
+}
+
+static void win_gui_create_names_free(CreateNameIndex *index)
+{
+    unsigned int i;
+    if (index->slots != NULL) {
+        for (i = 0; i < CREATE_NAME_HASH_CAP; i++)
+            free(index->slots[i].key);
+        free(index->slots);
+    }
+    memset(index, 0, sizeof(*index));
+}
+
+static unsigned long win_gui_create_name_hash(const WCHAR *key)
+{
+    unsigned long hash = 2166136261UL;
+    while (*key) {
+        hash ^= (unsigned long)(unsigned short)*key++;
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+static int win_gui_create_name_node(CreateNameIndex *index,
+                                    const WCHAR *key, size_t length,
+                                    int kind, int primary)
+{
+    unsigned long hash = win_gui_create_name_hash(key);
+    unsigned int slot = (unsigned int)(hash % CREATE_NAME_HASH_CAP);
+    size_t bytes = (length + 1) * sizeof(WCHAR);
+
+    for (;;) {
+        CreateNameSlot *node = &index->slots[slot];
+        if (node->key == NULL) {
+            if (index->node_count >= CREATE_NAME_MAX_NODES ||
+                index->key_bytes > CREATE_NAME_MAX_BYTES - bytes)
+                return BP_ERR_OVERFLOW;
+            node->key = (WCHAR *)malloc(bytes);
+            if (node->key == NULL) return BP_ERR_NOMEM;
+            memcpy(node->key, key, length * sizeof(WCHAR));
+            node->key[length] = L'\0';
+            node->hash = hash;
+            node->kind = kind;
+            node->primary = primary;
+            index->node_count++;
+            index->key_bytes += bytes;
+            return BP_OK;
+        }
+        if (node->hash == hash && wcscmp(node->key, key) == 0) {
+            if (node->kind != kind || (primary && node->primary))
+                return BP_ERR_PARTIAL;
+            if (primary) node->primary = 1;
+            return BP_OK;
+        }
+        slot++;
+        if (slot == CREATE_NAME_HASH_CAP) slot = 0;
+    }
+}
+
+static int win_gui_create_name_add(CreateNameIndex *index,
+                                   const char *local_name, int is_directory)
+{
+    WCHAR wide[MAX_PATH];
+    WCHAR prefix[MAX_PATH];
+    int wide_length;
+    size_t length, start, end, prefix_length;
+    int rc;
+
+    wide_length = MultiByteToWideChar(CP_ACP, 0, local_name, -1,
+                                     wide, MAX_PATH);
+    if (wide_length <= 1 || wide_length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    length = (size_t)wide_length - 1;
+    while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
+        length--;
+    if (length == 0) return BP_ERR_INVALID_ARG;
+    for (start = 0; start < length; start++)
+        if (wide[start] == L'/') wide[start] = L'\\';
+    CharLowerBuffW(wide, (DWORD)length);
+
+    index->primary_count++;
+    if (index->primary_count > CREATE_NAME_MAX_NODES)
+        return BP_ERR_OVERFLOW;
+
+    start = 0;
+    for (;;) {
+        int final;
+        end = start;
+        while (end < length && wide[end] != L'\\') end++;
+        if (end == start) return BP_ERR_INVALID_ARG;
+        prefix_length = end;
+        memcpy(prefix, wide, prefix_length * sizeof(WCHAR));
+        prefix[prefix_length] = L'\0';
+        final = end == length;
+        rc = win_gui_create_name_node(index, prefix, prefix_length,
+                                      final ? (is_directory ? 1 : 2) : 1,
+                                      final ? 1 : 0);
+        if (rc != BP_OK) return rc;
+        if (final) return BP_OK;
+        start = end + 1;
+    }
+}
+
+static int win_gui_preflight_create_path(CreateNameIndex *index,
+                                         const char *filepath,
+                                         const char *archive_name)
+{
+    DWORD attributes = GetFileAttributesA(filepath);
+    int is_directory;
+    int rc;
+    if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
+    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        g_create_reparse_refused = 1;
+        return BP_ERR_INVALID_ARG;
+    }
+    is_directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (is_directory) {
+        char directory_name[1024];
+        char search[MAX_PATH + 4];
+        WIN32_FIND_DATAA entry;
+        HANDLE find;
+        DWORD find_error;
+        int n = _snprintf(directory_name, sizeof(directory_name), "%s%s",
+                          archive_name,
+                          archive_name[0] != '\0' &&
+                          archive_name[strlen(archive_name) - 1] == '/' ? "" : "/");
+        if (n < 0 || (size_t)n >= sizeof(directory_name))
+            return BP_ERR_NAME_TOO_LONG;
+        rc = win_gui_create_name_add(index, directory_name, 1);
+        if (rc != BP_OK) return rc;
+        n = _snprintf(search, sizeof(search), "%s\\*", filepath);
+        if (n < 0 || (size_t)n >= sizeof(search)) return BP_ERR_NAME_TOO_LONG;
+        find = FindFirstFileA(search, &entry);
+        if (find == INVALID_HANDLE_VALUE) return BP_ERR_IO;
+        do {
+            char child_path[MAX_PATH + 260];
+            char child_name[1024];
+            if (strcmp(entry.cFileName, ".") == 0 ||
+                strcmp(entry.cFileName, "..") == 0) continue;
+            n = _snprintf(child_path, sizeof(child_path), "%s\\%s",
+                          filepath, entry.cFileName);
+            if (n < 0 || (size_t)n >= sizeof(child_path)) {
+                FindClose(find);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            n = _snprintf(child_name, sizeof(child_name), "%s%s",
+                          directory_name, entry.cFileName);
+            if (n < 0 || (size_t)n >= sizeof(child_name)) {
+                FindClose(find);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            rc = win_gui_preflight_create_path(index, child_path, child_name);
+            if (rc != BP_OK) {
+                FindClose(find);
+                return rc;
+            }
+        } while (FindNextFileA(find, &entry));
+        find_error = GetLastError();
+        FindClose(find);
+        return find_error == ERROR_NO_MORE_FILES ? BP_OK : BP_ERR_IO;
+    }
+    return win_gui_create_name_add(index, archive_name, 0);
+}
+
+static const char *win_gui_preflight_error(int rc)
+{
+    if (g_create_reparse_refused)
+        return "A source reparse point was refused instead of following its target.";
+    if (rc == BP_ERR_PARTIAL)
+        return "Selected source names collide under Windows case-insensitive naming rules.";
+    if (rc == BP_ERR_OVERFLOW)
+        return "Too many archive names or path components were selected.";
+    return bp_strerror(rc);
+}
+
 static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name)
 {
     DWORD attrs;
@@ -1691,6 +1889,8 @@ static void DoCreate(void)
     bp_io_t io;
     bp_archive_t ar;
     ArchiveTargetSnapshot target_snapshot;
+    CreateNameIndex create_names;
+    int preflight_rc;
     int publish_state;
     int rc;
 
@@ -1726,6 +1926,37 @@ static void DoCreate(void)
     if (!win_gui_archive_target_snapshot(save_buf, &target_snapshot)) {
         MessageBoxA(g_hWnd, "The selected destination must be a regular file.",
                     "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+    preflight_rc = win_gui_create_names_init(&create_names);
+    if (preflight_rc != BP_OK) {
+        MessageBoxA(g_hWnd, bp_strerror(preflight_rc), "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+    p = input_buf + strlen(input_buf) + 1;
+    preflight_rc = BP_OK;
+    if (*p == '\0') {
+        const char *base = strrchr(input_buf, '\\');
+        base = base ? base + 1 : input_buf;
+        preflight_rc = win_gui_preflight_create_path(&create_names, input_buf, base);
+    } else {
+        int n = _snprintf(dir, sizeof(dir), "%s", input_buf);
+        if (n < 0 || (size_t)n >= sizeof(dir))
+            preflight_rc = BP_ERR_NAME_TOO_LONG;
+        while (preflight_rc == BP_OK && *p) {
+            char full[MAX_PATH + 260];
+            n = _snprintf(full, sizeof(full), "%s\\%s", dir, p);
+            if (n < 0 || (size_t)n >= sizeof(full))
+                preflight_rc = BP_ERR_NAME_TOO_LONG;
+            else
+                preflight_rc = win_gui_preflight_create_path(&create_names, full, p);
+            p += strlen(p) + 1;
+        }
+    }
+    win_gui_create_names_free(&create_names);
+    if (preflight_rc != BP_OK) {
+        MessageBoxA(g_hWnd, win_gui_preflight_error(preflight_rc),
+                    "Cannot create archive", MB_OK | MB_ICONERROR);
         return;
     }
     if (win_gui_open_archive_stage(save_buf, stage_buf, sizeof(stage_buf), &fp) != BP_OK) {
@@ -2027,6 +2258,8 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         bp_io_t io;
         bp_archive_t ar;
         ArchiveTargetSnapshot target_snapshot;
+        CreateNameIndex create_names;
+        int preflight_rc;
         int publish_state;
         int rc;
 
@@ -2048,12 +2281,31 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
                         "Error", MB_OK | MB_ICONERROR);
             goto cleanup;
         }
+        g_create_reparse_refused = 0;
+        preflight_rc = win_gui_create_names_init(&create_names);
+        if (preflight_rc != BP_OK) {
+            MessageBoxA(g_hWnd, bp_strerror(preflight_rc), "Error", MB_OK | MB_ICONERROR);
+            goto cleanup;
+        }
+        for (i = 0; i < nother; i++) {
+            const char *base = strrchr(others[i], '\\');
+            if (!base) base = strrchr(others[i], '/');
+            base = base ? base + 1 : others[i];
+            preflight_rc = win_gui_preflight_create_path(&create_names,
+                                                         others[i], base);
+            if (preflight_rc != BP_OK) break;
+        }
+        win_gui_create_names_free(&create_names);
+        if (preflight_rc != BP_OK) {
+            MessageBoxA(g_hWnd, win_gui_preflight_error(preflight_rc),
+                        "Cannot create archive", MB_OK | MB_ICONERROR);
+            goto cleanup;
+        }
         if (win_gui_open_archive_stage(save_buf, stage_buf, sizeof(stage_buf), &fp) != BP_OK) {
             MessageBoxA(g_hWnd, "Cannot create a staging file beside the destination.",
                         "Error", MB_OK | MB_ICONERROR);
             goto cleanup;
         }
-        g_create_reparse_refused = 0;
         bp_io_from_file(&io, fp);
 
         memset(&ar, 0, sizeof(ar));

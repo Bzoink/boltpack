@@ -406,9 +406,12 @@ reparse points, stages regular files until checksums pass, restores
 representable times and portable FAT attributes, and defers directory
 restoration. Archive creation exposes Interchange Profile 1 and writes to a
 same-directory stage before publishing a completed archive; it refuses source
-reparse points instead of following them. It reports POSIX modes, symlinks,
-and resource forks as partial.
-Its path-based checks have a race with concurrent parent substitution, and it
+reparse points instead of following them. File-dialog and drag/drop creation
+preflight case-insensitive duplicate names and file/directory path conflicts,
+bounded at 65,535 primary entries/path nodes and 16 MiB of path keys. It reports
+POSIX modes, symlinks, and resource forks as partial. Its path-based checks
+have a race with concurrent parent substitution, and preflight does not detect
+Unicode normalization collisions or source-tree changes during creation. It
 has cross-build evidence but no Windows runtime qualification. The Windows
 FLTK GUI now uses strict UTF-8-to-ACP name and destination-root projection
 (and opens the chooser-selected archive path through UTF-16), Windows component
