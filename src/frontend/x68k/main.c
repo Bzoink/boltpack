@@ -490,6 +490,7 @@ static void usage(void)
         "Options:\n"
         "  -b SIZE   block size: 8k 16k 32k 64k 256k\n"
         "  -0        store only    -q quiet   -qq silent\n"
+        "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output path for extraction\n"
         "  -f        force overwrite    -n dry run\n",
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
@@ -614,7 +615,8 @@ static int cmd_list(const char *archive_name)
 
 /* ---- cmd_create ------------------------------------------------------- */
 
-static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
+static int cmd_create(int argc, char **argv, bp_uint32 block_size,
+                      bp_uint8 method, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     if (argc < 2) { fprintf(stderr, "boltpack: create needs archive + files\n"); return 1; }
@@ -623,8 +625,12 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     fp = fopen(argv[0], "w+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
     bp_io_from_file(&aio, fp);
-    rc = bp_archive_create(&ar, &aio, block_size, method);
+    rc = interchange_profile
+        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (interchange_profile && method == BP_METHOD_STORED)
+        ar.method = BP_METHOD_STORED;
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH];
         strcpy(buf, clean_path(argv[i]));
@@ -643,7 +649,8 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
 
 /* ---- cmd_add ---------------------------------------------------------- */
 
-static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
+static int cmd_add(int argc, char **argv, bp_uint32 block_size,
+                   bp_uint8 method, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     if (argc < 2) { fprintf(stderr, "boltpack: add needs archive + files\n"); return 1; }
@@ -654,6 +661,15 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
     bp_io_from_file(&aio, fp);
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (interchange_profile) {
+        rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); return 1;
+        }
+        if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
+    }
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH]; strcpy(buf, clean_path(argv[i])); normalise_seps(buf);
         rc = add_path(&ar, argv[i], buf);
@@ -750,6 +766,7 @@ int main(int argc, char **argv)
     bp_uint8   method     = BP_METHOD_BOLTLZ;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
+    int        interchange_profile = 0, codec_given = 0;
 
     if (argc < 3) { usage(); return 1; }
     if (strlen(argv[1]) != 1) {
@@ -762,7 +779,9 @@ int main(int argc, char **argv)
             if (++i >= argc) { fprintf(stderr, "boltpack: -b needs arg\n"); return 1; }
             block_size = parse_block_size(argv[i++]);
             if (!block_size) { fprintf(stderr, "boltpack: invalid block size\n"); return 1; }
-        } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; i++; }
+        } else if (!strcmp(argv[i], "--interchange-profile-1")) {
+            interchange_profile = 1; i++;
+        } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-qq")) { g_verbosity = VERB_SILENT; i++; }
         else if (!strcmp(argv[i], "-q"))  { g_verbosity = VERB_QUIET;  i++; }
         else if (!strcmp(argv[i], "-o")) {
@@ -773,9 +792,24 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "boltpack: unknown option: %s\n", argv[i]); usage(); return 1; }
     }
 
+    if (interchange_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_STORED &&
+             method != BP_METHOD_BOLTLITE)) {
+            fprintf(stderr,
+                    "boltpack: Interchange Profile 1 requires create/add, Stored or BoltLite, and 16 KiB blocks\n");
+            return 1;
+        }
+        block_size = BP_BLOCK_16K;
+        if (!codec_given) method = BP_METHOD_BOLTLITE;
+    }
+
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method);
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method,
+                                interchange_profile);
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method,
+                             interchange_profile);
     case 'l': if (i >= argc) { fprintf(stderr, "boltpack: list needs archive\n"); return 1; }
               return cmd_list(argv[i]);
     case 'x': if (i >= argc) { fprintf(stderr, "boltpack: extract needs archive\n"); return 1; }
