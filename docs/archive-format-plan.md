@@ -175,18 +175,18 @@ round-trip test; Win16 and OS/2-16 still need target-system testing. Other
 platform adapters remain outstanding.
 Both cores reject duplicate primary names (including trailing-slash aliases) and invalid portable metadata
 groups when reading and before finalizing a new archive. Copy, append, and
-deletion tests cover a file and its portable metadata group. Linux and Windows
-CLI in-place append now require a bounded table backup and restore it on
-finalization failure; Atari append uses a sibling stage. The Linux regression
-checks byte-for-byte restoration.
-Linux CLI deletion now writes to a unique same-directory stage, preserves the
-archive's permission bits, rechecks the original file identity, size, and
-mtime, then publishes with atomic rename without first unlinking the original.
-A forced rename failure leaves the original archive byte-for-byte intact and
-removes the stage. Ownership, ACLs, and extended attributes are not copied.
-The in-place Linux and Windows append paths still have a power-loss window
-because their rollback protects reported failures rather than interrupted
-writes.
+deletion tests cover a file and its portable metadata group. Linux CLI append
+and deletion write to unique same-directory stages and publish by atomic
+rename. Both retain owner, group, and permission bits where the caller has
+authority to set them, and abort before publication if those cannot be
+preserved. Append syncs the staged archive before publication, and checks the
+original file identity, size, and high-resolution mtime/ctime before replacing
+it. Delete also checks identity, size, and mtime before publication.
+Failure-injection tests prove that failed publication leaves the original
+archive byte-for-byte intact and removes the stage. These replacements do not
+preserve ACLs or extended attributes. Windows and OS/2 CLI append still use bounded tail
+backups and in-place updates, so process interruption or power loss can still
+damage the only archive copy. Atari append uses a sibling stage.
 Total Commander WCX append copies the original to an exclusive sibling stage,
 finalizes the updated archive there, and atomically replaces the original only
 after successful close. WCX deletion also writes an exclusive sibling stage

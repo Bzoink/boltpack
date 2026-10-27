@@ -111,34 +111,6 @@ static void sig_cleanup_handler(int sig)
     raise(sig);
 }
 
-/*
- * Globals for atomic cmd_add: if a signal arrives while the archive is
- * being appended in-place, restore the critical tail (file table + footer)
- * to leave the archive in its original state.
- * All functions used in the signal handler (lseek, write, ftruncate) are
- * async-signal-safe per POSIX.
- */
-static int            g_add_fd       = -1;   /* raw fd of the archive being appended */
-static off_t          g_add_tail_off =  0;   /* byte offset of the saved tail */
-static unsigned char *g_add_tail     = NULL; /* malloc'd tail bytes */
-static size_t         g_add_tail_sz  =  0;   /* size of tail backup */
-static unsigned char  g_add_header[BP_HEADER_SIZE];
-
-static void sig_add_restore_handler(int sig)
-{
-    if (g_add_fd >= 0 && g_add_tail != NULL && g_add_tail_sz > 0) {
-        (void)lseek(g_add_fd, g_add_tail_off, SEEK_SET);
-        (void)write(g_add_fd, g_add_tail, g_add_tail_sz);
-        (void)ftruncate(g_add_fd, g_add_tail_off + (off_t)g_add_tail_sz);
-        (void)lseek(g_add_fd, 0, SEEK_SET);
-        (void)write(g_add_fd, g_add_header, BP_HEADER_SIZE);
-    }
-    g_add_fd     = -1;
-    g_add_tail   = NULL;
-    g_add_tail_sz = 0;
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
 static int g_fast_threads = 0; /* explicit thread count for -j/--threads */
 static int g_fast_group_blocks = 0; /* 0 = codec default; >0 = grouped reset span */
 static char g_tmp_dir[4096] = ""; /* directory for fast-fluff temp files */
@@ -2844,6 +2816,19 @@ static int cmd_info(const char *archive_name)
     return 0;
 }
 
+static int preserve_archive_owner_mode(int fd,
+                                       const struct stat *original_stat)
+{
+    struct stat staged_stat;
+
+    if (fstat(fd, &staged_stat) != 0) return 0;
+    if ((staged_stat.st_uid != original_stat->st_uid ||
+         staged_stat.st_gid != original_stat->st_gid) &&
+        fchown(fd, original_stat->st_uid, original_stat->st_gid) != 0)
+        return 0;
+    return fchmod(fd, original_stat->st_mode & 07777) == 0;
+}
+
 static int cmd_delete(int argc, char **argv)
 {
     const char *archive_name;
@@ -2943,7 +2928,7 @@ static int cmd_delete(int argc, char **argv)
     }
 
     if (fflush(dst_fp) != 0 ||
-        fchmod(fileno(dst_fp), original_stat.st_mode & 0777) != 0 ||
+        !preserve_archive_owner_mode(fileno(dst_fp), &original_stat) ||
         fsync(fileno(dst_fp)) != 0) {
         fprintf(stderr, "boltpack: cannot finalize temporary archive: %s\n",
                 strerror(errno));
@@ -3001,21 +2986,67 @@ delete_cleanup:
     return result;
 }
 
+static int same_archive_file(const struct stat *left,
+                             const struct stat *right)
+{
+    if (!S_ISREG(left->st_mode) || !S_ISREG(right->st_mode) ||
+        left->st_dev != right->st_dev || left->st_ino != right->st_ino ||
+        left->st_size != right->st_size || left->st_mtime != right->st_mtime)
+        return 0;
+#if defined(__APPLE__)
+    if (left->st_mtimespec.tv_nsec != right->st_mtimespec.tv_nsec ||
+        left->st_ctimespec.tv_sec != right->st_ctimespec.tv_sec ||
+        left->st_ctimespec.tv_nsec != right->st_ctimespec.tv_nsec)
+        return 0;
+#else
+    if (left->st_mtim.tv_nsec != right->st_mtim.tv_nsec ||
+        left->st_ctim.tv_sec != right->st_ctim.tv_sec ||
+        left->st_ctim.tv_nsec != right->st_ctim.tv_nsec)
+        return 0;
+#endif
+    return 1;
+}
+
+static int copy_archive_stream(FILE *source, FILE *destination)
+{
+    unsigned char buffer[65536];
+    size_t count;
+
+    for (;;) {
+        count = fread(buffer, 1, sizeof(buffer), source);
+        if (count != 0 && fwrite(buffer, 1, count, destination) != count)
+            return 0;
+        if (count < sizeof(buffer)) {
+            if (ferror(source)) return 0;
+            break;
+        }
+    }
+    return fflush(destination) == 0;
+}
+
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                    bp_uint8 method, int level, int interchange_profile)
 {
     const char *archive_name;
     add_job_list_t list;
+    FILE *source_fp;
     FILE *fp;
     bp_io_t io;
     bp_archive_t ar;
+    struct stat original_stat;
+    struct stat opened_stat;
+    struct stat current_stat;
+    char tmp_name[4096 + 64];
+    int tmp_fd;
+    int dir_fd;
+    int n;
     int rc;
     int fin_rc;
-    bp_uint64 tail_off;
-    bp_uint64 tail_sz;
-    unsigned char *tail_buf;
-    size_t tail_bytes;
-    unsigned char original_header[BP_HEADER_SIZE];
+    int archive_open;
+    int handlers_set;
+    int result;
+    void (*old_sigint)(int);
+    void (*old_sigterm)(int);
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -3025,6 +3056,14 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     archive_name = argv[0];
     set_tmp_dir_from_archive(archive_name);
     memset(&list, 0, sizeof(list));
+    tmp_name[0] = '\0';
+    tmp_fd = -1;
+    dir_fd = -1;
+    source_fp = NULL;
+    fp = NULL;
+    archive_open = 0;
+    handlers_set = 0;
+    result = 1;
 
     rc = bp_compress_init();
     if (rc != BP_OK) {
@@ -3033,86 +3072,71 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    /*
-     * Save the critical tail (file table + footer) so we can restore the
-     * archive to its original state if the append fails or is interrupted.
-     * Refuse the append when the bounded backup cannot be made.
-     */
-    tail_buf   = NULL;
-    tail_bytes = 0;
-    {
-        FILE *qfp;
-        bp_io_t qio;
-
-        qfp = fopen(archive_name, "rb");
-        if (qfp == NULL) {
-            fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-            return 1;
-        }
-        if (fread(original_header, 1, BP_HEADER_SIZE, qfp) != BP_HEADER_SIZE) {
-            fprintf(stderr, "boltpack: cannot back up archive header\n");
-            fclose(qfp);
-            return 1;
-        }
-        bp_io_from_file(&qio, qfp);
-        rc = bp_archive_query_tail(&qio, &tail_off, &tail_sz);
-        if (rc == BP_OK && tail_sz.hi == 0 &&
-            tail_sz.lo <= 256U * 1024U * 1024U) {
-            tail_bytes = (size_t)tail_sz.lo;
-            tail_buf   = (unsigned char *)malloc(tail_bytes);
-            if (tail_buf != NULL) {
-                if (fseeko(qfp, (off_t)bp_u64_to_off(tail_off), SEEK_SET) != 0 ||
-                    fread(tail_buf, 1, tail_bytes, qfp) != tail_bytes) {
-                    free(tail_buf);
-                    tail_buf   = NULL;
-                    tail_bytes = 0;
-                }
-            }
-        }
-        fclose(qfp);
-        if (rc != BP_OK) {
-            fprintf(stderr, "boltpack: cannot read archive: %s\n",
-                    bp_strerror(rc));
-            return 1;
-        }
-        if (tail_buf == NULL) {
-            fprintf(stderr, "boltpack: cannot safely back up archive table for append\n");
-            return 1;
-        }
+    if (lstat(archive_name, &original_stat) != 0 ||
+        !S_ISREG(original_stat.st_mode)) {
+        fprintf(stderr, "boltpack: archive must be a regular, non-symlink file: %s\n",
+                archive_name);
+        goto add_cleanup;
     }
-
-    /* Open archive for in-place append. */
-    fp = fopen(archive_name, "r+b");
-    if (fp == NULL) {
-        free(tail_buf);
+    source_fp = fopen(archive_name, "rb");
+    if (source_fp == NULL) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
+        goto add_cleanup;
+    }
+    if (fstat(fileno(source_fp), &opened_stat) != 0 ||
+        !same_archive_file(&original_stat, &opened_stat)) {
+        fprintf(stderr, "boltpack: archive changed while opening: %s\n",
+                archive_name);
+        goto add_cleanup;
     }
 
-    /* Arm signal handler so Ctrl+C restores the tail. */
-    if (tail_buf != NULL) {
-        g_add_fd      = fileno(fp);
-        g_add_tail_off = (off_t)bp_u64_to_off(tail_off);
-        g_add_tail    = tail_buf;
-        g_add_tail_sz = tail_bytes;
-        memcpy(g_add_header, original_header, BP_HEADER_SIZE);
-        signal(SIGINT,  sig_add_restore_handler);
-        signal(SIGTERM, sig_add_restore_handler);
+    n = snprintf(tmp_name, sizeof(tmp_name), "%s/bpadd_XXXXXX",
+                 g_tmp_dir[0] ? g_tmp_dir : ".");
+    if (n <= 0 || (size_t)n >= sizeof(tmp_name)) {
+        fprintf(stderr, "boltpack: archive path too long\n");
+        goto add_cleanup;
+    }
+    tmp_fd = mkstemp(tmp_name);
+    if (tmp_fd < 0) {
+        fprintf(stderr, "boltpack: cannot create temporary archive: %s\n",
+                strerror(errno));
+        goto add_cleanup;
+    }
+    memcpy(g_tmp_archive, tmp_name, strlen(tmp_name) + 1);
+    fp = fdopen(tmp_fd, "w+b");
+    if (fp == NULL) {
+        fprintf(stderr, "boltpack: cannot open temporary archive stream\n");
+        goto add_cleanup;
+    }
+    tmp_fd = -1;
+    old_sigint = signal(SIGINT, sig_cleanup_handler);
+    old_sigterm = signal(SIGTERM, sig_cleanup_handler);
+    handlers_set = 1;
+
+    if (!copy_archive_stream(source_fp, fp)) {
+        fprintf(stderr, "boltpack: cannot copy source archive to staging file\n");
+        goto add_cleanup;
+    }
+    if (fstat(fileno(source_fp), &opened_stat) != 0 ||
+        !same_archive_file(&original_stat, &opened_stat)) {
+        fprintf(stderr, "boltpack: archive changed while staging append: %s\n",
+                archive_name);
+        goto add_cleanup;
     }
 
     bp_io_from_file(&io, fp);
     rc = bp_archive_open_append(&ar, &io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        goto add_fail_restore;
+        goto add_cleanup;
     }
+    archive_open = 1;
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
                     bp_strerror(rc));
-            bp_archive_close(&ar);
-            goto add_fail_restore;
+            goto add_cleanup;
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
@@ -3123,8 +3147,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error preparing input: %s\n",
                 bp_strerror(rc));
-        bp_archive_close(&ar);
-        goto add_fail_restore;
+        goto add_cleanup;
     }
 
     rc = add_job_list_with_policy(&ar, &list, method);
@@ -3132,58 +3155,88 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error adding input: %s\n",
                 bp_strerror(rc));
-        bp_archive_close(&ar);
-        goto add_fail_restore;
+        goto add_cleanup;
     }
 
     fin_rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-
+    archive_open = 0;
     if (fin_rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
-        goto add_fail_restore;
+        goto add_cleanup;
     }
 
-    /* Disarm signal handler; restore path not needed on success. */
-    if (tail_buf != NULL) {
-        signal(SIGINT,  SIG_DFL);
-        signal(SIGTERM, SIG_DFL);
-        g_add_fd      = -1;
-        g_add_tail    = NULL;
-        g_add_tail_sz = 0;
+    if (fflush(fp) != 0 ||
+        !preserve_archive_owner_mode(fileno(fp), &original_stat) ||
+        fsync(fileno(fp)) != 0) {
+        fprintf(stderr, "boltpack: cannot finalize staged archive: %s\n",
+                strerror(errno));
+        goto add_cleanup;
     }
-    free(tail_buf);
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        fp = NULL;
+        fprintf(stderr, "boltpack: cannot close staged archive: %s\n",
+                strerror(errno));
+        goto add_cleanup;
+    }
+    fp = NULL;
 
-    if (g_verbosity < VERB_SILENT) {
+    if (fstat(fileno(source_fp), &opened_stat) != 0 ||
+        lstat(archive_name, &current_stat) != 0 ||
+        !same_archive_file(&original_stat, &opened_stat) ||
+        !same_archive_file(&original_stat, &current_stat)) {
+        fprintf(stderr, "boltpack: archive changed during append: %s\n",
+                archive_name);
+        goto add_cleanup;
+    }
+    if (fclose(source_fp) != 0) {
+        source_fp = NULL;
+        fprintf(stderr, "boltpack: cannot close source archive: %s\n",
+                strerror(errno));
+        goto add_cleanup;
+    }
+    source_fp = NULL;
+
+    if (rename(tmp_name, archive_name) != 0) {
+        fprintf(stderr, "boltpack: cannot publish appended archive: %s\n",
+                strerror(errno));
+        goto add_cleanup;
+    }
+    g_tmp_archive[0] = '\0';
+    result = 0;
+
+#ifdef O_DIRECTORY
+    dir_fd = open(g_tmp_dir[0] ? g_tmp_dir : ".", O_RDONLY | O_DIRECTORY);
+#else
+    dir_fd = open(g_tmp_dir[0] ? g_tmp_dir : ".", O_RDONLY);
+#endif
+    if (dir_fd < 0 || fsync(dir_fd) != 0) {
+        fprintf(stderr,
+                "boltpack: warning: appended archive published, but directory sync failed: %s\n",
+                strerror(errno));
+    }
+    if (dir_fd >= 0) {
+        close(dir_fd);
+        dir_fd = -1;
+    }
+
+add_cleanup:
+    if (archive_open) bp_archive_close(&ar);
+    if (fp != NULL) fclose(fp);
+    if (source_fp != NULL) fclose(source_fp);
+    if (tmp_fd >= 0) close(tmp_fd);
+    if (result != 0 && g_tmp_archive[0] != '\0') cleanup_tmp_archive();
+    if (handlers_set) {
+        signal(SIGINT, old_sigint);
+        signal(SIGTERM, old_sigterm);
+    }
+    if (dir_fd >= 0) close(dir_fd);
+    free_job_list(&list);
+
+    if (result == 0 && g_verbosity < VERB_SILENT) {
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
     }
-    return 0;
-
-add_fail_restore:
-    /* Restore critical tail to leave the archive uncorrupted. */
-    if (tail_buf != NULL) {
-        signal(SIGINT,  SIG_DFL);
-        signal(SIGTERM, SIG_DFL);
-        g_add_fd      = -1;
-        g_add_tail    = NULL;
-        g_add_tail_sz = 0;
-        if (fflush(fp) != 0 ||
-            fseeko(fp, (off_t)bp_u64_to_off(tail_off), SEEK_SET) != 0 ||
-            fwrite(tail_buf, 1, tail_bytes, fp) != tail_bytes ||
-            fseeko(fp, 0, SEEK_SET) != 0 ||
-            fwrite(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
-            fflush(fp) != 0 ||
-            ftruncate(fileno(fp),
-                      (off_t)bp_u64_to_off(tail_off) + (off_t)tail_bytes) != 0) {
-            fprintf(stderr,
-                    "boltpack: warning: could not restore archive after error; "
-                    "archive may be corrupt\n");
-        }
-        free(tail_buf);
-    }
-    fclose(fp);
-    return 1;
+    return result;
 }
 
 /* ---- test fluff compression with statistics ----------------------------- */
