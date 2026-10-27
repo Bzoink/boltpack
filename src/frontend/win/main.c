@@ -169,46 +169,6 @@ static BOOL WINAPI ctrl_cleanup_handler(DWORD ctrl_type)
 }
 
 /*
- * Globals for atomic cmd_add: if Ctrl+C arrives while the archive is
- * being appended in-place, restore the critical tail via the Win32 handle
- * so the archive is left in its original state.
- * Windows console ctrl handlers run on a separate thread, so Win32 I/O
- * calls (WriteFile, SetFilePointerEx, SetEndOfFile) are safe here.
- */
-static HANDLE         g_add_handle   = INVALID_HANDLE_VALUE;
-static __int64        g_add_tail_off = 0;
-static unsigned char *g_add_tail     = NULL;
-static size_t         g_add_tail_sz  = 0;
-static unsigned char  g_add_header[BP_HEADER_SIZE];
-
-static BOOL WINAPI ctrl_add_restore_handler(DWORD ctrl_type)
-{
-    LARGE_INTEGER li;
-    DWORD written;
-
-    if ((ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_CLOSE_EVENT ||
-         ctrl_type == CTRL_BREAK_EVENT) &&
-        g_add_handle != INVALID_HANDLE_VALUE &&
-        g_add_tail != NULL && g_add_tail_sz > 0) {
-
-        li.QuadPart = g_add_tail_off;
-        SetFilePointerEx(g_add_handle, li, NULL, FILE_BEGIN);
-        WriteFile(g_add_handle, g_add_tail, (DWORD)g_add_tail_sz,
-                  &written, NULL);
-        li.QuadPart = g_add_tail_off + (__int64)g_add_tail_sz;
-        SetFilePointerEx(g_add_handle, li, NULL, FILE_BEGIN);
-        SetEndOfFile(g_add_handle);
-        li.QuadPart = 0;
-        SetFilePointerEx(g_add_handle, li, NULL, FILE_BEGIN);
-        WriteFile(g_add_handle, g_add_header, BP_HEADER_SIZE, &written, NULL);
-    }
-    g_add_handle  = INVALID_HANDLE_VALUE;
-    g_add_tail    = NULL;
-    g_add_tail_sz = 0;
-    return FALSE; /* let default handler terminate the process */
-}
-
-/*
  * Directory of the output archive, used as the fallback location for
  * temp files when %TEMP% does not have enough space.  Set by
  * set_tmp_dir_from_archive() early in cmd_create / cmd_add.
@@ -231,18 +191,161 @@ static void set_tmp_dir_from_archive(const char *archive_name)
 
     slash  = strrchr(archive_name, '/');
     bslash = strrchr(archive_name, '\\');
-    last   = (bslash > slash) ? bslash : slash;
+    last = slash;
+    if (bslash != NULL && (last == NULL || bslash > last))
+        last = bslash;
 
-    if (last != NULL && last > archive_name) {
+    if (last == archive_name) {
+        g_tmp_dir[0] = *last;
+        g_tmp_dir[1] = '\0';
+    } else if (last != NULL) {
         dlen = (size_t)(last - archive_name);
+        if (dlen == 2 && archive_name[1] == ':' &&
+            (archive_name[2] == '/' || archive_name[2] == '\\'))
+            dlen = 3;
         if (dlen < sizeof(g_tmp_dir)) {
             memcpy(g_tmp_dir, archive_name, dlen);
             g_tmp_dir[dlen] = '\0';
         }
+    } else if (archive_name[0] != '\0' && archive_name[1] == ':') {
+        g_tmp_dir[0] = archive_name[0];
+        g_tmp_dir[1] = ':';
+        g_tmp_dir[2] = '\0';
     } else {
         g_tmp_dir[0] = '.';
         g_tmp_dir[1] = '\0';
     }
+}
+
+static int win_archive_info_equal(const BY_HANDLE_FILE_INFORMATION *left,
+                                  const BY_HANDLE_FILE_INFORMATION *right)
+{
+    return left->dwVolumeSerialNumber == right->dwVolumeSerialNumber &&
+           left->nFileIndexHigh == right->nFileIndexHigh &&
+           left->nFileIndexLow == right->nFileIndexLow &&
+           left->nFileSizeHigh == right->nFileSizeHigh &&
+           left->nFileSizeLow == right->nFileSizeLow &&
+           left->ftLastWriteTime.dwHighDateTime ==
+               right->ftLastWriteTime.dwHighDateTime &&
+           left->ftLastWriteTime.dwLowDateTime ==
+               right->ftLastWriteTime.dwLowDateTime;
+}
+
+static int win_open_archive_snapshot(const char *path, HANDLE *handle_out,
+                                     BY_HANDLE_FILE_INFORMATION *info_out)
+{
+    HANDLE handle;
+
+    handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                         OPEN_EXISTING,
+                         FILE_FLAG_OPEN_REPARSE_POINT |
+                         FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    if (!GetFileInformationByHandle(handle, info_out) ||
+        (info_out->dwFileAttributes &
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        info_out->nNumberOfLinks != 1) {
+        CloseHandle(handle);
+        return 0;
+    }
+    *handle_out = handle;
+    return 1;
+}
+
+static int win_create_archive_stage(HANDLE source_handle, char *temporary,
+                                    size_t temporary_size)
+{
+    HANDLE destination_handle;
+    unsigned char buffer[65536];
+    DWORD bytes_read;
+    DWORD bytes_written;
+    DWORD offset;
+    LARGE_INTEGER zero;
+    int n;
+
+    if (!GetTempFileNameA(g_tmp_dir[0] ? g_tmp_dir : ".", "bpa", 0,
+                          temporary))
+        return 0;
+    if (strlen(temporary) >= temporary_size) {
+        DeleteFileA(temporary);
+        return 0;
+    }
+    memcpy(g_tmp_archive, temporary, strlen(temporary) + 1);
+    if (!SetConsoleCtrlHandler(ctrl_cleanup_handler, TRUE)) return 0;
+
+    if (source_handle != INVALID_HANDLE_VALUE) {
+        zero.QuadPart = 0;
+        if (!SetFilePointerEx(source_handle, zero, NULL, FILE_BEGIN)) return 0;
+        destination_handle = CreateFileA(temporary, GENERIC_WRITE,
+            FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (destination_handle == INVALID_HANDLE_VALUE) return 0;
+        for (;;) {
+            if (!ReadFile(source_handle, buffer, sizeof(buffer), &bytes_read,
+                          NULL)) {
+                CloseHandle(destination_handle);
+                return 0;
+            }
+            if (bytes_read == 0) break;
+            offset = 0;
+            while (offset < bytes_read) {
+                if (!WriteFile(destination_handle, buffer + offset,
+                               bytes_read - offset, &bytes_written, NULL) ||
+                    bytes_written == 0) {
+                    CloseHandle(destination_handle);
+                    return 0;
+                }
+                offset += bytes_written;
+            }
+        }
+        if (!FlushFileBuffers(destination_handle)) {
+            CloseHandle(destination_handle);
+            return 0;
+        }
+        if (!CloseHandle(destination_handle))
+            return 0;
+    }
+
+    n = (int)strlen(temporary);
+    return n > 0 && (size_t)n < temporary_size;
+}
+
+static int win_publish_archive_stage(const char *target, const char *temporary,
+                                     char *backup, size_t backup_size)
+{
+    size_t temporary_len;
+
+    temporary_len = strlen(temporary);
+    if (temporary_len < 4 || temporary_len + 1 > backup_size ||
+        strcmp(temporary + temporary_len - 4, ".tmp") != 0) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    memcpy(backup, temporary, temporary_len + 1);
+    memcpy(backup + temporary_len - 4, ".bak", 5);
+    if (GetFileAttributesA(backup) != INVALID_FILE_ATTRIBUTES) {
+        SetLastError(ERROR_FILE_EXISTS);
+        return 0;
+    }
+    if (!ReplaceFileA(target, temporary, backup, 0, NULL, NULL)) {
+        DWORD error = GetLastError();
+        if (GetFileAttributesA(backup) != INVALID_FILE_ATTRIBUTES) {
+            if (GetFileAttributesA(target) == INVALID_FILE_ATTRIBUTES &&
+                MoveFileExA(backup, target, MOVEFILE_WRITE_THROUGH)) {
+                /* The original is back at its path; stage cleanup is safe. */
+            } else {
+                fprintf(stderr,
+                        "boltpack: replacement recovery file kept at: %s\n",
+                        backup);
+            }
+        }
+        SetLastError(error);
+        return 0;
+    }
+    g_tmp_archive[0] = '\0';
+    if (!DeleteFileA(backup)) {
+        fprintf(stderr, "boltpack: old archive backup kept at: %s\n", backup);
+    }
+    return 1;
 }
 
 /* ---- bp_io_t adapters for FILE * --------------------------------------- */
@@ -2857,11 +2960,19 @@ static int cmd_delete(int argc, char **argv)
     const char *archive_name;
     const char **del_names;
     int del_count;
-    FILE *src_fp, *dst_fp;
+    FILE *src_fp;
+    FILE *dst_fp;
+    HANDLE source_handle;
+    HANDLE verify_handle;
+    BY_HANDLE_FILE_INFORMATION original_info;
+    BY_HANDLE_FILE_INFORMATION current_info;
     bp_io_t src_io, dst_io;
     char tmp_name[BP_MAX_PATH];
+    char backup_name[BP_MAX_PATH + 32];
     bp_uint32 deleted = 0;
+    int handlers_set = 0;
     int rc;
+    int result = 1;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: delete requires archive name and file(s)\n");
@@ -2879,18 +2990,37 @@ static int cmd_delete(int argc, char **argv)
             normalize_separators((char *)del_names[j]);
     }
 
+    source_handle = INVALID_HANDLE_VALUE;
+    verify_handle = INVALID_HANDLE_VALUE;
+    src_fp = NULL;
+    dst_fp = NULL;
+    tmp_name[0] = '\0';
+    backup_name[0] = '\0';
+
+    if (!win_open_archive_snapshot(archive_name, &source_handle,
+                                   &original_info)) {
+        fprintf(stderr,
+                "boltpack: cannot use archive target (must be a regular, non-reparse, single-link file): %s\n",
+                archive_name);
+        goto delete_cleanup_win;
+    }
     src_fp = fopen(archive_name, "rb");
     if (src_fp == NULL) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
+        goto delete_cleanup_win;
     }
 
-    snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", archive_name);
+    rc = win_create_archive_stage(INVALID_HANDLE_VALUE, tmp_name,
+                                  sizeof(tmp_name));
+    handlers_set = g_tmp_archive[0] != '\0';
+    if (!rc) {
+        fprintf(stderr, "boltpack: cannot create temporary archive\n");
+        goto delete_cleanup_win;
+    }
     dst_fp = fopen(tmp_name, "w+b");
     if (dst_fp == NULL) {
         fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
-        fclose(src_fp);
-        return 1;
+        goto delete_cleanup_win;
     }
 
     bp_io_from_file(&src_io, src_fp);
@@ -2899,31 +3029,68 @@ static int cmd_delete(int argc, char **argv)
     rc = bp_archive_delete(&src_io, &dst_io, del_names, (bp_uint32)del_count,
                            &deleted);
 
-    fclose(src_fp);
-    fclose(dst_fp);
-
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp_name);
-        return 1;
+        goto delete_cleanup_win;
     }
 
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
-        remove(tmp_name);
-        return 1;
+        goto delete_cleanup_win;
     }
 
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
-        return 1;
+    if (fflush(dst_fp) != 0 || _commit(_fileno(dst_fp)) != 0) {
+        fprintf(stderr, "boltpack: cannot flush temporary archive\n");
+        goto delete_cleanup_win;
     }
+    if (fclose(dst_fp) != 0) {
+        dst_fp = NULL;
+        fprintf(stderr, "boltpack: cannot close temporary archive\n");
+        goto delete_cleanup_win;
+    }
+    dst_fp = NULL;
 
-    if (g_verbosity < VERB_SILENT) {
+    if (!GetFileInformationByHandle(source_handle, &current_info) ||
+        !win_archive_info_equal(&original_info, &current_info) ||
+        !win_open_archive_snapshot(archive_name, &verify_handle,
+                                   &current_info) ||
+        !win_archive_info_equal(&original_info, &current_info)) {
+        fprintf(stderr, "boltpack: archive changed during delete: %s\n",
+                archive_name);
+        goto delete_cleanup_win;
+    }
+    CloseHandle(verify_handle);
+    verify_handle = INVALID_HANDLE_VALUE;
+    if (fclose(src_fp) != 0) {
+        src_fp = NULL;
+        fprintf(stderr, "boltpack: cannot close source archive\n");
+        goto delete_cleanup_win;
+    }
+    src_fp = NULL;
+    CloseHandle(source_handle);
+    source_handle = INVALID_HANDLE_VALUE;
+
+    if (!win_publish_archive_stage(archive_name, tmp_name, backup_name,
+                                   sizeof(backup_name))) {
+        fprintf(stderr, "boltpack: cannot publish deleted archive (error %lu)\n",
+                (unsigned long)GetLastError());
+        goto delete_cleanup_win;
+    }
+    result = 0;
+
+delete_cleanup_win:
+    if (dst_fp != NULL) fclose(dst_fp);
+    if (src_fp != NULL) fclose(src_fp);
+    if (verify_handle != INVALID_HANDLE_VALUE) CloseHandle(verify_handle);
+    if (source_handle != INVALID_HANDLE_VALUE) CloseHandle(source_handle);
+    if (result != 0 && g_tmp_archive[0] != '\0') cleanup_tmp_archive_win();
+    if (handlers_set) SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+
+    if (result == 0 && g_verbosity < VERB_SILENT) {
         printf("%lu entr%s deleted\n",
                (unsigned long)deleted, deleted == 1 ? "y" : "ies");
     }
-    return 0;
+    return result;
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
@@ -2934,14 +3101,17 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     FILE *fp;
     bp_io_t io;
     bp_archive_t ar;
+    HANDLE source_handle;
+    HANDLE verify_handle;
+    BY_HANDLE_FILE_INFORMATION original_info;
+    BY_HANDLE_FILE_INFORMATION current_info;
+    char tmp_name[BP_MAX_PATH];
+    char backup_name[BP_MAX_PATH + 32];
     int rc;
     int fin_rc;
-    bp_uint64 tail_off;
-    bp_uint64 tail_sz;
-    unsigned char *tail_buf;
-    size_t tail_bytes;
-    HANDLE win_handle;
-    unsigned char original_header[BP_HEADER_SIZE];
+    int archive_open;
+    int handlers_set;
+    int result;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -2951,104 +3121,58 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     archive_name = argv[0];
     set_tmp_dir_from_archive(archive_name);
     memset(&list, 0, sizeof(list));
+    source_handle = INVALID_HANDLE_VALUE;
+    verify_handle = INVALID_HANDLE_VALUE;
+    fp = NULL;
+    tmp_name[0] = '\0';
+    backup_name[0] = '\0';
+    archive_open = 0;
+    handlers_set = 0;
+    result = 1;
 
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
-        return 1;
+        goto add_cleanup_win;
     }
 
-    /*
-     * Save the critical tail (file table + footer) so we can restore the
-     * archive to its original state if the append fails or is interrupted.
-     * Refuse the append when the bounded backup cannot be made.
-     */
-    tail_buf   = NULL;
-    tail_bytes = 0;
-    {
-        FILE *qfp;
-        bp_io_t qio;
-
-        qfp = fopen(archive_name, "rb");
-        if (qfp == NULL) {
-            fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-            return 1;
-        }
-        if (fread(original_header, 1, BP_HEADER_SIZE, qfp) != BP_HEADER_SIZE) {
-            fprintf(stderr, "boltpack: cannot back up archive header\n");
-            fclose(qfp);
-            return 1;
-        }
-        bp_io_from_file(&qio, qfp);
-        rc = bp_archive_query_tail(&qio, &tail_off, &tail_sz);
-        if (rc == BP_OK && tail_sz.hi == 0 &&
-            tail_sz.lo <= 256U * 1024U * 1024U) {
-            tail_bytes = (size_t)tail_sz.lo;
-            tail_buf   = (unsigned char *)malloc(tail_bytes);
-            if (tail_buf != NULL) {
-                bp_off_t off = bp_u64_to_off(tail_off);
-                if (_fseeki64(qfp, (__int64)off, SEEK_SET) != 0 ||
-                    fread(tail_buf, 1, tail_bytes, qfp) != tail_bytes) {
-                    free(tail_buf);
-                    tail_buf   = NULL;
-                    tail_bytes = 0;
-                }
-            }
-        }
-        fclose(qfp);
-        if (rc != BP_OK) {
-            fprintf(stderr, "boltpack: cannot read archive: %s\n",
-                    bp_strerror(rc));
-            return 1;
-        }
-        if (tail_buf == NULL) {
-            fprintf(stderr, "boltpack: cannot safely back up archive table for append\n");
-            return 1;
-        }
+    if (!win_open_archive_snapshot(archive_name, &source_handle,
+                                   &original_info)) {
+        fprintf(stderr,
+                "boltpack: cannot use archive target (must be a regular, non-reparse, single-link file): %s\n",
+                archive_name);
+        goto add_cleanup_win;
     }
 
-    /* Open archive for in-place append. */
-    fp = fopen(archive_name, "r+b");
+    rc = win_create_archive_stage(source_handle, tmp_name,
+                                  sizeof(tmp_name));
+    handlers_set = g_tmp_archive[0] != '\0';
+    if (!rc) {
+        fprintf(stderr, "boltpack: cannot copy archive to a temporary stage\n");
+        goto add_cleanup_win;
+    }
+    fp = fopen(tmp_name, "r+b");
     if (fp == NULL) {
-        free(tail_buf);
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
-
-    /* Arm ctrl handler so Ctrl+C restores the tail. */
-    win_handle = INVALID_HANDLE_VALUE;
-    if (tail_buf != NULL) {
-        win_handle = (HANDLE)_get_osfhandle(_fileno(fp));
-        if (win_handle == INVALID_HANDLE_VALUE) {
-            free(tail_buf);
-            fclose(fp);
-            fprintf(stderr, "boltpack: cannot protect archive during append\n");
-            return 1;
-        } else {
-            g_add_handle  = win_handle;
-            g_add_tail_off = (__int64)bp_u64_to_off(tail_off);
-            g_add_tail    = tail_buf;
-            g_add_tail_sz = tail_bytes;
-            memcpy(g_add_header, original_header, BP_HEADER_SIZE);
-            SetConsoleCtrlHandler(ctrl_add_restore_handler, TRUE);
-        }
+        fprintf(stderr, "boltpack: cannot open temporary archive: %s\n",
+                tmp_name);
+        goto add_cleanup_win;
     }
 
     bp_io_from_file(&io, fp);
     rc = bp_archive_open_append(&ar, &io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        goto add_fail_restore_win;
+        goto add_cleanup_win;
     }
+    archive_open = 1;
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
             fprintf(stderr,
                     "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
                     bp_strerror(rc));
-            bp_archive_close(&ar);
-            goto add_fail_restore_win;
+            goto add_cleanup_win;
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
@@ -3059,8 +3183,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error preparing input: %s\n",
                 bp_strerror(rc));
-        bp_archive_close(&ar);
-        goto add_fail_restore_win;
+        goto add_cleanup_win;
     }
 
     rc = add_job_list_with_policy(&ar, &list, method);
@@ -3068,57 +3191,64 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error adding input: %s\n",
                 bp_strerror(rc));
-        bp_archive_close(&ar);
-        goto add_fail_restore_win;
+        goto add_cleanup_win;
     }
 
     fin_rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
+    archive_open = 0;
 
     if (fin_rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
-        goto add_fail_restore_win;
+        goto add_cleanup_win;
     }
 
-    /* Disarm ctrl handler. */
-    if (win_handle != INVALID_HANDLE_VALUE) {
-        SetConsoleCtrlHandler(ctrl_add_restore_handler, FALSE);
-        g_add_handle  = INVALID_HANDLE_VALUE;
-        g_add_tail    = NULL;
-        g_add_tail_sz = 0;
+    if (fflush(fp) != 0 || _commit(_fileno(fp)) != 0) {
+        fprintf(stderr, "boltpack: cannot flush staged archive\n");
+        goto add_cleanup_win;
     }
-    free(tail_buf);
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        fp = NULL;
+        fprintf(stderr, "boltpack: cannot close staged archive\n");
+        goto add_cleanup_win;
+    }
+    fp = NULL;
 
-    if (g_verbosity < VERB_SILENT) {
+    if (!GetFileInformationByHandle(source_handle, &current_info) ||
+        !win_archive_info_equal(&original_info, &current_info) ||
+        !win_open_archive_snapshot(archive_name, &verify_handle,
+                                   &current_info) ||
+        !win_archive_info_equal(&original_info, &current_info)) {
+        fprintf(stderr, "boltpack: archive changed during append: %s\n",
+                archive_name);
+        goto add_cleanup_win;
+    }
+    CloseHandle(verify_handle);
+    verify_handle = INVALID_HANDLE_VALUE;
+    CloseHandle(source_handle);
+    source_handle = INVALID_HANDLE_VALUE;
+
+    if (!win_publish_archive_stage(archive_name, tmp_name, backup_name,
+                                   sizeof(backup_name))) {
+        fprintf(stderr, "boltpack: cannot publish appended archive (error %lu)\n",
+                (unsigned long)GetLastError());
+        goto add_cleanup_win;
+    }
+    result = 0;
+
+add_cleanup_win:
+    if (archive_open) bp_archive_close(&ar);
+    if (fp != NULL) fclose(fp);
+    if (verify_handle != INVALID_HANDLE_VALUE) CloseHandle(verify_handle);
+    if (source_handle != INVALID_HANDLE_VALUE) CloseHandle(source_handle);
+    if (result != 0 && g_tmp_archive[0] != '\0') cleanup_tmp_archive_win();
+    if (handlers_set) SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+    free_job_list(&list);
+
+    if (result == 0 && g_verbosity < VERB_SILENT) {
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
     }
-    return 0;
-
-add_fail_restore_win:
-    /* Restore critical tail to leave the archive uncorrupted. */
-    if (win_handle != INVALID_HANDLE_VALUE) {
-        SetConsoleCtrlHandler(ctrl_add_restore_handler, FALSE);
-        g_add_handle  = INVALID_HANDLE_VALUE;
-        g_add_tail    = NULL;
-        g_add_tail_sz = 0;
-    }
-    if (tail_buf != NULL) {
-        if (fflush(fp) != 0 ||
-            _fseeki64(fp, (__int64)bp_u64_to_off(tail_off), SEEK_SET) != 0 ||
-            fwrite(tail_buf, 1, tail_bytes, fp) != tail_bytes ||
-            _fseeki64(fp, 0, SEEK_SET) != 0 ||
-            fwrite(original_header, 1, BP_HEADER_SIZE, fp) != BP_HEADER_SIZE ||
-            fflush(fp) != 0 ||
-            _chsize_s(_fileno(fp), (__int64)bp_u64_to_off(tail_off) + (__int64)tail_bytes) != 0) {
-            fprintf(stderr,
-                    "boltpack: warning: could not restore archive after error; "
-                    "archive may be corrupt\n");
-        }
-        free(tail_buf);
-    }
-    fclose(fp);
-    return 1;
+    return result;
 }
 
 /* ---- main -------------------------------------------------------------- */
