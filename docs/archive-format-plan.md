@@ -523,17 +523,17 @@ limit, including table and footer bytes. The full writer now offers
 checks codecs, block and per-entry sizes, physical entry count, and projected
 archive size during create, append, packed-entry commit, and archive copy.
 Profile append validates existing inline headers against the table before
-changing the archive. The Linux CLI exposes this as
-`--interchange-profile-1` for create and add. Readers reject oversized declared
-archives before extraction. Both cores reject absolute, drive-prefixed,
+changing the archive. The Linux and Windows CLIs expose this as
+`--interchange-profile-1` for create and add. The Linux FLTK GUI offers the
+profile for archive creation and network sending. Readers reject oversized
+declared archives before extraction. Both cores reject absolute, drive-prefixed,
 backslash, empty, `.` and `..` path components, and require primary directory
 names to end in `/`. Host tests cover profile output, append, refusal of
 extended codecs, entry-size and serialized-size limits, and a mini-reader test
-of a full-writer profile archive. The Linux and Windows CLIs expose the profile
-for create and add; Windows has cross-build evidence but still needs runtime
-qualification of option behavior and emitted archives. The full OS/2 CLI now
-also exposes create/add profile selection; its Watcom cross-build passes, and
-OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
+of a full-writer profile archive. Windows has cross-build evidence but still
+needs runtime qualification of option behavior and emitted archives. The full
+OS/2 CLI also exposes create/add profile selection; its Watcom cross-build
+passes, and OS/2 runtime qualification remains unavailable. The macOS CLI now exposes the
 same profile option; its strict C89 host build and create/add/test smoke pass,
 but a macOS target build and runtime profile round trip remain outstanding.
 Other full frontends have not yet exposed a user-selectable profile option.

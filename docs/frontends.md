@@ -2122,6 +2122,15 @@ as `fluff_mt`, and the standard `make linux-gui` build links the fast-fluff
 OpenMP path so the checkbox calls `bp_set_fast_fluff()` during archive
 creation instead of being a no-op.
 
+The create dialog also offers Interchange Profile 1, stored in `gui.conf` as
+`interchange_profile`. It writes BoltLite archives with 16 KiB blocks under
+the profile's entry-count, entry-size, and total-archive limits, making them
+compatible with the mini readers. Saved archives are written to a sibling
+stage and replace the selected path only after finalization, flush, and close
+succeed; an existing destination must be a regular file and remain unchanged
+while creation runs. Replacement retains its owner, group, and permission bits;
+ACLs and extended attributes are not copied to the staged file.
+
 Build dependencies: `libfltk-dev`, `libm`.
 
 ---
