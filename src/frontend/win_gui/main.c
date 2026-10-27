@@ -18,8 +18,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <utime.h>
+#include <fcntl.h>
+#include <io.h>
 
 #include "resource.h"
 
@@ -27,6 +31,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
+#include "../../core/bp_metadata.h"
 #include "../gui_common/help_text.h"
 
 /* ---- constants --------------------------------------------------------- */
@@ -86,6 +91,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:            return "operation aborted";
     case BP_ERR_NOT_FOUND:          return "entry not found";
     case BP_ERR_INVALID_ARG:        return "invalid argument";
+    case BP_ERR_PARTIAL:            return "some names or attributes were not restored";
     default:                        return "unknown error";
     }
 }
@@ -232,6 +238,24 @@ static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
     WideCharToMultiByte(CP_ACP, 0, wbuf, -1, acp, acp_size, NULL, NULL);
     acp[acp_size - 1] = '\0';
     return 1;
+}
+
+/* Extraction must not silently replace an unrepresentable character. */
+static int utf8_to_acp_strict(const char *utf8, char *acp, int acp_size)
+{
+    WCHAR wide[MAX_PATH];
+    UINT codepage = GetACP();
+    BOOL used_default = FALSE;
+    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    int wide_len, bytes;
+    if (utf8 == NULL || acp == NULL || acp_size <= 0) return -1;
+    wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                                   wide, MAX_PATH);
+    if (wide_len <= 0) return -1;
+    bytes = WideCharToMultiByte(codepage, flags, wide, wide_len, acp, acp_size,
+                                NULL, codepage == CP_UTF8 ? NULL : &used_default);
+    if (bytes <= 0 || used_default) return -1;
+    return 0;
 }
 
 /* ---- entry storage ----------------------------------------------------- */
@@ -736,60 +760,522 @@ static int progress_cb(const bp_progress_t *p, void *user_data)
 
 /* ---- extract ----------------------------------------------------------- */
 
+typedef struct win_gui_name_node_s {
+    struct win_gui_name_node_s *next;
+    WCHAR name[MAX_PATH];
+} WinGuiNameNode;
+
+typedef struct win_gui_dir_restore_s {
+    struct win_gui_dir_restore_s *next;
+    char path[MAX_PATH];
+    bp_uint64 mtime;
+    int mtime_valid;
+    bp_uint8 fat_valid;
+    bp_uint8 fat_value;
+} WinGuiDirectoryRestore;
+
+typedef struct {
+    bp_io_t io;
+    char target[MAX_PATH];
+    char temporary[MAX_PATH];
+} WinGuiStagedFile;
+
+typedef struct {
+    bp_io_t io;
+    bp_uint8 data[BP_META_MAX_SIZE];
+    unsigned length;
+} WinGuiMetadataSink;
+
 typedef struct {
     char dest_dir[MAX_PATH];
+    char last_subject_name[MAX_PATH];
+    char last_subject_path[MAX_PATH];
+    bp_uint8 last_subject_type;
+    int last_subject_valid;
+    int last_subject_ok;
     ProgressCtx *progress;
+    WinGuiNameNode *names;
+    WinGuiDirectoryRestore *directories;
+    WinGuiMetadataSink metadata;
+    int open_error;
+    unsigned int partial_count;
+    unsigned int directory_count;
 } ExtractCtx;
+
+static LONG g_gui_temp_counter = 0;
+
+static int win_gui_validate_component(const WCHAR *component, size_t length)
+{
+    size_t i, base_length = length;
+    WCHAR base[16];
+    if (length == 0 || component[length - 1] == L'.' || component[length - 1] == L' ')
+        return 0;
+    for (i = 0; i < length; i++) {
+        WCHAR c = component[i];
+        if (c < 32 || c == L'<' || c == L'>' || c == L':' || c == L'"' ||
+            c == L'|' || c == L'?' || c == L'*') return 0;
+    }
+    for (i = 0; i < length; i++) {
+        if (component[i] == L'.') { base_length = i; break; }
+    }
+    if (base_length == 0 || base_length >= sizeof(base) / sizeof(base[0])) return 1;
+    memcpy(base, component, base_length);
+    base[base_length] = L'\0';
+    if (_wcsicmp(base, L"CON") == 0 || _wcsicmp(base, L"PRN") == 0 ||
+        _wcsicmp(base, L"AUX") == 0 || _wcsicmp(base, L"NUL") == 0) return 0;
+    if (base_length == 4 &&
+        (_wcsnicmp(base, L"COM", 3) == 0 || _wcsnicmp(base, L"LPT", 3) == 0) &&
+        base[3] >= L'1' && base[3] <= L'9') return 0;
+    return 1;
+}
+
+static int win_gui_project_name(const char *utf8, char *local, size_t capacity)
+{
+    WCHAR wide[MAX_PATH];
+    size_t length, start, i;
+    int wide_length;
+    if (utf8 == NULL || !bp_name_is_safe(utf8) ||
+        utf8_to_acp_strict(utf8, local, (int)capacity) != 0) return BP_ERR_PARTIAL;
+    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                                      wide, MAX_PATH);
+    if (wide_length <= 0) return BP_ERR_PARTIAL;
+    length = (size_t)wide_length - 1;
+    if (length == 0 || length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    start = 0;
+    for (i = 0; i <= length; i++) {
+        size_t component_length;
+        if (i < length && wide[i] != L'/') continue;
+        component_length = i - start;
+        if (component_length == 0) {
+            if (i == length && length > 0 && wide[length - 1] == L'/') break;
+            return BP_ERR_INVALID_ARG;
+        }
+        if (!win_gui_validate_component(wide + start, component_length))
+            return BP_ERR_INVALID_ARG;
+        start = i + 1;
+    }
+    length = strlen(local);
+    if (length == 0 || length >= capacity || length >= MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+    {
+        char *p = local;
+        while (*p) {
+            if (*p == '/') *p = '\\';
+            p = CharNextA(p);
+        }
+    }
+    return BP_OK;
+}
+
+static int win_gui_register_name(ExtractCtx *ctx, const char *name)
+{
+    WCHAR normalized[MAX_PATH];
+    int length;
+    WinGuiNameNode *node, **at;
+    unsigned int count = 0;
+    length = MultiByteToWideChar(CP_ACP, 0, name, -1, normalized, MAX_PATH);
+    if (length <= 0) return BP_ERR_PARTIAL;
+    if (length > 1 && normalized[length - 2] == L'\\') normalized[length - 2] = L'\0';
+    for (node = ctx->names; node != NULL; node = node->next) {
+        if (_wcsicmp(node->name, normalized) == 0) return BP_ERR_PARTIAL;
+        count++;
+    }
+    if (count >= 65535U) return BP_ERR_OVERFLOW;
+    node = (WinGuiNameNode *)calloc(1, sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    wcscpy(node->name, normalized);
+    at = &ctx->names;
+    while (*at != NULL) at = &(*at)->next;
+    *at = node;
+    return BP_OK;
+}
+
+static int win_gui_make_full_path(const ExtractCtx *ctx, const char *relative,
+                                  char *full, size_t full_size)
+{
+    size_t root_length = strlen(ctx->dest_dir);
+    size_t relative_length = strlen(relative);
+    const char *last_root_char = root_length == 0 ? ctx->dest_dir :
+                                 CharPrevA(ctx->dest_dir, ctx->dest_dir + root_length);
+    int separator = root_length != 0 && *last_root_char != '\\' &&
+                    *last_root_char != '/';
+    if (root_length + (size_t)separator + relative_length + 1 > full_size ||
+        root_length + (size_t)separator + relative_length >= MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+    memcpy(full, ctx->dest_dir, root_length);
+    if (separator) full[root_length++] = '\\';
+    memcpy(full + root_length, relative, relative_length + 1);
+    return BP_OK;
+}
+
+static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
+                                      int include_leaf)
+{
+    char local[MAX_PATH], current[MAX_PATH];
+    char *part, *next, *scan;
+    DWORD attributes;
+    size_t local_length;
+    if (strlen(relative) >= sizeof(local)) return BP_ERR_NAME_TOO_LONG;
+    strcpy(local, relative);
+    local_length = strlen(local);
+    if (local_length > 0) {
+        char *last = CharPrevA(local, local + local_length);
+        if (*last == '\\' && CharNextA(last) == local + local_length) *last = '\0';
+    }
+    if (strlen(ctx->dest_dir) >= sizeof(current)) return BP_ERR_NAME_TOO_LONG;
+    strcpy(current, ctx->dest_dir);
+    attributes = GetFileAttributesA(current);
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        !(attributes & FILE_ATTRIBUTE_DIRECTORY)) return BP_ERR_IO;
+    part = local;
+    while (*part != '\0') {
+        next = NULL;
+        for (scan = part; *scan; scan = CharNextA(scan)) {
+            if (*scan == '\\') { next = scan; break; }
+        }
+        if (next != NULL) *next = '\0';
+        if (next == NULL && !include_leaf) break;
+        if (strlen(current) + strlen(part) + 2 >= sizeof(current))
+            return BP_ERR_NAME_TOO_LONG;
+        {
+            size_t current_length = strlen(current);
+            char *last = CharPrevA(current, current + current_length);
+            if (*last != '\\' && *last != '/') strcat(current, "\\");
+        }
+        strcat(current, part);
+        attributes = GetFileAttributesA(current);
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            DWORD error = GetLastError();
+            if ((error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) ||
+                (!CreateDirectoryA(current, NULL) && GetLastError() != ERROR_ALREADY_EXISTS))
+                return BP_ERR_IO;
+            attributes = GetFileAttributesA(current);
+        }
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return BP_ERR_INVALID_ARG;
+        if (next == NULL) break;
+        *next = '\\';
+        part = next + 1;
+    }
+    return BP_OK;
+}
+
+static int win_gui_open_staged_file(const char *target, char *temporary,
+                                    size_t temporary_size, FILE **file)
+{
+    char directory[MAX_PATH];
+    char *slash, *scan;
+    HANDLE handle;
+    int fd, attempt;
+    FILE *fp;
+    size_t length = strlen(target);
+    if (length >= sizeof(directory) || temporary_size < MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+    strcpy(directory, target);
+    slash = NULL;
+    for (scan = directory; *scan; scan = CharNextA(scan))
+        if (*scan == '\\' || *scan == '/') slash = scan;
+    if (slash == NULL) return BP_ERR_INVALID_ARG;
+    slash[1] = '\0';
+    for (attempt = 0; attempt < 256; attempt++) {
+        LONG serial = InterlockedIncrement(&g_gui_temp_counter);
+        int n = _snprintf(temporary, temporary_size,
+                          "%s.boltpack-%08lx.tmp", directory,
+                          (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
+        if (n < 0 || (size_t)n >= temporary_size) return BP_ERR_NAME_TOO_LONG;
+        handle = CreateFileA(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
+                             NULL);
+        if (handle == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return BP_ERR_IO;
+        }
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_WRONLY);
+        if (fd < 0) { CloseHandle(handle); DeleteFileA(temporary); return BP_ERR_IO; }
+        fp = _fdopen(fd, "wb");
+        if (fp == NULL) { _close(fd); DeleteFileA(temporary); return BP_ERR_IO; }
+        *file = fp;
+        return BP_OK;
+    }
+    return BP_ERR_IO;
+}
+
+static int win_gui_apply_fat(const char *path, bp_uint8 valid, bp_uint8 value)
+{
+    DWORD old_attributes = GetFileAttributesA(path);
+    DWORD desired, actual;
+    if (old_attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_PARTIAL;
+    desired = (old_attributes & ~(DWORD)valid) | (DWORD)value;
+    if (!SetFileAttributesA(path, desired)) return BP_ERR_PARTIAL;
+    actual = GetFileAttributesA(path);
+    return actual != INVALID_FILE_ATTRIBUTES && (actual & valid) == value
+         ? BP_OK : BP_ERR_PARTIAL;
+}
+
+static int win_gui_queue_directory(ExtractCtx *ctx, const char *path,
+                                   bp_uint64 mtime, int mtime_valid)
+{
+    WinGuiDirectoryRestore *node, **at;
+    size_t length = strlen(path);
+    if (length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    for (node = ctx->directories; node != NULL; node = node->next) {
+        if (strcmp(node->path, path) == 0) {
+            if (mtime_valid) {
+                node->mtime = mtime;
+                node->mtime_valid = 1;
+            }
+            return BP_OK;
+        }
+    }
+    if (ctx->directory_count >= 65535U) return BP_ERR_OVERFLOW;
+    node = (WinGuiDirectoryRestore *)calloc(1, sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    strcpy(node->path, path);
+    node->mtime = mtime;
+    node->mtime_valid = mtime_valid;
+    at = &ctx->directories;
+    while (*at != NULL && strlen((*at)->path) >= length) at = &(*at)->next;
+    node->next = *at;
+    *at = node;
+    ctx->directory_count++;
+    return BP_OK;
+}
+
+static int win_gui_queue_fat(ExtractCtx *ctx, const char *path,
+                             bp_uint8 valid, bp_uint8 value)
+{
+    WinGuiDirectoryRestore *node;
+    int rc = win_gui_queue_directory(ctx, path, bp_u64_from_u32(0), 0);
+    if (rc != BP_OK) return rc;
+    for (node = ctx->directories; node != NULL; node = node->next) {
+        if (strcmp(node->path, path) == 0) {
+            node->fat_valid = valid;
+            node->fat_value = value;
+            return BP_OK;
+        }
+    }
+    return BP_ERR_IO;
+}
+
+static int win_gui_finish_directories(ExtractCtx *ctx, int apply)
+{
+    WinGuiDirectoryRestore *node = ctx->directories;
+    int result = BP_OK;
+    ctx->directories = NULL;
+    while (node != NULL) {
+        WinGuiDirectoryRestore *next = node->next;
+        if (apply) {
+            if (node->mtime_valid) {
+                bp_off_t seconds = bp_u64_to_off(node->mtime);
+                time_t t = (time_t)seconds;
+                struct _stat64 st;
+                struct utimbuf ut;
+                if (seconds < 0 ||
+                    bp_u64_cmp(bp_off_to_u64(seconds), node->mtime) != 0 ||
+                    (bp_off_t)t != seconds || _stat64(node->path, &st) != 0) {
+                    result = BP_ERR_PARTIAL;
+                } else {
+                    ut.actime = (time_t)st.st_atime;
+                    ut.modtime = t;
+                    if (utime(node->path, &ut) != 0) result = BP_ERR_PARTIAL;
+                }
+            }
+            if (node->fat_valid != 0 &&
+                win_gui_apply_fat(node->path, node->fat_valid,
+                                  node->fat_value) != BP_OK)
+                result = BP_ERR_PARTIAL;
+        }
+        free(node);
+        node = next;
+    }
+    ctx->directory_count = 0;
+    return result;
+}
+
+static long win_gui_metadata_write(void *handle, const void *data, bp_uint32 size)
+{
+    WinGuiMetadataSink *sink = (WinGuiMetadataSink *)handle;
+    if (size > BP_META_MAX_SIZE - sink->length) return -1;
+    memcpy(sink->data + sink->length, data, size);
+    sink->length += size;
+    return (long)size;
+}
+
+static void win_gui_free_names(ExtractCtx *ctx)
+{
+    WinGuiNameNode *node = ctx->names;
+    while (node != NULL) {
+        WinGuiNameNode *next = node->next;
+        free(node);
+        node = next;
+    }
+    ctx->names = NULL;
+}
 
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
-    char acp_name[1024];
-    char full_path[MAX_PATH + 1024];
+    char local_name[MAX_PATH];
+    char full_path[MAX_PATH];
     FILE *fp;
-    bp_io_t *out;
-    char *p;
+    int rc;
 
-    if (!entry->name || !bp_name_is_safe(entry->name)) return NULL;
-
-    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+    if (!entry->name || !bp_name_is_safe(entry->name)) {
+        ctx->partial_count++;
         return NULL;
-
-    if (entry->name)
-        utf8_to_acp(entry->name, acp_name, sizeof(acp_name));
-    else
-        acp_name[0] = '\0';
-
-    /* convert forward slashes to backslashes */
-    for (p = acp_name; *p; p++) {
-        if (*p == '/') *p = '\\';
+    }
+    if (entry->entry_type == BP_TYPE_META) {
+        if (entry->platform != BP_META_PORTABLE || !ctx->last_subject_valid ||
+            !ctx->last_subject_ok ||
+            strcmp(entry->name, ctx->last_subject_name) != 0) {
+            ctx->partial_count++;
+            return NULL;
+        }
+        ctx->metadata.length = 0;
+        ctx->metadata.io.read = NULL;
+        ctx->metadata.io.write = win_gui_metadata_write;
+        ctx->metadata.io.seek = NULL;
+        ctx->metadata.io.tell = NULL;
+        ctx->metadata.io.handle = &ctx->metadata;
+        return &ctx->metadata.io;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC) {
+        ctx->partial_count++;
+        return NULL;
+    }
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) {
+        ctx->partial_count++;
+        return NULL;
     }
 
-    _snprintf(full_path, sizeof(full_path), "%s\\%s", ctx->dest_dir, acp_name);
-    full_path[sizeof(full_path) - 1] = '\0';
+    ctx->last_subject_valid = 0;
+    ctx->last_subject_ok = 0;
+    rc = win_gui_project_name(entry->name, local_name, sizeof(local_name));
+    if (rc != BP_OK) {
+        ctx->partial_count++;
+        return NULL;
+    }
+    rc = win_gui_register_name(ctx, local_name);
+    if (rc != BP_OK) {
+        ctx->partial_count++;
+        return NULL;
+    }
+    rc = win_gui_make_full_path(ctx, local_name, full_path, sizeof(full_path));
+    if (rc != BP_OK) { ctx->partial_count++; return NULL; }
+    if (strlen(entry->name) >= sizeof(ctx->last_subject_name) ||
+        strlen(full_path) >= sizeof(ctx->last_subject_path)) {
+        ctx->partial_count++;
+        return NULL;
+    }
+    strcpy(ctx->last_subject_name, entry->name);
+    strcpy(ctx->last_subject_path, full_path);
+    ctx->last_subject_type = entry->entry_type;
+    ctx->last_subject_valid = 1;
 
     if (entry->entry_type == BP_TYPE_DIR) {
-        MakeDirs(full_path);
+        rc = win_gui_ensure_directories(ctx, local_name, 1);
+        if (rc != BP_OK) { ctx->open_error = rc; return NULL; }
+        rc = win_gui_queue_directory(ctx, full_path, entry->mtime,
+                    (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0);
+        if (rc != BP_OK) { ctx->open_error = rc; return NULL; }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial_count++;
+        ctx->last_subject_ok = 1;
+        return NULL;
+    }
+    if (entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->partial_count++;
         return NULL;
     }
 
-    MakeDirsForFile(full_path);
-    fp = fopen(full_path, "wb");
-    if (!fp) return NULL;
-
-    out = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!out) { fclose(fp); return NULL; }
-    bp_io_from_file(out, fp);
-    return out;
+    rc = win_gui_ensure_directories(ctx, local_name, 0);
+    if (rc != BP_OK) { ctx->open_error = rc; return NULL; }
+    {
+        WinGuiStagedFile *staged = (WinGuiStagedFile *)calloc(1, sizeof(*staged));
+        if (staged == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        rc = win_gui_open_staged_file(full_path, staged->temporary,
+                                      sizeof(staged->temporary), &fp);
+        if (rc != BP_OK) { free(staged); ctx->open_error = rc; return NULL; }
+        strcpy(staged->target, full_path);
+        bp_io_from_file(&staged->io, fp);
+        return &staged->io;
+    }
 }
 
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *user_data)
 {
-    (void)entry;
-    (void)user_data;
-    if (out) {
-        fclose((FILE *)out->handle);
-        free(out);
+    ExtractCtx *ctx = (ExtractCtx *)user_data;
+    if (entry->entry_type == BP_TYPE_META) {
+        bp_portable_metadata_t parsed;
+        int parse_rc;
+        if (status != BP_OK) return status;
+        parse_rc = bp_metadata_parse(ctx->metadata.data, ctx->metadata.length, &parsed);
+        if (parse_rc == BP_ERR_CORRUPT) return parse_rc;
+        if (parsed.supported_version &&
+            parsed.subject_type != ctx->last_subject_type) return BP_ERR_CORRUPT;
+        if (parsed.has_fat) {
+            int rc;
+            if (ctx->last_subject_type == BP_TYPE_DIR)
+                rc = win_gui_queue_fat(ctx, ctx->last_subject_path,
+                                       parsed.fat_valid, parsed.fat_value);
+            else
+                rc = win_gui_apply_fat(ctx->last_subject_path,
+                                       parsed.fat_valid, parsed.fat_value);
+            if (rc != BP_OK) ctx->partial_count++;
+        }
+        if (parse_rc == BP_ERR_PARTIAL || parsed.has_unknown) ctx->partial_count++;
+        (void)out;
+        return BP_OK;
+    }
+    if (entry->entry_type == BP_TYPE_DIR) return BP_OK;
+    {
+        WinGuiStagedFile *staged = (WinGuiStagedFile *)out;
+        FILE *fp = (FILE *)out->handle;
+        int result = status;
+        if (status != BP_OK) {
+            fclose(fp);
+            DeleteFileA(staged->temporary);
+            free(staged);
+            ctx->last_subject_ok = 0;
+            return status;
+        }
+        if (fclose(fp) != 0) result = BP_ERR_IO;
+        if (result == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+            bp_off_t seconds = bp_u64_to_off(entry->mtime);
+            time_t t = (time_t)seconds;
+            struct _stat64 st;
+            struct utimbuf ut;
+            if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
+                (bp_off_t)t != seconds || _stat64(staged->temporary, &st) != 0) {
+                result = BP_ERR_PARTIAL;
+            } else {
+                ut.actime = (time_t)st.st_atime;
+                ut.modtime = t;
+                if (utime(staged->temporary, &ut) != 0) result = BP_ERR_PARTIAL;
+            }
+        }
+        if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) result = BP_ERR_PARTIAL;
+        if (result != BP_ERR_IO && result != BP_ERR_CORRUPT &&
+            result != BP_ERR_CHECKSUM &&
+            !MoveFileExA(staged->temporary, staged->target,
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileA(staged->temporary);
+            free(staged);
+            ctx->last_subject_ok = 0;
+            return BP_ERR_IO;
+        }
+        if (result == BP_OK || result == BP_ERR_PARTIAL) {
+            ctx->last_subject_ok = 1;
+            free(staged);
+            return result;
+        }
+        DeleteFileA(staged->temporary);
+        free(staged);
+        ctx->last_subject_ok = 0;
+        return result;
     }
 }
 
@@ -810,7 +1296,8 @@ static void DoExtract(void)
     FILE *fp;
     bp_io_t io;
     ExtractCtx ectx;
-    int rc;
+    int rc, dir_rc;
+    DWORD dest_attributes;
 
     if (!g_archive_open) return;
 
@@ -838,6 +1325,14 @@ static void DoExtract(void)
     }
     CoTaskMemFree(pidl);
 
+    dest_attributes = GetFileAttributesA(dest);
+    if (dest_attributes == INVALID_FILE_ATTRIBUTES ||
+        !(dest_attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        MessageBoxA(g_hWnd, "Destination is not a readable directory.",
+                    "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+
     fp = fopen(g_archive_path, "rb");
     if (!fp) {
         MessageBoxA(g_hWnd, "Cannot open archive.", "Error", MB_OK | MB_ICONERROR);
@@ -845,6 +1340,7 @@ static void DoExtract(void)
     }
     bp_io_from_file(&io, fp);
 
+    memset(&ectx, 0, sizeof(ectx));
     strncpy(ectx.dest_dir, dest, MAX_PATH);
     ectx.dest_dir[MAX_PATH - 1] = '\0';
 
@@ -859,8 +1355,15 @@ static void DoExtract(void)
     SetWindowTextA(g_progress.hDlg, "Extracting...");
     ectx.progress = &g_progress;
 
-    rc = bp_archive_extract_all(&io, extract_open_cb, extract_done_cb,
-                                progress_cb, &g_progress);
+    rc = bp_archive_extract_all_ex(&io, extract_open_cb, extract_done_cb,
+                                   progress_cb, &ectx);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ectx.open_error != BP_OK)
+        rc = ectx.open_error;
+    dir_rc = win_gui_finish_directories(
+        &ectx, (rc == BP_OK || rc == BP_ERR_PARTIAL) && ectx.open_error == BP_OK);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK) rc = dir_rc;
+    if (rc == BP_OK && ectx.partial_count != 0) rc = BP_ERR_PARTIAL;
+    win_gui_free_names(&ectx);
 
     DestroyWindow(g_progress.hDlg);
     fclose(fp);
