@@ -77,16 +77,19 @@ timestamps, or GEM GUI use.
 On 2026-10-28, `test/check_hatari_fat.py` also ran the full CLI against a
 disposable 720 KiB FAT12 floppy image under Hatari. Linux-created BoltLite
 archives extracted on the floppy; Atari create, append, extract, delete, and
-test succeeded; the guest copied restored file bytes and the edited archive
-back to Hatari's GEMDOS host drive, where Linux verified them. TOS reports
+test succeeded; mtools verified restored file bytes and the edited archive
+directly from the saved image after Hatari's normal quit/eject. TOS reports
 different `st_dev` and synthesized `st_ino` values for the same FAT file via
 pathname and handle queries, so Atari edit identity checks now compare regular
-file type, size, and timestamps only. The disk image itself did not retain the
-guest's directory changes after Hatari exited, despite sector writes and
-successful in-guest reads. The test therefore qualifies the FAT12 guest
-filesystem operations and byte round trip during the run, but not durable
-floppy-image writeback. Native attribute and timestamp restoration and the
-GEM GUI remain open.
+file type, size, and timestamps only. `--run-vbls` exits before saving the
+floppy, so the test uses control-console quit/eject. This qualifies durable
+FAT12 writeback for that workflow. FAT12 file hidden/system flags and a fixed
+2000 timestamp round-trip successfully. Nested and empty directories and their
+file bytes transfer, but TOS 1.62 `utime` fails on directories and `Fattrib`
+cannot restore nonzero attributes to newly created directories; the CLI
+reports this as partial. For source directory enumeration, a failed `Fattrib`
+on a path that `stat` confirms is a directory is treated as the default zero
+optional flags rather than aborting archive creation. The GEM GUI remains open.
 
 The same host-directory test now transfers a nested tree with an empty
 directory both ways and verifies pre-output refusal for a long 8.3 name and a
@@ -261,11 +264,12 @@ by that runner.
    and empty directories, collision refusal, corruption cleanup, and archive
    edits on Hatari's GEMDOS host-directory drive. `test/check_hatari_fat.py`
    additionally qualifies in-guest Linux ↔ Atari Stored/BoltLite byte transfer
-   and archive edits on a disposable FAT12 floppy; its guest runner captures
-   output before emulator shutdown because Hatari does not retain the changed
-   directory entries in the image. Next, verify native attributes/timestamps,
-   durable image writeback with a suitable emulator/eject workflow, interruption
-   recovery, and the GEM GUI. Keep host-directory and FAT-image results distinct.
+   and archive edits on a disposable FAT12 floppy; it uses Hatari's control
+   console to quit/eject and verifies the saved image after shutdown. Next,
+   verify directory metadata behavior and interruption recovery, and exercise
+   the GEM GUI. File FAT flags/timestamps round-trip; TOS 1.62 directory times
+   and nonzero flags currently report partial. Keep host-directory and
+   FAT-image results distinct.
 2. **Amiga, FS-UAE:** use Kickstart 2.04 and Workbench 2.04 under `~/images/Amiga`.
    Boot a disposable copy of `Workbench-2.04/1-Workbench.adf`; Xvfb, software
    OpenGL, `--floppy_drive_speed=800`, and `--warp_mode=1` worked in the startup
@@ -315,8 +319,8 @@ missing native environments in parallel.
 | Linux CLI/mini/FLTK | Native Linux, QEMU-i386, usable GUI display | Reuse existing lifecycle/profile/race fixtures; add actual GUI creation, cancellation, extraction, flattened-name collisions, and metadata checks. |
 | Windows CLI/native GUI/FLTK/.NET/WCX | Windows with NTFS and FAT-compatible test volume, .NET build tools, Total Commander plugin host | Run `python test/check_windows_cli.py build/win64/boltpack.exe`; extend it for I02/I03, build the managed GUI, and exercise every UI/plugin path. Record denied hard-link/reparse privileges as missing evidence. Cross-build both word sizes. |
 | macOS CLI/Cocoa/legacy GUI | macOS SDK/runtime; case-sensitive and case-insensitive test volumes; supported legacy environment where shipped | Verify Unicode normalization, Apple xattrs/Finder info/resource forks, time/mode restoration, publication, and actual GUI flows. Host declaration stubs remain supporting evidence only. |
-| DOS16/full DOS/Win16/OS2-16/full OS2 | Independent DOS runtime with FAT, DPMI host for DJGPP, Windows 3.x, OS/2 with FAT and HPFS | Resolve accented-name failure; qualify codepages, FAT flags, deferred directories, timestamps, profile transfer, and edit/recovery behavior. DOSBox conversion tests do not qualify the other adapters. |
-| Atari CLI/GEM GUI | Hatari and TOS 1.62 are installed; prepare writable guest media | Run projection/profile corpus, attributes and dates, GUI creation/extraction, staged edits, and interruption recovery. |
+| DOS16/full DOS/Win16/OS2-16/full OS2 | DOSBox-X FAT12 plus DPMI host for DJGPP, Windows 3.x, OS/2 with FAT and HPFS | DOSBox-X verifies CP437 extraction and DOS16 → Linux archive creation on FAT12. Qualify FAT flags and directory metadata; full-DOS edits need a DPMI runtime. Win16 and OS/2-16 still need their target filesystems and APIs. |
+| Atari CLI/GEM GUI | Hatari and TOS 1.62; disposable FAT12 media | `test/check_hatari_fat.py` verifies guest FAT12 transfers, archive edits, clean control-console shutdown/eject, and persisted bytes after exit. Native attributes and times, GUI creation/extraction, and interruption recovery remain. |
 | Amiga CLI/GadTools and OS4/MorphOS/AROS variants | FS-UAE and Workbench 2.04 are available for 68k; matching SDKs and runtimes are needed for each other variant | Build each variant, then verify Latin-1 mapping, native protection/comment precedence, directory capture/restoration, staging, and recovery. Shared source and a 68k emulator do not qualify all variants. |
 | Classic Mac 68k/PPC | Complete application/resource builds and Mac OS 9 runtime | Test MacRoman/HFS collisions, resource forks, Finder fields, directory dates, bounded preflight, partial failures, and profile transfer for both builds. |
 | QL/X68000/RISC OS/Plan 9/CPM-86 | Matching compiler and native filesystem runtime/emulator for each | Replace syntax/host-shim-only evidence with target builds and the applicable corpus. Exercise native path mappings, limits, metadata, and refusal behavior. |

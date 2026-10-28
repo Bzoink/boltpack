@@ -46,6 +46,19 @@ Directory timestamp restoration reports partial on this backend. Linux reports p
 Atari-specific metadata. It does not validate a native FAT disk, attributes,
 timestamps, or the GEM GUI; test those separately.
 
+For FAT12 floppy testing, run:
+
+```sh
+python3 test/check_hatari_fat.py --tos "$HOME/images/Atari/tos162se.img"
+```
+
+This uses a disposable 720 KiB image and `hconsole.py` for a normal Hatari
+quit. The `--run-vbls` option terminates before the changed floppy is saved;
+the control-console `quit` ejects it. The test therefore reads the final files
+back from the image with mtools after Hatari exits. FAT12 file hidden/system
+flags and timestamps round-trip. TOS 1.62 reports partial for directory times
+and nonzero directory attributes; GEM GUI behavior remains unqualified.
+
 ## Amiga: FS-UAE
 
 - Emulator: FS-UAE 3.1.66.
