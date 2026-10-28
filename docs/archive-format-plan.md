@@ -108,9 +108,12 @@ restores it if publishing fails, and preserves hidden/system/archive flags.
 Read-only archive targets are refused. A crash during staging leaves the
 original intact; a crash between backup and publication can leave the original
 at the recovery name. `--interchange-profile-1` is available for create/add.
-The Atari cross-build passes, but runtime and interruption tests still need an
-Atari emulator or hardware. Path-based TOS calls cannot prevent a concurrent
-rename of a checked parent. Full OS/2 now writes native attributes and the portable
+The Atari cross-build and Hatari TOS 1.62 CLI byte round trips and archive
+edits pass on both a host-directory drive and a FAT12 floppy guest filesystem.
+Hatari does not retain the FAT12 image's changed directory entries after exit,
+so durable floppy writeback, native attribute/timestamp restoration, GUI use,
+and interruption recovery remain unqualified. Path-based TOS calls cannot
+prevent a concurrent rename of a checked parent. Full OS/2 now writes native attributes and the portable
 FAT envelope for files and directories, applies native attributes ahead of
 portable fallback, and restores directory timestamps and flags deepest first.
 Its bounded queue holds 256 directories and 32 KiB of paths. Extraction first
@@ -169,10 +172,15 @@ archive's UTF-8 name before converting it to local bytes; they must not pass
 the resulting CP437 or CP850 byte string back through the UTF-8 validator.
 The full codepage unit fixture checks CP437 `café.txt` conversion both ways,
 and mini-configured CP437/CP850 fixtures check accented filename byte round
-trips. `make mini-all` cross-builds all three 16-bit frontends. The DOSBox
-transfer fixture still uses ASCII filenames: an attempted CP437 accented-name
-extraction to DOSBox's host-mounted filesystem did not materialize the expected
-file, so target filesystem handling of non-ASCII names remains unqualified.
+trips. `make mini-all` cross-builds all three 16-bit frontends. DOSBox 0.74-3
+host-mounted CP437 accented extraction and direct file-creation probes failed.
+On 2026-10-28, `test/check_dosboxx_cp437.py` verified a Linux-created CP437
+`café.txt` entry extracted on a DOSBox-X FAT12 image with the expected filename,
+bytes, and FAT timestamp. The same run created an archive on FAT12 in DOS16 and
+Linux verified its listing and extracted bytes. Both readers report partial for
+metadata their platform cannot represent. DOSBox-X host-mounted extraction
+still reports partial without creating the host file. DOS16 mini has no archive
+edit commands; full-DOS edits remain unverified.
 The Linux
 CLI and Linux mini, plus FreeBSD, NetBSD, and OpenBSD builds of the shared
 POSIX wrapper, resolve archive-controlled directories with directory-relative
@@ -227,15 +235,21 @@ closes regular-file stages before publishing, and keeps an existing file under
 a recovery name during forced replacement. It refuses non-regular targets and
 existing symlink path components, rejects AmigaDOS volume separators in
 projected names, and preflights case-folded path collisions and file/directory
-prefix conflicts before output changes. The name index is capped at 1,024
-primary entries and 32 KiB of keys; archives exceeding the bound are refused.
+prefix conflicts, including implicit parents, before output changes. The name
+index is capped at 1,024 path nodes and 32 KiB of exact and folded keys;
+archives exceeding the bound are refused.
 Matching Amiga protection/comment metadata applies only after its exact
 subject succeeds. Directory times and protection are deferred until children
 finish. Negative or host-unrepresentable source times are warned about and
 stored as unknown, while epoch zero stays valid. Malformed native Amiga metadata is rejected; foreign native metadata,
 portable FAT envelopes, symlinks, and resource forks return partial. The m68k
-cross-build passes cleanly, but no Amiga runtime or emulator round trip is
-available. AmigaOS 4, MorphOS, and AROS use this source but their cross-toolchains
+cross-build passes cleanly. Stored and BoltLite profile file transfers and a
+profile append pass with Linux on an FS-UAE host-directory drive, including at
+the default guest shell stack after reducing writer and traversal stack use.
+Deep recursion and other codecs need stack qualification. The CLI stages create,
+append and delete, with emulator coverage for failure cleanup and preservation
+of archive protection and comments across append and delete. Native disk,
+metadata and other codecs remain to be tested. AmigaOS 4, MorphOS, and AROS use this source but their cross-toolchains
 are unavailable here. Path-based checks retain a parent-substitution race, and
 interruption between backup and publication can leave the original at its
 recovery name.
@@ -243,12 +257,13 @@ recovery name.
 The Amiga GadTools GUI now uses status-aware extraction with sibling staging,
 bounded case-folded name and file/directory-prefix preflight, checked existing
 directory components, and deferred directory time/protection restoration. It
-captures and restores native protection/comment metadata for files; GUI archive
-creation does not add directory entries, so it has no directory metadata to
-capture. Its Compression menu offers Interchange Profile 1 for new archives,
+captures and restores native protection/comment metadata for files and
+directories, including empty directories. GUI archive creation uses sibling
+staging and reports partial preservation when replacing an archive whose native
+metadata cannot be fully retained. Its Compression menu offers Interchange Profile 1 for new archives,
 selecting BoltLite with 16 KiB blocks under mini-reader limits.
-Latin-1-unrepresentable names, resource forks, symlinks, foreign
-metadata, and portable FAT envelopes are skipped with a partial result. Source
+Latin-1-unrepresentable names are refused; resource forks, symlinks, foreign
+metadata, and portable FAT envelopes may produce a partial result. Source
 times outside the host's nonnegative representable range are recorded as
 unknown. The GUI cross-build passes, but its path-based checks retain a
 parent-substitution race and no Amiga runtime or emulator round trip is
@@ -270,8 +285,13 @@ unrepresentable names, resource forks, foreign metadata, and POSIX modes are
 reported or refused. Its Compression menu includes Interchange Profile 1,
 which selects BoltLite with 16 KiB blocks and enforces mini-reader limits.
 Both GUI and CLI pass Atari cross-builds with warnings
-treated as errors. No Hatari emulator is installed for runtime round trips;
-the GUI's pathname checks retain a concurrent parent-substitution race.
+treated as errors. Hatari now starts with TOS 1.62, but no Atari archive
+runtime round trip has yet been recorded for the GUI; the full CLI has passed
+Linux/Atari byte round trips and archive edits on both Hatari's host-directory
+backend and a FAT12 floppy guest filesystem. Hatari did not retain FAT12
+directory changes in the image after shutdown, and Atari native attribute and
+timestamp restoration remain unqualified. The GUI's pathname checks retain a
+concurrent parent-substitution race.
 
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
@@ -845,11 +865,9 @@ conversion. `make mini-all` cross-built DOS16, Win16, and OS/2-16 after fixing
 their local-name validation order. `make unit-test-dos16` now runs Watcom-built
 CP437 and CP850 conversion fixtures under DOSBox, with CP850 selected by the
 mini codepage override, as well as its compression tests. The DOSBox transfer
-fixture passes for its ASCII names. Accented-name
-filesystem behavior remains unqualified: extraction to DOSBox's host-mounted
-drive did not materialize the file, and a standalone Watcom `open()` probe for
-CP437 byte 0x82 also failed on a DOSBox FAT12 image while ASCII creation
-succeeded.
+fixture passes for its ASCII names. DOSBox-X FAT12 tests now qualify CP437
+filename extraction and DOS16-to-Linux archive creation. Host-mount behavior
+and full-DOS archive edits remain open.
 
 Golden expectations must not be generated solely by the same writer under
 test. On capable destinations require exact bytes/names/attributes. On limited

@@ -1232,9 +1232,36 @@ linuxmini-interoperability-test: modern linuxmini
 dos16-interoperability-test: modern dos16 unit-test-dos16
 	python3 test/check_dos16_interop.py
 
+.PHONY: amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
+amiga-gui-stage-host-test:
+	mkdir -p build/amiga-gui-stage-test
+	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_gui_stage.c -o build/amiga-gui-stage-test/test
+	build/amiga-gui-stage-test/test
+
+amiga-gui-gather-host-test:
+	mkdir -p build/amiga-gui-gather-test
+	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_gui_gather.c -o build/amiga-gui-gather-test/test
+	build/amiga-gui-gather-test/test
+
+amiga-gui-source-name-host-test:
+	mkdir -p build/amiga-gui-source-name-test
+	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_gui_source_name.c src/core/bp_codepage.c \
+	    -o build/amiga-gui-source-name-test/test
+	build/amiga-gui-source-name-test/test
+
+amiga-gui-name-index-host-test:
+	mkdir -p build/amiga-gui-name-index-test
+	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_gui_name_index.c src/core/bp_codepage.c \
+	    -o build/amiga-gui-name-index-test/test
+	build/amiga-gui-name-index-test/test
+
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp posix-dirfd-host-test atari-path-test
+test: modern unit-test dos-djgpp posix-dirfd-host-test atari-path-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== symlink timestamp and publication ==="

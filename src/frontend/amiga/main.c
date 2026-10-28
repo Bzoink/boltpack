@@ -488,7 +488,8 @@ static int amiga_decode_meta(const unsigned char *buf, int len,
 
 /*
  * Query protection bits and file comment for fs_path using AmigaDOS
- * Lock() + Examine().  Falls back to safe defaults on failure.
+ * Lock() + Examine().  The caller must report failure rather than archiving
+ * invented metadata.
  */
 static int amiga_get_meta(const char *fs_path, unsigned long *prot,
                           char *comment)
@@ -581,7 +582,10 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
     bp_io_t       meta_io;
     rbuf_ctx_t    rctx;
 
-    amiga_get_meta(fs_path, &prot, comment);
+    if (amiga_get_meta(fs_path, &prot, comment) != 0) {
+        fprintf(stderr, "boltpack: cannot read Amiga metadata: %s\n", fs_path);
+        return BP_ERR_IO;
+    }
     meta_len = amiga_encode_meta(meta_buf, prot, comment);
 
     rctx.buf  = meta_buf;
@@ -602,24 +606,38 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     DIR           *d;
     struct dirent *ent;
     int            rc;
-    char           child_path[BP_MAX_PATH];
-    char           child_arc[BP_MAX_PATH];
+    char          *paths, *child_path, *child_arc;
 
+    paths = (char *)malloc(BP_MAX_PATH * 2U);
+    if (!paths) return BP_ERR_NOMEM;
+    child_path = paths;
+    child_arc = paths + BP_MAX_PATH;
     d = opendir(dir_path);
     if (d == NULL) {
         fprintf(stderr, "boltpack: cannot open directory: %s\n", dir_path);
+        free(paths);
         return BP_ERR_IO;
     }
-    while ((ent = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (ent == NULL) {
+            rc = errno ? BP_ERR_IO : BP_OK;
+            if (closedir(d) != 0) rc = BP_ERR_IO;
+            free(paths);
+            return rc;
+        }
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
-        path_join(child_arc,  sizeof(child_arc),  arc_prefix, ent->d_name);
+        if (strlen(dir_path) + strlen(ent->d_name) + 2 > BP_MAX_PATH ||
+            strlen(arc_prefix) + strlen(ent->d_name) + 2 > BP_MAX_PATH) {
+            closedir(d); free(paths); return BP_ERR_NAME_TOO_LONG;
+        }
+        path_join(child_path, BP_MAX_PATH, dir_path, ent->d_name);
+        path_join(child_arc, BP_MAX_PATH, arc_prefix, ent->d_name);
         rc = add_path(ar, child_path, child_arc);
-        if (rc != BP_OK) { closedir(d); return rc; }
+        if (rc != BP_OK) { closedir(d); free(paths); return rc; }
     }
-    closedir(d);
-    return BP_OK;
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
@@ -627,17 +645,21 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     struct stat st;
     int         rc;
 
-    if (stat(path, &st) != 0) {
-        fprintf(stderr, "boltpack: cannot stat: %s\n", path);
+    if (lstat(path, &st) != 0 || S_ISLNK(st.st_mode)) {
+        fprintf(stderr, "boltpack: cannot archive source or symbolic link: %s\n", path);
         return BP_ERR_IO;
     }
 
     if (S_ISDIR(st.st_mode)) {
-        char dir_arc[BP_MAX_PATH];
-        char dir_arc_utf8[BP_MAX_PATH * 2];
+        char *names, *dir_arc, *dir_arc_utf8;
         bp_uint64 mtime;
         bp_uint16 mtime_flags;
 
+        if (strlen(arcname) + 2 > BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+        names = (char *)malloc(BP_MAX_PATH * 3U);
+        if (!names) return BP_ERR_NOMEM;
+        dir_arc = names;
+        dir_arc_utf8 = names + BP_MAX_PATH;
         if (!ends_with_slash(arcname))
             sprintf(dir_arc, "%s/", arcname);
         else
@@ -646,8 +668,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", dir_arc);
 
-        if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8),
-                             AMIGA_CP) != 0) return BP_ERR_INVALID_ARG;
+        if (bp_local_to_utf8(dir_arc, dir_arc_utf8, BP_MAX_PATH * 2U,
+                             AMIGA_CP) != 0) { free(names); return BP_ERR_INVALID_ARG; }
 
         mtime_flags = amiga_entry_mtime(st.st_mtime, &mtime);
         if (mtime_flags == 0 && st.st_mtime != (time_t)0)
@@ -657,25 +679,30 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
                                      BP_CREATOR_OS, NULL, bp_u64_from_u32(0),
                                      mtime, mtime_flags);
-        if (rc != BP_OK) return rc;
+        if (rc != BP_OK) { free(names); return rc; }
 
         /* Preserve directory protection bits */
         rc = add_meta_entry(ar, dir_arc_utf8, path);
-        if (rc != BP_OK) return rc;
-
-        return add_directory(ar, path, dir_arc);
+        if (rc == BP_OK) rc = add_directory(ar, path, dir_arc);
+        free(names);
+        return rc;
 
     } else if (S_ISREG(st.st_mode)) {
         FILE      *fp;
         bp_io_t    fio;
-        bp_uint64  file_size = bp_u64_from_ulong((unsigned long)st.st_size);
+        bp_uint64  file_size;
         bp_uint64  mtime;
         bp_uint16  mtime_flags;
-        char       arcname_utf8[BP_MAX_PATH * 2];
+        char      *arcname_utf8;
 
+        if (st.st_size < 0) return BP_ERR_OVERFLOW;
+        file_size = bp_u64_from_ulong((unsigned long)st.st_size);
+        arcname_utf8 = (char *)malloc(BP_MAX_PATH * 2U);
+        if (!arcname_utf8) return BP_ERR_NOMEM;
         fp = fopen(path, "rb");
         if (fp == NULL) {
             fprintf(stderr, "boltpack: cannot open: %s\n", path);
+            free(arcname_utf8);
             return BP_ERR_IO;
         }
         bp_io_from_file(&fio, fp);
@@ -685,9 +712,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             fflush(stdout);
         }
 
-        if (bp_local_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8),
+        if (bp_local_to_utf8(arcname, arcname_utf8, BP_MAX_PATH * 2U,
                              AMIGA_CP) != 0) {
             fclose(fp);
+            free(arcname_utf8);
             return BP_ERR_INVALID_ARG;
         }
 
@@ -699,8 +727,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_CREATOR_OS, &fio, file_size,
                                      mtime, mtime_flags);
-        fclose(fp);
-        if (rc != BP_OK) return rc;
+        if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        if (rc != BP_OK) { free(arcname_utf8); return rc; }
 
         if (g_verbosity == VERB_DEFAULT) {
             bp_entry_t *e    = &ar->entry_list[ar->entries_written - 1];
@@ -718,11 +746,13 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 
         /* Preserve file protection bits and comment */
-        return add_meta_entry(ar, arcname_utf8, path);
+        rc = add_meta_entry(ar, arcname_utf8, path);
+        free(arcname_utf8);
+        return rc;
     }
 
-    /* Skip device nodes and other exotic types (uncommon on Amiga) */
-    return BP_OK;
+    fprintf(stderr, "boltpack: unsupported source type: %s\n", path);
+    return BP_ERR_IO;
 }
 
 /* ---- list callback ----------------------------------------------------- */
@@ -852,6 +882,7 @@ static void amiga_fold_name(char *name)
 typedef struct {
     char *key;
     int   is_directory;
+    int   explicit_entry;
 } amiga_name_key_t;
 
 typedef struct {
@@ -862,10 +893,44 @@ typedef struct {
     const char *error_reason;
 } amiga_name_index_t;
 
-static int amiga_path_prefix(const char *prefix, const char *path)
+static int amiga_index_path(amiga_name_index_t *index, const char *exact,
+                            int is_directory, int explicit_entry)
 {
-    size_t n = strlen(prefix);
-    return strncmp(prefix, path, n) == 0 && path[n] == '/';
+    char folded[BP_MAX_PATH];
+    size_t len = strlen(exact);
+    unsigned long needed = ((unsigned long)len + 1UL) * 2UL;
+    unsigned int i;
+    char *key;
+    if (len == 0 || len >= sizeof(folded)) return 1;
+    memcpy(folded, exact, len + 1);
+    amiga_fold_name(folded);
+    for (i = 0; i < index->count; i++) {
+        amiga_name_key_t *old = &index->names[i];
+        if (strcmp(old->key, folded) != 0) continue;
+        if (strcmp(old->key + len + 1, exact) != 0 ||
+            old->is_directory != is_directory ||
+            (explicit_entry && old->explicit_entry)) {
+            index->error_reason = "Amiga case-insensitive path collision";
+            return 1;
+        }
+        if (explicit_entry) old->explicit_entry = 1;
+        return 0;
+    }
+    if (index->count >= AMIGA_NAME_INDEX_MAX ||
+        needed > AMIGA_NAME_INDEX_BYTES_MAX - index->key_bytes) {
+        index->error_reason = "Amiga collision index limit reached";
+        return 1;
+    }
+    key = (char *)malloc((size_t)needed);
+    if (!key) { index->error_reason = "not enough memory for Amiga collision checks"; return 1; }
+    memcpy(key, folded, len + 1);
+    memcpy(key + len + 1, exact, len + 1);
+    index->names[index->count].key = key;
+    index->names[index->count].is_directory = is_directory;
+    index->names[index->count].explicit_entry = explicit_entry;
+    index->count++;
+    index->key_bytes += needed;
+    return 0;
 }
 
 static int amiga_preflight_name(const bp_entry_t *entry, void *user_data)
@@ -873,48 +938,32 @@ static int amiga_preflight_name(const bp_entry_t *entry, void *user_data)
     amiga_name_index_t *index = (amiga_name_index_t *)user_data;
     char local_name[BP_MAX_PATH];
     char full_path[BP_MAX_PATH];
-    size_t len;
-    unsigned int i;
+    size_t len, pos;
     int is_directory;
 
     if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
         entry->entry_type != BP_TYPE_SYMLINK) return 0;
-    if (!bp_name_is_safe(entry->name)) return 0; /* extraction reports partial */
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
-                         AMIGA_CP) != 0 || !amiga_local_name_safe(local_name))
-        return 0; /* extraction refuses names the target cannot represent */
-    if (amiga_path_from_name(index->out_dir, local_name, full_path,
-                             sizeof(full_path)) != 0) return 0;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local_name, sizeof(local_name), AMIGA_CP) != 0 ||
+        !amiga_local_name_safe(local_name) ||
+        amiga_path_from_name(index->out_dir, local_name, full_path, sizeof(full_path)) != 0) {
+        index->error_reason = "unsafe or unrepresentable Amiga destination name";
+        return 1;
+    }
     len = strlen(local_name);
     while (len > 0 && local_name[len - 1] == '/') local_name[--len] = '\0';
-    if (len == 0) return 0;
-    amiga_fold_name(local_name);
+    if (len == 0) { index->error_reason = "empty Amiga destination name"; return 1; }
     is_directory = entry->entry_type == BP_TYPE_DIR;
-
-    for (i = 0; i < index->count; i++) {
-        const char *old = index->names[i].key;
-        if (strcmp(old, local_name) == 0 ||
-            (!index->names[i].is_directory && amiga_path_prefix(old, local_name)) ||
-            (!is_directory && amiga_path_prefix(local_name, old))) {
-            index->error_reason = "Amiga case-insensitive path collision";
-            return 1;
-        }
+    for (pos = 0; pos <= len; pos++) {
+        char saved;
+        int final, rc;
+        if (pos < len && local_name[pos] != '/') continue;
+        final = pos == len;
+        saved = local_name[pos]; local_name[pos] = '\0';
+        rc = amiga_index_path(index, local_name, final ? is_directory : 1, final);
+        local_name[pos] = saved;
+        if (rc) return 1;
     }
-    if (index->count >= AMIGA_NAME_INDEX_MAX ||
-        index->key_bytes + (unsigned long)len + 1UL >
-            AMIGA_NAME_INDEX_BYTES_MAX) {
-        index->error_reason = "Amiga collision index limit reached";
-        return 1;
-    }
-    index->names[index->count].key = (char *)malloc(len + 1);
-    if (index->names[index->count].key == NULL) {
-        index->error_reason = "not enough memory for Amiga collision checks";
-        return 1;
-    }
-    memcpy(index->names[index->count].key, local_name, len + 1);
-    index->names[index->count].is_directory = is_directory;
-    index->count++;
-    index->key_bytes += (unsigned long)len + 1UL;
     return 0;
 }
 
@@ -1011,6 +1060,13 @@ static int amiga_stat_same_file(const struct stat *a, const struct stat *b)
            a->st_ctime == b->st_ctime;
 }
 
+static int amiga_stat_same_moved_file(const struct stat *a, const struct stat *b)
+{
+    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_size == b->st_size && a->st_mtime == b->st_mtime;
+}
+
 static long amiga_staged_write(void *handle, const void *data, bp_uint32 count)
 {
     amiga_staged_output_t *stage = (amiga_staged_output_t *)handle;
@@ -1073,7 +1129,7 @@ static int amiga_commit_staged(amiga_staged_output_t *stage, int force)
         if (!Rename((STRPTR)stage->target, (STRPTR)backup)) return BP_ERR_IO;
         has_backup = 1;
         if (lstat(backup, &backup_stat) != 0 ||
-            !amiga_stat_same_file(&stage->target_snapshot, &backup_stat)) {
+            !amiga_stat_same_moved_file(&stage->target_snapshot, &backup_stat)) {
             if (!Rename((STRPTR)backup, (STRPTR)stage->target))
                 fprintf(stderr,
                         "boltpack: changed destination remains at recovery path: %s\n",
@@ -1096,6 +1152,67 @@ static int amiga_commit_staged(amiga_staged_output_t *stage, int force)
         return BP_ERR_PARTIAL;
     }
     return BP_OK;
+}
+
+typedef struct {
+    amiga_staged_output_t stage;
+    unsigned long protection;
+    char comment[80];
+} amiga_archive_stage_t;
+
+static int amiga_archive_stage_open(amiga_archive_stage_t *archive,
+                                    const char *target, int allow_missing,
+                                    FILE **out)
+{
+    amiga_staged_output_t *stage = &archive->stage;
+    memset(archive, 0, sizeof(*archive));
+    stage->fd = -1;
+    *out = NULL;
+    if (strlen(target) >= sizeof(stage->target)) return BP_ERR_NAME_TOO_LONG;
+    strcpy(stage->target, target);
+    if (lstat(target, &stage->target_snapshot) == 0) {
+        stage->target_existed = 1;
+        if (!S_ISREG(stage->target_snapshot.st_mode) ||
+            amiga_get_meta(target, &archive->protection, archive->comment) != 0 ||
+            (archive->protection & (FIBF_WRITE | FIBF_DELETE)) != 0)
+            return BP_ERR_IO;
+    } else if (errno != ENOENT || !allow_missing) return BP_ERR_IO;
+    if (amiga_make_sibling_template(target, "BPXXXXXX", stage->temporary,
+                                    sizeof(stage->temporary)) != 0)
+        return BP_ERR_NAME_TOO_LONG;
+    stage->fd = mkstemp(stage->temporary);
+    if (stage->fd < 0) { stage->temporary[0] = '\0'; return BP_ERR_IO; }
+    if (amiga_set_default_file_mode(stage->temporary) != 0) {
+        amiga_discard_staged(stage);
+        return BP_ERR_IO;
+    }
+    *out = fdopen(stage->fd, "w+b");
+    if (*out == NULL) { amiga_discard_staged(stage); return BP_ERR_IO; }
+    return BP_OK;
+}
+
+static void amiga_archive_stage_discard(amiga_archive_stage_t *archive, FILE **fp)
+{
+    if (*fp != NULL) { (void)fclose(*fp); *fp = NULL; archive->stage.fd = -1; }
+    amiga_discard_staged(&archive->stage);
+}
+
+static int amiga_archive_stage_finish(amiga_archive_stage_t *archive, FILE **fp)
+{
+    int rc;
+    if (fflush(*fp) != 0) { amiga_archive_stage_discard(archive, fp); return BP_ERR_IO; }
+    rc = fclose(*fp);
+    *fp = NULL;
+    archive->stage.fd = -1;
+    if (rc != 0 || (archive->stage.target_existed &&
+        amiga_apply_meta(archive->stage.temporary, archive->protection,
+                         archive->comment) != 0)) {
+        amiga_discard_staged(&archive->stage);
+        return BP_ERR_IO;
+    }
+    rc = amiga_commit_staged(&archive->stage, 1);
+    if (rc != BP_OK) amiga_discard_staged(&archive->stage);
+    return rc;
 }
 
 typedef struct extract_ctx extract_ctx_t;
@@ -1560,7 +1677,9 @@ static void usage(void)
     fprintf(stderr,
         "\nOptions:\n"
         "  -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k (auto-detected)\n"
+        "  --interchange-profile-1  Mini-compatible limits for create/add\n"
         "  -0        Store only (no compression)\n"
+        "  -1        Use BoltLite compression\n"
         "  -F        Use fluff LZ77+Huffman compression (better ratio than boltlz)\n"
         "  -q        Quiet (summary only)\n"
         "  -qq       Silent (errors only)\n"
@@ -1574,12 +1693,14 @@ static void usage(void)
 
 /* ---- commands ---------------------------------------------------------- */
 
-static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
+static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
+                      int interchange_profile)
 {
     const char  *archive_name;
     FILE        *fp;
     bp_io_t      aio;
     bp_archive_t ar;
+    amiga_archive_stage_t archive_stage;
     int          rc, i;
     clock_t      start;
     clock_t      elapsed_clocks;
@@ -1599,18 +1720,22 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
         return 1;
     }
 
-    fp = fopen(archive_name, "w+b");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", archive_name);
+    rc = amiga_archive_stage_open(&archive_stage, archive_name, 1, &fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", archive_name);
         return 1;
     }
     bp_io_from_file(&aio, fp);
 
-    rc = bp_archive_create(&ar, &aio, block_size, method);
+    rc = interchange_profile
+        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        amiga_archive_stage_discard(&archive_stage, &fp); return 1;
     }
+    if (interchange_profile && method == BP_METHOD_STORED)
+        ar.method = BP_METHOD_STORED;
 
     start = clock();
 
@@ -1621,14 +1746,14 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); amiga_archive_stage_discard(&archive_stage, &fp); return 1;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
-        bp_archive_close(&ar); fclose(fp); return 1;
+        bp_archive_close(&ar); amiga_archive_stage_discard(&archive_stage, &fp); return 1;
     }
 
     elapsed_clocks = clock() - start;
@@ -1680,7 +1805,11 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     }
 
     bp_archive_close(&ar);
-    fclose(fp);
+    rc = amiga_archive_stage_finish(&archive_stage, &fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n", bp_strerror(rc));
+        return 1;
+    }
     return 0;
 }
 
@@ -2028,7 +2157,7 @@ static int cmd_delete(int argc, char **argv)
     int          del_count;
     FILE        *src_fp, *dst_fp;
     bp_io_t      src_io, dst_io;
-    char         tmp_name[BP_MAX_PATH];
+    amiga_archive_stage_t archive_stage;
     bp_uint32    deleted = 0;
     int          rc;
 
@@ -2040,16 +2169,15 @@ static int cmd_delete(int argc, char **argv)
     del_names    = (const char **)&argv[1];
     del_count    = argc - 1;
 
+    rc = amiga_archive_stage_open(&archive_stage, archive_name, 0, &dst_fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", archive_name);
+        return 1;
+    }
     src_fp = fopen(archive_name, "rb");
     if (!src_fp) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
-    sprintf(tmp_name, "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
-    if (!dst_fp) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
-        fclose(src_fp); return 1;
+        amiga_archive_stage_discard(&archive_stage, &dst_fp); return 1;
     }
 
     bp_io_from_file(&src_io, src_fp);
@@ -2057,19 +2185,19 @@ static int cmd_delete(int argc, char **argv)
 
     rc = bp_archive_delete(&src_io, &dst_io, del_names,
                            (bp_uint32)del_count, &deleted);
-    fclose(src_fp);
-    fclose(dst_fp);
+    if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
-        remove(tmp_name); return 1;
+        amiga_archive_stage_discard(&archive_stage, &dst_fp); return 1;
     }
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
-        remove(tmp_name); return 1;
+        amiga_archive_stage_discard(&archive_stage, &dst_fp); return 1;
     }
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
+    rc = amiga_archive_stage_finish(&archive_stage, &dst_fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n", bp_strerror(rc));
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
@@ -2079,12 +2207,17 @@ static int cmd_delete(int argc, char **argv)
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
-                   bp_uint8 method)
+                   bp_uint8 method, int interchange_profile)
 {
     const char  *archive_name;
     FILE        *fp;
+    FILE        *source;
     bp_io_t      io;
     bp_archive_t ar;
+    amiga_archive_stage_t archive_stage;
+    char         copy_buffer[512];
+    size_t       copied;
+    int          copy_failed = 0;
     int          rc, i;
 
     if (argc < 2) {
@@ -2102,17 +2235,39 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
-    fp = fopen(archive_name, "r+b");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+    rc = amiga_archive_stage_open(&archive_stage, archive_name, 0, &fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", archive_name);
         return 1;
     }
+    source = fopen(archive_name, "rb");
+    if (!source) { amiga_archive_stage_discard(&archive_stage, &fp); return 1; }
+    while ((copied = fread(copy_buffer, 1, sizeof(copy_buffer), source)) != 0) {
+        if (fwrite(copy_buffer, 1, copied, fp) != copied) {
+            copy_failed = 1;
+            break;
+        }
+    }
+    rc = (copy_failed || ferror(source) || ferror(fp)) ? BP_ERR_IO : BP_OK;
+    if (fclose(source) != 0) rc = BP_ERR_IO;
+    if (rc == BP_OK && (fflush(fp) != 0 || fseek(fp, 0, SEEK_SET) != 0)) rc = BP_ERR_IO;
+    if (rc != BP_OK) { amiga_archive_stage_discard(&archive_stage, &fp); return 1; }
     bp_io_from_file(&io, fp);
 
     rc = bp_archive_open_append(&ar, &io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        amiga_archive_stage_discard(&archive_stage, &fp); return 1;
+    }
+    if (interchange_profile) {
+        rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: archive does not meet Interchange Profile 1: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar);
+            amiga_archive_stage_discard(&archive_stage, &fp);
+            return 1;
+        }
     }
 
     for (i = 1; i < argc; i++) {
@@ -2122,16 +2277,21 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); amiga_archive_stage_discard(&archive_stage, &fp); return 1;
         }
     }
 
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        amiga_archive_stage_discard(&archive_stage, &fp);
+        return 1;
+    }
+    rc = amiga_archive_stage_finish(&archive_stage, &fp);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n", bp_strerror(rc));
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
@@ -2149,6 +2309,8 @@ int main(int argc, char **argv)
     const char *out_dir  = NULL;
     int        force     = 0;
     int        dry_run   = 0;
+    int        interchange_profile = 0;
+    int        codec_given = 0;
     int        i;
 
     if (argc < 3) { usage(); return 1; }
@@ -2173,10 +2335,14 @@ int main(int argc, char **argv)
                 return 1;
             }
             i += 2;
+        } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
+            interchange_profile = 1; i++;
         } else if (strcmp(argv[i], "-0") == 0) {
-            method = BP_METHOD_STORED; i++;
+            method = BP_METHOD_STORED; codec_given = 1; i++;
+        } else if (strcmp(argv[i], "-1") == 0) {
+            method = BP_METHOD_BOLTLITE; codec_given = 1; i++;
         } else if (strcmp(argv[i], "-F") == 0) {
-            method = BP_METHOD_FLUFF; i++;
+            method = BP_METHOD_FLUFF; codec_given = 1; i++;
         } else if (strcmp(argv[i], "-qq") == 0) {
             g_verbosity = VERB_SILENT; i++;
         } else if (strcmp(argv[i], "-q") == 0) {
@@ -2197,13 +2363,24 @@ int main(int argc, char **argv)
         }
     }
 
+    if (interchange_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED)) {
+            fprintf(stderr, "boltpack: Interchange Profile 1 requires create/add, BoltLite or Stored, and 16 KiB blocks\n");
+            return 1;
+        }
+        block_size = BP_BLOCK_16K;
+        if (method != BP_METHOD_STORED) method = BP_METHOD_BOLTLITE;
+    }
     if (method == BP_METHOD_FLUFF && block_size == 0) {
         block_size = BP_BLOCK_256K;
     }
 
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method);
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method, interchange_profile);
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method, interchange_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n"); return 1;

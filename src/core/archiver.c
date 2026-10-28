@@ -738,6 +738,7 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
     bp_uint64 total_comp;
     bp_uint8 *in_buf = NULL;
     bp_uint8 *out_buf = NULL;
+    bp_uint8 *boltlite_work = NULL;
     bp_uint32 out_buf_size;
     fluff_ctx_t *fctx = NULL;
     bp_packed_entry_t local_packed;
@@ -1214,6 +1215,11 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
             in_buf  = ar->seq_in_buf;
             out_buf = ar->seq_out_buf;
 
+            if (actual_method == BP_METHOD_BOLTLITE) {
+                boltlite_work = (bp_uint8 *)malloc((size_t)BOLTLITE_WORK_SIZE);
+                if (boltlite_work == NULL) { rc = BP_ERR_NOMEM; goto seq_done; }
+            }
+
             if (actual_method == BP_METHOD_BOLTLZ && ar->seq_boltlz_work == NULL) {
                 ar->seq_boltlz_work = malloc((size_t)bp_compress_work_size());
                 if (ar->seq_boltlz_work == NULL) { rc = BP_ERR_NOMEM; goto seq_done; }
@@ -1256,7 +1262,6 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                 adler = bp_checksum_typed(ck_type, adler, in_buf, chunk);
 
                 if (actual_method == BP_METHOD_BOLTLITE) {
-                    bp_uint8 boltlite_work[BOLTLITE_WORK_SIZE];
                     comp_len = boltlite_compress(in_buf, chunk, out_buf, boltlite_work);
                     if (comp_len == 0) {
                         rc = BP_ERR_COMPRESS;
@@ -1350,6 +1355,7 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
 
             rc = BP_OK;
 seq_done:
+            free(boltlite_work);
             if (rc != BP_OK) return rc;
             /* buffers and context owned by ar; freed in bp_archive_close */
             }

@@ -32,6 +32,7 @@
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
+#include "amiga_source_name.h"
 
 #ifndef BP_CREATOR_OS
 #  define BP_CREATOR_OS BP_OS_AMIGA_68K
@@ -176,6 +177,7 @@ static int current_interchange_profile;
 static char status_lines[STATUS_LINE_COUNT][160];
 static int gather_count;
 static char **gather_files;
+static bp_uint8 gather_types[MAX_ENTRIES];
 static int gather_capacity;
 
 static void show_requester(const char *title, const char *msg);
@@ -658,6 +660,10 @@ static int ensure_gather_capacity(int needed)
 static int add_gather_file(const char *path)
 {
     char *copy;
+    struct stat st;
+
+    if (lstat(path, &st) != 0 || S_ISLNK(st.st_mode) ||
+        (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) return -3;
 
     if (!ensure_gather_capacity(gather_count + 1))
         return -1;
@@ -666,6 +672,7 @@ static int add_gather_file(const char *path)
     if (copy == NULL)
         return -1;
 
+    gather_types[gather_count] = S_ISDIR(st.st_mode) ? BP_TYPE_DIR : BP_TYPE_DATA;
     gather_files[gather_count++] = copy;
     return 0;
 }
@@ -1509,14 +1516,7 @@ static void do_info(void)
 #define GUI_DIR_QUEUE_MAX        256U
 #define GUI_DIR_QUEUE_BYTES_MAX  32768UL
 
-typedef struct {
-    bp_io_t io;
-    int fd;
-    char target[BP_MAX_PATH];
-    char temporary[BP_MAX_PATH];
-    int target_existed;
-    struct stat target_snapshot;
-} gui_staged_output_t;
+#include "amiga_stage.h"
 
 typedef struct {
     bp_io_t io;
@@ -1536,18 +1536,7 @@ typedef struct gui_dir_restore {
     char comment[80];
 } gui_dir_restore_t;
 
-typedef struct {
-    char *key;
-    int is_directory;
-} gui_name_key_t;
-
-typedef struct {
-    const char *dest;
-    gui_name_key_t names[GUI_NAME_INDEX_MAX];
-    unsigned int count;
-    unsigned long bytes;
-    const char *error;
-} gui_name_index_t;
+#include "amiga_name_index.h"
 
 struct amiga_extract_ctx {
     char dest[BP_MAX_PATH];
@@ -1563,104 +1552,6 @@ struct amiga_extract_ctx {
     unsigned int directory_count;
     unsigned long directory_path_bytes;
 };
-
-static unsigned char gui_fold_byte(unsigned char c)
-{
-    if (c >= 'A' && c <= 'Z') return (unsigned char)(c + ('a' - 'A'));
-    if ((c >= 0xC0 && c <= 0xD6) || (c >= 0xD8 && c <= 0xDE))
-        return (unsigned char)(c + 0x20);
-    return c;
-}
-
-static void gui_fold_name(char *name)
-{
-    unsigned char *p = (unsigned char *)name;
-    while (*p) { *p = gui_fold_byte(*p); p++; }
-}
-
-static int gui_local_name_safe(const char *name)
-{
-    const unsigned char *p = (const unsigned char *)name;
-    while (*p) {
-        if (*p == ':') return 0;
-        p++;
-    }
-    return 1;
-}
-
-static int gui_build_path(const char *dest, const char *local_name,
-                          char *path, size_t cap)
-{
-    size_t dlen = strlen(dest), nlen = strlen(local_name), sep = 1, len;
-    if (dlen != 0 && (dest[dlen - 1] == '/' || dest[dlen - 1] == ':'))
-        sep = 0;
-    if (dlen + sep + nlen + 1 > cap) return -1;
-    memcpy(path, dest, dlen);
-    if (sep) path[dlen++] = '/';
-    memcpy(path + dlen, local_name, nlen + 1);
-    len = strlen(path);
-    while (len > 0 && path[len - 1] == '/') path[--len] = '\0';
-    return 0;
-}
-
-static int gui_path_prefix(const char *prefix, const char *path)
-{
-    size_t n = strlen(prefix);
-    return strncmp(prefix, path, n) == 0 && path[n] == '/';
-}
-
-static int gui_preflight_name(const bp_entry_t *entry, void *ud)
-{
-    gui_name_index_t *index = (gui_name_index_t *)ud;
-    char local[BP_MAX_PATH], full[BP_MAX_PATH];
-    size_t len;
-    unsigned int i;
-    int is_dir;
-    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
-        entry->entry_type != BP_TYPE_SYMLINK) return 0;
-    if (!bp_name_is_safe(entry->name) ||
-        bp_utf8_to_local(entry->name, local, sizeof(local), BP_CP_8859_1) != 0 ||
-        !gui_local_name_safe(local) ||
-        gui_build_path(index->dest, local, full, sizeof(full)) != 0)
-        return 0; /* extraction will report the unrepresentable or unsafe name */
-    len = strlen(local);
-    while (len && local[len - 1] == '/') local[--len] = '\0';
-    if (len == 0) return 0;
-    gui_fold_name(local);
-    is_dir = entry->entry_type == BP_TYPE_DIR;
-    for (i = 0; i < index->count; i++) {
-        const char *old = index->names[i].key;
-        if (strcmp(old, local) == 0 ||
-            (!index->names[i].is_directory && gui_path_prefix(old, local)) ||
-            (!is_dir && gui_path_prefix(local, old))) {
-            index->error = "Archive names collide on this Amiga destination";
-            return 1;
-        }
-    }
-    if (index->count >= GUI_NAME_INDEX_MAX ||
-        index->bytes + (unsigned long)len + 1UL > GUI_NAME_INDEX_BYTES_MAX) {
-        index->error = "Archive exceeds the Amiga name preflight limit";
-        return 1;
-    }
-    index->names[index->count].key = (char *)malloc(len + 1);
-    if (index->names[index->count].key == NULL) {
-        index->error = "Not enough memory for Amiga name checks";
-        return 1;
-    }
-    memcpy(index->names[index->count].key, local, len + 1);
-    index->names[index->count].is_directory = is_dir;
-    index->count++;
-    index->bytes += (unsigned long)len + 1UL;
-    return 0;
-}
-
-static void gui_name_index_clear(gui_name_index_t *index)
-{
-    unsigned int i;
-    for (i = 0; i < index->count; i++) free(index->names[i].key);
-    index->count = 0;
-    index->bytes = 0;
-}
 
 static int gui_check_dir(const char *path, int create)
 {
@@ -1708,28 +1599,6 @@ static int gui_make_parents(const char *path)
     if (slash == NULL || slash == parent) return 0;
     *slash = '\0';
     return gui_makedirs_checked(parent);
-}
-
-static int gui_make_temp_name(const char *target, const char *leaf,
-                              char *out, size_t cap)
-{
-    const char *slash = strrchr(target, '/');
-    const char *colon = strchr(target, ':');
-    size_t prefix = 0;
-    if (colon && (!slash || colon > slash)) prefix = (size_t)(colon - target) + 1;
-    else if (slash) prefix = (size_t)(slash - target) + 1;
-    if (prefix + strlen(leaf) + 1 > cap) return -1;
-    memcpy(out, target, prefix);
-    strcpy(out + prefix, leaf);
-    return 0;
-}
-
-static int gui_same_file(const struct stat *a, const struct stat *b)
-{
-    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
-           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
-           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
-           a->st_ctime == b->st_ctime;
 }
 
 static long gui_stage_write(void *handle, const void *data, bp_uint32 count)
@@ -1785,55 +1654,6 @@ static int gui_set_default_mode(const char *path)
     mode_t mask = umask(0);
     (void)umask(mask);
     return chmod(path, (mode_t)(0666 & ~mask));
-}
-
-static void gui_discard_stage(gui_staged_output_t *stage)
-{
-    if (stage->fd >= 0) { (void)close(stage->fd); stage->fd = -1; }
-    if (stage->temporary[0]) {
-        (void)unlink(stage->temporary);
-        stage->temporary[0] = '\0';
-    }
-}
-
-static int gui_commit_stage(gui_staged_output_t *stage)
-{
-    struct stat current, backup_st;
-    char backup[BP_MAX_PATH];
-    int fd, backup_moved = 0;
-    if (lstat(stage->target, &current) == 0) {
-        if (!stage->target_existed || !gui_same_file(&stage->target_snapshot, &current))
-            return BP_ERR_PARTIAL;
-    } else if (errno != ENOENT || stage->target_existed) return BP_ERR_IO;
-    if (stage->target_existed) {
-        if (gui_make_temp_name(stage->target, "BRXXXXXX", backup,
-                               sizeof(backup)) != 0) return BP_ERR_NAME_TOO_LONG;
-        fd = mkstemp(backup);
-        if (fd < 0) return BP_ERR_IO;
-        if (close(fd) != 0 || unlink(backup) != 0) {
-            (void)unlink(backup);
-            return BP_ERR_IO;
-        }
-        if (!Rename((STRPTR)stage->target, (STRPTR)backup)) return BP_ERR_IO;
-        backup_moved = 1;
-        if (lstat(backup, &backup_st) != 0 ||
-            !gui_same_file(&stage->target_snapshot, &backup_st)) {
-            if (!Rename((STRPTR)backup, (STRPTR)stage->target))
-                log_message("Changed destination remains at recovery path: %s", backup);
-            return BP_ERR_PARTIAL;
-        }
-    }
-    if (!Rename((STRPTR)stage->temporary, (STRPTR)stage->target)) {
-        if (backup_moved && !Rename((STRPTR)backup, (STRPTR)stage->target))
-            log_message("Original file remains at recovery path: %s", backup);
-        return BP_ERR_IO;
-    }
-    stage->temporary[0] = '\0';
-    if (backup_moved && !DeleteFile((STRPTR)backup)) {
-        log_message("Cannot remove replaced-file backup: %s", backup);
-        return BP_ERR_PARTIAL;
-    }
-    return BP_OK;
 }
 
 static gui_dir_restore_t *gui_queue_dir(struct amiga_extract_ctx *ctx,
@@ -2194,50 +2014,7 @@ static void do_extract(void)
 
 /* ---- Create ---- */
 
-static int gather_dir(const char *dir)
-{
-    DIR *dp;
-    struct dirent *de;
-    int rc;
-
-    dp = opendir(dir);
-    if (!dp) {
-        log_message("Gather directory skipped (cannot open): %s",
-                    dir ? dir : "(null)");
-        return 0;
-    }
-
-    while ((de = readdir(dp)) != NULL) {
-        char full[BP_MAX_PATH];
-        struct stat st;
-
-        if (de->d_name[0] == '.') continue;
-        sprintf(full, "%s/%s", dir, de->d_name);
-
-        if (stat(full, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            rc = gather_dir(full);
-            if (rc != 0) {
-                closedir(dp);
-                return rc;
-            }
-        } else if (gather_count < MAX_ENTRIES) {
-            rc = add_gather_file(full);
-            if (rc != 0) {
-                closedir(dp);
-                return rc;
-            }
-            if (gather_count == 1 || (gather_count % 64) == 0)
-                log_message("Gathered %d file(s) so far, latest='%s'",
-                            gather_count, full);
-        } else {
-            closedir(dp);
-            return -2;
-        }
-    }
-    closedir(dp);
-    return 0;
-}
+#include "amiga_gather.h"
 
 static double gathered_total_bytes(void)
 {
@@ -2248,7 +2025,7 @@ static double gathered_total_bytes(void)
     for (i = 0; i < gather_count; i++) {
         struct stat st;
 
-        if (stat(gather_files[i], &st) != 0)
+        if (lstat(gather_files[i], &st) != 0 || !S_ISREG(st.st_mode))
             continue;
         total += (double)st.st_size;
     }
@@ -2308,7 +2085,7 @@ static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
     return 1;
 }
 
-/* Append Amiga protection bits and comment after a successfully added file. */
+/* Append Amiga protection bits and comment after a successfully added subject. */
 static int gui_add_native_metadata(bp_archive_t *ar, const char *arcname,
                                    const char *path, int *captured)
 {
@@ -2369,9 +2146,11 @@ static void do_create_from_paths(const char **paths, int path_count)
     FILE *outfp;
     bp_io_t outio;
     bp_archive_t ar;
+    gui_staged_output_t archive_stage;
     struct stat out_st;
     int gather_rc;
     int preservation_partial;
+    int have_base;
     int rc, i;
 
     log_message("Create requested for %d selected path(s)", path_count);
@@ -2384,24 +2163,32 @@ static void do_create_from_paths(const char **paths, int path_count)
     gather_count = 0;
     base_dir[0] = '\0';
     gather_rc = 0;
+    have_base = 0;
 
     for (i = 0; i < path_count; i++) {
         struct stat st;
-        if (stat(paths[i], &st) != 0) continue;
-
-        if (base_dir[0] == '\0') {
-            const char *sl;
-            strncpy(base_dir, paths[i], sizeof(base_dir) - 1);
-            base_dir[sizeof(base_dir) - 1] = '\0';
-            sl = strrchr(base_dir, '/');
-            if (sl)
-                base_dir[sl - base_dir] = '\0';
-            else
-                base_dir[0] = '\0';
+        if (lstat(paths[i], &st) != 0 || S_ISLNK(st.st_mode) ||
+            (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) {
+            gather_rc = -3;
+            break;
         }
 
-        if (S_ISDIR(st.st_mode))
-            gather_rc = gather_dir(paths[i]);
+        if (!have_base) {
+            if (gui_source_parent(paths[i], base_dir, sizeof(base_dir)) != 0) {
+                gather_rc = -4;
+                break;
+            }
+            have_base = 1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            /* The selected volume root has no archive-relative name. */
+            if (strcmp(paths[i], base_dir) != 0) {
+                if (gather_count >= MAX_ENTRIES) gather_rc = -2;
+                else gather_rc = add_gather_file(paths[i]);
+            }
+            if (gather_rc == 0) gather_rc = gather_dir(paths[i]);
+        }
         else if (gather_count < MAX_ENTRIES)
             gather_rc = add_gather_file(paths[i]);
         else
@@ -2426,7 +2213,9 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     if (gather_rc != 0) {
         log_message("Create aborted during gather: rc=%d", gather_rc);
-        show_requester("Error", "Out of memory");
+        show_requester("Error", gather_rc == -4 ? "Source path too long" :
+                       gather_rc == -3 ? "Cannot read or archive source" :
+                       "Out of memory");
         free_gather_files();
         return;
     }
@@ -2436,6 +2225,52 @@ static void do_create_from_paths(const char **paths, int path_count)
         show_requester("BoltPack", "No files to archive");
         free_gather_files();
         return;
+    }
+
+    /* Check projected source names before asking for or opening an output. */
+    {
+        gui_name_index_t *index = (gui_name_index_t *)calloc(1, sizeof(*index));
+        const char *name_error = NULL;
+        if (!index) {
+            show_requester("Error", "Out of memory for source name checks");
+            free_gather_files();
+            return;
+        }
+        index->dest = "";
+        for (i = 0; i < gather_count; i++) {
+            char name[BP_MAX_PATH * 3 + 1];
+            bp_entry_t entry;
+            struct stat source_st;
+            bp_uint8 type;
+            if (lstat(gather_files[i], &source_st) != 0 || S_ISLNK(source_st.st_mode) ||
+                (!S_ISDIR(source_st.st_mode) && !S_ISREG(source_st.st_mode))) {
+                name_error = "Cannot inspect source entry";
+                break;
+            }
+            type = S_ISDIR(source_st.st_mode) ? BP_TYPE_DIR : BP_TYPE_DATA;
+            if (type != gather_types[i]) {
+                name_error = "Source entry changed during gathering";
+                break;
+            }
+            if (gui_source_archive_name(base_dir, gather_files[i], type, name, sizeof(name)) != 0) {
+                name_error = "Invalid or unrepresentable source name";
+                break;
+            }
+            memset(&entry, 0, sizeof(entry));
+            entry.name = name;
+            entry.entry_type = type;
+            if (gui_preflight_name(&entry, index) != 0) {
+                name_error = index->error ? index->error : "Source name check failed";
+                break;
+            }
+        }
+        gui_name_index_clear(index);
+        free(index);
+        if (name_error) {
+            show_requester("Error", name_error);
+            free_gather_files();
+            return;
+        }
     }
 
     if (!ensure_selected_method_available()) {
@@ -2469,15 +2304,49 @@ static void do_create_from_paths(const char **paths, int path_count)
         return;
     }
 
+    if (strlen((const char *)freq->fr_Drawer) >= sizeof(out_path)) {
+        FreeAslRequest(freq);
+        show_requester("Error", "Destination path too long");
+        free_gather_files();
+        return;
+    }
     strcpy(out_path, (const char *)freq->fr_Drawer);
-    AddPart((STRPTR)out_path, freq->fr_File, BP_MAX_PATH);
+    if (!AddPart((STRPTR)out_path, freq->fr_File, BP_MAX_PATH)) {
+        FreeAslRequest(freq);
+        show_requester("Error", "Destination path too long");
+        free_gather_files();
+        return;
+    }
     FreeAslRequest(freq);
     log_message("Create output path selected: %s", out_path);
 
-    outfp = fopen(out_path, "wb");
+    memset(&archive_stage, 0, sizeof(archive_stage));
+    archive_stage.fd = -1;
+    strcpy(archive_stage.target, out_path);
+    if (lstat(out_path, &out_st) == 0) {
+        if (!S_ISREG(out_st.st_mode) || S_ISLNK(out_st.st_mode)) {
+            show_requester("Error", "Destination is not a regular file");
+            free_gather_files();
+            return;
+        }
+        archive_stage.target_existed = 1;
+        archive_stage.target_snapshot = out_st;
+    } else if (errno != ENOENT) {
+        show_requester("Error", "Cannot inspect destination");
+        free_gather_files();
+        return;
+    }
+    if (gui_make_temp_name(out_path, "BPXXXXXX", archive_stage.temporary,
+                           sizeof(archive_stage.temporary)) != 0 ||
+        (archive_stage.fd = mkstemp(archive_stage.temporary)) < 0) {
+        show_requester("Error", "Cannot create archive staging file");
+        free_gather_files();
+        return;
+    }
+    outfp = fdopen(archive_stage.fd, "w+b");
     if (!outfp) {
-        log_message("Create failed: cannot open output file '%s'", out_path);
-        show_requester("Error", "Cannot create file");
+        gui_discard_stage(&archive_stage);
+        show_requester("Error", "Cannot open archive staging file");
         free_gather_files();
         return;
     }
@@ -2498,7 +2367,9 @@ static void do_create_from_paths(const char **paths, int path_count)
                 out_path, rc, bp_strerror(rc), method_name(current_method),
                 current_interchange_profile);
     if (rc != BP_OK) {
-        fclose(outfp);
+        (void)fclose(outfp);
+        archive_stage.fd = -1;
+        gui_discard_stage(&archive_stage);
         show_requester("Error", "Create failed");
         ClearPointer(win);
         stop_progress_ui(&progress);
@@ -2510,26 +2381,35 @@ static void do_create_from_paths(const char **paths, int path_count)
     ar.progress_data = &progress;
 
     for (i = 0; i < gather_count; i++) {
-        char *rel;
+        char name[BP_MAX_PATH * 3 + 1];
         struct stat st;
         bp_uint64 fsize, mtime;
         bp_uint16 mtime_flags;
+        bp_uint8 type;
         int metadata_captured;
         FILE *fp;
         bp_io_t fio;
 
         update_create_queue_state(base_dir, i, "[>]");
-        rel = gather_files[i];
-        if (base_dir[0] && strncmp(rel, base_dir, strlen(base_dir)) == 0)
-            rel += strlen(base_dir) + 1;
-
-        if (stat(gather_files[i], &st) != 0) {
-            log_message("Create skip %d/%d: stat failed for '%s'",
+        if (lstat(gather_files[i], &st) != 0 || S_ISLNK(st.st_mode) ||
+            (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) {
+            log_message("Create failed %d/%d: invalid source '%s'",
                         i + 1, gather_count, gather_files[i]);
             update_create_queue_state(base_dir, i, "[!]");
-            continue;
+            rc = BP_ERR_IO;
+            break;
         }
-        fsize = bp_off_to_u64((bp_off_t)st.st_size);
+        type = S_ISDIR(st.st_mode) ? BP_TYPE_DIR : BP_TYPE_DATA;
+        if (type != gather_types[i]) {
+            log_message("Create failed: source type changed: %s", gather_files[i]);
+            rc = BP_ERR_IO;
+            break;
+        }
+        if (gui_source_archive_name(base_dir, gather_files[i], type, name, sizeof(name)) != 0) {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
+        fsize = type == BP_TYPE_DIR ? bp_u64_from_u32(0) : bp_off_to_u64((bp_off_t)st.st_size);
         mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
                     ? BP_ENTRY_FLAG_MTIME_VALID : 0;
         if (mtime_flags == 0 && st.st_mtime != (time_t)0) {
@@ -2542,24 +2422,29 @@ static void do_create_from_paths(const char **paths, int path_count)
                     i + 1,
                     gather_count,
                     gather_files[i],
-                    rel,
+                    name,
                     u64_to_ull(fsize));
 
-        fp = fopen(gather_files[i], "rb");
-        if (!fp) {
-            log_message("Create skip %d/%d: cannot open '%s'",
-                        i + 1, gather_count, gather_files[i]);
-            update_create_queue_state(base_dir, i, "[!]");
-            continue;
+        if (type == BP_TYPE_DIR) {
+            rc = bp_archive_add_entry_ex(&ar, name, type, BP_CREATOR_OS,
+                                         NULL, fsize, mtime, mtime_flags);
+        } else {
+            fp = fopen(gather_files[i], "rb");
+            if (!fp) {
+                log_message("Create failed %d/%d: cannot open '%s'",
+                            i + 1, gather_count, gather_files[i]);
+                update_create_queue_state(base_dir, i, "[!]");
+                rc = BP_ERR_IO;
+                break;
+            }
+            fio = make_io(fp);
+            rc = bp_archive_add_entry_ex(&ar, name, type, BP_CREATOR_OS,
+                                         &fio, fsize, mtime, mtime_flags);
+            if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         }
-        fio = make_io(fp);
-
-        rc = bp_archive_add_entry_ex(&ar, rel,
-            BP_TYPE_DATA, BP_CREATOR_OS, &fio, fsize, mtime, mtime_flags);
-        fclose(fp);
 
         if (rc == BP_OK) {
-            rc = gui_add_native_metadata(&ar, rel, gather_files[i],
+            rc = gui_add_native_metadata(&ar, name, gather_files[i],
                                          &metadata_captured);
             if (rc == BP_OK && !metadata_captured) {
                 log_message("Could not read Amiga metadata for '%s'",
@@ -2585,7 +2470,29 @@ static void do_create_from_paths(const char **paths, int path_count)
                     out_path, rc, bp_strerror(rc));
     }
     bp_archive_close(&ar);
-    fclose(outfp);
+    if (fflush(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (fclose(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    archive_stage.fd = -1;
+    if (rc == BP_OK) {
+        if (archive_stage.target_existed) {
+            if (chmod(archive_stage.temporary,
+                      archive_stage.target_snapshot.st_mode & 0777) != 0)
+                rc = BP_ERR_IO;
+            /* Native protection/comment metadata on the old archive is not
+             * carried by chmod; report that limitation after replacement. */
+            preservation_partial = 1;
+        } else if (gui_set_default_mode(archive_stage.temporary) != 0) {
+            rc = BP_ERR_IO;
+        }
+    }
+    if (rc == BP_OK) {
+        rc = gui_commit_stage(&archive_stage);
+        if (rc == BP_ERR_PARTIAL && archive_stage.temporary[0] == '\0') {
+            preservation_partial = 1;
+            rc = BP_OK;
+        }
+    }
+    gui_discard_stage(&archive_stage);
     ClearPointer(win);
     stop_progress_ui(&progress);
     free_gather_files();
@@ -2608,7 +2515,7 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     if (preservation_partial)
         show_requester("Partial preservation",
-                       "Archive created, but some source metadata could not be saved");
+                       "Archive created, but some metadata or recovery cleanup was incomplete");
 
     /* Open the newly created archive */
     do_open(out_path);
@@ -2645,22 +2552,33 @@ static void do_create_dialog(void)
     num_args = (int)freq->fr_NumArgs;
     log_message("Create dialog selection count: %d", num_args);
 
+    if (strlen((const char *)freq->fr_Drawer) >= sizeof(path) ||
+        num_args > 256) {
+        FreeAslRequest(freq);
+        show_requester("Error", "Selection path or count exceeds the limit");
+        return;
+    }
+
     if (num_args > 0) {
         /* Multi-select mode */
         cnt = 0;
-        for (i = 0; i < num_args && cnt < 256; i++) {
+        for (i = 0; i < num_args; i++) {
             strcpy(path, (const char *)freq->fr_Drawer);
-            if (AddPart((STRPTR)path,
+            if (!AddPart((STRPTR)path,
                 (STRPTR)freq->fr_ArgList[i].wa_Name, BP_MAX_PATH)) {
-                selected_paths[cnt] = dup_string(path);
-                if (selected_paths[cnt] == NULL)
-                    break;
-                ptrs[cnt] = selected_paths[cnt];
-                cnt++;
+                FreeAslRequest(freq);
+                free_path_array(selected_paths, cnt);
+                show_requester("Error", "Selection path exceeds the limit");
+                return;
             }
+            selected_paths[cnt] = dup_string(path);
+            if (selected_paths[cnt] == NULL)
+                break;
+            ptrs[cnt] = selected_paths[cnt];
+            cnt++;
         }
         FreeAslRequest(freq);
-        if (i < num_args && cnt < 256 && selected_paths[cnt] == NULL) {
+        if (i < num_args) {
             free_path_array(selected_paths, cnt);
             show_requester("Error", "Out of memory");
             return;
@@ -2671,7 +2589,11 @@ static void do_create_dialog(void)
     } else {
         /* Single file */
         strcpy(path, (const char *)freq->fr_Drawer);
-        AddPart((STRPTR)path, freq->fr_File, BP_MAX_PATH);
+        if (!AddPart((STRPTR)path, freq->fr_File, BP_MAX_PATH)) {
+            FreeAslRequest(freq);
+            show_requester("Error", "Selection path exceeds the limit");
+            return;
+        }
         FreeAslRequest(freq);
         selected_paths[0] = dup_string(path);
         if (selected_paths[0] == NULL) {
