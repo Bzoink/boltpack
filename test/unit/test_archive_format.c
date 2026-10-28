@@ -958,6 +958,48 @@ static void test_previous_versions_rejected(void)
         UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_VERSION,
                    "mini test rejects previous version with valid header CRC");
     }
+    rc = create_test_archive(&mem, BP_METHOD_STORED);
+    UNIT_CHECK(rc == BP_OK, "prepare reserved archive flags fixture");
+    if (rc == BP_OK) {
+        bp_write_le16(mem.buf + 6, 1);
+        bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                      bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+        io = make_mem_io(&mem);
+        UNIT_CHECK(bp_archive_list(&io, list_cb, NULL) == BP_ERR_CORRUPT,
+                   "full list rejects reserved archive flags");
+        UNIT_CHECK(bp_archive_info(&io, &info) == BP_ERR_CORRUPT,
+                   "full info rejects reserved archive flags");
+        UNIT_CHECK(bp_archive_test(&io, test_cb, NULL) == BP_ERR_CORRUPT,
+                   "full test rejects reserved archive flags");
+        UNIT_CHECK(bp_mini_archive_info(&io, &mini_info) == BP_ERR_CORRUPT,
+                   "mini info rejects reserved archive flags");
+        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+                   "mini test rejects reserved archive flags");
+        {
+            MemIO dst;
+            bp_io_t dst_io;
+            bp_archive_t ar;
+            const char *names[1];
+            dst.buf = (unsigned char *)malloc(MEM_IO_CAP);
+            if (!dst.buf) exit(2);
+            dst.cap = MEM_IO_CAP; dst.size = 0; dst.pos = 0;
+            dst_io = make_mem_io(&dst);
+            names[0] = "missing";
+            UNIT_CHECK(bp_archive_open_append(&ar, &io, BP_BLOCK_8K,
+                                              BP_METHOD_STORED) == BP_ERR_CORRUPT,
+                       "append rejects reserved archive flags");
+            UNIT_CHECK(bp_archive_delete(&io, &dst_io, names, 1, NULL) == BP_ERR_CORRUPT && dst.size == 0,
+                       "delete rejects reserved archive flags before writing");
+            rc = bp_archive_create(&ar, &dst_io, BP_BLOCK_8K, BP_METHOD_STORED);
+            UNIT_CHECK(rc == BP_OK, "prepare archive copy destination");
+            if (rc == BP_OK) {
+                UNIT_CHECK(bp_archive_copy_from(&ar, &io) == BP_ERR_CORRUPT,
+                           "copy rejects reserved archive flags");
+                bp_archive_close(&ar);
+            }
+            free(dst.buf);
+        }
+    }
     free(mem.buf);
 }
 

@@ -2135,6 +2135,7 @@ int bp_archive_open_append(bp_archive_t *ar, bp_io_t *io,
         return BP_ERR_MAGIC;
     src_version = bp_read_le16(hdr + 4);
     if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+    if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
     if (src_version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -2880,6 +2881,8 @@ int bp_archive_info(bp_io_t *io, bp_archive_info_t *info)
         return BP_ERR_VERSION;
     }
 
+    if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
+
     if (version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -3073,6 +3076,7 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
             return BP_ERR_MAGIC;
         src_version = bp_read_le16(hdr + 4);
         if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+        if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
         if (src_version == BP_FORMAT_VERSION) {
             bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
             bp_uint32 calc   = bp_crc32(0, hdr, BP_HEADER_CRC_OFF);
@@ -3239,6 +3243,7 @@ int bp_archive_delete(bp_io_t *src_io, bp_io_t *dst_io,
         return BP_ERR_MAGIC;
     src_version = bp_read_le16(src_hdr + 4);
     if (src_version != BP_FORMAT_VERSION) return BP_ERR_VERSION;
+    if (bp_read_le16(src_hdr + 6) != 0) return BP_ERR_CORRUPT;
     if (src_version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(src_hdr + BP_HEADER_CRC_OFF);
         bp_uint32 calc   = bp_crc32(0, src_hdr, BP_HEADER_CRC_OFF);

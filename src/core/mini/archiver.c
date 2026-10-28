@@ -704,6 +704,7 @@ static int mini_read_archive_header(bp_io_t *io, bp_uint32 *file_count,
     *version      = bp_read_le16(hdr + 4);
     if (*version != BP_FORMAT_VERSION)
         return BP_ERR_VERSION;
+    if (bp_read_le16(hdr + 6) != 0) return BP_ERR_CORRUPT;
 
     if (*version == BP_FORMAT_VERSION) {
         bp_uint32 stored = bp_read_le32(hdr + BP_HEADER_CRC_OFF);
