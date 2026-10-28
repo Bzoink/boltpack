@@ -5,6 +5,10 @@
 **Status:** implementation in progress; the core and specification use format 6.  
 **Basis:** [archive format audit](archive-format-audit.md).
 
+**Next work:** [interoperability completion plan](interoperability-completion-plan.md)
+provides the ordered backlog, target dependencies, and evidence required to close
+the remaining work. The phases below retain the original requirements.
+
 This replaces the interoperability plan previously embedded in the audit. Its
 goal is predictable transfer: preserve file bytes, preserve representable names
 and attributes, and report every unsupported or lossy operation. Identical

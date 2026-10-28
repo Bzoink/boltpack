@@ -34,6 +34,7 @@ make
 | `BUILD.md`             | Native build procedures and platform-specific caveats  |
 | `mini.md`              | 16-bit mini variant architecture and capability limits |
 | [archive-format-plan.md](archive-format-plan.md) | Format 6 work plan and remaining interoperability tasks |
+| [interoperability-completion-plan.md](interoperability-completion-plan.md) | Ordered completion backlog, target environments, and exit criteria |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
 | `RELEASES.md`          | Release workflow (maintainer reference)                |
