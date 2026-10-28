@@ -115,6 +115,48 @@ static void test_index_bounds(void)
     bp_atari_name_set_free(&set);
 }
 
+static int tree_add(bp_atari_tree_t *tree, const char *name, int directory)
+{
+    char key[BP_ATARI_GEMDOS_PATH_MAX + 1];
+    unsigned int length;
+    int rc = bp_atari_project_name(name, directory, key, sizeof(key), &length);
+    return rc == BP_OK ? bp_atari_tree_add(tree, name, key, length, directory) : rc;
+}
+
+static void test_tree_collisions(void)
+{
+    bp_atari_tree_t tree;
+    char name[16];
+    unsigned int i;
+    int rc = BP_OK;
+    memset(&tree, 0, sizeof(tree));
+    check(tree_add(&tree, "Foo/A.TXT", 0) == BP_OK &&
+          tree_add(&tree, "foo/B.TXT", 0) == BP_ERR_CORRUPT,
+          "implicit parent names with different case collide");
+    bp_atari_tree_free(&tree);
+    check(tree_add(&tree, "DIR/FILE.TXT", 0) == BP_OK &&
+          tree_add(&tree, "DIR/", 1) == BP_OK &&
+          tree_add(&tree, "DIR/", 1) == BP_ERR_CORRUPT,
+          "explicit directory may follow implicit parent once");
+    bp_atari_tree_free(&tree);
+    check(tree_add(&tree, "DIR", 0) == BP_OK &&
+          tree_add(&tree, "DIR/FILE.TXT", 0) == BP_ERR_CORRUPT,
+          "file blocks a later directory prefix");
+    bp_atari_tree_free(&tree);
+    check(tree_add(&tree, "DIR/FILE.TXT", 0) == BP_OK &&
+          tree_add(&tree, "DIR", 0) == BP_ERR_CORRUPT,
+          "implicit directory blocks a later file prefix");
+    bp_atari_tree_free(&tree);
+    for (i = 0; i <= BP_ATARI_PATH_MAX_ENTRIES; i++) {
+        sprintf(name, "K%04u", i);
+        rc = tree_add(&tree, name, 0);
+        if (rc != BP_OK) break;
+    }
+    check(i == BP_ATARI_PATH_MAX_ENTRIES && rc == BP_ERR_OVERFLOW,
+          "tree index refuses path node 1,025");
+    bp_atari_tree_free(&tree);
+}
+
 int main(void)
 {
     char deep[BP_ATARI_GEMDOS_PATH_MAX + 2];
@@ -123,6 +165,7 @@ int main(void)
     int rc;
 
     printf("BoltPack Atari path projection tests\n\n");
+    test_tree_collisions();
     check(project_equals("readme.txt", 0, "README.TXT"),
           "ASCII filename is uppercased");
     check(project_equals("folder/subdir/file.bin", 0,

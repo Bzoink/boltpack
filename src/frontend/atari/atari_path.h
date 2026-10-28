@@ -144,4 +144,81 @@ static void bp_atari_name_set_free(bp_atari_name_set_t *set)
     bp_atari_name_set_init(set);
 }
 
+/* Include implicit parent directories and retain their original spelling.
+ * GEMDOS projection is ASCII, so exact and folded paths have equal lengths. */
+typedef struct bp_atari_tree_node_s {
+    struct bp_atari_tree_node_s *next;
+    char *names; /* projected name, NUL, exact name, NUL */
+    unsigned int length;
+    int directory;
+    int explicit_entry;
+} bp_atari_tree_node_t;
+
+typedef struct {
+    bp_atari_tree_node_t *nodes;
+    unsigned int count;
+    unsigned long bytes;
+} bp_atari_tree_t;
+
+static int bp_atari_tree_add(bp_atari_tree_t *tree, const char *exact,
+                             const char *projected, unsigned int length,
+                             int directory)
+{
+    unsigned int pos;
+    if (!tree || !exact || !projected || length == 0 ||
+        strlen(projected) != length || strlen(exact) < length)
+        return BP_ERR_INVALID_ARG;
+    for (pos = 0; pos <= length; pos++) {
+        bp_atari_tree_node_t *node;
+        unsigned long needed;
+        int final = pos == length;
+        int is_dir = final ? directory : 1;
+        if (!final && projected[pos] != '\\') continue;
+        for (node = tree->nodes; node; node = node->next) {
+            if (node->length == pos && memcmp(node->names, projected, pos) == 0)
+                break;
+        }
+        if (node) {
+            if (memcmp(node->names + pos + 1, exact, pos) != 0 ||
+                node->directory != is_dir || (final && node->explicit_entry))
+                return BP_ERR_CORRUPT;
+            if (final) node->explicit_entry = 1;
+            continue;
+        }
+        needed = ((unsigned long)pos + 1UL) * 2UL;
+        if (tree->count >= BP_ATARI_PATH_MAX_ENTRIES ||
+            needed > BP_ATARI_PATH_MAX_BYTES - tree->bytes) return BP_ERR_OVERFLOW;
+        node = (bp_atari_tree_node_t *)malloc(sizeof(*node));
+        if (!node) return BP_ERR_NOMEM;
+        node->names = (char *)malloc((size_t)needed);
+        if (!node->names) { free(node); return BP_ERR_NOMEM; }
+        memcpy(node->names, projected, pos);
+        node->names[pos] = '\0';
+        memcpy(node->names + pos + 1, exact, pos);
+        node->names[2U * pos + 1U] = '\0';
+        node->length = pos;
+        node->directory = is_dir;
+        node->explicit_entry = final;
+        node->next = tree->nodes;
+        tree->nodes = node;
+        tree->count++;
+        tree->bytes += needed;
+    }
+    return BP_OK;
+}
+
+static void bp_atari_tree_free(bp_atari_tree_t *tree)
+{
+    bp_atari_tree_node_t *node, *next;
+    if (!tree) return;
+    for (node = tree->nodes; node; node = next) {
+        next = node->next;
+        free(node->names);
+        free(node);
+    }
+    tree->nodes = NULL;
+    tree->count = 0;
+    tree->bytes = 0;
+}
+
 #endif

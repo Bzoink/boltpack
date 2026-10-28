@@ -506,12 +506,26 @@ static bp_uint32 parse_block_size(const char *s)
 
 /* ---- Atari attribute helpers ------------------------------------------- */
 
+static int atari_gemdos_path(const char *path, char *out, size_t capacity)
+{
+    size_t i, length = strlen(path);
+    if (length >= capacity) return -1;
+    for (i = 0; i < length; i++) out[i] = path[i] == '/' ? '\\' : path[i];
+    while (length > 1 && out[length - 1] == '\\' &&
+           !(length == 3 && out[1] == ':')) length--;
+    out[length] = '\0';
+    return 0;
+}
+
 /*
  * Read TOS file attributes.  Fattrib(path, 0, 0) returns the current value.
  */
 static int atari_get_attrib(const char *path, unsigned char *attr)
 {
-    long result = Fattrib(path, 0, 0);
+    char native_path[BP_MAX_PATH];
+    long result;
+    if (atari_gemdos_path(path, native_path, sizeof(native_path)) != 0) return -1;
+    result = Fattrib(native_path, 0, 0);
     if (result < 0 || attr == NULL) return -1;
     *attr = (unsigned char)((int)result & ATARI_ATTR_MASK);
     return 0;
@@ -523,14 +537,17 @@ static int atari_get_attrib(const char *path, unsigned char *attr)
 static int atari_apply_attrib(const char *path, unsigned char valid,
                               unsigned char value)
 {
-    long current = Fattrib(path, 0, 0);
+    char native_path[BP_MAX_PATH];
+    long current;
     unsigned char desired;
     long result;
+    if (atari_gemdos_path(path, native_path, sizeof(native_path)) != 0) return -1;
+    current = Fattrib(native_path, 0, 0);
     if (current < 0) return -1;
     valid = (unsigned char)(valid & ATARI_ATTR_MASK);
     desired = (unsigned char)(((unsigned char)current & (unsigned char)~valid) |
                               (value & valid));
-    result = Fattrib(path, 1, (int)(desired & ATARI_ATTR_MASK));
+    result = Fattrib(native_path, 1, (int)(desired & ATARI_ATTR_MASK));
     return result < 0 ? -1 : 0;
 }
 
@@ -999,8 +1016,9 @@ static int atari_archive_stat_matches(const struct stat *expected,
                                       const struct stat *current)
 {
     return S_ISREG(current->st_mode) &&
-           current->st_dev == expected->st_dev &&
-           (expected->st_ino == 0 || current->st_ino == expected->st_ino) &&
+           /* TOS exposes different device identifiers for pathname stats
+            * and file-handle stats on FAT12 volumes.  It also synthesizes
+            * inode numbers independently for those queries. */
            current->st_size == expected->st_size &&
            current->st_mtime == expected->st_mtime &&
            current->st_ctime == expected->st_ctime;
@@ -1147,7 +1165,9 @@ static void finish_directory_restores(extract_ctx_t *ctx)
         node = *best_link;
         *best_link = node->next;
         if (node->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-            if (bp_restore_mtime(node->path, node->mtime) != BP_OK) {
+            char native_path[BP_MAX_PATH];
+            if (atari_gemdos_path(node->path, native_path, sizeof(native_path)) != 0 ||
+                bp_restore_mtime(native_path, node->mtime) != BP_OK) {
                 fprintf(stderr, "boltpack: cannot restore directory timestamp: %s\n",
                         node->path);
                 ctx->mtime_errors++;
@@ -1859,6 +1879,46 @@ static int cmd_list(const char *archive_name)
     return 0;
 }
 
+typedef struct {
+    const char *out_dir;
+    bp_atari_tree_t names;
+} atari_preflight_t;
+
+static int atari_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    atari_preflight_t *ctx = (atari_preflight_t *)user_data;
+    char local[BP_MAX_PATH], projected[BP_MAX_PATH], path[BP_MAX_PATH];
+    unsigned int length;
+    size_t path_length;
+    int rc;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local, sizeof(local), ATARI_CP) != 0) {
+        fprintf(stderr, "boltpack: unsafe or unrepresentable Atari name: %s\n", entry->name);
+        return 1;
+    }
+    if (ctx->out_dir) {
+        if (path_join(path, sizeof(path), ctx->out_dir, local) != 0) return 1;
+    } else strcpy(path, local);
+    path_length = strlen(path);
+    if (entry->entry_type == BP_TYPE_DIR && path_length &&
+        (path[path_length - 1] == '/' || path[path_length - 1] == '\\')) path_length--;
+    if (path_length > BP_ATARI_GEMDOS_PATH_MAX ||
+        bp_atari_project_name(local, entry->entry_type == BP_TYPE_DIR,
+                              projected, sizeof(projected), &length) != BP_OK) {
+        fprintf(stderr, "boltpack: name is outside the Atari 8.3 profile: %s\n", local);
+        return 1;
+    }
+    rc = bp_atari_tree_add(&ctx->names, local, projected, length,
+                           entry->entry_type == BP_TYPE_DIR);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: Atari destination name collision or index limit: %s\n", local);
+        return 1;
+    }
+    return 0;
+}
+
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
@@ -1868,6 +1928,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     int            rc;
     clock_t        start;
     double         elapsed;
+    atari_preflight_t preflight;
 
     fp = fopen(archive_name, "rb");
     if (!fp) {
@@ -1880,9 +1941,17 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                 bp_strerror(rc));
         fclose(fp); return 1;
     }
-    if (out_dir && !dry_run) mkdirs(out_dir);
-
     bp_io_from_file(&aio, fp);
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.out_dir = out_dir;
+    rc = bp_archive_list(&aio, atari_preflight_entry, &preflight);
+    bp_atari_tree_free(&preflight.names);
+    if (rc != BP_OK || fseek(fp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "boltpack: archive name preflight failed\n");
+        fclose(fp);
+        return 1;
+    }
+    if (out_dir && !dry_run) mkdirs(out_dir);
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force   = force;

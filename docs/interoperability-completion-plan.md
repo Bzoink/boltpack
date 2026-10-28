@@ -1,7 +1,13 @@
 # Interoperability completion plan
 
-**Prepared:** 2026-10-27  
-**State:** proposed execution plan; implementation goal remains paused.
+**Updated:** 2026-10-28
+
+**State:** execution plan; the tracked implementation goal is active.
+
+**Current requested focus:** close the remaining interoperability gaps that can
+be developed and verified on this machine, including available emulator checks.
+Keep native-only qualification gaps visible; completing local work does not
+prove the wider original goal.
 
 This is the execution backlog for completing the [archive-format plan](archive-format-plan.md).
 The [specification](specification-1.0.md) defines the format, and the
@@ -29,12 +35,26 @@ mapping, unsafe concurrent path changes, and native execution evidence.
 Cross-builds and host API shims do not establish target filesystem behavior.
 
 DOS16 CP437 and CP850 conversion fixtures run as Watcom-built DOS programs in
-DOSBox. Accented filename extraction remains unresolved. Exploratory direct
-file creation also failed in DOSBox 0.74-3, so the next useful step is an
-independent DOS environment and a saved reproducer, rather than another
-equivalent host-mount experiment. Full DJGPP execution separately needs a DPMI
-host. The 16-bit resource measurements collected before the pause still need
-a reproducible report.
+DOSBox. DOSBox 0.74-3 still fails the accented-name host-mount and direct-create
+probes. On 2026-10-28, `test/check_dosboxx_cp437.py` verified a Linux-created
+`café.txt` archive extracted to a DOSBox-X-mounted FAT12 image: mtools read the
+exact CP437 filename and bytes back, and the FAT directory timestamp matched
+the expected value. DOS16 reported partial because some Linux metadata has no
+DOS representation. The same run created a DOS archive on FAT12 and Linux
+verified its contents and extracted bytes. Both readers report partial for
+metadata their platform cannot represent. Host-mounted CP437 extraction still
+reports partial and does not create the expected host file. DOS16 archive edit
+commands are not provided. Full DJGPP execution separately needs a working
+DPMI host. The 16-bit resource measurements still need a reproducible report.
+
+Hatari 2.5.0 ran for 250 frames with TOS 1.62. FS-UAE 3.1.66 booted Kickstart
+2.04 and a copy of the Workbench 2.04 disk to the desktop under Xvfb with
+software rendering; accelerated floppy access and warp mode got past a long
+white startup, and answering `0` then Enter dismissed the keymap prompt. These
+are startup checks only: BoltPack has not yet run in either emulator. Wine is
+installed, but a fresh-prefix Windows CLI probe failed with a missing component;
+32-bit Wine support is also absent. QEMU x86 is installed; guest OS images
+must be supplied before it can run Windows or OS/2.
 
 On 2026-10-28, the initial core audit found that nonzero reserved archive-header
 flags were rejected by full extraction/listing but accepted by mini readers and
@@ -42,6 +62,95 @@ some full-core info/edit paths. Those paths now reject the flags with
 `BP_ERR_CORRUPT`; regression fixtures use a valid header CRC and cover full and
 mini readers plus append, copy, and delete. `make CC=gcc unit-test` and
 `make mini-all` passed. The complete I01 requirement ledger remains outstanding.
+
+Hatari 2.5.0 with TOS 1.62 has run the full Atari CLI using a disposable
+GEMDOS host-directory drive. `test/check_hatari_interop.py` records guest exit
+statuses and verifies Stored and BoltLite file bytes in both directions with
+Linux. It also verifies append and delete, failed edit preservation, and
+checksum failure cleanup over an existing file. The test exposed TOS libc's
+unstable synthesized inode values; archive edit identity checks now use file
+type, size, and timestamps. Same-size substitutions with matching timestamps
+cannot be excluded. Linux reports partial preservation of Atari-specific
+metadata. This host-directory result does not qualify target attributes or
+timestamps, or GEM GUI use.
+
+On 2026-10-28, `test/check_hatari_fat.py` also ran the full CLI against a
+disposable 720 KiB FAT12 floppy image under Hatari. Linux-created BoltLite
+archives extracted on the floppy; Atari create, append, extract, delete, and
+test succeeded; the guest copied restored file bytes and the edited archive
+back to Hatari's GEMDOS host drive, where Linux verified them. TOS reports
+different `st_dev` and synthesized `st_ino` values for the same FAT file via
+pathname and handle queries, so Atari edit identity checks now compare regular
+file type, size, and timestamps only. The disk image itself did not retain the
+guest's directory changes after Hatari exited, despite sector writes and
+successful in-guest reads. The test therefore qualifies the FAT12 guest
+filesystem operations and byte round trip during the run, but not durable
+floppy-image writeback. Native attribute and timestamp restoration and the
+GEM GUI remain open.
+
+The same host-directory test now transfers a nested tree with an empty
+directory both ways and verifies pre-output refusal for a long 8.3 name and a
+case-colliding pair. Atari source enumeration required conversion of `/` to
+GEMDOS separators for `Fattrib`; extraction now scans archive names before
+opening output files. The host-directory backend still refuses restoration of
+directory timestamps, which returns partial. The current collision index tracks
+implicit parent directories as well as complete projected paths; host tests
+cover aliases and file/directory prefix conflicts in both entry orders. Hatari
+also verifies CLI refusal of an implicit-parent case collision before output.
+The GEM GUI now uses the same index for extraction and source-name checks and
+its staged replacement check no longer relies on TOS's unstable synthesized
+inodes. The GUI cross-build passes; its actual UI and replacement behavior
+still need emulator runtime validation.
+
+The Amiga GadTools GUI now includes directories, including empty directories,
+and captures native protection and comments for files and directories. It
+converts Latin-1 source names to UTF-8, checks projected names and implicit
+parent collisions, and stages archive creation beside its destination. Traversal
+includes dot-prefixed names, rejects links and non-regular sources, and reports
+enumeration and I/O failures. Retained host tests cover traversal, source names,
+collision preflight and staged publication; `make amiga-gui` cross-builds the
+GUI. These checks are not an Amiga runtime test: emulator round trips and
+pathname-based source and parent substitution remain open. Replacement reports
+partial preservation when the old archive's native metadata cannot be retained.
+
+FS-UAE with Workbench 2.04 and Kickstart 2.04 has run the Amiga CLI on a
+disposable host-directory drive: `test/check_fsuae_interop.py` checks Stored
+and BoltLite profile file bytes in both directions with Linux, profile append,
+and rejection of incompatible options, and records guest statuses. A default
+shell-stack create attempt failed to complete and left an invalid archive.
+The core BoltLite workspace now uses heap storage, and recursive Amiga source
+path buffers no longer occupy large stack frames. The current FS-UAE corpus,
+including nested directories and edits, passes with the default shell stack;
+the runner defaults to 256 KiB and accepts `--stack 0` for this check. Deep
+recursion and other codecs still require stack qualification. The CLI exposes Interchange Profile 1 for
+create and add. Creation, append, and delete now write to sibling stages; FS-UAE tests
+verify that a missing second input leaves existing archives unchanged and a
+failed new archive unpublished. Replacement preserves captured Amiga
+protection and comments or fails before publication; protected targets are
+refused. The host-directory emulator test confirms a nondefault protection bit
+and comment survive append and delete, and unchanged archive bytes after a
+failed delete. It also checks a file, a directory and an empty directory
+retain native protection and comments through an Amiga archive, and that a
+corrupted stored payload leaves an existing file and its metadata unchanged.
+`test/check_fsuae_native.py` separately exercises disposable native OFS and
+FFS floppies: BoltLite profile transfer, create/append/delete, failed-append
+preservation, file protection, comment and timestamp restoration, and Linux
+extraction of the edited archive pass. The tests transfer `café.txt` in both
+directions, and verify that an unrepresentable Unicode name and an implicit
+case-colliding parent are refused before creating output. The CLI preflight
+now tracks exact and folded parent paths and refuses unrepresentable names.
+These native-disk tests use a 256 KiB
+guest stack.
+Interruption recovery, broader native-disk behavior, deep-recursion stack sizing,
+broader metadata validation, and GUI runtime remain open.
+
+Amiga CLI traversal rejects source types reported as links or non-regular
+files, reports directory enumeration and close failures, and fails when native
+metadata cannot be read rather than inventing attributes. FS-UAE's
+host-directory mount exposed a host symlink as a regular file: the CLI followed
+it and archived its target despite `lstat`. An FFS `MakeLink ... SOFT` probe
+returned an error, so native soft-link behavior is not yet qualified. This
+backend limitation and path-based source substitution remain open.
 
 ## Ordered work packages
 
@@ -56,7 +165,7 @@ targets must stay visibly blocked in the backlog.
 | I03 | First: finish extraction, metadata, and archive edits | Audit then fix each adapter against the lifecycle and metadata contract below. Verify successful restoration, accurate partial/error results, original-file preservation, and recovery behavior. |
 | I04 | Next: make cross-system qualification reproducible | Extend existing fixtures into a shared corpus with independent expected results and target runners. Record real execution separately from builds and host shims; skipped checks stay open. |
 | I05 | Next: complete 16-bit resource accounting | Save reproducible binary/static-data measurements and heap/stack bounds for the current DOS16, Win16, and OS/2-16 builds. Exercise index/queue bounds and allocation failures; document allocator overhead and compiler assumptions. |
-| I06 | In parallel with I02–I05: obtain and run native environments | Execute the target queue below, fix failures, and retain results tied to the tested commit and filesystem. A missing compiler, SDK, OS image, ROM, or runtime is an explicit dependency. |
+| I06 | In parallel with I02–I05: develop and run emulator/target fixtures | Use the installed emulators as described below, fix failures, and retain results tied to the tested commit and filesystem. A missing compiler, SDK, OS image, ROM, or runtime remains an explicit dependency. |
 | I07 | Last: run the completion audit and release gate | Reconcile the ledger, target results, matrix, specification, bindings, copied sources, build instructions, and release notes. Every required row must have sufficient evidence; no completion claim while required behavior or target evidence remains open. |
 
 ### I02: filename and destination code
@@ -133,12 +242,73 @@ legacy destinations with a shared encoding/profile; Linux-only readers do not
 prove that relationship. Do not require unsupported filesystems to preserve
 features they cannot represent, but require the specified reported outcome.
 
-## I06: target environment queue
+## I06: emulator development and test sequence
+
+The verified local startup commands and image locations are recorded in
+[emulator setup](emulator-setup.md).
+
+Start with the installed emulators and the user's images under `~/images`.
+Keep ROMs and OS disks out of the repository. Make disposable disk copies and
+exchange directories for each run; never alter the user's originals. Expose
+image and emulator paths as runner arguments or environment variables rather
+than requiring this particular home directory on another machine. Save the
+commands, guest output, exit/result markers, manifest, and emulator/OS versions
+with the test result. Use explicit timeouts and terminate only processes started
+by that runner.
+
+1. **Atari, Hatari:** `make atari-cli`, `make atari-gui`, and TOS 1.62 startup
+   are verified. `test/check_hatari_interop.py` qualifies Linux exchange, nested
+   and empty directories, collision refusal, corruption cleanup, and archive
+   edits on Hatari's GEMDOS host-directory drive. `test/check_hatari_fat.py`
+   additionally qualifies in-guest Linux ↔ Atari Stored/BoltLite byte transfer
+   and archive edits on a disposable FAT12 floppy; its guest runner captures
+   output before emulator shutdown because Hatari does not retain the changed
+   directory entries in the image. Next, verify native attributes/timestamps,
+   durable image writeback with a suitable emulator/eject workflow, interruption
+   recovery, and the GEM GUI. Keep host-directory and FAT-image results distinct.
+2. **Amiga, FS-UAE:** use Kickstart 2.04 and Workbench 2.04 under `~/images/Amiga`.
+   Boot a disposable copy of `Workbench-2.04/1-Workbench.adf`; Xvfb, software
+   OpenGL, `--floppy_drive_speed=800`, and `--warp_mode=1` worked in the startup
+   check. The initial keymap prompt must be handled reproducibly. Confirm the
+   `make amiga68k` toolchain is available and build the CLI and GadTools GUI;
+   if it is missing, provision it before claiming a target build. Arrange a
+   writable exchange disk or directory and a guest command/status mechanism.
+   Run Linux ↔ Amiga profile transfers, then check Latin-1 names, case collisions,
+   protection bits/comments, times and directories, failed extraction, and
+   archive-edit recovery. Test the GUI independently. Capture the emulator's
+   own frame when needed; generic X11 captures can be misleading. Validate
+   mounted-directory and native disk filesystem behavior separately.
+3. **DOS, DOSBox-X:** `test/check_dosboxx_cp437.py` passes CP437 filename and
+   byte extraction, timestamp restoration, and DOS → Linux archive creation on
+   a FAT12 image. Preserve the separate DOSBox 0.74-3 failure and DOSBox-X
+   host-directory result. DOS16 mini does not provide archive edit operations.
+   Confirm whether a DPMI host is present before attempting the full DJGPP
+   binary; qualify full-DOS archive edits separately if a usable DPMI runtime is
+   available.
+4. **Windows, Wine then Windows:** repair the isolated Wine-prefix setup and
+   provision 32-bit Wine where needed. Cross-build Win32/Win64 binaries, run
+   the existing Windows CLI fixture where Wine supports its APIs, and add the
+   Unicode and edit cases as each code slice lands. Record Wine version and
+   filesystem. Wine is an early feedback environment, not evidence of native
+   Windows NTFS/FAT, reparse, GUI, .NET, or Total Commander behavior; retain
+   those target runs in the queue below.
+5. **QEMU:** continue the existing QEMU-i386 Linux-mini checks. For full DOS,
+   Windows, OS/2, or other guests, use a suitable guest OS image and a prepared
+   writable test disk only after confirming availability. Record guest and disk
+   setup; an installed emulator alone is not a running target OS.
+
+For every emulator slice, first reproduce a specific missing behavior, add a
+fixture with an independent expected result, implement the smallest code change,
+and rerun the focused guest and host checks. Expand the corpus only after that
+slice passes. An emulator startup, a successful build, and a desktop screenshot
+are not archive-transfer or attribute-preservation results.
+
+## Remaining target environment queue
 
 This groups execution work without removing any frontend from scope. I01 must
 include every shipped adapter, including wrappers omitted from this short table.
-Start Windows and macOS environment acquisition first because their APIs also
-serve several GUI/plugin consumers.
+Use Hatari, FS-UAE and DOSBox-X now while obtaining Windows/macOS and other
+missing native environments in parallel.
 
 | Target group | Environment needed | Qualification work |
 | --- | --- | --- |
@@ -146,8 +316,8 @@ serve several GUI/plugin consumers.
 | Windows CLI/native GUI/FLTK/.NET/WCX | Windows with NTFS and FAT-compatible test volume, .NET build tools, Total Commander plugin host | Run `python test/check_windows_cli.py build/win64/boltpack.exe`; extend it for I02/I03, build the managed GUI, and exercise every UI/plugin path. Record denied hard-link/reparse privileges as missing evidence. Cross-build both word sizes. |
 | macOS CLI/Cocoa/legacy GUI | macOS SDK/runtime; case-sensitive and case-insensitive test volumes; supported legacy environment where shipped | Verify Unicode normalization, Apple xattrs/Finder info/resource forks, time/mode restoration, publication, and actual GUI flows. Host declaration stubs remain supporting evidence only. |
 | DOS16/full DOS/Win16/OS2-16/full OS2 | Independent DOS runtime with FAT, DPMI host for DJGPP, Windows 3.x, OS/2 with FAT and HPFS | Resolve accented-name failure; qualify codepages, FAT flags, deferred directories, timestamps, profile transfer, and edit/recovery behavior. DOSBox conversion tests do not qualify the other adapters. |
-| Atari CLI/GEM GUI | Hatari or hardware with appropriate TOS environment and writable media | Run projection/profile corpus, attributes and dates, GUI creation/extraction, staged edits, and interruption recovery. |
-| Amiga CLI/GadTools and OS4/MorphOS/AROS variants | Matching SDKs and emulator/hardware/runtime for each claimed variant | Build each variant, then verify Latin-1 mapping, native protection/comment precedence, directory capture/restoration, staging, and recovery. Shared source does not qualify all variants. |
+| Atari CLI/GEM GUI | Hatari and TOS 1.62 are installed; prepare writable guest media | Run projection/profile corpus, attributes and dates, GUI creation/extraction, staged edits, and interruption recovery. |
+| Amiga CLI/GadTools and OS4/MorphOS/AROS variants | FS-UAE and Workbench 2.04 are available for 68k; matching SDKs and runtimes are needed for each other variant | Build each variant, then verify Latin-1 mapping, native protection/comment precedence, directory capture/restoration, staging, and recovery. Shared source and a 68k emulator do not qualify all variants. |
 | Classic Mac 68k/PPC | Complete application/resource builds and Mac OS 9 runtime | Test MacRoman/HFS collisions, resource forks, Finder fields, directory dates, bounded preflight, partial failures, and profile transfer for both builds. |
 | QL/X68000/RISC OS/Plan 9/CPM-86 | Matching compiler and native filesystem runtime/emulator for each | Replace syntax/host-shim-only evidence with target builds and the applicable corpus. Exercise native path mappings, limits, metadata, and refusal behavior. |
 | Haiku CLI/BeAPI GUI | Haiku compiler/runtime and BFS test volume | Complete and qualify collision/symlink handling, native attributes, timestamps, profile behavior, and GUI outcomes. |
@@ -160,9 +330,10 @@ and filesystem path used; it is not a hardware-performance measurement.
 
 ## Execution and completion rules
 
-On resumption, do I01 first and select the first unresolved I02/I03 code item
-that can be reproduced locally. Begin obtaining the Windows/macOS and legacy
-environments concurrently with that work. Keep one concrete defect or missing
+On resumption, begin I01 and the Atari, Amiga, and DOS emulator setup above;
+select the first unresolved I02/I03 code item that those fixtures reproduce.
+Obtain the Windows/macOS and other legacy environments concurrently with that
+work. Keep one concrete defect or missing
 capability per implementation change, with its meaningful regression evidence.
 Use current checks such as `make CC=gcc test`,
 `make CC=gcc linuxmini-interoperability-test`,

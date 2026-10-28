@@ -1376,56 +1376,29 @@ typedef struct {
 
 typedef struct {
     const char *dest_dir;
-    char *keys[BP_ATARI_PATH_MAX_ENTRIES];
-    unsigned char is_directory[BP_ATARI_PATH_MAX_ENTRIES];
-    unsigned int count;
-    unsigned long bytes;
+    bp_atari_tree_t tree;
     const char *error;
 } atari_gui_name_index_t;
-
-static int atari_gui_name_prefix(const char *prefix, const char *path)
-{
-    size_t len = strlen(prefix);
-    return strncmp(prefix, path, len) == 0 && path[len] == '\\';
-}
 
 static int atari_gui_index_projected_name(atari_gui_name_index_t *index,
                                           const char *local, int is_dir)
 {
     char key[BP_MAX_PATH];
-    size_t len;
-    unsigned int key_len, i;
+    unsigned int key_len;
     int rc;
     rc = bp_atari_project_name(local, is_dir, key, sizeof(key), &key_len);
     if (rc != BP_OK) {
         index->error = "Name is outside Atari's 8.3 filename profile";
         return rc;
     }
-    for (i = 0; i < index->count; i++) {
-        if (strcmp(index->keys[i], key) == 0 ||
-            (!index->is_directory[i] &&
-             atari_gui_name_prefix(index->keys[i], key)) ||
-            (!is_dir && atari_gui_name_prefix(key, index->keys[i]))) {
-            index->error = "Names collide on the Atari destination";
-            return BP_ERR_CORRUPT;
-        }
-    }
-    len = strlen(key);
-    if (index->count >= BP_ATARI_PATH_MAX_ENTRIES ||
-        index->bytes + (unsigned long)len + 1UL > BP_ATARI_PATH_MAX_BYTES) {
+    rc = bp_atari_tree_add(&index->tree, local, key, key_len, is_dir);
+    if (rc == BP_ERR_CORRUPT)
+        index->error = "Names collide on the Atari destination";
+    else if (rc == BP_ERR_OVERFLOW)
         index->error = "Name index exceeds Atari's bounded limit";
-        return BP_ERR_OVERFLOW;
-    }
-    index->keys[index->count] = (char *)malloc(len + 1);
-    if (index->keys[index->count] == NULL) {
+    else if (rc == BP_ERR_NOMEM)
         index->error = "Not enough memory for Atari name checks";
-        return BP_ERR_NOMEM;
-    }
-    memcpy(index->keys[index->count], key, len + 1);
-    index->is_directory[index->count] = (unsigned char)is_dir;
-    index->count++;
-    index->bytes += (unsigned long)len + 1UL;
-    return BP_OK;
+    return rc;
 }
 
 static int atari_gui_build_path(const char *dir, const char *name,
@@ -1473,10 +1446,7 @@ static int atari_gui_preflight_name(const bp_entry_t *entry, void *user_data)
 
 static void atari_gui_name_index_clear(atari_gui_name_index_t *index)
 {
-    unsigned int i;
-    for (i = 0; i < index->count; i++) free(index->keys[i]);
-    index->count = 0;
-    index->bytes = 0;
+    bp_atari_tree_free(&index->tree);
 }
 
 static int atari_gui_check_dir(const char *path, int create)
@@ -1534,7 +1504,8 @@ static int atari_gui_make_parents(const char *path)
 static int atari_gui_same_file(const struct stat *a, const struct stat *b)
 {
     return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
-           a->st_dev == b->st_dev && (a->st_ino == 0 || a->st_ino == b->st_ino) &&
+           /* Plain TOS synthesizes unstable inode values for pathname stats. */
+           a->st_dev == b->st_dev &&
            a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
            a->st_ctime == b->st_ctime;
 }
