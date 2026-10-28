@@ -539,11 +539,18 @@ static int atari_apply_attrib(const char *path, unsigned char valid,
 {
     char native_path[BP_MAX_PATH];
     long current;
+    struct stat st;
     unsigned char desired;
     long result;
     if (atari_gemdos_path(path, native_path, sizeof(native_path)) != 0) return -1;
     current = Fattrib(native_path, 0, 0);
-    if (current < 0) return -1;
+    if (current < 0) {
+        /* TOS 1.62 returns EFILNF for a directory with no optional FAT
+         * attributes.  A successful stat distinguishes that default case. */
+        if (stat(native_path, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+        current = 0;
+        if ((value & valid & ATARI_ATTR_MASK) == 0) return 0;
+    }
     valid = (unsigned char)(valid & ATARI_ATTR_MASK);
     desired = (unsigned char)(((unsigned char)current & (unsigned char)~valid) |
                               (value & valid));
@@ -675,8 +682,12 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         bp_uint16 flags;
 
         if (atari_get_attrib(path, &attr) != 0) {
-            fprintf(stderr, "boltpack: cannot read TOS attributes: %s\n", path);
-            return BP_ERR_IO;
+            if (!S_ISDIR(st.st_mode)) {
+                fprintf(stderr, "boltpack: cannot read TOS attributes: %s\n", path);
+                return BP_ERR_IO;
+            }
+            /* Default directories have no optional FAT attributes on TOS. */
+            attr = 0;
         }
 
         if (!ends_with_sep(arcname))

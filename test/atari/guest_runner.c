@@ -3,28 +3,6 @@
 #include <string.h>
 #include <mint/osbind.h>
 
-static int copy_file(const char *source, const char *destination)
-{
-    FILE *input = fopen(source, "rb");
-    FILE *output;
-    unsigned char buffer[1024];
-    size_t count;
-    if (!input) return -1;
-    output = fopen(destination, "wb");
-    if (!output) { fclose(input); return -1; }
-    while ((count = fread(buffer, 1, sizeof(buffer), input)) != 0) {
-        if (fwrite(buffer, 1, count, output) != count) {
-            fclose(input); fclose(output); return -1;
-        }
-    }
-    {
-        int failed = ferror(input) ? 1 : 0;
-        if (fclose(input) != 0) failed = 1;
-        if (fclose(output) != 0) failed = 1;
-        return failed ? -1 : 0;
-    }
-}
-
 int main(void)
 {
     char tail[128], line[125];
@@ -58,9 +36,5 @@ int main(void)
     }
     fclose(input);
     fclose(output);
-    if (copy_file("A:\\OUT\\SRC.TXT", "C:\\CAPSRC.TXT") != 0 ||
-        copy_file("A:\\RESTORE\\SRC.TXT", "C:\\CAPREST.TXT") != 0 ||
-        copy_file("A:\\RESTORE\\NEW.TXT", "C:\\CAPNEW.TXT") != 0 ||
-        copy_file("A:\\ATARI.BLT", "C:\\CAPATARI.BLT") != 0) return 4;
     return 0;
 }

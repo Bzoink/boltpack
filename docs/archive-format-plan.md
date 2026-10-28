@@ -110,9 +110,12 @@ original intact; a crash between backup and publication can leave the original
 at the recovery name. `--interchange-profile-1` is available for create/add.
 The Atari cross-build and Hatari TOS 1.62 CLI byte round trips and archive
 edits pass on both a host-directory drive and a FAT12 floppy guest filesystem.
-Hatari does not retain the FAT12 image's changed directory entries after exit,
-so durable floppy writeback, native attribute/timestamp restoration, GUI use,
-and interruption recovery remain unqualified. Path-based TOS calls cannot
+The FAT12 test now quits through Hatari's control console, which ejects and
+saves the image; mtools verifies the final files after emulator exit. Durable
+FAT12 writeback is qualified for this workflow. FAT12 file hidden/system flags
+and timestamps round-trip, while TOS 1.62 directory timestamps and nonzero
+directory attributes report partial. GUI use and interruption recovery remain
+unqualified. Path-based TOS calls cannot
 prevent a concurrent rename of a checked parent. Full OS/2 now writes native attributes and the portable
 FAT envelope for files and directories, applies native attributes ahead of
 portable fallback, and restores directory timestamps and flags deepest first.
@@ -288,9 +291,9 @@ Both GUI and CLI pass Atari cross-builds with warnings
 treated as errors. Hatari now starts with TOS 1.62, but no Atari archive
 runtime round trip has yet been recorded for the GUI; the full CLI has passed
 Linux/Atari byte round trips and archive edits on both Hatari's host-directory
-backend and a FAT12 floppy guest filesystem. Hatari did not retain FAT12
-directory changes in the image after shutdown, and Atari native attribute and
-timestamp restoration remain unqualified. The GUI's pathname checks retain a
+backend and a FAT12 floppy guest filesystem; normal control-console quit/eject
+saves the image, which the test verifies after shutdown. Atari native attribute
+and timestamp restoration remain unqualified. The GUI's pathname checks retain a
 concurrent parent-substitution race.
 
 The portable metadata envelope and FAT validity/value masks are specified and
