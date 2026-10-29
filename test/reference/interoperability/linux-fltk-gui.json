@@ -1,0 +1,57 @@
+{
+  "case": "Linux FLTK GUI Profile 1 archive creation, mini-reader extraction, collision preflight, open, and nested extraction under Xvfb/QEMU-i386",
+  "filesystem": "temporary Linux host directory",
+  "created_archive_name": "gui-created.blt",
+  "created_entry_name": "profile.bin",
+  "created_profile": {
+    "archive_name": "profile.bin",
+    "size": 65536,
+    "sha256": "156c38442089c1323d3e3ba549a6ac24341c47e8b6367bec4740c9b8c865826e"
+  },
+  "entries": [
+    {
+      "archive_name": "nested/payload.txt",
+      "content": "Linux FLTK GUI archive transfer\n",
+      "size": 32,
+      "mode": "0640",
+      "mtime_epoch": 0,
+      "sha256": "d72468f7b607990b6f9e39f94626e9aacec500d8cdfd3a5469d0434e5346b51c"
+    }
+  ],
+  "directories": [
+    {
+      "archive_name": "nested/",
+      "mode": "0750",
+      "mtime_epoch": 0
+    }
+  ],
+  "flattened_collision": {
+    "existing_output": {
+      "name": "same.txt",
+      "content": "keep the destination's original file\n"
+    },
+    "entries": [
+      {
+        "archive_name": "a/same.txt",
+        "content": "flatten fixture A\n",
+        "flattened_name": "same-01.txt",
+        "size": 18,
+        "sha256": "e3e7a452ab263c96d214bf769d9576ccfd8644a18f5bedf04e29ffe9bb6b105f"
+      },
+      {
+        "archive_name": "b/same.txt",
+        "content": "flatten fixture B\n",
+        "flattened_name": "same-02.txt",
+        "size": 18,
+        "sha256": "5e884a1cdd6b30ce43b892248406e3f449f1b0ff48837f5b623b086bbc5e5a05"
+      }
+    ]
+  },
+  "cancelled_extraction": {
+    "archive_name": "cancelled.bin",
+    "size": 268435456,
+    "existing_content": "preserve this file if extraction is cancelled\n",
+    "expected": "Cancellation, checksum failure, and injected write, flush, close, and timestamp-restoration failures leave the old file byte-identical and remove all .boltpack-gui-* stages."
+  },
+  "expected": "Create an Interchange Profile 1 BoltLite/16 KiB archive through the GUI and verify it with the full and mini readers against pinned bytes; restore file and directory modes and epoch-zero timestamps; reject a file/child prefix conflict without writing output; flatten colliding selected files without replacing an existing destination; preserve an existing file on cancellation and checksum failure."
+}

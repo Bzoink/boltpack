@@ -1,0 +1,57 @@
+{
+  "case": "Linux mini and full-core interchange on QEMU i386",
+  "names": {
+    "metadata_member": "src/child/file.txt",
+    "file_directory_conflict": ["parent", "parent/child.txt"]
+  },
+  "files": {
+    "metadata": {
+      "bytes": 14,
+      "sha256": "864a6bc2a351094c9b3c69893034b437b28aa48a18ccac7df63248e5921e519f"
+    },
+    "profile": {
+      "bytes": 65536,
+      "sha256": "156c38442089c1323d3e3ba549a6ac24341c47e8b6367bec4740c9b8c865826e"
+    },
+    "overwrite_sentinel": {
+      "bytes": 8,
+      "sha256": "afafb16ac47b9b3da9825787ce354896fce376ae6cb1b5a157fa682a122011a1"
+    },
+    "mini_conflict_sentinel": {
+      "bytes": 31,
+      "sha256": "62d6bf503af004b66c3f1b7e5d8a8e65c4a0516cd14912b912707427f250c6e1"
+    },
+    "full_conflict_sentinel": {
+      "bytes": 34,
+      "sha256": "5ab8ec47451e9e7b7efbf439e1407b434073aac4017b9259b22e742aa52bf38a"
+    },
+    "old_time_source": {
+      "bytes": 13,
+      "sha256": "3f28ba4a4bc72010030bb807a4bae658ed44be09b5069b310a8b3de00b4d2556"
+    }
+  },
+  "metadata": {
+    "file": {
+      "mode_octal": "0640",
+      "mtime_unix": 0
+    },
+    "child_directory": {
+      "mode_octal": "0750",
+      "mtime_unix": 1234567890
+    },
+    "source_directory": {
+      "mode_octal": "0751",
+      "mtime_unix": 1234567892
+    },
+    "negative_time_source_mtime_unix": -86400
+  },
+  "expected_outcomes": {
+    "mini_to_full_profile": "full core extracts the mini-created BoltLite/16 KiB archive byte-identically",
+    "full_to_mini_profile": "mini validates and extracts the full-core-created BoltLite/16 KiB archive byte-identically",
+    "metadata": "mini and full extraction preserve mode and epoch-zero file/directory times",
+    "file_directory_conflict_both_orders": "mini and full refuse before changing absent or existing output roots",
+    "no_overwrite": "mini refuses and retains existing bytes",
+    "corrupt_payload": "mini refuses corrupted data and cleans its stage",
+    "negative_time_source": "mini create refuses pre-1970 time; full reader accepts the valid resulting archive"
+  }
+}

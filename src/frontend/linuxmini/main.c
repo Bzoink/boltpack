@@ -119,6 +119,7 @@ static int on_list(const bp_mini_entry_t *e, void *user_data)
 typedef struct mini_restore_dir_s {
     struct mini_restore_dir_s *next;
     char *path;
+    size_t path_length;
     bp_uint16 flags;
     bp_uint64 mtime;
 } mini_restore_dir_t;
@@ -127,6 +128,7 @@ typedef struct {
     char dest[BP_MAX_PATH];
     int root_fd;
     mini_restore_dir_t *dirs;
+    mini_restore_dir_t *dirs_tail;
     unsigned dir_count;
     int error;
     int partial;
@@ -173,25 +175,95 @@ static int preflight_extract_names(bp_io_t *archive_io)
 
 static int queue_directory(extract_ctx_t *ctx, const char *path, const bp_mini_entry_t *e)
 {
-    mini_restore_dir_t *node, **at;
+    mini_restore_dir_t *node;
     size_t n = strlen(path);
-    if (ctx->dir_count >= 1024U) return BP_ERR_OVERFLOW;
+    /* The full-table preflight already caps primary names at the mini
+     * interchange limit. Keep the deferred-metadata queue at that same
+     * bound instead of imposing a much smaller extraction-only ceiling. */
+    if (ctx->dir_count >= BP_POSIX_PREFLIGHT_MAX_ENTRIES)
+        return BP_ERR_OVERFLOW;
     node = (mini_restore_dir_t *)malloc(sizeof(*node));
     if (node == NULL) return BP_ERR_NOMEM;
     node->path = (char *)malloc(n + 1);
     if (node->path == NULL) { free(node); return BP_ERR_NOMEM; }
     memcpy(node->path, path, n + 1);
+    node->path_length = n;
     node->flags = e->flags;
     node->mtime = e->mtime;
-    at = &ctx->dirs;
-    while (*at != NULL && strlen((*at)->path) >= n) at = &(*at)->next;
-    node->next = *at; *at = node; ctx->dir_count++;
+    node->next = NULL;
+    if (ctx->dirs_tail != NULL) ctx->dirs_tail->next = node;
+    else ctx->dirs = node;
+    ctx->dirs_tail = node;
+    ctx->dir_count++;
     return BP_OK;
+}
+
+/* Stable bottom-up list merge sort; longer paths are finalized first so
+ * applying a parent timestamp cannot overwrite a child's final timestamp. */
+static mini_restore_dir_t *sort_restore_directories(mini_restore_dir_t *head)
+{
+    size_t width = 1;
+    for (;;) {
+        mini_restore_dir_t *cursor = head;
+        mini_restore_dir_t *sorted = NULL;
+        mini_restore_dir_t *tail = NULL;
+        unsigned merges = 0;
+
+        while (cursor != NULL) {
+            mini_restore_dir_t *left = cursor;
+            mini_restore_dir_t *right;
+            size_t left_count = 0;
+            size_t right_count = 0;
+            size_t i;
+
+            ++merges;
+            for (i = 0; i < width && cursor != NULL; ++i) {
+                ++left_count;
+                cursor = cursor->next;
+            }
+            right = cursor;
+            for (i = 0; i < width && cursor != NULL; ++i) {
+                ++right_count;
+                cursor = cursor->next;
+            }
+
+            while (left_count != 0 || right_count != 0) {
+                mini_restore_dir_t *picked;
+                if (left_count == 0) {
+                    picked = right;
+                    right = right->next;
+                    --right_count;
+                } else if (right_count == 0 || right == NULL) {
+                    picked = left;
+                    left = left->next;
+                    --left_count;
+                } else if (left->path_length >= right->path_length) {
+                    picked = left;
+                    left = left->next;
+                    --left_count;
+                } else {
+                    picked = right;
+                    right = right->next;
+                    --right_count;
+                }
+                if (tail != NULL) tail->next = picked;
+                else sorted = picked;
+                tail = picked;
+            }
+        }
+
+        if (tail != NULL) tail->next = NULL;
+        head = sorted;
+        if (merges <= 1) return head;
+        width *= 2;
+    }
 }
 
 static int finish_directories(extract_ctx_t *ctx, int apply)
 {
     int rc = BP_OK;
+    ctx->dirs = sort_restore_directories(ctx->dirs);
+    ctx->dirs_tail = NULL;
     while (ctx->dirs != NULL) {
         mini_restore_dir_t *node = ctx->dirs;
         ctx->dirs = node->next;

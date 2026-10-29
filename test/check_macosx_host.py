@@ -9,6 +9,7 @@ import argparse
 import os
 from pathlib import Path
 import shlex
+import struct
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,25 @@ def build_host_cli(cc, output):
         "-o", str(output),
     ]
     subprocess.run(command, cwd=ROOT, check=True)
+
+
+def primary_mtimes(path):
+    archive = path.read_bytes()
+    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
+    record = table_offset + 16
+    entries = {}
+    for _ in range(count):
+        name_length = struct.unpack_from("<H", archive, record)[0]
+        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
+        fields = record + 2 + name_length
+        entry_type = archive[fields + 16]
+        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
+        flags = struct.unpack_from("<H", archive, fields + 41)[0]
+        if entry_type in (0, 3, 4):
+            entries[name] = (mtime, flags)
+        record = fields + 43
+    return entries
 
 
 def check_apple_branches_syntax(cc):
@@ -119,6 +139,15 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="boltpack-macosx-host-") as temp:
         root = Path(temp)
+        mode_test = root / "test-posix-restore-mode"
+        subprocess.run(shlex.split(args.cc) + [
+            "-ansi", "-pedantic", "-Wall", "-Wextra", "-Wno-unused-function",
+            "-I" + str(ROOT / "src/core"),
+            "-I" + str(ROOT / "src/frontend/posix"),
+            str(ROOT / "test/unit/test_posix_restore_mode.c"),
+            "-o", str(mode_test)], cwd=ROOT, check=True)
+        run([str(mode_test)], root)
+
         binary = root / "boltpack-macosx-host"
         check_apple_branches_syntax(args.cc)
         build_host_cli(args.cc, binary)
@@ -135,6 +164,18 @@ def main():
         run([str(binary), "t", "profile.bolt"], root)
         listing = run([str(binary), "l", "profile.bolt"], root).stdout
         assert b"second.txt" in listing and b"first.txt" not in listing
+
+        # A pre-epoch POSIX mtime is unknown in format 6, never wrapped.
+        pre_epoch = root / "pre-epoch.txt"
+        pre_epoch.write_bytes(b"macOS host pre-epoch timestamp\n")
+        os.utime(pre_epoch, (-1, -1))
+        pre_epoch_archive = root / "pre-epoch.bolt"
+        run([str(binary), "c", "-0", str(pre_epoch_archive),
+             pre_epoch.name], root)
+        mtime, flags = primary_mtimes(pre_epoch_archive)[pre_epoch.name]
+        assert mtime == 0 and not (flags & 0x4000), \
+            "macOS frontend marked pre-epoch time as valid"
+        run([str(binary), "t", str(pre_epoch_archive)], root)
 
         # Failed append/delete publication preserves the prior archive bytes.
         if sys.platform.startswith("linux"):

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check Linux mini archive metadata and no-clobber behavior."""
 import os
+import hashlib
+import json
 from pathlib import Path
 import shlex
 import stat
@@ -12,6 +14,16 @@ ROOT = Path(__file__).resolve().parent.parent
 MINI = Path(os.environ.get("BP_TEST_LINUXMINI", ROOT / "build/linux32mini/bpmini"))
 MINI_RUNNER = shlex.split(os.environ.get("BP_TEST_LINUXMINI_RUNNER", ""))
 FULL = ROOT / "build/linux/boltpack"
+EXPECTED = json.loads((ROOT / "test/reference/interoperability/linux-mini-qemu.json").read_text(encoding="utf-8"))
+
+
+def check_manifest_file(path, key):
+    expected = EXPECTED["files"][key]
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if len(data) != expected["bytes"] or digest != expected["sha256"]:
+        raise AssertionError("independent expected-result mismatch for %s: %d bytes, sha256=%s" %
+                             (key, len(data), digest))
 
 
 def build_path_conflict_helper(directory):
@@ -82,29 +94,33 @@ def main():
         child.mkdir(parents=True)
         file = child / "file.txt"
         file.write_bytes(b"mini metadata\n")
-        os.chmod(file, 0o640)
-        os.utime(file, (0, 0))
-        os.chmod(child, 0o750)
-        os.utime(child, (1234567890, 1234567890))
-        os.chmod(source, 0o751)
-        os.utime(source, (1234567892, 1234567892))
+        check_manifest_file(file, "metadata")
+        expected_file = EXPECTED["metadata"]["file"]
+        expected_child = EXPECTED["metadata"]["child_directory"]
+        expected_source = EXPECTED["metadata"]["source_directory"]
+        os.chmod(file, int(expected_file["mode_octal"], 8))
+        os.utime(file, (expected_file["mtime_unix"], expected_file["mtime_unix"]))
+        os.chmod(child, int(expected_child["mode_octal"], 8))
+        os.utime(child, (expected_child["mtime_unix"], expected_child["mtime_unix"]))
+        os.chmod(source, int(expected_source["mode_octal"], 8))
+        os.utime(source, (expected_source["mtime_unix"], expected_source["mtime_unix"]))
         result = run(MINI, "c", "mini.blt", "src", cwd=root)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         result = run(MINI, "x", "mini.blt", "out", cwd=root)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         restored = root / "out/src"
         target = restored / "child/file.txt"
-        assert target.read_bytes() == b"mini metadata\n"
-        assert stat.S_IMODE(target.stat().st_mode) == 0o640
-        assert int(target.stat().st_mtime) == 0
-        assert stat.S_IMODE((restored / "child").stat().st_mode) == 0o750
-        assert int((restored / "child").stat().st_mtime) == 1234567890
-        assert stat.S_IMODE(restored.stat().st_mode) == 0o751
-        assert int(restored.stat().st_mtime) == 1234567892
+        check_manifest_file(target, "metadata")
+        assert stat.S_IMODE(target.stat().st_mode) == int(expected_file["mode_octal"], 8)
+        assert int(target.stat().st_mtime) == expected_file["mtime_unix"]
+        assert stat.S_IMODE((restored / "child").stat().st_mode) == int(expected_child["mode_octal"], 8)
+        assert int((restored / "child").stat().st_mtime) == expected_child["mtime_unix"]
+        assert stat.S_IMODE(restored.stat().st_mode) == int(expected_source["mode_octal"], 8)
+        assert int(restored.stat().st_mtime) == expected_source["mtime_unix"]
         target.write_bytes(b"existing")
         result = run(MINI, "x", "mini.blt", "out", cwd=root)
         assert result.returncode != 0
-        assert target.read_bytes() == b"existing"
+        check_manifest_file(target, "overwrite_sentinel")
         (root / "unsafe").mkdir()
         (root / "outside").mkdir()
         (root / "unsafe/src").symlink_to(root / "outside", target_is_directory=True)
@@ -113,10 +129,38 @@ def main():
         assert not (root / "outside/child/file.txt").exists()
         result = run(FULL, "x", "-o", "full", "mini.blt", cwd=root)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
-        assert (root / "full/src/child/file.txt").read_bytes() == b"mini metadata\n"
+        full_restored = root / "full/src"
+        full_target = full_restored / "child/file.txt"
+        check_manifest_file(full_target, "metadata")
+        assert stat.S_IMODE(full_target.stat().st_mode) == int(expected_file["mode_octal"], 8)
+        assert int(full_target.stat().st_mtime) == expected_file["mtime_unix"]
+        assert stat.S_IMODE((full_restored / "child").stat().st_mode) == int(expected_child["mode_octal"], 8)
+        assert int((full_restored / "child").stat().st_mtime) == expected_child["mtime_unix"]
+        assert stat.S_IMODE(full_restored.stat().st_mode) == int(expected_source["mode_octal"], 8)
+        assert int(full_restored.stat().st_mtime) == expected_source["mtime_unix"]
+
+        # Mini must support many directories beyond the former 1,024-node
+        # metadata queue while finalizing every directory after creation.
+        manydirs = root / "manydirs"
+        manydirs.mkdir()
+        for index in range(4097):
+            (manydirs / ("d%04d" % index)).mkdir()
+        os.utime(manydirs / "d0000", (1600000000, 1600000000))
+        os.utime(manydirs, (1600000001, 1600000001))
+        result = run(FULL, "c", "-0", "manydirs.blt", "manydirs", cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        manydirs_out = root / "manydirs-out"
+        result = run(MINI, "x", "manydirs.blt", manydirs_out.name, cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        restored_dirs = manydirs_out / "manydirs"
+        assert restored_dirs.is_dir() and len(list(restored_dirs.iterdir())) == 4097, \
+            "mini did not extract and finalize all 4,097 child directories"
+        assert int(restored_dirs.stat().st_mtime) == 1600000001
+        assert int((restored_dirs / "d0000").stat().st_mtime) == 1600000000
 
         profile_data = root / "profile.bin"
         profile_data.write_bytes(b"A" * 65536)
+        check_manifest_file(profile_data, "profile")
         result = run(MINI, "c", "--interchange-profile-1", "mini-profile.blt",
                      "profile.bin", cwd=root)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
@@ -125,6 +169,21 @@ def main():
             f"mini profile did not select BoltLite/16 KiB: {profile_entries}"
         assert run(MINI, "t", "mini-profile.blt", cwd=root).returncode == 0
         assert run(FULL, "t", "mini-profile.blt", cwd=root).returncode == 0
+        mini_profile_full_out = root / "mini-profile-full-out"
+        result = run(FULL, "x", "-o", mini_profile_full_out.name,
+                     "mini-profile.blt", cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        check_manifest_file(mini_profile_full_out / "profile.bin", "profile")
+
+        result = run(FULL, "c", "--interchange-profile-1", "full-profile.blt",
+                     "profile.bin", cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert run(MINI, "t", "full-profile.blt", cwd=root).returncode == 0
+        full_profile_mini_out = root / "full-profile-mini-out"
+        result = run(MINI, "x", "full-profile.blt", full_profile_mini_out.name,
+                     cwd=root)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        check_manifest_file(full_profile_mini_out / "profile.bin", "profile")
 
         result = run(MINI, "c", "--interchange-profile-1", "-m0",
                      "mini-profile-stored.blt", "profile.bin", cwd=root)
@@ -155,9 +214,10 @@ def main():
         existing_target.mkdir()
         sentinel = existing_target / "sentinel"
         sentinel.write_bytes(b"existing tree remains untouched")
+        check_manifest_file(sentinel, "mini_conflict_sentinel")
         result = run(MINI, "x", conflict_archive.name, existing_target.name, cwd=root)
         assert result.returncode != 0, "file/directory conflict was accepted"
-        assert sentinel.read_bytes() == b"existing tree remains untouched"
+        check_manifest_file(sentinel, "mini_conflict_sentinel")
         assert sorted(path.relative_to(existing_target).as_posix()
                       for path in existing_target.rglob("*")) == ["sentinel"]
         for source_archive in (conflict_archive, reverse_archive):
@@ -170,10 +230,11 @@ def main():
         full_existing.mkdir()
         full_sentinel = full_existing / "sentinel"
         full_sentinel.write_bytes(b"full extractor preserves this tree")
+        check_manifest_file(full_sentinel, "full_conflict_sentinel")
         result = run(FULL, "x", "-o", full_existing.name,
                      conflict_archive.name, cwd=root)
         assert result.returncode != 0, "full Linux CLI accepted a path conflict"
-        assert full_sentinel.read_bytes() == b"full extractor preserves this tree"
+        check_manifest_file(full_sentinel, "full_conflict_sentinel")
         assert sorted(path.relative_to(full_existing).as_posix()
                       for path in full_existing.rglob("*")) == ["sentinel"]
 
@@ -202,7 +263,9 @@ def main():
 
         old = root / "old.txt"
         old.write_bytes(b"old timestamp")
-        os.utime(old, (-86400, -86400))
+        check_manifest_file(old, "old_time_source")
+        negative_time = EXPECTED["metadata"]["negative_time_source_mtime_unix"]
+        os.utime(old, (negative_time, negative_time))
         result = run(MINI, "c", "old.blt", "old.txt", cwd=root)
         assert result.returncode != 0 and b"pre-1970" in result.stderr
         result = run(FULL, "t", "old.blt", cwd=root)
