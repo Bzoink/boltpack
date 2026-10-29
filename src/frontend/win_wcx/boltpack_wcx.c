@@ -59,6 +59,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <stdint.h>
+#include <wchar.h>
 
 /* ==========================================================================
  * WCX API constants and types (from Total Commander SDK wcxhead.h)
@@ -67,6 +68,7 @@
  #ifndef WCX_MAX_PATH
  #define WCX_MAX_PATH 260
  #endif
+#define WCX_UTF8_PATH (WCX_MAX_PATH * 4)
  
  /* ==========================================================================
   * Codepage conversion helpers
@@ -76,12 +78,19 @@
 static int acp_to_utf8(const char *acp, char *utf8, int utf8_size)
 {
     wchar_t wbuf[WCX_MAX_PATH];
+    char roundtrip[WCX_MAX_PATH];
+    BOOL used_default = FALSE;
     UINT codepage = GetACP();
     DWORD flags = codepage == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
-    int wlen, ulen;
+    int wlen, alen, ulen;
 
     wlen = MultiByteToWideChar(codepage, flags, acp, -1, wbuf, WCX_MAX_PATH);
     if (wlen == 0) return -1;
+    alen = WideCharToMultiByte(codepage,
+                               codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS,
+                               wbuf, wlen, roundtrip, sizeof(roundtrip), NULL,
+                               codepage == CP_UTF8 ? NULL : &used_default);
+    if (alen == 0 || used_default || strcmp(roundtrip, acp) != 0) return -1;
 
     ulen = WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen, utf8, utf8_size,
                                NULL, NULL);
@@ -94,7 +103,7 @@ static int acp_to_utf8(const char *acp, char *utf8, int utf8_size)
  * Returns 0 on success, -1 on failure. */
 static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
 {
-    wchar_t wbuf[WCX_MAX_PATH];
+    wchar_t wbuf[WCX_MAX_PATH], roundtrip[WCX_MAX_PATH];
     BOOL used_default = FALSE;
     UINT codepage = GetACP();
     DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
@@ -104,11 +113,203 @@ static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
                                wbuf, WCX_MAX_PATH);
     if (wlen == 0) return -1;
 
+    {
+        char utf8_roundtrip[WCX_MAX_PATH * 4];
+        int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen,
+                                            utf8_roundtrip,
+                                            sizeof(utf8_roundtrip), NULL, NULL);
+        if (utf8_len == 0 || strcmp(utf8_roundtrip, utf8) != 0) return -1;
+    }
+
     alen = WideCharToMultiByte(codepage, flags, wbuf, wlen, acp, acp_size,
                                NULL, codepage == CP_UTF8 ? NULL : &used_default);
     if (alen == 0 || used_default) return -1;
+    if (MultiByteToWideChar(codepage,
+                            codepage == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0,
+                            acp, -1, roundtrip, WCX_MAX_PATH) != wlen ||
+        memcmp(roundtrip, wbuf, (size_t)wlen * sizeof(wchar_t)) != 0)
+        return -1;
 
     return 0;
+}
+
+/* WCX W entry points normalize native UTF-16 paths to the core's UTF-8 path
+ * representation. These adapters make every filesystem boundary wide. */
+static int wcx_utf8_to_wide(const char *utf8, WCHAR *wide, int capacity)
+{
+    int length, bytes;
+    char roundtrip[WCX_UTF8_PATH];
+    if (utf8 == NULL || wide == NULL || capacity <= 0) return -1;
+    length = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, capacity);
+    if (length <= 0) return -1;
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, roundtrip,
+                                sizeof(roundtrip), NULL, NULL);
+    if (bytes <= 0 || strcmp(roundtrip, utf8) != 0) return -1;
+    return length;
+}
+
+static int wcx_wide_to_utf8(const WCHAR *wide, char *utf8, int capacity)
+{
+    const WCHAR *p;
+    int bytes;
+    if (wide == NULL || utf8 == NULL || capacity <= 0) return -1;
+    for (p = wide; *p; ++p) {
+        if (*p >= 0xD800 && *p <= 0xDBFF) {
+            if (p[1] < 0xDC00 || p[1] > 0xDFFF) return -1;
+            ++p;
+        } else if (*p >= 0xDC00 && *p <= 0xDFFF) return -1;
+    }
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, capacity,
+                                NULL, NULL);
+    return bytes > 0 ? bytes : -1;
+}
+
+static FILE *wcx_fopen_utf8(const char *path, const char *mode)
+{
+    WCHAR wide_path[WCX_MAX_PATH], wide_mode[8];
+    size_t i;
+    if (wcx_utf8_to_wide(path, wide_path, WCX_MAX_PATH) <= 0 || mode == NULL)
+        return NULL;
+    for (i = 0; mode[i] && i < 7; ++i) wide_mode[i] = (WCHAR)(unsigned char)mode[i];
+    if (mode[i] != '\0') return NULL;
+    wide_mode[i] = L'\0';
+    return _wfopen(wide_path, wide_mode);
+}
+
+static int wcx_stat64_utf8(const char *path, struct _stat64 *st)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0 ? _wstat64(wide, st) : -1;
+}
+
+static int wcx_utime_utf8(const char *path, struct _utimbuf *times)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0 ? _wutime(wide, times) : -1;
+}
+
+static DWORD wcx_GetFileAttributesA_utf8(const char *path)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0
+         ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL wcx_SetFileAttributesA_utf8(const char *path, DWORD attributes)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0 &&
+           SetFileAttributesW(wide, attributes);
+}
+
+static BOOL wcx_CreateDirectoryA_utf8(const char *path, LPSECURITY_ATTRIBUTES sa)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0 &&
+           CreateDirectoryW(wide, sa);
+}
+
+static HANDLE wcx_CreateFileA_utf8(const char *path, DWORD access, DWORD share,
+                                  LPSECURITY_ATTRIBUTES sa, DWORD creation,
+                                  DWORD flags, HANDLE template_file)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    if (wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) <= 0) return INVALID_HANDLE_VALUE;
+    return CreateFileW(wide, access, share, sa, creation, flags, template_file);
+}
+
+static BOOL wcx_DeleteFileA_utf8(const char *path)
+{
+    WCHAR wide[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(path, wide, WCX_MAX_PATH) > 0 && DeleteFileW(wide);
+}
+
+static BOOL wcx_MoveFileExA_utf8(const char *from, const char *to, DWORD flags)
+{
+    WCHAR wide_from[WCX_MAX_PATH], wide_to[WCX_MAX_PATH];
+    return wcx_utf8_to_wide(from, wide_from, WCX_MAX_PATH) > 0 &&
+           wcx_utf8_to_wide(to, wide_to, WCX_MAX_PATH) > 0 &&
+           MoveFileExW(wide_from, wide_to, flags);
+}
+
+static DWORD wcx_GetFullPathNameA_utf8(const char *path, DWORD capacity,
+                                      char *full, char **file_part)
+{
+    WCHAR wide_path[WCX_MAX_PATH], wide_full[WCX_MAX_PATH], *wide_part = NULL;
+    int length;
+    if (wcx_utf8_to_wide(path, wide_path, WCX_MAX_PATH) <= 0) return 0;
+    length = (int)GetFullPathNameW(wide_path, WCX_MAX_PATH, wide_full, &wide_part);
+    if (length <= 0 || length >= WCX_MAX_PATH ||
+        wcx_wide_to_utf8(wide_full, full, (int)capacity) <= 0) return 0;
+    if (file_part != NULL) {
+        char *slash = strrchr(full, '\\');
+        char *fslash = strrchr(full, '/');
+        if (fslash != NULL && (slash == NULL || fslash > slash)) slash = fslash;
+        *file_part = slash == NULL ? full : slash + 1;
+    }
+    return (DWORD)strlen(full);
+}
+
+#define fopen(path, mode) wcx_fopen_utf8((path), (mode))
+#define _stat64(path, st) wcx_stat64_utf8((path), (st))
+#define _utime(path, times) wcx_utime_utf8((path), (times))
+#define GetFileAttributesA(path) wcx_GetFileAttributesA_utf8((path))
+#define SetFileAttributesA(path, attrs) wcx_SetFileAttributesA_utf8((path), (attrs))
+#define CreateDirectoryA(path, sa) wcx_CreateDirectoryA_utf8((path), (sa))
+#define CreateFileA(path, a, s, sa, c, f, t) \
+    wcx_CreateFileA_utf8((path), (a), (s), (sa), (c), (f), (t))
+#define DeleteFileA(path) wcx_DeleteFileA_utf8((path))
+#define MoveFileExA(from, to, flags) wcx_MoveFileExA_utf8((from), (to), (flags))
+#define GetFullPathNameA(path, n, full, part) \
+    wcx_GetFullPathNameA_utf8((path), (n), (full), (part))
+
+static char *wcx_multisz_acp_to_utf8(const char *input)
+{
+    size_t input_bytes, capacity, source = 0, destination = 0;
+    char *output;
+    if (input == NULL) return NULL;
+    input_bytes = 0;
+    while (input[input_bytes] != '\0')
+        input_bytes += strlen(input + input_bytes) + 1;
+    if (input_bytes > (SIZE_MAX - 2) / 4) return NULL;
+    capacity = input_bytes * 4 + 2;
+    output = (char *)malloc(capacity);
+    if (output == NULL) return NULL;
+    while (input[source] != '\0') {
+        size_t left = capacity - destination;
+        if (acp_to_utf8(input + source, output + destination,
+                        left > INT_MAX ? INT_MAX : (int)left) != 0) {
+            free(output);
+            return NULL;
+        }
+        destination += strlen(output + destination) + 1;
+        source += strlen(input + source) + 1;
+    }
+    output[destination] = '\0';
+    if (destination == 0) output[1] = '\0';
+    return output;
+}
+
+static char *wcx_multisz_wide_to_utf8(const WCHAR *input)
+{
+    size_t chars = 0, capacity, source = 0, destination = 0;
+    char *output;
+    if (input == NULL) return NULL;
+    while (input[chars] != L'\0') chars += wcslen(input + chars) + 1;
+    if (chars > (SIZE_MAX - 2) / 4) return NULL;
+    capacity = chars * 4 + 2;
+    output = (char *)malloc(capacity);
+    if (output == NULL) return NULL;
+    while (input[source] != L'\0') {
+        int bytes = wcx_wide_to_utf8(input + source, output + destination,
+                                     (int)(capacity - destination));
+        if (bytes < 0) { free(output); return NULL; }
+        destination += (size_t)bytes;
+        source += wcslen(input + source) + 1;
+    }
+    output[destination] = '\0';
+    if (destination == 0) output[1] = '\0';
+    return output;
 }
 
 /* ==========================================================================
@@ -139,8 +340,8 @@ static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
 #define E_EREAD           18
 #define E_EWRITE          19
 #define E_SMALL_BUF       20
-#define E_ECOPY           21
-#define E_EABORTED        22
+#define E_EABORTED        21
+#define E_NOT_SUPPORTED   24
 
 /* GetPackerCaps flags */
 #define PK_CAPS_NEW       1   /* can create new archives      */
@@ -161,6 +362,16 @@ typedef struct {
     int   CmtSize;
     int   CmtState;
 } tOpenArchiveData;
+
+typedef struct {
+    WCHAR *ArcName;
+    int OpenMode;
+    int OpenResult;
+    WCHAR *CmtBuf;
+    int CmtBufSize;
+    int CmtSize;
+    int CmtState;
+} tOpenArchiveDataW;
 
 typedef struct {
     char ArcName[260];
@@ -201,8 +412,31 @@ typedef struct {
     char  Reserved[1024];
 } tHeaderDataEx;
 
+typedef struct {
+    WCHAR ArcName[1024];
+    WCHAR FileName[1024];
+    int   Flags;
+    unsigned int PackSize;
+    unsigned int PackSizeHigh;
+    unsigned int UnpSize;
+    unsigned int UnpSizeHigh;
+    int   HostOS;
+    int   FileCRC;
+    int   FileTime;
+    int   UnpVer;
+    int   Method;
+    int   FileAttr;
+    char *CmtBuf;
+    int   CmtBufSize;
+    int   CmtSize;
+    int   CmtState;
+    char  Reserved[1024];
+} tHeaderDataExW;
+
 typedef int (WINAPI *tChangeVolProc)  (char *ArcName, int Mode);
 typedef int (WINAPI *tProcessDataProc)(char *FileName, int Size);
+typedef int (WINAPI *tChangeVolProcW)  (WCHAR *ArcName, int Mode);
+typedef int (WINAPI *tProcessDataProcW)(WCHAR *FileName, int Size);
 
 /* ==========================================================================
  * File I/O adapters (same pattern as win/main.c)
@@ -330,7 +564,7 @@ static void path_join(char *out, size_t outsz, const char *dir,
  * existing reparse points. The target root is supplied by Total Commander. */
 static int wcx_ensure_directories(const char *path, int include_leaf)
 {
-    char input[WCX_MAX_PATH], full[WCX_MAX_PATH], current[WCX_MAX_PATH];
+    char input[WCX_UTF8_PATH], full[WCX_UTF8_PATH], current[WCX_UTF8_PATH];
     char *file_part = NULL;
     DWORD length, attr;
     size_t root_len, i, n;
@@ -402,7 +636,7 @@ static LONG g_wcx_temp_counter = 0;
 static int wcx_open_sibling_stage(const char *target, char *temporary,
                                  size_t temporary_size, FILE **file)
 {
-    char directory[WCX_MAX_PATH], full_target[WCX_MAX_PATH];
+    char directory[WCX_UTF8_PATH], full_target[WCX_UTF8_PATH];
     char *slash, *fslash;
     DWORD full_length;
     size_t length;
@@ -411,7 +645,7 @@ static int wcx_open_sibling_stage(const char *target, char *temporary,
                                    full_target, NULL);
     if (full_length == 0 || full_length >= sizeof(full_target)) return -1;
     length = strlen(full_target);
-    if (length >= sizeof(directory) || temporary_size < WCX_MAX_PATH) return -1;
+    if (length >= sizeof(directory) || temporary_size < WCX_UTF8_PATH) return -1;
     strcpy(directory, full_target);
     slash = strrchr(directory, '\\');
     fslash = strrchr(directory, '/');
@@ -427,7 +661,8 @@ static int wcx_open_sibling_stage(const char *target, char *temporary,
                     "%s.boltpack-%08lx.tmp", directory,
                     (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
         if (count < 0 || (size_t)count >= temporary_size) return -1;
-        handle = CreateFileA(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+        /* Archive finalization patches and rereads its header after writing. */
+        handle = CreateFileA(temporary, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                              NULL);
         if (handle == INVALID_HANDLE_VALUE) {
@@ -435,9 +670,9 @@ static int wcx_open_sibling_stage(const char *target, char *temporary,
             if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
             return -1;
         }
-        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_WRONLY);
+        fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_RDWR);
         if (fd < 0) { CloseHandle(handle); DeleteFileA(temporary); return -1; }
-        fp = _fdopen(fd, "wb");
+        fp = _fdopen(fd, "w+b");
         if (fp == NULL) { _close(fd); DeleteFileA(temporary); return -1; }
         *file = fp;
         return 0;
@@ -474,15 +709,27 @@ static int wcx_apply_fat(const char *path, bp_uint8 valid, bp_uint8 value)
 static int wcx_set_time(const char *path, bp_uint64 mtime)
 {
     bp_off_t seconds = bp_u64_to_off(mtime);
-    time_t t;
-    struct _stat64 st;
-    struct _utimbuf ut;
+    WCHAR wide_path[WCX_MAX_PATH];
+    ULONGLONG ticks;
+    FILETIME file_time;
+    HANDLE handle;
+    int converted;
+    const ULONGLONG epoch = 11644473600ULL;
     if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0) return -1;
-    t = (time_t)seconds;
-    if ((bp_off_t)t != seconds || _stat64(path, &st) != 0) return -1;
-    ut.actime = (time_t)st.st_atime;
-    ut.modtime = t;
-    return _utime(path, &ut);
+    if ((ULONGLONG)seconds > (ULLONG_MAX / 10000000ULL) - epoch) return -1;
+    converted = wcx_utf8_to_wide(path, wide_path, WCX_MAX_PATH);
+    if (converted <= 0) return -1;
+    ticks = ((ULONGLONG)seconds + epoch) * 10000000ULL;
+    file_time.dwLowDateTime = (DWORD)ticks;
+    file_time.dwHighDateTime = (DWORD)(ticks >> 32);
+    handle = CreateFileW(wide_path, FILE_WRITE_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return -1;
+    converted = SetFileTime(handle, NULL, NULL, &file_time) ? 0 : -1;
+    CloseHandle(handle);
+    return converted;
 }
 
 static int wcx_set_open_file_time(FILE *fp, bp_uint64 mtime)
@@ -507,7 +754,7 @@ static int wcx_set_open_file_time(FILE *fp, bp_uint64 mtime)
  * ========================================================================== */
 
 typedef struct {
-    char             arc_name[WCX_MAX_PATH];
+    char             arc_name[WCX_UTF8_PATH];
     FILE            *fp;
     bp_io_t          io;
 
@@ -522,11 +769,13 @@ typedef struct {
     /* Callbacks set by Total Commander. */
     tProcessDataProc  proc_cb;
     tChangeVolProc    vol_cb;
+    tProcessDataProcW proc_cb_w;
+    tChangeVolProcW   vol_cb_w;
 } wcx_arc_t;
 
 typedef struct wcx_entry {
-    char      name[WCX_MAX_PATH];   /* archive path, backslash separators */
-    char      name_fwd[WCX_MAX_PATH]; /* same path, forward-slash separators */
+    char      name[WCX_UTF8_PATH];   /* UTF-8 archive path, backslash separators */
+    char      name_fwd[WCX_UTF8_PATH]; /* same path, forward-slash separators */
     bp_uint64 orig_size;
     bp_uint64 comp_size;
     bp_uint64 mtime;
@@ -541,7 +790,7 @@ typedef struct wcx_entry {
     int       resource_present;
     bp_uint8  fat_valid;
     bp_uint8  fat_value;
-    char      output_path[WCX_MAX_PATH];
+    char      output_path[WCX_UTF8_PATH];
 } wcx_entry_t;
 
 static int wcx_component_safe(const WCHAR *name, size_t length)
@@ -572,7 +821,7 @@ static int wcx_component_safe(const WCHAR *name, size_t length)
 static int wcx_windows_name_safe(const char *name)
 {
     WCHAR wide[WCX_MAX_PATH];
-    int n = MultiByteToWideChar(CP_ACP, 0, name, -1, wide, WCX_MAX_PATH);
+    int n = wcx_utf8_to_wide(name, wide, WCX_MAX_PATH);
     size_t length, start, i;
     if (n <= 0) return 0;
     length = (size_t)n - 1;
@@ -601,7 +850,7 @@ static int wcx_windows_case_key(const char *path, WCHAR *key, size_t capacity)
     WCHAR wide[WCX_MAX_PATH], folded[WCX_MAX_PATH];
     int wide_length, folded_length;
     size_t length;
-    wide_length = MultiByteToWideChar(CP_ACP, 0, path, -1, wide, WCX_MAX_PATH);
+    wide_length = wcx_utf8_to_wide(path, wide, WCX_MAX_PATH);
     if (wide_length <= 0) return -1;
     length = (size_t)wide_length - 1;
     while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
@@ -617,7 +866,7 @@ static int wcx_windows_case_key(const char *path, WCHAR *key, size_t capacity)
 static int wcx_projected_collision(const wcx_arc_t *arc, const char *name,
                                    int is_dir)
 {
-    char candidate[WCX_MAX_PATH];
+    char candidate[WCX_UTF8_PATH];
     WCHAR candidate_key[WCX_MAX_PATH];
     int i;
     safe_strcpy(candidate, sizeof(candidate), name);
@@ -626,7 +875,7 @@ static int wcx_projected_collision(const wcx_arc_t *arc, const char *name,
                              sizeof(candidate_key) / sizeof(candidate_key[0])) < 0)
         return 1;
     for (i = 0; i + 1 < arc->entry_count; i++) {
-        char existing[WCX_MAX_PATH];
+        char existing[WCX_UTF8_PATH];
         WCHAR existing_key[WCX_MAX_PATH];
         size_t candidate_len, existing_len;
         safe_strcpy(existing, sizeof(existing), arc->entries[i].name);
@@ -649,14 +898,13 @@ static int wcx_projected_collision(const wcx_arc_t *arc, const char *name,
 
 static int wcx_record_supplementary(const bp_entry_t *e, wcx_arc_t *arc)
 {
-    char acp[WCX_MAX_PATH];
-    char name[WCX_MAX_PATH];
+    char name[WCX_UTF8_PATH];
     int i;
-    if (!bp_name_is_safe(e->name) || utf8_to_acp(e->name, acp, sizeof(acp)) != 0) {
+    if (!bp_name_is_safe(e->name) || strlen(e->name) >= sizeof(name)) {
         arc->list_error = BP_ERR_CORRUPT;
         return -1;
     }
-    safe_strcpy(name, sizeof(name), acp);
+    safe_strcpy(name, sizeof(name), e->name);
     to_backslash(name);
     for (i = 0; i < arc->entry_count; i++) {
         wcx_entry_t *subject = &arc->entries[i];
@@ -721,16 +969,17 @@ static int list_populate(const bp_entry_t *e, void *user_data)
     ent = &arc->entries[arc->entry_count++];
     memset(ent, 0, sizeof(*ent));
 
-    /* Archive stores UTF-8; refuse names that cannot be represented exactly
-     * by Total Commander's ANSI filename API. */
-    if (utf8_to_acp(e->name, ent->name_fwd, WCX_MAX_PATH) != 0 ||
-        !wcx_windows_name_safe(ent->name_fwd)) {
+    /* Keep the archive's UTF-8 spelling; W exports widen it for the host. */
+    if (strlen(e->name) >= sizeof(ent->name_fwd)) {
         arc->list_error = BP_ERR_PARTIAL;
         return -1;
     }
-
-    strncpy(ent->name, ent->name_fwd, WCX_MAX_PATH - 1);
-    ent->name[WCX_MAX_PATH - 1] = '\0';
+    safe_strcpy(ent->name_fwd, sizeof(ent->name_fwd), e->name);
+    if (!wcx_windows_name_safe(ent->name_fwd)) {
+        arc->list_error = BP_ERR_PARTIAL;
+        return -1;
+    }
+    safe_strcpy(ent->name, sizeof(ent->name), ent->name_fwd);
     to_backslash(ent->name);  /* TC expects Windows path separators */
 
     if (wcx_projected_collision(arc, ent->name, e->entry_type == BP_TYPE_DIR)) {
@@ -755,12 +1004,12 @@ static int list_populate(const bp_entry_t *e, void *user_data)
 
 typedef struct {
     bp_io_t io;
-    char target[WCX_MAX_PATH];
-    char temporary[WCX_MAX_PATH];
+    char target[WCX_UTF8_PATH];
+    char temporary[WCX_UTF8_PATH];
 } wcx_staged_file_t;
 
 typedef struct {
-    const char       *target_fwd;   /* entry name, forward-slash separators */
+    const char       *target_fwd;   /* UTF-8 entry name, forward-slash separators */
     const char       *dest_path;    /* full OS path to write extracted file  */
     wcx_entry_t      *selected;
     int               found;
@@ -771,6 +1020,7 @@ typedef struct {
     bp_io_t           discard_io;
     bp_metadata_sink_t metadata;
     tProcessDataProc  proc_cb;
+    tProcessDataProcW proc_cb_w;
 } extract_ctx_t;
 
 static long discard_write(void *handle, const void *buf, bp_uint32 count)
@@ -782,13 +1032,11 @@ static long discard_write(void *handle, const void *buf, bp_uint32 count)
 
 static int extract_name_matches(const bp_entry_t *e, extract_ctx_t *ctx)
 {
-    char acp[WCX_MAX_PATH];
-    if (!bp_name_is_safe(e->name) || utf8_to_acp(e->name, acp, sizeof(acp)) != 0) {
+    if (!bp_name_is_safe(e->name)) {
         ctx->open_error = BP_ERR_PARTIAL;
         return 0;
     }
-    to_fwdslash(acp);
-    return strcmp(acp, ctx->target_fwd) == 0;
+    return strcmp(e->name, ctx->target_fwd) == 0;
 }
 
 static int extract_done(const bp_entry_t *e, bp_io_t *out, int status,
@@ -845,7 +1093,17 @@ static int extract_done(const bp_entry_t *e, bp_io_t *out, int status,
             }
             ctx->target_ok = 1;
             if (result == BP_ERR_PARTIAL) ctx->partial = 1;
-            if (ctx->proc_cb) ctx->proc_cb((char *)ctx->dest_path, -1);
+            if (ctx->proc_cb_w) {
+                WCHAR wide_path[WCX_MAX_PATH];
+                if (wcx_utf8_to_wide(ctx->dest_path, wide_path,
+                                     WCX_MAX_PATH) > 0)
+                    ctx->proc_cb_w(wide_path, -1);
+            } else if (ctx->proc_cb) {
+                char acp_path[WCX_MAX_PATH];
+                if (utf8_to_acp(ctx->dest_path, acp_path,
+                                sizeof(acp_path)) == 0)
+                    ctx->proc_cb(acp_path, -1);
+            }
             free(stage);
             return result;
         }
@@ -964,15 +1222,15 @@ static int pack_add_file(bp_archive_t *ar, const char *src_path,
     bp_uint16 flags;
     FILE *fp;
     bp_io_t fio;
-    char dir_arc[WCX_MAX_PATH + 1];  /* +1 for trailing '/' appended below */
-    char arc_name_utf8[WCX_MAX_PATH * 3 + 1];
+    char dir_arc[WCX_UTF8_PATH + 1];  /* +1 for trailing '/' appended below */
+    char arc_name_utf8[WCX_UTF8_PATH];
     int rc;
 
     if (_stat64(src_path, &st) != 0) return BP_ERR_IO;
     if (st.st_size < 0) return BP_ERR_OVERFLOW;
     attributes = GetFileAttributesA(src_path);
     if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
-    if (acp_to_utf8(arc_name, arc_name_utf8, sizeof(arc_name_utf8)) != 0)
+    if (strlen(arc_name) >= sizeof(arc_name_utf8))
         return BP_ERR_INVALID_ARG;
     if ((bp_off_t)st.st_mtime >= 0 &&
         (time_t)(bp_off_t)st.st_mtime == st.st_mtime) {
@@ -994,8 +1252,9 @@ static int pack_add_file(bp_archive_t *ar, const char *src_path,
             dir_arc[sizeof(dir_arc) - 1] = '\0';
         }
 
-        if (acp_to_utf8(dir_arc, arc_name_utf8, sizeof(arc_name_utf8)) != 0)
+        if (strlen(dir_arc) >= sizeof(arc_name_utf8))
             return BP_ERR_INVALID_ARG;
+        safe_strcpy(arc_name_utf8, sizeof(arc_name_utf8), dir_arc);
         rc = bp_archive_add_entry_ex(ar, arc_name_utf8, BP_TYPE_DIR,
                                      BP_OS_WINDOWS, NULL, bp_u64_from_u32(0),
                                      mtime, flags);
@@ -1009,6 +1268,7 @@ static int pack_add_file(bp_archive_t *ar, const char *src_path,
     }
 
     /* Regular file. */
+    safe_strcpy(arc_name_utf8, sizeof(arc_name_utf8), arc_name);
     fp = fopen(src_path, "rb");
     if (fp == NULL) return BP_ERR_IO;
 
@@ -1035,6 +1295,8 @@ static int pack_add_file(bp_archive_t *ar, const char *src_path,
 
 static tChangeVolProc   g_vol_cb;
 static tProcessDataProc g_proc_cb;
+static tChangeVolProcW   g_vol_cb_w;
+static tProcessDataProcW g_proc_cb_w;
 
 /* ==========================================================================
  * Registry helpers
@@ -1114,8 +1376,7 @@ static int set_compression_method(int method)
  * WCX exported functions
  * ========================================================================== */
 
-__declspec(dllexport)
-HANDLE WINAPI OpenArchive(tOpenArchiveData *data)
+static HANDLE wcx_open_archive_utf8(tOpenArchiveData *data)
 {
     wcx_arc_t *arc;
     int rc;
@@ -1125,8 +1386,17 @@ HANDLE WINAPI OpenArchive(tOpenArchiveData *data)
 
     arc->current  = 0;
     arc->selected = -1;
+    arc->proc_cb = g_proc_cb;
+    arc->proc_cb_w = g_proc_cb_w;
+    arc->vol_cb = g_vol_cb;
+    arc->vol_cb_w = g_vol_cb_w;
 
-    strncpy(arc->arc_name, data->ArcName, WCX_MAX_PATH - 1);
+    if (strlen(data->ArcName) >= sizeof(arc->arc_name)) {
+        free(arc);
+        data->OpenResult = E_EOPEN;
+        return (HANDLE)0;
+    }
+    safe_strcpy(arc->arc_name, sizeof(arc->arc_name), data->ArcName);
 
     arc->fp = fopen(data->ArcName, "rb");
     if (arc->fp == NULL) {
@@ -1160,6 +1430,48 @@ HANDLE WINAPI OpenArchive(tOpenArchiveData *data)
 }
 
 __declspec(dllexport)
+HANDLE WINAPI OpenArchive(tOpenArchiveData *data)
+{
+    char utf8_path[WCX_UTF8_PATH];
+    tOpenArchiveData internal;
+    HANDLE result;
+    if (data == NULL || data->ArcName == NULL ||
+        acp_to_utf8(data->ArcName, utf8_path, sizeof(utf8_path)) != 0) {
+        if (data != NULL) data->OpenResult = E_EOPEN;
+        return (HANDLE)0;
+    }
+    internal = *data;
+    internal.ArcName = utf8_path;
+    result = wcx_open_archive_utf8(&internal);
+    data->OpenResult = internal.OpenResult;
+    data->CmtSize = internal.CmtSize;
+    data->CmtState = internal.CmtState;
+    return result;
+}
+
+__declspec(dllexport)
+HANDLE WINAPI OpenArchiveW(tOpenArchiveDataW *data)
+{
+    char utf8_path[WCX_UTF8_PATH];
+    tOpenArchiveData internal;
+    HANDLE result;
+    if (data == NULL || wcx_wide_to_utf8(data->ArcName, utf8_path,
+                                         sizeof(utf8_path)) < 0) {
+        if (data != NULL) data->OpenResult = E_EOPEN;
+        return (HANDLE)0;
+    }
+    memset(&internal, 0, sizeof(internal));
+    internal.ArcName = utf8_path;
+    internal.OpenMode = data->OpenMode;
+    internal.CmtBufSize = 0;
+    result = wcx_open_archive_utf8(&internal);
+    data->OpenResult = internal.OpenResult;
+    data->CmtSize = internal.CmtSize;
+    data->CmtState = internal.CmtState;
+    return result;
+}
+
+__declspec(dllexport)
 int WINAPI ReadHeader(HANDLE hArcData, tHeaderData *hd)
 {
     wcx_arc_t   *arc = (wcx_arc_t *)hArcData;
@@ -1175,8 +1487,9 @@ int WINAPI ReadHeader(HANDLE hArcData, tHeaderData *hd)
     arc->current++;
 
     memset(hd, 0, sizeof(*hd));
-    safe_strcpy(hd->ArcName, sizeof(hd->ArcName), arc->arc_name);
-    safe_strcpy(hd->FileName, sizeof(hd->FileName), e->name);
+    if (utf8_to_acp(arc->arc_name, hd->ArcName, sizeof(hd->ArcName)) != 0 ||
+        utf8_to_acp(e->name, hd->FileName, sizeof(hd->FileName)) != 0)
+        return E_BAD_ARCHIVE;
 
     hd->Flags    = 0;
     hd->PackSize = (int)e->comp_size.lo;
@@ -1210,8 +1523,9 @@ int WINAPI ReadHeaderEx(HANDLE hArcData, tHeaderDataEx *hd)
     arc->current++;
 
     memset(hd, 0, sizeof(*hd));
-    safe_strcpy(hd->ArcName, sizeof(hd->ArcName), arc->arc_name);
-    safe_strcpy(hd->FileName, sizeof(hd->FileName), e->name);
+    if (utf8_to_acp(arc->arc_name, hd->ArcName, sizeof(hd->ArcName)) != 0 ||
+        utf8_to_acp(e->name, hd->FileName, sizeof(hd->FileName)) != 0)
+        return E_BAD_ARCHIVE;
 
     hd->Flags        = 0;
     hd->PackSize     = e->comp_size.lo;
@@ -1235,14 +1549,47 @@ int WINAPI ReadHeaderEx(HANDLE hArcData, tHeaderDataEx *hd)
 }
 
 __declspec(dllexport)
-int WINAPI ProcessFile(HANDLE hArcData, int Operation,
-                       char *DestPath, char *DestName)
+int WINAPI ReadHeaderExW(HANDLE hArcData, tHeaderDataExW *hd)
+{
+    wcx_arc_t *arc = (wcx_arc_t *)hArcData;
+    wcx_entry_t *e;
+    if (arc->current >= arc->entry_count) return E_END_ARCHIVE;
+    e = &arc->entries[arc->current];
+    memset(hd, 0, sizeof(*hd));
+    if (wcx_utf8_to_wide(arc->arc_name, hd->ArcName,
+                         (int)(sizeof(hd->ArcName) / sizeof(hd->ArcName[0]))) <= 0 ||
+        wcx_utf8_to_wide(e->name, hd->FileName,
+                         (int)(sizeof(hd->FileName) / sizeof(hd->FileName[0]))) <= 0)
+        return E_BAD_ARCHIVE;
+    arc->selected = arc->current++;
+    hd->Flags        = 0;
+    hd->PackSize     = e->comp_size.lo;
+    hd->PackSizeHigh = e->comp_size.hi;
+    hd->UnpSize      = e->orig_size.lo;
+    hd->UnpSizeHigh  = e->orig_size.hi;
+    hd->HostOS       = 0;
+    hd->FileCRC      = 0;
+    hd->FileTime     = unix_to_dostime(e->mtime,
+                       (e->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0);
+    hd->UnpVer       = 0;
+    hd->Method       = e->method;
+    hd->FileAttr     = e->is_dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    hd->CmtBuf       = NULL;
+    hd->CmtBufSize   = 0;
+    hd->CmtSize      = 0;
+    hd->CmtState     = 0;
+    memset(hd->Reserved, 0, sizeof(hd->Reserved));
+    return E_SUCCESS;
+}
+
+static int wcx_process_file_utf8(HANDLE hArcData, int Operation,
+                                 char *DestPath, char *DestName)
 {
     wcx_arc_t   *arc = (wcx_arc_t *)hArcData;
     wcx_entry_t *e;
     extract_ctx_t ctx;
-    char dest[WCX_MAX_PATH];
-    char full_dest[WCX_MAX_PATH];
+    char dest[WCX_UTF8_PATH];
+    char full_dest[WCX_UTF8_PATH];
     DWORD full_length;
     int rc;
 
@@ -1269,16 +1616,14 @@ int WINAPI ProcessFile(HANDLE hArcData, int Operation,
     if (DestName != NULL && DestName[0] != '\0') {
         /* TC provides the full target path. */
         if (strlen(DestName) >= sizeof(dest)) return E_ECREATE;
-        strncpy(dest, DestName, WCX_MAX_PATH - 1);
-        dest[WCX_MAX_PATH - 1] = '\0';
+        safe_strcpy(dest, sizeof(dest), DestName);
     } else if (DestPath != NULL && DestPath[0] != '\0') {
         /* TC provides the target directory; append the archive entry name. */
         if (strlen(DestPath) + strlen(e->name) + 2 >= sizeof(dest)) return E_ECREATE;
         path_join(dest, sizeof(dest), DestPath, e->name);
     } else {
         if (strlen(e->name) >= sizeof(dest)) return E_ECREATE;
-        strncpy(dest, e->name, WCX_MAX_PATH - 1);
-        dest[WCX_MAX_PATH - 1] = '\0';
+        safe_strcpy(dest, sizeof(dest), e->name);
     }
     full_length = GetFullPathNameA(dest, (DWORD)sizeof(full_dest), full_dest, NULL);
     if (full_length == 0 || full_length >= sizeof(full_dest)) return E_ECREATE;
@@ -1289,6 +1634,7 @@ int WINAPI ProcessFile(HANDLE hArcData, int Operation,
     ctx.dest_path  = dest;
     ctx.selected   = e;
     ctx.proc_cb    = arc->proc_cb;
+    ctx.proc_cb_w  = arc->proc_cb_w;
     ctx.discard_io.read = NULL;
     ctx.discard_io.write = discard_write;
     ctx.discard_io.seek = NULL;
@@ -1312,13 +1658,47 @@ int WINAPI ProcessFile(HANDLE hArcData, int Operation,
     e->extracted = 1;
     safe_strcpy(e->output_path, sizeof(e->output_path), dest);
 
-    if (arc->proc_cb && !e->is_dir) {
-        arc->proc_cb(dest, (int)e->orig_size.lo);
+    if (!e->is_dir && arc->proc_cb_w) {
+        WCHAR wide_dest[WCX_MAX_PATH];
+        if (wcx_utf8_to_wide(dest, wide_dest, WCX_MAX_PATH) > 0)
+            arc->proc_cb_w(wide_dest, (int)e->orig_size.lo);
+    } else if (!e->is_dir && arc->proc_cb) {
+        char acp_dest[WCX_MAX_PATH];
+        if (utf8_to_acp(dest, acp_dest, sizeof(acp_dest)) == 0)
+            arc->proc_cb(acp_dest, (int)e->orig_size.lo);
     }
 
     if (ctx.partial || (e->portable_meta_present && !ctx.target_metadata_seen))
-        return E_ECREATE;
+        return E_NOT_SUPPORTED;
     return E_SUCCESS;
+}
+
+__declspec(dllexport)
+int WINAPI ProcessFile(HANDLE hArcData, int Operation,
+                       char *DestPath, char *DestName)
+{
+    char path[WCX_UTF8_PATH], name[WCX_UTF8_PATH];
+    if (DestPath != NULL && DestPath[0] != '\0' &&
+        acp_to_utf8(DestPath, path, sizeof(path)) != 0) return E_ECREATE;
+    if (DestName != NULL && DestName[0] != '\0' &&
+        acp_to_utf8(DestName, name, sizeof(name)) != 0) return E_ECREATE;
+    return wcx_process_file_utf8(hArcData, Operation,
+        DestPath != NULL && DestPath[0] != '\0' ? path : NULL,
+        DestName != NULL && DestName[0] != '\0' ? name : NULL);
+}
+
+__declspec(dllexport)
+int WINAPI ProcessFileW(HANDLE hArcData, int Operation,
+                        WCHAR *DestPath, WCHAR *DestName)
+{
+    char path[WCX_UTF8_PATH], name[WCX_UTF8_PATH];
+    if (DestPath != NULL && DestPath[0] != L'\0' &&
+        wcx_wide_to_utf8(DestPath, path, sizeof(path)) < 0) return E_ECREATE;
+    if (DestName != NULL && DestName[0] != L'\0' &&
+        wcx_wide_to_utf8(DestName, name, sizeof(name)) < 0) return E_ECREATE;
+    return wcx_process_file_utf8(hArcData, Operation,
+        DestPath != NULL && DestPath[0] != L'\0' ? path : NULL,
+        DestName != NULL && DestName[0] != L'\0' ? name : NULL);
 }
 
 static int wcx_directory_order(const void *a, const void *b)
@@ -1385,6 +1765,17 @@ void WINAPI SetChangeVolProc(HANDLE hArcData, tChangeVolProc pProc)
 }
 
 __declspec(dllexport)
+void WINAPI SetChangeVolProcW(HANDLE hArcData, tChangeVolProcW pProc)
+{
+    if (hArcData == (HANDLE)-1 || hArcData == NULL) {
+        g_vol_cb_w = pProc;
+    } else {
+        wcx_arc_t *arc = (wcx_arc_t *)hArcData;
+        arc->vol_cb_w = pProc;
+    }
+}
+
+__declspec(dllexport)
 void WINAPI SetProcessDataProc(HANDLE hArcData, tProcessDataProc pProc)
 {
     if (hArcData == (HANDLE)-1 || hArcData == NULL) {
@@ -1396,18 +1787,28 @@ void WINAPI SetProcessDataProc(HANDLE hArcData, tProcessDataProc pProc)
 }
 
 __declspec(dllexport)
-int WINAPI PackFiles(char *PackedFile, char *SubPath,
-                     char *SrcPath, char *AddList, int Flags)
+void WINAPI SetProcessDataProcW(HANDLE hArcData, tProcessDataProcW pProc)
+{
+    if (hArcData == (HANDLE)-1 || hArcData == NULL) {
+        g_proc_cb_w = pProc;
+    } else {
+        wcx_arc_t *arc = (wcx_arc_t *)hArcData;
+        arc->proc_cb_w = pProc;
+    }
+}
+
+static int wcx_pack_files_utf8(char *PackedFile, char *SubPath,
+                               char *SrcPath, char *AddList, int Flags)
 {
     FILE *fp = NULL;
     FILE *source_fp = NULL;
     bp_io_t aio;
     bp_archive_t ar;
     char *name;
-    char src[WCX_MAX_PATH];
-    char arc_name[WCX_MAX_PATH];
-    char target[WCX_MAX_PATH];
-    char temporary[WCX_MAX_PATH] = "";
+    char src[WCX_UTF8_PATH];
+    char arc_name[WCX_UTF8_PATH];
+    char target[WCX_UTF8_PATH];
+    char temporary[WCX_UTF8_PATH] = "";
     const char *base;
     char *sep;
     char *fsep;
@@ -1449,18 +1850,18 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
         source_fp = fopen(target, "rb");
         if (source_fp == NULL || wcx_copy_stream(source_fp, fp) != 0 ||
             wcx_flush_stage(fp) != 0) {
-            result = E_ECOPY;
+            result = E_EWRITE;
             goto pack_cleanup;
         }
         if (fclose(source_fp) != 0) {
             source_fp = NULL;
-            result = E_ECOPY;
+            result = E_ECLOSE;
             goto pack_cleanup;
         }
         source_fp = NULL;
         if (fclose(fp) != 0) {
             fp = NULL;
-            result = E_ECOPY;
+            result = E_ECLOSE;
             goto pack_cleanup;
         }
         fp = fopen(temporary, "r+b");
@@ -1489,8 +1890,7 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
         if (SrcPath != NULL && SrcPath[0] != '\0') {
             path_join(src, sizeof(src), SrcPath, name);
         } else {
-            strncpy(src, name, WCX_MAX_PATH - 1);
-            src[WCX_MAX_PATH - 1] = '\0';
+            safe_strcpy(src, sizeof(src), name);
         }
 
         /* Build the archive entry name. */
@@ -1530,7 +1930,7 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
             continue;
         }
         if (rc != BP_OK) {
-            result = E_ECOPY;
+            result = E_EWRITE;
             goto pack_cleanup;
         }
     }
@@ -1557,12 +1957,12 @@ int WINAPI PackFiles(char *PackedFile, char *SubPath,
     if (!MoveFileExA(temporary, target,
                      (appending ? MOVEFILE_REPLACE_EXISTING : 0) |
                      MOVEFILE_WRITE_THROUGH)) {
-        result = E_ECOPY;
+        result = E_ECREATE;
         goto pack_cleanup;
     }
     stage_exists = 0;
 
-    return partial ? E_ECOPY : E_SUCCESS;
+    return partial ? E_NOT_SUPPORTED : E_SUCCESS;
 
 pack_cleanup:
     if (source_fp != NULL) fclose(source_fp);
@@ -1573,12 +1973,52 @@ pack_cleanup:
 }
 
 __declspec(dllexport)
-int WINAPI DeleteFiles(char *PackedFile, char *DeleteList)
+int WINAPI PackFiles(char *PackedFile, char *SubPath,
+                     char *SrcPath, char *AddList, int Flags)
+{
+    char archive[WCX_UTF8_PATH], subpath[WCX_UTF8_PATH], source[WCX_UTF8_PATH];
+    char *list;
+    int rc;
+    if (PackedFile == NULL || acp_to_utf8(PackedFile, archive, sizeof(archive)) != 0 ||
+        (SubPath != NULL && acp_to_utf8(SubPath, subpath, sizeof(subpath)) != 0) ||
+        (SrcPath != NULL && acp_to_utf8(SrcPath, source, sizeof(source)) != 0))
+        return E_ECREATE;
+    list = wcx_multisz_acp_to_utf8(AddList);
+    if (list == NULL) return E_NO_MEMORY;
+    rc = wcx_pack_files_utf8(archive, SubPath != NULL ? subpath : NULL,
+                             SrcPath != NULL ? source : NULL, list, Flags);
+    free(list);
+    return rc;
+}
+
+__declspec(dllexport)
+int WINAPI PackFilesW(WCHAR *PackedFile, WCHAR *SubPath,
+                      WCHAR *SrcPath, WCHAR *AddList, int Flags)
+{
+    char archive[WCX_UTF8_PATH], subpath[WCX_UTF8_PATH], source[WCX_UTF8_PATH];
+    char *list;
+    int rc;
+    if (PackedFile == NULL || wcx_wide_to_utf8(PackedFile, archive,
+                                               sizeof(archive)) < 0 ||
+        (SubPath != NULL && wcx_wide_to_utf8(SubPath, subpath,
+                                             sizeof(subpath)) < 0) ||
+        (SrcPath != NULL && wcx_wide_to_utf8(SrcPath, source,
+                                             sizeof(source)) < 0))
+        return E_ECREATE;
+    list = wcx_multisz_wide_to_utf8(AddList);
+    if (list == NULL) return E_NO_MEMORY;
+    rc = wcx_pack_files_utf8(archive, SubPath != NULL ? subpath : NULL,
+                             SrcPath != NULL ? source : NULL, list, Flags);
+    free(list);
+    return rc;
+}
+
+static int wcx_delete_files_utf8(char *PackedFile, char *DeleteList)
 {
     FILE *src_fp = NULL, *dst_fp = NULL;
     bp_io_t src_io, dst_io;
-    char tmp_name[WCX_MAX_PATH];
-    char target[WCX_MAX_PATH];
+    char tmp_name[WCX_UTF8_PATH];
+    char target[WCX_UTF8_PATH];
     DWORD target_length;
     DWORD target_attr;
     int rc;
@@ -1668,10 +2108,44 @@ int WINAPI DeleteFiles(char *PackedFile, char *DeleteList)
     if (!MoveFileExA(tmp_name, target,
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileA(tmp_name);
-        return E_ECOPY;
+        return E_ECREATE;
     }
 
     return E_SUCCESS;
+}
+
+__declspec(dllexport)
+int WINAPI DeleteFiles(char *PackedFile, char *DeleteList)
+{
+    char archive[WCX_UTF8_PATH];
+    char *list;
+    int rc;
+
+    if (PackedFile == NULL || acp_to_utf8(PackedFile, archive,
+                                          sizeof(archive)) != 0)
+        return E_EOPEN;
+    list = wcx_multisz_acp_to_utf8(DeleteList);
+    if (list == NULL) return DeleteList == NULL ? E_SUCCESS : E_NO_MEMORY;
+    rc = wcx_delete_files_utf8(archive, list);
+    free(list);
+    return rc;
+}
+
+__declspec(dllexport)
+int WINAPI DeleteFilesW(WCHAR *PackedFile, WCHAR *DeleteList)
+{
+    char archive[WCX_UTF8_PATH];
+    char *list;
+    int rc;
+
+    if (PackedFile == NULL || wcx_wide_to_utf8(PackedFile, archive,
+                                               sizeof(archive)) < 0)
+        return E_EOPEN;
+    list = wcx_multisz_wide_to_utf8(DeleteList);
+    if (list == NULL) return DeleteList == NULL ? E_SUCCESS : E_NO_MEMORY;
+    rc = wcx_delete_files_utf8(archive, list);
+    free(list);
+    return rc;
 }
 
 /* ==========================================================================

@@ -26,11 +26,7 @@
 #  include <sys/utime.h>    /* _utime, _utimbuf */
 #  include "resource.h"
 /* map POSIX names to Windows equivalents */
-#  define utime(p, t)    _utime((p), (struct _utimbuf *)(t))
 #  define utimbuf        _utimbuf
-#  define mkdir(p, m)    _mkdir(p)
-#  define access(p, m)   _access((p), (m))
-#  define unlink(p)      _unlink(p)
 #  define strcasecmp     _stricmp
 #  define strncasecmp    _strnicmp
 #else
@@ -43,6 +39,7 @@
 #  define _ftelli64(f)         ((long long)ftello(f))
 #  define _stat64              stat
 #endif
+
 
 #include <FL/Fl.H>
 #include <FL/Fl_Double_Window.H>
@@ -107,6 +104,176 @@ extern "C" {
 
 #include "../gui_common/help_text.h"
 #include "../gui_common/logo_png.h"
+
+#ifdef _WIN32
+/* FLTK returns UTF-8 paths; keep that encoding through every filesystem call. */
+static bool win_utf8_to_wide(const char *utf8, std::wstring *wide)
+{
+    int length, bytes;
+    std::string roundtrip;
+    if (utf8 == NULL || wide == NULL) return false;
+    length = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    if (length <= 0) return false;
+    wide->resize((size_t)length);
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &(*wide)[0], length) <= 0)
+        return false;
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide->c_str(), -1,
+                                NULL, 0, NULL, NULL);
+    if (bytes <= 0) return false;
+    roundtrip.resize((size_t)bytes);
+    if (WideCharToMultiByte(CP_UTF8, 0, wide->c_str(), -1, &roundtrip[0],
+                            bytes, NULL, NULL) != bytes)
+        return false;
+    roundtrip.resize((size_t)bytes - 1);
+    if (roundtrip != utf8) return false;
+    wide->resize((size_t)length - 1);
+    return true;
+}
+
+static bool win_wide_to_utf8(const WCHAR *wide, std::string *utf8)
+{
+    const WCHAR *p;
+    int length;
+    if (wide == NULL || utf8 == NULL) return false;
+    for (p = wide; *p; ++p) {
+        if (*p >= 0xD800 && *p <= 0xDBFF) {
+            if (p[1] < 0xDC00 || p[1] > 0xDFFF) return false;
+            ++p;
+        } else if (*p >= 0xDC00 && *p <= 0xDFFF) return false;
+    }
+    length = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (length <= 0) return false;
+    utf8->resize((size_t)length);
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, &(*utf8)[0], length,
+                            NULL, NULL) != length) return false;
+    utf8->resize((size_t)length - 1);
+    return true;
+}
+
+static FILE *open_utf8_file(const std::string &path, const wchar_t *mode);
+static FILE *win_fopen_utf8(const char *path, const char *mode)
+{
+    wchar_t wide_mode[8];
+    std::string utf8_path(path ? path : "");
+    size_t i;
+    for (i = 0; mode && mode[i] && i < 7; ++i)
+        wide_mode[i] = (wchar_t)(unsigned char)mode[i];
+    if (mode == NULL || mode[i] != '\0') return NULL;
+    wide_mode[i] = L'\0';
+    return open_utf8_file(utf8_path, wide_mode);
+}
+
+static int win_stat64_utf8(const char *path, struct _stat64 *st)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) ? _wstat64(wide.c_str(), st) : -1;
+}
+
+static int win_utime_utf8(const char *path, struct _utimbuf *times)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) ? _wutime(wide.c_str(), times) : -1;
+}
+
+static int win_access_utf8(const char *path, int mode)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) ? _waccess(wide.c_str(), mode) : -1;
+}
+
+static int win_mkdir_utf8(const char *path, int mode)
+{
+    std::wstring wide;
+    (void)mode;
+    if (!win_utf8_to_wide(path, &wide)) return -1;
+    if (CreateDirectoryW(wide.c_str(), NULL)) return 0;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) errno = EEXIST;
+    return -1;
+}
+
+static int win_unlink_utf8(const char *path)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) && DeleteFileW(wide.c_str()) ? 0 : -1;
+}
+
+static DWORD win_GetFileAttributesA_utf8(const char *path)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) ? GetFileAttributesW(wide.c_str())
+                                         : INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL win_SetFileAttributesA_utf8(const char *path, DWORD attributes)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) &&
+           SetFileAttributesW(wide.c_str(), attributes);
+}
+
+static BOOL win_CreateDirectoryA_utf8(const char *path, LPSECURITY_ATTRIBUTES sa)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) && CreateDirectoryW(wide.c_str(), sa);
+}
+
+static HANDLE win_CreateFileA_utf8(const char *path, DWORD access, DWORD share,
+                                  LPSECURITY_ATTRIBUTES sa, DWORD create,
+                                  DWORD flags, HANDLE template_file)
+{
+    std::wstring wide;
+    if (!win_utf8_to_wide(path, &wide)) return INVALID_HANDLE_VALUE;
+    return CreateFileW(wide.c_str(), access, share, sa, create, flags, template_file);
+}
+
+static BOOL win_DeleteFileA_utf8(const char *path)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) && DeleteFileW(wide.c_str());
+}
+
+static BOOL win_RemoveDirectoryA_utf8(const char *path)
+{
+    std::wstring wide;
+    return win_utf8_to_wide(path, &wide) && RemoveDirectoryW(wide.c_str());
+}
+
+static BOOL win_MoveFileExA_utf8(const char *from, const char *to, DWORD flags)
+{
+    std::wstring wide_from, wide_to;
+    return win_utf8_to_wide(from, &wide_from) && win_utf8_to_wide(to, &wide_to) &&
+           MoveFileExW(wide_from.c_str(), wide_to.c_str(), flags);
+}
+
+static BOOL win_ReplaceFileA_utf8(const char *replaced, const char *replacement,
+                                 const char *backup, DWORD flags,
+                                 LPVOID exclude, LPVOID reserved)
+{
+    std::wstring wide_replaced, wide_replacement, wide_backup;
+    if (!win_utf8_to_wide(replaced, &wide_replaced) ||
+        !win_utf8_to_wide(replacement, &wide_replacement) ||
+        !win_utf8_to_wide(backup, &wide_backup)) return FALSE;
+    return ReplaceFileW(wide_replaced.c_str(), wide_replacement.c_str(),
+                        wide_backup.c_str(), flags, exclude, reserved);
+}
+
+#  define fopen(path, mode) win_fopen_utf8((path), (mode))
+#  define _stat64(path, st) win_stat64_utf8((path), (st))
+#  define utime(path, times) win_utime_utf8((path), (times))
+#  define access(path, mode) win_access_utf8((path), (mode))
+#  define mkdir(path, mode) win_mkdir_utf8((path), (mode))
+#  define unlink(path) win_unlink_utf8((path))
+#  define GetFileAttributesA(path) win_GetFileAttributesA_utf8((path))
+#  define SetFileAttributesA(path, attrs) win_SetFileAttributesA_utf8((path), (attrs))
+#  define CreateDirectoryA(path, sa) win_CreateDirectoryA_utf8((path), (sa))
+#  define CreateFileA(path, a, s, sa, c, f, t) \
+    win_CreateFileA_utf8((path), (a), (s), (sa), (c), (f), (t))
+#  define DeleteFileA(path) win_DeleteFileA_utf8((path))
+#  define RemoveDirectoryA(path) win_RemoveDirectoryA_utf8((path))
+#  define MoveFileExA(from, to, flags) win_MoveFileExA_utf8((from), (to), (flags))
+#  define ReplaceFileA(a, b, c, f, e, r) win_ReplaceFileA_utf8((a), (b), (c), (f), (e), (r))
+#endif
+
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -407,14 +574,21 @@ static void allow_drop_message(HWND hwnd, UINT message)
 static std::vector<std::string> paths_from_hdrop(HDROP hdrop)
 {
     std::vector<std::string> paths;
-    UINT count = DragQueryFileA(hdrop, 0xFFFFFFFF, NULL, 0);
+    UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, NULL, 0);
 
     for (UINT i = 0; i < count; i++) {
-        UINT len = DragQueryFileA(hdrop, i, NULL, 0);
+        UINT len = DragQueryFileW(hdrop, i, NULL, 0);
         if (len > 0) {
-            std::vector<char> buf(len + 1, '\0');
-            DragQueryFileA(hdrop, i, &buf[0], len + 1);
-            paths.push_back(&buf[0]);
+            std::vector<WCHAR> wide(len + 1, L'\0');
+            std::string utf8;
+            if (DragQueryFileW(hdrop, i, &wide[0], len + 1) != 0 &&
+                win_wide_to_utf8(&wide[0], &utf8)) {
+                paths.push_back(utf8);
+            } else {
+                paths.clear();
+                fl_alert("A dropped path contains invalid Unicode and cannot be opened.");
+                return paths;
+            }
         }
     }
 
@@ -2184,21 +2358,15 @@ static bool win_component_is_safe(const WCHAR *component, size_t length)
     return true;
 }
 
-/* Project archive UTF-8 to the active Windows code page without substitution. */
+/* Validate archive UTF-8 against Windows naming rules without ACP projection. */
 static int project_windows_name(const char *utf8, char *local, size_t capacity)
 {
-    WCHAR wide[MAX_PATH];
-    size_t length, start, i;
-    int wide_length, bytes;
-    BOOL used_default = FALSE;
-    UINT codepage = GetACP();
-    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    std::wstring wide;
+    size_t start, i, length;
     if (utf8 == NULL || local == NULL || capacity == 0 || !bp_name_is_safe(utf8))
         return BP_ERR_PARTIAL;
-    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
-                                      wide, MAX_PATH);
-    if (wide_length <= 0) return BP_ERR_PARTIAL;
-    length = (size_t)wide_length - 1;
+    if (!win_utf8_to_wide(utf8, &wide)) return BP_ERR_PARTIAL;
+    length = wide.size();
     if (length == 0 || length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
     start = 0;
     for (i = 0; i <= length; ++i) {
@@ -2209,59 +2377,31 @@ static int project_windows_name(const char *utf8, char *local, size_t capacity)
             if (i == length && length > 0 && wide[length - 1] == L'/') break;
             return BP_ERR_INVALID_ARG;
         }
-        if (!win_component_is_safe(wide + start, component_length))
+        if (!win_component_is_safe(wide.data() + start, component_length))
             return BP_ERR_INVALID_ARG;
         start = i + 1;
     }
-    bytes = WideCharToMultiByte(codepage, flags, wide, wide_length, local,
-                                (int)capacity, NULL,
-                                codepage == CP_UTF8 ? NULL : &used_default);
-    if (bytes <= 0 || used_default) return BP_ERR_PARTIAL;
-    for (char *p = local; *p; p = CharNextA(p))
-        if (*p == '/') *p = '\\';
+    if (strlen(utf8) + 1 > capacity) return BP_ERR_NAME_TOO_LONG;
+    memcpy(local, utf8, strlen(utf8) + 1);
+    for (char *p = local; *p; ++p) if (*p == '/') *p = '\\';
     return BP_OK;
 }
 
-static int utf8_path_to_acp(const char *utf8, std::string *local)
+static int utf8_windows_path(const char *utf8, std::string *local)
 {
-    int wide_length, local_length;
-    UINT codepage = GetACP();
-    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
-    BOOL used_default = FALSE;
-    std::vector<WCHAR> wide;
-    std::vector<char> bytes;
+    std::wstring wide;
     if (utf8 == NULL || local == NULL) return BP_ERR_INVALID_ARG;
-    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
-                                     NULL, 0);
-    if (wide_length <= 0 || wide_length > MAX_PATH) return BP_ERR_NAME_TOO_LONG;
-    wide.resize((size_t)wide_length);
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
-                            &wide[0], wide_length) <= 0) return BP_ERR_PARTIAL;
-    local_length = WideCharToMultiByte(codepage, flags, &wide[0], wide_length,
-                                       NULL, 0, NULL,
-                                       codepage == CP_UTF8 ? NULL : &used_default);
-    if (local_length <= 0 || local_length > MAX_PATH || used_default)
-        return BP_ERR_PARTIAL;
-    bytes.resize((size_t)local_length);
-    used_default = FALSE;
-    if (WideCharToMultiByte(codepage, flags, &wide[0], wide_length, &bytes[0],
-                            local_length, NULL,
-                            codepage == CP_UTF8 ? NULL : &used_default) <= 0 ||
-        used_default) return BP_ERR_PARTIAL;
-    local->assign(&bytes[0]);
+    if (!win_utf8_to_wide(utf8, &wide)) return BP_ERR_PARTIAL;
+    if (wide.size() >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    local->assign(utf8);
     return BP_OK;
 }
 
 static FILE *open_utf8_file(const std::string &path, const wchar_t *mode)
 {
-    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                     path.c_str(), -1, NULL, 0);
-    std::vector<WCHAR> wide;
-    if (length <= 0) return NULL;
-    wide.resize((size_t)length);
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1,
-                            &wide[0], length) <= 0) return NULL;
-    return _wfopen(&wide[0], mode);
+    std::wstring wide;
+    if (!win_utf8_to_wide(path.c_str(), &wide)) return NULL;
+    return _wfopen(wide.c_str(), mode);
 }
 
 static int ensure_windows_directories(const std::string &root,
@@ -2518,11 +2658,10 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
 
 static std::wstring windows_case_key(const std::string &local)
 {
-    WCHAR wide[MAX_PATH];
-    int length = MultiByteToWideChar(CP_ACP, 0, local.c_str(), -1, wide, MAX_PATH);
+    std::wstring wide;
     std::wstring key;
-    if (length <= 0) return key;
-    key.assign(wide, wide + length - 1);
+    if (!win_utf8_to_wide(local.c_str(), &wide)) return key;
+    key.assign(wide);
     while (!key.empty() && key[key.size() - 1] == L'\\') key.resize(key.size() - 1);
     if (!key.empty()) CharLowerBuffW(&key[0], (DWORD)key.size());
     return key;
@@ -2533,7 +2672,7 @@ static int extract_preflight_entry(const bp_entry_t *entry, void *user_data)
     ExtractPreflight *preflight = (ExtractPreflight *)user_data;
     ExtractCtx *ctx = preflight->ctx;
     std::string ename(entry->name ? entry->name : "");
-    char projected[MAX_PATH];
+    char projected[MAX_PATH * 4];
     std::string local, path;
     int rc;
     if (!entry->name || !bp_name_is_safe(entry->name)) {
@@ -2630,7 +2769,7 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     std::string ename(entry->name ? entry->name : "");
     std::string local_name;
     std::string path;
-    char projected[MAX_PATH];
+    char projected[MAX_PATH * 4];
     int rc;
 
     if (!entry->name || !bp_name_is_safe(entry->name)) {
@@ -2826,7 +2965,7 @@ static int gui_extract_io(bp_io_t *aio, const char *out_dir, int force,
     int rc;
     (void)force;
     (void)ud;
-    rc = utf8_path_to_acp((out_dir && *out_dir) ? out_dir : ".", &ctx.dest_dir);
+    rc = utf8_windows_path((out_dir && *out_dir) ? out_dir : ".", &ctx.dest_dir);
     if (rc != BP_OK) return rc;
     ctx.progress = NULL;
     ctx.mode     = EXTRACT_KEEP_FOLDERS;
@@ -2873,8 +3012,8 @@ static void do_extract()
 
     ExtractWork work;
     work.archive_path       = g_archive_path;
-    if (utf8_path_to_acp(dest, &work.ectx.dest_dir) != BP_OK) {
-        fl_alert("The selected destination path cannot be represented by the active Windows code page.");
+    if (utf8_windows_path(dest, &work.ectx.dest_dir) != BP_OK) {
+        fl_alert("The selected destination is not a valid UTF-8 Windows path or is too long.");
         return;
     }
     work.ectx.progress      = create_progress_window("Extracting...");
@@ -2936,8 +3075,8 @@ static void do_extract_selected()
 
     ExtractWork work;
     work.archive_path  = g_archive_path;
-    if (utf8_path_to_acp(dest, &work.ectx.dest_dir) != BP_OK) {
-        fl_alert("The selected destination path cannot be represented by the active Windows code page.");
+    if (utf8_windows_path(dest, &work.ectx.dest_dir) != BP_OK) {
+        fl_alert("The selected destination is not a valid UTF-8 Windows path or is too long.");
         return;
     }
     work.ectx.progress = create_progress_window("Extracting...");
@@ -2981,6 +3120,20 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                              const char *prefix);
 
+static bp_uint16 win_gui_archive_mtime(time_t source_time, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+
+    *mtime = bp_u64_from_u32(0);
+    if (source_time < (time_t)0)
+        return 0;
+    seconds = (bp_off_t)source_time;
+    if (seconds < 0 || (time_t)seconds != source_time)
+        return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                const char *arc_name)
 {
@@ -2992,10 +3145,11 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         std::string dname = std::string(arc_name);
         if (dname.empty() || dname[dname.size()-1] != '/')
             dname += '/';
-        bp_uint64 mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        int rc = bp_archive_add_entry(ar, dname.c_str(), BP_TYPE_DIR,
-                                      BP_OS_WINDOWS, NULL,
-                                      bp_u64_from_u32(0), mtime);
+        bp_uint64 mtime;
+        bp_uint16 flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+        int rc = bp_archive_add_entry_ex(ar, dname.c_str(), BP_TYPE_DIR,
+                                         BP_OS_WINDOWS, NULL,
+                                         bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
         return add_dir_recursive(ar, filepath, dname.c_str());
     }
@@ -3007,9 +3161,10 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     bp_io_from_file(&fio, fp);
 
     bp_uint64 fsize = bp_off_to_u64((bp_off_t)st.st_size);
-    bp_uint64 mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-    int rc = bp_archive_add_entry(ar, arc_name, BP_TYPE_DATA,
-                                  BP_OS_WINDOWS, &fio, fsize, mtime);
+    bp_uint64 mtime;
+    bp_uint16 flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+    int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
+                                     BP_OS_WINDOWS, &fio, fsize, mtime, flags);
     fclose(fp);
     return rc;
 }
@@ -3762,12 +3917,15 @@ static void create_and_send(const std::vector<std::string> &input_files)
     std::string tmpdir;
 #ifdef _WIN32
     {
-        char tp[MAX_PATH], td[MAX_PATH];
-        DWORD n = GetTempPathA(MAX_PATH, tp);
-        if (n != 0 && n <= MAX_PATH && GetTempFileNameA(tp, "blt", 0, td) != 0) {
-            DeleteFileA(td);               /* drop the file GetTempFileName made */
-            if (CreateDirectoryA(td, NULL))
-                tmpdir = td;
+        WCHAR tp[MAX_PATH], td[MAX_PATH];
+        std::string temp_file;
+        DWORD n = GetTempPathW(MAX_PATH, tp);
+        if (n != 0 && n < MAX_PATH &&
+            GetTempFileNameW(tp, L"blt", 0, td) != 0 &&
+            win_wide_to_utf8(td, &temp_file)) {
+            DeleteFileA(temp_file.c_str()); /* drop the file GetTempFileName made */
+            if (CreateDirectoryA(temp_file.c_str(), NULL))
+                tmpdir = temp_file;
         }
     }
     std::string out_path = tmpdir.empty() ? std::string() : tmpdir + "\\" + name;

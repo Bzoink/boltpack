@@ -1,5 +1,5 @@
 /*
- * main.c -- Win32 GUI frontend for BoltPack (Windows 95+)
+ * main.c -- Win32 GUI frontend for BoltPack (Windows NT Unicode APIs)
  *
  * Pure Win32 API, no MFC/ATL. Links the archiver core statically.
  *
@@ -38,6 +38,7 @@
 
 #define APP_CLASS_NAME  "BoltPackGuiClass"
 #define MAX_ENTRIES     65536
+#define GUI_PATH_BYTES  (MAX_PATH * 4)
 
 /* ---- bp_io_t adapters for FILE * --------------------------------------- */
 
@@ -223,45 +224,371 @@ static void format_time(bp_uint64 mtime, char *buf, size_t bufsize)
     buf[bufsize - 1] = '\0';
 }
 
-/* ---- Windows codepage helpers ------------------------------------------ */
-/* Convert UTF-8 path to ANSI (ACP) for file operations on Win9x */
-
-static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
+/* Paths stay UTF-8 internally and cross into Win32/CRT as UTF-16. */
+static int win_gui_utf8_to_wide(const char *utf8, WCHAR *wide, int capacity)
 {
-    WCHAR wbuf[1024];
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wbuf, 1024);
-    if (wlen <= 0) {
-        strncpy(acp, utf8, acp_size);
-        acp[acp_size - 1] = '\0';
-        return 0;
+    int length, bytes;
+    char *roundtrip;
+    if (utf8 == NULL || wide == NULL || capacity <= 0) return -1;
+    length = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, capacity);
+    if (length <= 0) return -1;
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (bytes <= 0) return -1;
+    roundtrip = (char *)malloc((size_t)bytes);
+    if (roundtrip == NULL) return -1;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, roundtrip, bytes,
+                            NULL, NULL) != bytes || strcmp(roundtrip, utf8) != 0) {
+        free(roundtrip);
+        return -1;
     }
-    WideCharToMultiByte(CP_ACP, 0, wbuf, -1, acp, acp_size, NULL, NULL);
-    acp[acp_size - 1] = '\0';
+    free(roundtrip);
+    return length;
+}
+
+static int win_gui_wide_is_valid_utf16(const WCHAR *wide)
+{
+    const WCHAR *p;
+    if (wide == NULL) return 0;
+    for (p = wide; *p != L'\0'; p++) {
+        if (*p >= 0xD800 && *p <= 0xDBFF) {
+            if (p[1] < 0xDC00 || p[1] > 0xDFFF) return 0;
+            p++;
+        } else if (*p >= 0xDC00 && *p <= 0xDFFF) {
+            return 0;
+        }
+    }
     return 1;
 }
 
-/* Extraction must not silently replace an unrepresentable character. */
-static int utf8_to_acp_strict(const char *utf8, char *acp, int acp_size)
+static int win_gui_wide_to_utf8(const WCHAR *wide, char *utf8, int capacity)
 {
-    WCHAR wide[MAX_PATH];
-    UINT codepage = GetACP();
-    BOOL used_default = FALSE;
-    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
-    int wide_len, bytes;
-    if (utf8 == NULL || acp == NULL || acp_size <= 0) return -1;
-    wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
-                                   wide, MAX_PATH);
-    if (wide_len <= 0) return -1;
-    bytes = WideCharToMultiByte(codepage, flags, wide, wide_len, acp, acp_size,
-                                NULL, codepage == CP_UTF8 ? NULL : &used_default);
-    if (bytes <= 0 || used_default) return -1;
+    if (wide == NULL || utf8 == NULL || capacity <= 0 ||
+        !win_gui_wide_is_valid_utf16(wide)) return -1;
+    return WideCharToMultiByte(CP_UTF8, 0, wide, -1,
+                               utf8, capacity, NULL, NULL);
+}
+
+static int win_gui_multisz_wide_to_utf8(const WCHAR *wide, char *utf8,
+                                        size_t capacity)
+{
+    size_t source = 0, destination = 0;
+    if (wide == NULL || utf8 == NULL || capacity == 0) return -1;
+    if (wide[0] == L'\0') {
+        if (capacity < 2) return -1;
+        utf8[0] = utf8[1] = '\0';
+        return 0;
+    }
+    while (wide[source] != L'\0') {
+        if (!win_gui_wide_is_valid_utf16(wide + source)) return -1;
+        int bytes = WideCharToMultiByte(CP_UTF8, 0,
+                                        wide + source, -1, NULL, 0, NULL, NULL);
+        if (bytes <= 0 || (size_t)bytes >= capacity - destination) return -1;
+        if (WideCharToMultiByte(CP_UTF8, 0,
+                                wide + source, -1, utf8 + destination, bytes,
+                                NULL, NULL) != bytes) return -1;
+        destination += (size_t)bytes;
+        source += wcslen(wide + source) + 1;
+    }
+    if (destination >= capacity) return -1;
+    utf8[destination] = '\0';
     return 0;
 }
+
+static int win_gui_acp_to_utf8(const char *acp, char *utf8, int capacity)
+{
+    WCHAR wide[MAX_PATH];
+    char roundtrip[MAX_PATH];
+    int length, bytes;
+    length = MultiByteToWideChar(CP_ACP, 0, acp, -1, wide, MAX_PATH);
+    if (length <= 0) return -1;
+    bytes = WideCharToMultiByte(CP_ACP, 0, wide, -1, roundtrip,
+                                sizeof(roundtrip), NULL, NULL);
+    if (bytes <= 0 || strcmp(roundtrip, acp) != 0) return -1;
+    return win_gui_wide_to_utf8(wide, utf8, capacity) > 0 ? 0 : -1;
+}
+
+static int win_gui_multisz_acp_to_utf8(const char *acp, char *utf8,
+                                       size_t capacity)
+{
+    size_t source = 0, destination = 0;
+    if (acp == NULL || utf8 == NULL || capacity == 0) return -1;
+    if (acp[0] == '\0') {
+        if (capacity < 2) return -1;
+        utf8[0] = utf8[1] = '\0';
+        return 0;
+    }
+    while (acp[source] != '\0') {
+        char segment[GUI_PATH_BYTES];
+        size_t bytes;
+        if (win_gui_acp_to_utf8(acp + source, segment, sizeof(segment)) != 0)
+            return -1;
+        bytes = strlen(segment) + 1;
+        if (bytes >= capacity - destination) return -1;
+        memcpy(utf8 + destination, segment, bytes);
+        destination += bytes;
+        source += strlen(acp + source) + 1;
+    }
+    if (destination >= capacity) return -1;
+    utf8[destination] = '\0';
+    return 0;
+}
+
+/* The GUI imports Unicode APIs directly; Windows 9x is not a supported target. */
+static const int g_gui_unicode_api = 1;
+
+static int win_gui_utf8_to_acp(const char *utf8, char *acp, int capacity)
+{
+    WCHAR wide[MAX_PATH], roundtrip[MAX_PATH];
+    int bytes, wide_length, roundtrip_length;
+    if (win_gui_utf8_to_wide(utf8, wide, MAX_PATH) <= 0) return -1;
+    bytes = WideCharToMultiByte(CP_ACP, 0, wide, -1, acp, capacity, NULL, NULL);
+    if (bytes <= 0) return -1;
+    wide_length = (int)wcslen(wide) + 1;
+    roundtrip_length = MultiByteToWideChar(CP_ACP, 0, acp, -1,
+                                          roundtrip, MAX_PATH);
+    if (roundtrip_length != wide_length ||
+        memcmp(wide, roundtrip, (size_t)wide_length * sizeof(WCHAR)) != 0)
+        return -1;
+    return 0;
+}
+
+static int win_gui_utf8_copy(const char *source, char *target, size_t capacity)
+{
+    WCHAR wide[MAX_PATH];
+    size_t length;
+    if (source == NULL || target == NULL ||
+        win_gui_utf8_to_wide(source, wide, MAX_PATH) <= 0) return -1;
+    length = strlen(source) + 1;
+    if (length > capacity) return -1;
+    memcpy(target, source, length);
+    return 0;
+}
+
+static FILE *win_gui_fopen(const char *path, const char *mode)
+{
+    WCHAR wide_path[MAX_PATH], wide_mode[8];
+    char acp_path[MAX_PATH];
+    size_t i;
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp_path, MAX_PATH) != 0) return NULL;
+        return fopen(acp_path, mode);
+    }
+    if (win_gui_utf8_to_wide(path, wide_path, MAX_PATH) <= 0) return NULL;
+    for (i = 0; mode[i] != '\0' && i < 7; i++) wide_mode[i] = (WCHAR)(unsigned char)mode[i];
+    if (mode[i] != '\0') return NULL;
+    wide_mode[i] = L'\0';
+    return _wfopen(wide_path, wide_mode);
+}
+
+static int win_gui_stat64(const char *path, struct _stat64 *st)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return -1;
+        return _stat64(acp, st);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return -1;
+    return _wstat64(wide, st);
+}
+
+static int win_gui_utime(const char *path, struct _utimbuf *times)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        struct utimbuf acp_times;
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return -1;
+        acp_times.actime = times->actime;
+        acp_times.modtime = times->modtime;
+        return utime(acp, &acp_times);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return -1;
+    return _wutime(wide, times);
+}
+
+static DWORD win_gui_GetFileAttributesA(const char *path)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return INVALID_FILE_ATTRIBUTES;
+        return GetFileAttributesA(acp);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(wide);
+}
+
+static BOOL win_gui_SetFileAttributesA(const char *path, DWORD attributes)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return FALSE;
+        return SetFileAttributesA(acp, attributes);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return FALSE;
+    return SetFileAttributesW(wide, attributes);
+}
+
+static BOOL win_gui_CreateDirectoryA(const char *path, LPSECURITY_ATTRIBUTES security)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return FALSE;
+        return CreateDirectoryA(acp, security);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return FALSE;
+    return CreateDirectoryW(wide, security);
+}
+
+static HANDLE win_gui_CreateFileA(const char *path, DWORD access, DWORD share,
+                                 LPSECURITY_ATTRIBUTES security, DWORD creation,
+                                 DWORD flags, HANDLE template_file)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return INVALID_HANDLE_VALUE;
+        return CreateFileA(acp, access, share, security, creation, flags,
+                           template_file);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return INVALID_HANDLE_VALUE;
+    return CreateFileW(wide, access, share, security, creation, flags,
+                       template_file);
+}
+
+static BOOL win_gui_DeleteFileA(const char *path)
+{
+    WCHAR wide[MAX_PATH];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(path, acp, MAX_PATH) != 0) return FALSE;
+        return DeleteFileA(acp);
+    }
+    if (win_gui_utf8_to_wide(path, wide, MAX_PATH) <= 0) return FALSE;
+    return DeleteFileW(wide);
+}
+
+static BOOL win_gui_MoveFileExA(const char *source, const char *destination, DWORD flags)
+{
+    WCHAR wide_source[MAX_PATH], wide_destination[MAX_PATH];
+    char acp_source[MAX_PATH], acp_destination[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(source, acp_source, MAX_PATH) != 0 ||
+            win_gui_utf8_to_acp(destination, acp_destination, MAX_PATH) != 0)
+            return FALSE;
+        return MoveFileExA(acp_source, acp_destination, flags);
+    }
+    if (win_gui_utf8_to_wide(source, wide_source, MAX_PATH) <= 0 ||
+        win_gui_utf8_to_wide(destination, wide_destination, MAX_PATH) <= 0)
+        return FALSE;
+    return MoveFileExW(wide_source, wide_destination, flags);
+}
+
+static BOOL win_gui_MoveFileA(const char *source, const char *destination)
+{
+    return win_gui_MoveFileExA(source, destination, 0);
+}
+
+static void win_gui_set_dlg_item_utf8(HWND dialog, int control, const char *text)
+{
+    WCHAR wide[GUI_PATH_BYTES];
+    char acp[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        if (win_gui_utf8_to_acp(text, acp, MAX_PATH) == 0)
+            SetDlgItemTextA(dialog, control, acp);
+        else
+            SetDlgItemTextA(dialog, control, "");
+        return;
+    }
+    int length = win_gui_utf8_to_wide(text, wide, GUI_PATH_BYTES);
+    if (length > 0) SetDlgItemTextW(dialog, control, wide);
+}
+
+#define fopen win_gui_fopen
+#define _stat64(path, st) win_gui_stat64((path), (st))
+#define utime win_gui_utime
+#define GetFileAttributesA win_gui_GetFileAttributesA
+#define SetFileAttributesA win_gui_SetFileAttributesA
+#define CreateDirectoryA win_gui_CreateDirectoryA
+#define CreateFileA win_gui_CreateFileA
+#define DeleteFileA win_gui_DeleteFileA
+#define MoveFileExA win_gui_MoveFileExA
+#define MoveFileA win_gui_MoveFileA
+typedef struct {
+    WIN32_FIND_DATAW wide;
+    char name[GUI_PATH_BYTES];
+    int conversion_error;
+} WinGuiFindData;
+
+static int win_gui_find_convert(WinGuiFindData *entry)
+{
+    if (win_gui_wide_to_utf8(entry->wide.cFileName, entry->name,
+                             sizeof(entry->name)) <= 0) {
+        entry->conversion_error = 1;
+        return -1;
+    }
+    return 0;
+}
+
+static HANDLE win_gui_FindFirstFileA(const char *pattern, WinGuiFindData *entry)
+{
+    WCHAR wide_pattern[MAX_PATH];
+    HANDLE find;
+    char acp_pattern[MAX_PATH];
+    if (!g_gui_unicode_api) {
+        WIN32_FIND_DATAA data;
+        if (win_gui_utf8_to_acp(pattern, acp_pattern, MAX_PATH) != 0)
+            return INVALID_HANDLE_VALUE;
+        memset(entry, 0, sizeof(*entry));
+        find = FindFirstFileA(acp_pattern, &data);
+        if (find != INVALID_HANDLE_VALUE &&
+            win_gui_acp_to_utf8(data.cFileName, entry->name,
+                                sizeof(entry->name)) != 0) {
+            entry->conversion_error = 1;
+            FindClose(find);
+            return INVALID_HANDLE_VALUE;
+        }
+        return find;
+    }
+    if (win_gui_utf8_to_wide(pattern, wide_pattern, MAX_PATH) <= 0)
+        return INVALID_HANDLE_VALUE;
+    memset(entry, 0, sizeof(*entry));
+    find = FindFirstFileW(wide_pattern, &entry->wide);
+    if (find != INVALID_HANDLE_VALUE && win_gui_find_convert(entry) != 0) {
+        FindClose(find);
+        return INVALID_HANDLE_VALUE;
+    }
+    return find;
+}
+
+static BOOL win_gui_FindNextFileA(HANDLE find, WinGuiFindData *entry)
+{
+    if (!g_gui_unicode_api) {
+        WIN32_FIND_DATAA data;
+        if (!FindNextFileA(find, &data)) return FALSE;
+        if (win_gui_acp_to_utf8(data.cFileName, entry->name,
+                                sizeof(entry->name)) != 0) {
+            entry->conversion_error = 1;
+            return FALSE;
+        }
+        return TRUE;
+    }
+    if (!FindNextFileW(find, &entry->wide)) return FALSE;
+    return win_gui_find_convert(entry) == 0;
+}
+
+#define FindFirstFileA win_gui_FindFirstFileA
+#define FindNextFileA win_gui_FindNextFileA
+
+static char        g_archive_path[GUI_PATH_BYTES] = {0};
 
 /* ---- entry storage ----------------------------------------------------- */
 
 typedef struct {
-    char    name[512];
+    char    name[GUI_PATH_BYTES];
     double  orig_size;
     double  comp_size;
     int     ratio;
@@ -272,7 +599,6 @@ typedef struct {
 
 static EntryInfo *g_entries = NULL;
 static int         g_entry_count = 0;
-static char        g_archive_path[MAX_PATH] = {0};
 static bp_archive_info_t g_info;
 static int         g_archive_open = 0;
 
@@ -317,16 +643,16 @@ static void ShowLogo(HWND hWnd, HDC hdc);
 
 /* classify-and-act for drag-and-drop */
 static int HasBoltExtension(const char *path);
-static void ClassifyAndAct(char paths[][MAX_PATH], int count);
+static void ClassifyAndAct(char paths[][GUI_PATH_BYTES], int count);
 
 /* ---- mkdir recursive (Windows) ----------------------------------------- */
 
 static void MakeDirs(const char *path)
 {
-    char tmp[MAX_PATH];
+    char tmp[GUI_PATH_BYTES];
     char *p;
-    strncpy(tmp, path, MAX_PATH);
-    tmp[MAX_PATH - 1] = '\0';
+    strncpy(tmp, path, GUI_PATH_BYTES);
+    tmp[GUI_PATH_BYTES - 1] = '\0';
     for (p = tmp + 1; *p; p++) {
         if (*p == '\\' || *p == '/') {
             char old = *p;
@@ -340,10 +666,10 @@ static void MakeDirs(const char *path)
 
 static void MakeDirsForFile(const char *path)
 {
-    char tmp[MAX_PATH];
+    char tmp[GUI_PATH_BYTES];
     char *slash;
-    strncpy(tmp, path, MAX_PATH);
-    tmp[MAX_PATH - 1] = '\0';
+    strncpy(tmp, path, GUI_PATH_BYTES);
+    tmp[GUI_PATH_BYTES - 1] = '\0';
     slash = strrchr(tmp, '\\');
     if (!slash) slash = strrchr(tmp, '/');
     if (slash) {
@@ -367,7 +693,8 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     {
         EntryInfo *e = &g_entries[g_entry_count];
         if (entry->name) {
-            utf8_to_acp(entry->name, e->name, sizeof(e->name));
+            if (win_gui_utf8_copy(entry->name, e->name, sizeof(e->name)) != 0)
+                e->name[0] = '\0';
         } else {
             e->name[0] = '\0';
         }
@@ -424,8 +751,8 @@ static void DoOpen(const char *path)
         return;
     }
 
-    strncpy(g_archive_path, path, MAX_PATH);
-    g_archive_path[MAX_PATH - 1] = '\0';
+    strncpy(g_archive_path, path, GUI_PATH_BYTES);
+    g_archive_path[GUI_PATH_BYTES - 1] = '\0';
     g_archive_open = 1;
 
     PopulateListView();
@@ -494,8 +821,8 @@ static int validate_progress_cb(const bp_progress_t *p, void *user_data)
     MSG msg;
 
     if (p->file_name) {
-        utf8_to_acp(p->file_name, acp_name, sizeof(acp_name));
-        SetDlgItemTextA(ctx->hDlg, IDC_PROG_FILE, acp_name);
+        win_gui_utf8_copy(p->file_name, acp_name, sizeof(acp_name));
+        win_gui_set_dlg_item_utf8(ctx->hDlg, IDC_PROG_FILE, acp_name);
     }
 
     file_total = (unsigned long)(g_info.entry_count - g_info.dir_count);
@@ -714,8 +1041,8 @@ static int progress_cb(const bp_progress_t *p, void *user_data)
     /* update file label */
     if (p->file_name) {
         char acp_name[512];
-        utf8_to_acp(p->file_name, acp_name, sizeof(acp_name));
-        SetDlgItemTextA(ctx->hDlg, IDC_PROG_FILE, acp_name);
+        win_gui_utf8_copy(p->file_name, acp_name, sizeof(acp_name));
+        win_gui_set_dlg_item_utf8(ctx->hDlg, IDC_PROG_FILE, acp_name);
     }
 
     /* update count */
@@ -767,7 +1094,7 @@ typedef struct win_gui_name_node_s {
 
 typedef struct win_gui_dir_restore_s {
     struct win_gui_dir_restore_s *next;
-    char path[MAX_PATH];
+    char path[GUI_PATH_BYTES];
     bp_uint64 mtime;
     int mtime_valid;
     bp_uint8 fat_valid;
@@ -776,8 +1103,8 @@ typedef struct win_gui_dir_restore_s {
 
 typedef struct {
     bp_io_t io;
-    char target[MAX_PATH];
-    char temporary[MAX_PATH];
+    char target[GUI_PATH_BYTES];
+    char temporary[GUI_PATH_BYTES];
 } WinGuiStagedFile;
 
 typedef struct {
@@ -787,9 +1114,9 @@ typedef struct {
 } WinGuiMetadataSink;
 
 typedef struct {
-    char dest_dir[MAX_PATH];
-    char last_subject_name[MAX_PATH];
-    char last_subject_path[MAX_PATH];
+    char dest_dir[GUI_PATH_BYTES];
+    char last_subject_name[GUI_PATH_BYTES];
+    char last_subject_path[GUI_PATH_BYTES];
     bp_uint8 last_subject_type;
     int last_subject_valid;
     int last_subject_ok;
@@ -837,9 +1164,8 @@ static int win_gui_project_name(const char *utf8, char *local, size_t capacity)
     size_t length, start, i;
     int wide_length;
     if (utf8 == NULL || !bp_name_is_safe(utf8) ||
-        utf8_to_acp_strict(utf8, local, (int)capacity) != 0) return BP_ERR_PARTIAL;
-    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
-                                      wide, MAX_PATH);
+        win_gui_utf8_copy(utf8, local, capacity) != 0) return BP_ERR_PARTIAL;
+    wide_length = win_gui_utf8_to_wide(utf8, wide, MAX_PATH);
     if (wide_length <= 0) return BP_ERR_PARTIAL;
     length = (size_t)wide_length - 1;
     if (length == 0 || length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
@@ -857,13 +1183,13 @@ static int win_gui_project_name(const char *utf8, char *local, size_t capacity)
         start = i + 1;
     }
     length = strlen(local);
-    if (length == 0 || length >= capacity || length >= MAX_PATH)
+    if (length == 0 || length >= capacity)
         return BP_ERR_NAME_TOO_LONG;
     {
         char *p = local;
-        while (*p) {
+        while (*p != '\0') {
             if (*p == '/') *p = '\\';
-            p = CharNextA(p);
+            p++;
         }
     }
     return BP_OK;
@@ -875,7 +1201,7 @@ static int win_gui_register_name(ExtractCtx *ctx, const char *name)
     int length;
     WinGuiNameNode *node, **at;
     unsigned int count = 0;
-    length = MultiByteToWideChar(CP_ACP, 0, name, -1, normalized, MAX_PATH);
+    length = win_gui_utf8_to_wide(name, normalized, MAX_PATH);
     if (length <= 0) return BP_ERR_PARTIAL;
     if (length > 1 && normalized[length - 2] == L'\\') normalized[length - 2] = L'\0';
     for (node = ctx->names; node != NULL; node = node->next) {
@@ -898,22 +1224,27 @@ static int win_gui_make_full_path(const ExtractCtx *ctx, const char *relative,
     size_t root_length = strlen(ctx->dest_dir);
     size_t relative_length = strlen(relative);
     const char *last_root_char = root_length == 0 ? ctx->dest_dir :
-                                 CharPrevA(ctx->dest_dir, ctx->dest_dir + root_length);
+                                 ctx->dest_dir + root_length - 1;
     int separator = root_length != 0 && *last_root_char != '\\' &&
                     *last_root_char != '/';
-    if (root_length + (size_t)separator + relative_length + 1 > full_size ||
-        root_length + (size_t)separator + relative_length >= MAX_PATH)
+    if (root_length + (size_t)separator + relative_length + 1 > full_size)
         return BP_ERR_NAME_TOO_LONG;
     memcpy(full, ctx->dest_dir, root_length);
     if (separator) full[root_length++] = '\\';
     memcpy(full + root_length, relative, relative_length + 1);
+    {
+        WCHAR wide[MAX_PATH];
+        int wide_length = win_gui_utf8_to_wide(full, wide, MAX_PATH);
+        if (wide_length <= 0 || wide_length > MAX_PATH)
+            return BP_ERR_NAME_TOO_LONG;
+    }
     return BP_OK;
 }
 
 static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
                                       int include_leaf)
 {
-    char local[MAX_PATH], current[MAX_PATH];
+    char local[GUI_PATH_BYTES], current[GUI_PATH_BYTES];
     char *part, *next, *scan;
     DWORD attributes;
     size_t local_length;
@@ -921,8 +1252,8 @@ static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
     strcpy(local, relative);
     local_length = strlen(local);
     if (local_length > 0) {
-        char *last = CharPrevA(local, local + local_length);
-        if (*last == '\\' && CharNextA(last) == local + local_length) *last = '\0';
+        char *last = local + local_length - 1;
+        if (*last == '\\') *last = '\0';
     }
     if (strlen(ctx->dest_dir) >= sizeof(current)) return BP_ERR_NAME_TOO_LONG;
     strcpy(current, ctx->dest_dir);
@@ -932,7 +1263,7 @@ static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
     part = local;
     while (*part != '\0') {
         next = NULL;
-        for (scan = part; *scan; scan = CharNextA(scan)) {
+        for (scan = part; *scan; scan++) {
             if (*scan == '\\') { next = scan; break; }
         }
         if (next != NULL) *next = '\0';
@@ -941,7 +1272,7 @@ static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
             return BP_ERR_NAME_TOO_LONG;
         {
             size_t current_length = strlen(current);
-            char *last = CharPrevA(current, current + current_length);
+            char *last = current + current_length - 1;
             if (*last != '\\' && *last != '/') strcat(current, "\\");
         }
         strcat(current, part);
@@ -966,17 +1297,17 @@ static int win_gui_ensure_directories(ExtractCtx *ctx, const char *relative,
 static int win_gui_open_staged_file(const char *target, char *temporary,
                                     size_t temporary_size, FILE **file)
 {
-    char directory[MAX_PATH];
+    char directory[GUI_PATH_BYTES];
     char *slash, *scan;
     HANDLE handle;
     int fd, attempt;
     FILE *fp;
     size_t length = strlen(target);
-    if (length >= sizeof(directory) || temporary_size < MAX_PATH)
+    if (length >= sizeof(directory) || temporary_size < GUI_PATH_BYTES)
         return BP_ERR_NAME_TOO_LONG;
     strcpy(directory, target);
     slash = NULL;
-    for (scan = directory; *scan; scan = CharNextA(scan))
+    for (scan = directory; *scan; scan++)
         if (*scan == '\\' || *scan == '/') slash = scan;
     if (slash == NULL) return BP_ERR_INVALID_ARG;
     slash[1] = '\0';
@@ -1012,14 +1343,14 @@ typedef struct {
 static int win_gui_open_archive_stage(const char *target, char *temporary,
                                       size_t temporary_size, FILE **file)
 {
-    char directory[MAX_PATH];
+    char directory[GUI_PATH_BYTES];
     char *slash, *scan;
     int attempt;
     size_t length = strlen(target);
     if (length >= sizeof(directory)) return BP_ERR_NAME_TOO_LONG;
     strcpy(directory, target);
     slash = NULL;
-    for (scan = directory; *scan; scan = CharNextA(scan))
+    for (scan = directory; *scan; scan++)
         if (*scan == '\\' || *scan == '/') slash = scan;
     if (slash == NULL)
         strcpy(directory, ".\\");
@@ -1134,16 +1465,21 @@ static int win_gui_publish_archive_stage(const char *temporary, const char *targ
     }
 
     {
-        typedef BOOL (WINAPI *replace_file_fn)(LPCSTR, LPCSTR, LPCSTR,
+        typedef BOOL (WINAPI *replace_file_fn)(LPCWSTR, LPCWSTR, LPCWSTR,
                                                DWORD, LPVOID, LPVOID);
         FARPROC proc;
         HMODULE kernel = GetModuleHandleA("kernel32.dll");
         replace_file_fn replace_file = NULL;
-        proc = kernel == NULL ? NULL : GetProcAddress(kernel, "ReplaceFileA");
+        WCHAR wide_target[MAX_PATH], wide_temporary[MAX_PATH];
+        WCHAR wide_backup[MAX_PATH];
+        proc = kernel == NULL ? NULL : GetProcAddress(kernel, "ReplaceFileW");
         if (proc != NULL)
             memcpy(&replace_file, &proc, sizeof(replace_file));
-        if (replace_file != NULL) {
-            if (replace_file(target, temporary, backup, 0, NULL, NULL))
+        if (replace_file != NULL &&
+            win_gui_utf8_to_wide(target, wide_target, MAX_PATH) > 0 &&
+            win_gui_utf8_to_wide(temporary, wide_temporary, MAX_PATH) > 0 &&
+            win_gui_utf8_to_wide(backup, wide_backup, MAX_PATH) > 0) {
+            if (replace_file(wide_target, wide_temporary, wide_backup, 0, NULL, NULL))
                 return DeleteFileA(backup) ? 0 : 1;
             if (GetFileAttributesA(backup) != INVALID_FILE_ATTRIBUTES)
                 return -2;
@@ -1151,7 +1487,7 @@ static int win_gui_publish_archive_stage(const char *temporary, const char *targ
         }
     }
 
-    /* Older Windows releases lack ReplaceFileA. Keep a recovery rename if the
+    /* Older Windows releases lack ReplaceFileW. Keep a recovery rename if the
      * second move fails, and never discard the previous target in that case. */
     if (!MoveFileA(target, backup)) return -1;
     if (!MoveFileA(temporary, target)) {
@@ -1178,7 +1514,10 @@ static int win_gui_queue_directory(ExtractCtx *ctx, const char *path,
 {
     WinGuiDirectoryRestore *node, **at;
     size_t length = strlen(path);
-    if (length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    WCHAR wide[MAX_PATH];
+    int wide_length = win_gui_utf8_to_wide(path, wide, MAX_PATH);
+    if (length >= sizeof(node->path) || wide_length <= 0 || wide_length > MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
     for (node = ctx->directories; node != NULL; node = node->next) {
         if (strcmp(node->path, path) == 0) {
             if (mtime_valid) {
@@ -1230,7 +1569,7 @@ static int win_gui_finish_directories(ExtractCtx *ctx, int apply)
                 bp_off_t seconds = bp_u64_to_off(node->mtime);
                 time_t t = (time_t)seconds;
                 struct _stat64 st;
-                struct utimbuf ut;
+                struct _utimbuf ut;
                 if (seconds < 0 ||
                     bp_u64_cmp(bp_off_to_u64(seconds), node->mtime) != 0 ||
                     (bp_off_t)t != seconds || _stat64(node->path, &st) != 0) {
@@ -1276,8 +1615,8 @@ static void win_gui_free_names(ExtractCtx *ctx)
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
-    char local_name[MAX_PATH];
-    char full_path[MAX_PATH];
+    char local_name[GUI_PATH_BYTES];
+    char full_path[GUI_PATH_BYTES];
     FILE *fp;
     int rc;
 
@@ -1406,7 +1745,7 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
             bp_off_t seconds = bp_u64_to_off(entry->mtime);
             time_t t = (time_t)seconds;
             struct _stat64 st;
-            struct utimbuf ut;
+            struct _utimbuf ut;
             if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
                 (bp_off_t)t != seconds || _stat64(staged->temporary, &st) != 0) {
                 result = BP_ERR_PARTIAL;
@@ -1441,17 +1780,26 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
 static int CALLBACK BrowseSetDirCallback(HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData)
 {
     (void)lParam;
-    if (uMsg == BFFM_INITIALIZED)
-        SendMessageA(hwnd, BFFM_SETSELECTION, TRUE, lpData);
+    if (uMsg == BFFM_INITIALIZED) {
+        if (g_gui_unicode_api)
+            SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, lpData);
+        else
+            SendMessageA(hwnd, BFFM_SETSELECTIONA, TRUE, lpData);
+    }
     return 0;
 }
 
 static void DoExtract(void)
 {
-    BROWSEINFOA bi;
+    BROWSEINFOW bi;
+    BROWSEINFOA bia;
     LPITEMIDLIST pidl;
-    char dest[MAX_PATH];
-    char archive_dir[MAX_PATH];
+    char dest[GUI_PATH_BYTES];
+    char archive_dir[GUI_PATH_BYTES];
+    WCHAR archive_dir_wide[MAX_PATH];
+    WCHAR dest_wide[MAX_PATH];
+    char archive_dir_acp[MAX_PATH];
+    char dest_acp[MAX_PATH];
     FILE *fp;
     bp_io_t io;
     ExtractCtx ectx;
@@ -1461,26 +1809,45 @@ static void DoExtract(void)
     if (!g_archive_open) return;
 
     /* Derive the archive's parent directory for the initial browse location */
-    strncpy(archive_dir, g_archive_path, MAX_PATH);
-    archive_dir[MAX_PATH - 1] = '\0';
+    strncpy(archive_dir, g_archive_path, GUI_PATH_BYTES);
+    archive_dir[GUI_PATH_BYTES - 1] = '\0';
     {
         char *sep = strrchr(archive_dir, '\\');
         if (!sep) sep = strrchr(archive_dir, '/');
         if (sep) *sep = '\0';
     }
-
-    memset(&bi, 0, sizeof(bi));
-    bi.hwndOwner = g_hWnd;
-    bi.lpszTitle = "Select destination folder";
-    bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-    bi.lpfn      = BrowseSetDirCallback;
-    bi.lParam    = (LPARAM)archive_dir;
-
-    pidl = SHBrowseForFolderA(&bi);
-    if (!pidl) return;
-    if (!SHGetPathFromIDListA(pidl, dest)) {
-        CoTaskMemFree(pidl);
-        return;
+    if (g_gui_unicode_api) {
+        if (win_gui_utf8_to_wide(archive_dir, archive_dir_wide, MAX_PATH) <= 0)
+            archive_dir_wide[0] = L'\0';
+        memset(&bi, 0, sizeof(bi));
+        bi.hwndOwner = g_hWnd;
+        bi.lpszTitle = L"Select destination folder";
+        bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        bi.lpfn      = BrowseSetDirCallback;
+        bi.lParam    = (LPARAM)archive_dir_wide;
+        pidl = SHBrowseForFolderW(&bi);
+        if (!pidl) return;
+        if (!SHGetPathFromIDListW(pidl, dest_wide) ||
+            win_gui_wide_to_utf8(dest_wide, dest, sizeof(dest)) <= 0) {
+            CoTaskMemFree(pidl);
+            return;
+        }
+    } else {
+        if (win_gui_utf8_to_acp(archive_dir, archive_dir_acp,
+                                sizeof(archive_dir_acp)) != 0) return;
+        memset(&bia, 0, sizeof(bia));
+        bia.hwndOwner = g_hWnd;
+        bia.lpszTitle = "Select destination folder";
+        bia.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        bia.lpfn      = BrowseSetDirCallback;
+        bia.lParam    = (LPARAM)archive_dir_acp;
+        pidl = SHBrowseForFolderA(&bia);
+        if (!pidl) return;
+        if (!SHGetPathFromIDListA(pidl, dest_acp) ||
+            win_gui_acp_to_utf8(dest_acp, dest, sizeof(dest)) != 0) {
+            CoTaskMemFree(pidl);
+            return;
+        }
     }
     CoTaskMemFree(pidl);
 
@@ -1500,8 +1867,8 @@ static void DoExtract(void)
     bp_io_from_file(&io, fp);
 
     memset(&ectx, 0, sizeof(ectx));
-    strncpy(ectx.dest_dir, dest, MAX_PATH);
-    ectx.dest_dir[MAX_PATH - 1] = '\0';
+    strncpy(ectx.dest_dir, dest, GUI_PATH_BYTES);
+    ectx.dest_dir[GUI_PATH_BYTES - 1] = '\0';
 
     /* show progress dialog (modeless) */
     g_progress.cancelled  = 0;
@@ -1545,52 +1912,26 @@ static void DoExtract(void)
 static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name);
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath, const char *prefix);
 
-static int win_gui_acp_name_to_utf8(const char *local, char *utf8, size_t capacity)
+static bp_uint16 win_gui_archive_mtime(time_t value, bp_uint64 *mtime)
 {
-    int local_length, wide_length, roundtrip_length, utf8_length;
-    UINT codepage = GetACP();
-    DWORD flags = codepage == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
-    BOOL used_default = FALSE;
-    BOOL *used_default_ptr = codepage == CP_UTF8 ? NULL : &used_default;
-    WCHAR *wide = NULL;
-    char *roundtrip = NULL;
-    int rc = BP_ERR_PARTIAL;
+    bp_off_t seconds;
 
-    local_length = (int)strlen(local) + 1;
-    wide_length = MultiByteToWideChar(CP_ACP, 0, local, local_length, NULL, 0);
-    if (wide_length <= 0) return BP_ERR_PARTIAL;
-    wide = (WCHAR *)malloc((size_t)wide_length * sizeof(WCHAR));
-    if (wide == NULL) return BP_ERR_NOMEM;
-    if (MultiByteToWideChar(CP_ACP, 0, local, local_length,
-                            wide, wide_length) <= 0) goto done;
+    *mtime = bp_u64_from_u32(0);
+    if (value < (time_t)0)
+        return 0;
+    seconds = (bp_off_t)value;
+    if (seconds < 0 || (time_t)seconds != value)
+        return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
 
-    roundtrip_length = WideCharToMultiByte(codepage, flags,
-                                           wide, wide_length, NULL, 0, NULL,
-                                           used_default_ptr);
-    if (roundtrip_length != local_length || used_default) goto done;
-    roundtrip = (char *)malloc((size_t)roundtrip_length);
-    if (roundtrip == NULL) { rc = BP_ERR_NOMEM; goto done; }
-    used_default = FALSE;
-    if (WideCharToMultiByte(codepage, flags, wide, wide_length,
-                            roundtrip, roundtrip_length, NULL,
-                            used_default_ptr) != roundtrip_length || used_default ||
-        memcmp(roundtrip, local, (size_t)local_length) != 0) goto done;
-
-    utf8_length = WideCharToMultiByte(CP_UTF8, 0,
-                                      wide, wide_length, NULL, 0, NULL, NULL);
-    if (utf8_length <= 0 || (size_t)utf8_length > capacity) {
-        rc = BP_ERR_NAME_TOO_LONG;
-        goto done;
-    }
-    if (WideCharToMultiByte(CP_UTF8, 0, wide, wide_length,
-                            utf8, (int)capacity, NULL, NULL) != utf8_length)
-        goto done;
-    rc = BP_OK;
-
-done:
-    free(wide);
-    free(roundtrip);
-    return rc;
+static int win_gui_copy_utf8_name(const char *local, char *utf8, size_t capacity)
+{
+    if (local == NULL || utf8 == NULL) return BP_ERR_INVALID_ARG;
+    if (win_gui_utf8_copy(local, utf8, capacity) != 0)
+        return BP_ERR_NAME_TOO_LONG;
+    return BP_OK;
 }
 
 #define CREATE_NAME_HASH_CAP 131071U
@@ -1685,8 +2026,7 @@ static int win_gui_create_name_add(CreateNameIndex *index,
     size_t length, start, end, prefix_length;
     int rc;
 
-    wide_length = MultiByteToWideChar(CP_ACP, 0, local_name, -1,
-                                     wide, MAX_PATH);
+    wide_length = win_gui_utf8_to_wide(local_name, wide, MAX_PATH);
     if (wide_length <= 1 || wide_length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
     length = (size_t)wide_length - 1;
     while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
@@ -1734,8 +2074,8 @@ static int win_gui_preflight_create_path(CreateNameIndex *index,
     is_directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     if (is_directory) {
         char directory_name[1024];
-        char search[MAX_PATH + 4];
-        WIN32_FIND_DATAA entry;
+        char search[GUI_PATH_BYTES + 4];
+        WinGuiFindData entry;
         HANDLE find;
         DWORD find_error;
         int n = _snprintf(directory_name, sizeof(directory_name), "%s%s",
@@ -1751,18 +2091,18 @@ static int win_gui_preflight_create_path(CreateNameIndex *index,
         find = FindFirstFileA(search, &entry);
         if (find == INVALID_HANDLE_VALUE) return BP_ERR_IO;
         do {
-            char child_path[MAX_PATH + 260];
+            char child_path[GUI_PATH_BYTES + 260];
             char child_name[1024];
-            if (strcmp(entry.cFileName, ".") == 0 ||
-                strcmp(entry.cFileName, "..") == 0) continue;
+            if (strcmp(entry.name, ".") == 0 ||
+                strcmp(entry.name, "..") == 0) continue;
             n = _snprintf(child_path, sizeof(child_path), "%s\\%s",
-                          filepath, entry.cFileName);
+                          filepath, entry.name);
             if (n < 0 || (size_t)n >= sizeof(child_path)) {
                 FindClose(find);
                 return BP_ERR_NAME_TOO_LONG;
             }
             n = _snprintf(child_name, sizeof(child_name), "%s%s",
-                          directory_name, entry.cFileName);
+                          directory_name, entry.name);
             if (n < 0 || (size_t)n >= sizeof(child_name)) {
                 FindClose(find);
                 return BP_ERR_NAME_TOO_LONG;
@@ -1775,6 +2115,7 @@ static int win_gui_preflight_create_path(CreateNameIndex *index,
         } while (FindNextFileA(find, &entry));
         find_error = GetLastError();
         FindClose(find);
+        if (entry.conversion_error) return BP_ERR_INVALID_ARG;
         return find_error == ERROR_NO_MORE_FILES ? BP_OK : BP_ERR_IO;
     }
     return win_gui_create_name_add(index, archive_name, 0);
@@ -1798,6 +2139,7 @@ static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name
     FILE *fp;
     bp_io_t fio;
     bp_uint64 fsize, mtime;
+    bp_uint16 mtime_flags;
     char archive_name[4096];
     int rc;
 
@@ -1811,16 +2153,18 @@ static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name
 
     if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
         char dname[1024];
+        bp_uint16 flags;
         int n = _snprintf(dname, sizeof(dname), "%s/", arc_name);
         if (n < 0 || (size_t)n >= sizeof(dname)) return BP_ERR_NAME_TOO_LONG;
-        rc = win_gui_acp_name_to_utf8(dname, archive_name, sizeof(archive_name));
+        rc = win_gui_copy_utf8_name(dname, archive_name, sizeof(archive_name));
         if (rc != BP_OK) return rc;
 
         if (_stat64(filepath, &st) != 0)
             return BP_ERR_IO;
-        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        rc = bp_archive_add_entry(ar, archive_name, BP_TYPE_DIR, BP_OS_WINDOWS,
-                                  NULL, bp_u64_from_u32(0), mtime);
+        flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+        rc = bp_archive_add_entry_ex(ar, archive_name, BP_TYPE_DIR,
+                                     BP_OS_WINDOWS, NULL,
+                                     bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
         return add_dir_recursive(ar, filepath, dname);
     }
@@ -1833,19 +2177,20 @@ static int add_file(bp_archive_t *ar, const char *filepath, const char *arc_name
 
     bp_io_from_file(&fio, fp);
     fsize = bp_off_to_u64((bp_off_t)st.st_size);
-    mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-    rc = win_gui_acp_name_to_utf8(arc_name, archive_name, sizeof(archive_name));
+    mtime_flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+    rc = win_gui_copy_utf8_name(arc_name, archive_name, sizeof(archive_name));
     if (rc != BP_OK) { fclose(fp); return rc; }
-    rc = bp_archive_add_entry(ar, archive_name, BP_TYPE_DATA, BP_OS_WINDOWS,
-                              &fio, fsize, mtime);
+    rc = bp_archive_add_entry_ex(ar, archive_name, BP_TYPE_DATA,
+                                 BP_OS_WINDOWS, &fio, fsize, mtime,
+                                 mtime_flags);
     fclose(fp);
     return rc;
 }
 
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath, const char *prefix)
 {
-    char search[MAX_PATH];
-    WIN32_FIND_DATAA fd;
+    char search[GUI_PATH_BYTES];
+    WinGuiFindData fd;
     HANDLE hFind;
 
     _snprintf(search, sizeof(search), "%s\\*", dirpath);
@@ -1855,36 +2200,46 @@ static int add_dir_recursive(bp_archive_t *ar, const char *dirpath, const char *
     if (hFind == INVALID_HANDLE_VALUE) return BP_ERR_IO;
 
     do {
-        char full[MAX_PATH + 260];
+        char full[GUI_PATH_BYTES + 260];
         char arc[1024];
         int rc;
 
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+        if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0)
             continue;
 
-        _snprintf(full, sizeof(full), "%s\\%s", dirpath, fd.cFileName);
+        _snprintf(full, sizeof(full), "%s\\%s", dirpath, fd.name);
         full[sizeof(full) - 1] = '\0';
-        _snprintf(arc, sizeof(arc), "%s%s", prefix, fd.cFileName);
+        _snprintf(arc, sizeof(arc), "%s%s", prefix, fd.name);
         arc[sizeof(arc) - 1] = '\0';
 
         rc = add_file(ar, full, arc);
         if (rc != BP_OK) { FindClose(hFind); return rc; }
     } while (FindNextFileA(hFind, &fd));
 
-    FindClose(hFind);
-    return BP_OK;
+    {
+        DWORD error = GetLastError();
+        int conversion_error = fd.conversion_error;
+        FindClose(hFind);
+        if (conversion_error) return BP_ERR_INVALID_ARG;
+        return error == ERROR_NO_MORE_FILES ? BP_OK : BP_ERR_IO;
+    }
 }
 
 static void DoCreate(void)
 {
-    OPENFILENAMEA ofn;
-    char input_buf[32768]; /* OFN_ALLOWMULTISELECT buffer */
-    char save_buf[MAX_PATH];
-    char stage_buf[MAX_PATH + 64];
-    char backup_buf[MAX_PATH + 128];
-    char recovery_msg[MAX_PATH * 2 + 192];
+    OPENFILENAMEW ofn;
+    OPENFILENAMEA ofna;
+    WCHAR input_wbuf[32768]; /* OFN_ALLOWMULTISELECT buffer */
+    char input_buf[32768 * 4 + 1];
+    char input_acp[32768];
+    char save_buf[GUI_PATH_BYTES];
+    WCHAR save_wbuf[MAX_PATH];
+    char save_acp[MAX_PATH];
+    char stage_buf[GUI_PATH_BYTES + 64];
+    char backup_buf[GUI_PATH_BYTES + 128];
+    char recovery_msg[GUI_PATH_BYTES * 2 + 192];
     char *p;
-    char dir[MAX_PATH];
+    char dir[GUI_PATH_BYTES];
     FILE *fp;
     bp_io_t io;
     bp_archive_t ar;
@@ -1897,31 +2252,62 @@ static void DoCreate(void)
     g_create_reparse_refused = 0;
 
     /* pick input files */
-    memset(&ofn, 0, sizeof(ofn));
-    ofn.lStructSize     = sizeof(ofn);
-    ofn.hwndOwner       = g_hWnd;
-    ofn.lpstrFilter     = "All Files\0*.*\0";
-    ofn.lpstrFile       = input_buf;
-    ofn.nMaxFile        = sizeof(input_buf);
-    ofn.Flags           = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST;
-    ofn.lpstrTitle      = "Select files to archive";
-    input_buf[0] = '\0';
-
-    if (!GetOpenFileNameA(&ofn)) return;
+    if (g_gui_unicode_api) {
+        memset(&ofn, 0, sizeof(ofn));
+        ofn.lStructSize     = sizeof(ofn);
+        ofn.hwndOwner       = g_hWnd;
+        ofn.lpstrFilter     = L"All Files\0*.*\0";
+        ofn.lpstrFile       = input_wbuf;
+        ofn.nMaxFile        = sizeof(input_wbuf) / sizeof(input_wbuf[0]);
+        ofn.Flags           = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST;
+        ofn.lpstrTitle      = L"Select files to archive";
+        input_wbuf[0] = L'\0';
+        if (!GetOpenFileNameW(&ofn)) return;
+        if (win_gui_multisz_wide_to_utf8(input_wbuf, input_buf,
+                                         sizeof(input_buf)) != 0) return;
+    } else {
+        memset(&ofna, 0, sizeof(ofna));
+        ofna.lStructSize     = sizeof(ofna);
+        ofna.hwndOwner       = g_hWnd;
+        ofna.lpstrFilter     = "All Files\0*.*\0";
+        ofna.lpstrFile       = input_acp;
+        ofna.nMaxFile        = sizeof(input_acp);
+        ofna.Flags           = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST;
+        ofna.lpstrTitle      = "Select files to archive";
+        input_acp[0] = '\0';
+        if (!GetOpenFileNameA(&ofna)) return;
+        if (win_gui_multisz_acp_to_utf8(input_acp, input_buf,
+                                        sizeof(input_buf)) != 0) return;
+    }
 
     /* pick output path */
-    memset(&ofn, 0, sizeof(ofn));
-    ofn.lStructSize     = sizeof(ofn);
-    ofn.hwndOwner       = g_hWnd;
-    ofn.lpstrFilter     = "BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
-    ofn.lpstrFile       = save_buf;
-    ofn.nMaxFile        = MAX_PATH;
-    ofn.Flags           = OFN_OVERWRITEPROMPT;
-    ofn.lpstrDefExt     = "bolt";
-    ofn.lpstrTitle      = "Save archive as";
-    save_buf[0] = '\0';
-
-    if (!GetSaveFileNameA(&ofn)) return;
+    if (g_gui_unicode_api) {
+        memset(&ofn, 0, sizeof(ofn));
+        ofn.lStructSize     = sizeof(ofn);
+        ofn.hwndOwner       = g_hWnd;
+        ofn.lpstrFilter     = L"BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
+        ofn.lpstrFile       = save_wbuf;
+        ofn.nMaxFile        = MAX_PATH;
+        ofn.Flags           = OFN_OVERWRITEPROMPT;
+        ofn.lpstrDefExt     = L"bolt";
+        ofn.lpstrTitle      = L"Save archive as";
+        save_wbuf[0] = L'\0';
+        if (!GetSaveFileNameW(&ofn) ||
+            win_gui_wide_to_utf8(save_wbuf, save_buf, sizeof(save_buf)) <= 0) return;
+    } else {
+        memset(&ofna, 0, sizeof(ofna));
+        ofna.lStructSize     = sizeof(ofna);
+        ofna.hwndOwner       = g_hWnd;
+        ofna.lpstrFilter     = "BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
+        ofna.lpstrFile       = save_acp;
+        ofna.nMaxFile        = sizeof(save_acp);
+        ofna.Flags           = OFN_OVERWRITEPROMPT;
+        ofna.lpstrDefExt     = "bolt";
+        ofna.lpstrTitle      = "Save archive as";
+        save_acp[0] = '\0';
+        if (!GetSaveFileNameA(&ofna) ||
+            win_gui_acp_to_utf8(save_acp, save_buf, sizeof(save_buf)) != 0) return;
+    }
 
     if (!win_gui_archive_target_snapshot(save_buf, &target_snapshot)) {
         MessageBoxA(g_hWnd, "The selected destination must be a regular file.",
@@ -1944,7 +2330,7 @@ static void DoCreate(void)
         if (n < 0 || (size_t)n >= sizeof(dir))
             preflight_rc = BP_ERR_NAME_TOO_LONG;
         while (preflight_rc == BP_OK && *p) {
-            char full[MAX_PATH + 260];
+            char full[GUI_PATH_BYTES + 260];
             n = _snprintf(full, sizeof(full), "%s\\%s", dir, p);
             if (n < 0 || (size_t)n >= sizeof(full))
                 preflight_rc = BP_ERR_NAME_TOO_LONG;
@@ -2002,10 +2388,10 @@ static void DoCreate(void)
         rc = add_file(&ar, input_buf, base);
     } else {
         /* multiple files: input_buf is directory, p iterates filenames */
-        strncpy(dir, input_buf, MAX_PATH);
-        dir[MAX_PATH - 1] = '\0';
+        strncpy(dir, input_buf, GUI_PATH_BYTES);
+        dir[GUI_PATH_BYTES - 1] = '\0';
         while (*p && !g_progress.cancelled) {
-            char full[MAX_PATH + 260];
+            char full[GUI_PATH_BYTES + 260];
             _snprintf(full, sizeof(full), "%s\\%s", dir, p);
             full[sizeof(full) - 1] = '\0';
             rc = add_file(&ar, full, p);
@@ -2107,7 +2493,8 @@ static void CreateListView(HWND hParent)
 
 static void PopulateListView(void)
 {
-    LVITEMA lvi;
+    LVITEMW lvi;
+    LVITEMA lvia;
     int i;
 
     ListView_DeleteAllItems(g_hListView);
@@ -2115,13 +2502,28 @@ static void PopulateListView(void)
     for (i = 0; i < g_entry_count; i++) {
         EntryInfo *e = &g_entries[i];
         char buf[128];
+        WCHAR wide_name[GUI_PATH_BYTES];
+        char acp_name[MAX_PATH];
 
-        memset(&lvi, 0, sizeof(lvi));
-        lvi.mask     = LVIF_TEXT;
-        lvi.iItem    = i;
-        lvi.iSubItem = 0;
-        lvi.pszText  = e->name;
-        ListView_InsertItem(g_hListView, &lvi);
+        if (win_gui_utf8_to_wide(e->name, wide_name, GUI_PATH_BYTES) <= 0)
+            wide_name[0] = L'\0';
+        if (g_gui_unicode_api) {
+            memset(&lvi, 0, sizeof(lvi));
+            lvi.mask     = LVIF_TEXT;
+            lvi.iItem    = i;
+            lvi.iSubItem = 0;
+            lvi.pszText  = wide_name;
+            SendMessageW(g_hListView, LVM_INSERTITEMW, 0, (LPARAM)&lvi);
+        } else {
+            memset(&lvia, 0, sizeof(lvia));
+            lvia.mask     = LVIF_TEXT;
+            lvia.iItem    = i;
+            lvia.iSubItem = 0;
+            if (win_gui_utf8_to_acp(e->name, acp_name, sizeof(acp_name)) != 0)
+                acp_name[0] = '\0';
+            lvia.pszText  = acp_name;
+            SendMessageA(g_hListView, LVM_INSERTITEMA, 0, (LPARAM)&lvia);
+        }
 
         /* Original size */
         if (e->entry_type == BP_TYPE_DATA)
@@ -2225,22 +2627,22 @@ static int HasBoltExtension(const char *path)
     return 0;
 }
 
-static void ClassifyAndAct(char paths[][MAX_PATH], int count)
+static void ClassifyAndAct(char paths[][GUI_PATH_BYTES], int count)
 {
-    char (*archives)[MAX_PATH] = NULL;
-    char (*others)[MAX_PATH]   = NULL;
+    char (*archives)[GUI_PATH_BYTES] = NULL;
+    char (*others)[GUI_PATH_BYTES]   = NULL;
     int narc = 0, nother = 0;
     int i;
 
-    archives = (char (*)[MAX_PATH])malloc(count * MAX_PATH);
-    others   = (char (*)[MAX_PATH])malloc(count * MAX_PATH);
+    archives = (char (*)[GUI_PATH_BYTES])malloc((size_t)count * GUI_PATH_BYTES);
+    others   = (char (*)[GUI_PATH_BYTES])malloc((size_t)count * GUI_PATH_BYTES);
     if (!archives || !others) { free(archives); free(others); return; }
 
     for (i = 0; i < count; i++) {
         if (HasBoltExtension(paths[i]))
-            strncpy(archives[narc++], paths[i], MAX_PATH);
+            strncpy(archives[narc++], paths[i], GUI_PATH_BYTES);
         else
-            strncpy(others[nother++], paths[i], MAX_PATH);
+            strncpy(others[nother++], paths[i], GUI_PATH_BYTES);
     }
 
     if (narc == 1 && nother == 0) {
@@ -2249,11 +2651,14 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         DoOpen(archives[0]);
     } else if (narc == 0 && nother > 0) {
         /* create archive from dropped files */
-        OPENFILENAMEA ofn;
-        char save_buf[MAX_PATH];
-        char stage_buf[MAX_PATH + 64];
-        char backup_buf[MAX_PATH + 128];
-        char recovery_msg[MAX_PATH * 2 + 192];
+        OPENFILENAMEW ofn;
+        OPENFILENAMEA ofna;
+        char save_buf[GUI_PATH_BYTES];
+        WCHAR save_wbuf[MAX_PATH];
+        char save_acp[MAX_PATH];
+        char stage_buf[GUI_PATH_BYTES + 64];
+        char backup_buf[GUI_PATH_BYTES + 128];
+        char recovery_msg[GUI_PATH_BYTES * 2 + 192];
         FILE *fp;
         bp_io_t io;
         bp_archive_t ar;
@@ -2263,18 +2668,35 @@ static void ClassifyAndAct(char paths[][MAX_PATH], int count)
         int publish_state;
         int rc;
 
-        memset(&ofn, 0, sizeof(ofn));
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner   = g_hWnd;
-        ofn.lpstrFilter = "BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
-        ofn.lpstrFile   = save_buf;
-        ofn.nMaxFile    = MAX_PATH;
-        ofn.Flags       = OFN_OVERWRITEPROMPT;
-        ofn.lpstrDefExt = "bolt";
-        ofn.lpstrTitle  = "Save archive as";
-        save_buf[0]     = '\0';
-
-        if (!GetSaveFileNameA(&ofn)) goto cleanup;
+        if (g_gui_unicode_api) {
+            memset(&ofn, 0, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner   = g_hWnd;
+            ofn.lpstrFilter = L"BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
+            ofn.lpstrFile   = save_wbuf;
+            ofn.nMaxFile    = MAX_PATH;
+            ofn.Flags       = OFN_OVERWRITEPROMPT;
+            ofn.lpstrDefExt = L"bolt";
+            ofn.lpstrTitle  = L"Save archive as";
+            save_wbuf[0]    = L'\0';
+            if (!GetSaveFileNameW(&ofn) ||
+                win_gui_wide_to_utf8(save_wbuf, save_buf, sizeof(save_buf)) <= 0)
+                goto cleanup;
+        } else {
+            memset(&ofna, 0, sizeof(ofna));
+            ofna.lStructSize = sizeof(ofna);
+            ofna.hwndOwner   = g_hWnd;
+            ofna.lpstrFilter = "BoltPack Archives (*.bolt)\0*.bolt\0All Files\0*.*\0";
+            ofna.lpstrFile   = save_acp;
+            ofna.nMaxFile    = sizeof(save_acp);
+            ofna.Flags       = OFN_OVERWRITEPROMPT;
+            ofna.lpstrDefExt = "bolt";
+            ofna.lpstrTitle  = "Save archive as";
+            save_acp[0]      = '\0';
+            if (!GetSaveFileNameA(&ofna) ||
+                win_gui_acp_to_utf8(save_acp, save_buf, sizeof(save_buf)) != 0)
+                goto cleanup;
+        }
 
         if (!win_gui_archive_target_snapshot(save_buf, &target_snapshot)) {
             MessageBoxA(g_hWnd, "The selected destination must be a regular file.",
@@ -2457,8 +2879,22 @@ static INT_PTR CALLBACK GenericTextDlgProc(HWND hDlg, UINT msg,
     case WM_INITDIALOG: {
         TextDlgData *d = (TextDlgData *)lParam;
         if (d) {
-            SetWindowTextA(hDlg, d->title);
-            SetDlgItemTextA(hDlg, IDC_DOC_TEXT, d->body);
+            WCHAR title[256];
+            WCHAR body[8192];
+            if (g_gui_unicode_api) {
+                if (win_gui_utf8_to_wide(d->title, title, 256) > 0)
+                    SetWindowTextW(hDlg, title);
+                if (win_gui_utf8_to_wide(d->body, body, 8192) > 0)
+                    SetDlgItemTextW(hDlg, IDC_DOC_TEXT, body);
+            } else {
+                char title_acp[MAX_PATH], body_acp[8192];
+                if (win_gui_utf8_to_acp(d->title, title_acp,
+                                        sizeof(title_acp)) == 0)
+                    SetWindowTextA(hDlg, title_acp);
+                if (win_gui_utf8_to_acp(d->body, body_acp,
+                                        sizeof(body_acp)) == 0)
+                    SetDlgItemTextA(hDlg, IDC_DOC_TEXT, body_acp);
+            }
         }
         return TRUE;
     }
@@ -2503,19 +2939,38 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case IDM_OPEN: {
-            OPENFILENAMEA ofn;
-            char buf[MAX_PATH];
-            memset(&ofn, 0, sizeof(ofn));
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner   = hWnd;
-            ofn.lpstrFilter = "BoltPack Archives (*.bolt;*.blt)\0*.bolt;*.blt\0All Files\0*.*\0";
-            ofn.lpstrFile   = buf;
-            ofn.nMaxFile    = MAX_PATH;
-            ofn.Flags       = OFN_FILEMUSTEXIST;
-            ofn.lpstrTitle  = "Open BoltPack Archive";
-            buf[0] = '\0';
-            if (GetOpenFileNameA(&ofn))
-                DoOpen(buf);
+            OPENFILENAMEW ofn;
+            OPENFILENAMEA ofna;
+            char buf[GUI_PATH_BYTES];
+            char acp_buf[MAX_PATH];
+            WCHAR wide_buf[MAX_PATH];
+            if (g_gui_unicode_api) {
+                memset(&ofn, 0, sizeof(ofn));
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner   = hWnd;
+                ofn.lpstrFilter = L"BoltPack Archives (*.bolt;*.blt)\0*.bolt;*.blt\0All Files\0*.*\0";
+                ofn.lpstrFile   = wide_buf;
+                ofn.nMaxFile    = MAX_PATH;
+                ofn.Flags       = OFN_FILEMUSTEXIST;
+                ofn.lpstrTitle  = L"Open BoltPack Archive";
+                wide_buf[0] = L'\0';
+                if (GetOpenFileNameW(&ofn) &&
+                    win_gui_wide_to_utf8(wide_buf, buf, sizeof(buf)) > 0)
+                    DoOpen(buf);
+            } else {
+                memset(&ofna, 0, sizeof(ofna));
+                ofna.lStructSize = sizeof(ofna);
+                ofna.hwndOwner   = hWnd;
+                ofna.lpstrFilter = "BoltPack Archives (*.bolt;*.blt)\0*.bolt;*.blt\0All Files\0*.*\0";
+                ofna.lpstrFile   = acp_buf;
+                ofna.nMaxFile    = sizeof(acp_buf);
+                ofna.Flags       = OFN_FILEMUSTEXIST;
+                ofna.lpstrTitle  = "Open BoltPack Archive";
+                acp_buf[0] = '\0';
+                if (GetOpenFileNameA(&ofna) &&
+                    win_gui_acp_to_utf8(acp_buf, buf, sizeof(buf)) == 0)
+                    DoOpen(buf);
+            }
             return 0;
         }
         case IDM_EXTRACT: DoExtract(); return 0;
@@ -2539,15 +2994,35 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_DROPFILES: {
         HDROP hDrop = (HDROP)wParam;
-        int count = (int)DragQueryFileA(hDrop, 0xFFFFFFFF, NULL, 0);
+        int count = (int)(g_gui_unicode_api
+            ? DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0)
+            : DragQueryFileA(hDrop, 0xFFFFFFFF, NULL, 0));
         if (count > 0) {
-            char (*paths)[MAX_PATH];
+            char (*paths)[GUI_PATH_BYTES];
             int i;
-            paths = (char (*)[MAX_PATH])malloc(count * MAX_PATH);
+            int path_error = 0;
+            paths = (char (*)[GUI_PATH_BYTES])malloc((size_t)count * GUI_PATH_BYTES);
             if (paths) {
-                for (i = 0; i < count; i++)
-                    DragQueryFileA(hDrop, i, paths[i], MAX_PATH);
-                ClassifyAndAct(paths, count);
+                for (i = 0; i < count; i++) {
+                    if (g_gui_unicode_api) {
+                        WCHAR wide[MAX_PATH];
+                        if (DragQueryFileW(hDrop, i, wide, MAX_PATH) == 0 ||
+                            win_gui_wide_to_utf8(wide, paths[i], GUI_PATH_BYTES) <= 0) {
+                            path_error = 1;
+                            break;
+                        }
+                    } else {
+                        char acp[MAX_PATH];
+                        if (DragQueryFileA(hDrop, i, acp, MAX_PATH) == 0 ||
+                            win_gui_acp_to_utf8(acp, paths[i], GUI_PATH_BYTES) != 0) {
+                            path_error = 1;
+                            break;
+                        }
+                    }
+                }
+                if (!path_error) ClassifyAndAct(paths, count);
+                else MessageBoxA(g_hWnd, "Dropped path could not be converted to UTF-8.",
+                                 "Error", MB_OK | MB_ICONERROR);
                 free(paths);
             }
         }
@@ -2572,7 +3047,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     INITCOMMONCONTROLSEX icex;
 
     (void)hPrevInstance;
-
     g_hInst = hInstance;
 
     bp_compress_init();
@@ -2611,21 +3085,38 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
 
-    /* if launched with a file argument, open it */
-    if (lpCmdLine && *lpCmdLine) {
-        char path[MAX_PATH];
-        /* strip quotes */
-        if (lpCmdLine[0] == '"') {
-            char *end;
-            strncpy(path, lpCmdLine + 1, MAX_PATH);
-            path[MAX_PATH - 1] = '\0';
-            end = strchr(path, '"');
-            if (end) *end = '\0';
-        } else {
-            strncpy(path, lpCmdLine, MAX_PATH);
-            path[MAX_PATH - 1] = '\0';
+    /* Windows file-association arguments arrive as UTF-16. */
+    if (g_gui_unicode_api) {
+        int argc = 0;
+        LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv != NULL) {
+            if (argc > 1) {
+                char path[GUI_PATH_BYTES];
+                if (win_gui_wide_to_utf8(argv[1], path, sizeof(path)) > 0)
+                    DoOpen(path);
+                else
+                    MessageBoxA(g_hWnd, "Archive path cannot be represented as UTF-8.",
+                                "Error", MB_OK | MB_ICONERROR);
+            }
+            LocalFree(argv);
         }
-        DoOpen(path);
+    } else if (lpCmdLine != NULL && lpCmdLine[0] != '\0') {
+        char path_acp[MAX_PATH];
+        char path[GUI_PATH_BYTES];
+        const char *start = lpCmdLine;
+        size_t length;
+        while (*start == ' ' || *start == '\t') start++;
+        if (*start == '"') {
+            start++;
+            length = strcspn(start, "\"");
+        } else {
+            length = strcspn(start, " \t");
+        }
+        if (length >= sizeof(path_acp)) length = sizeof(path_acp) - 1;
+        memcpy(path_acp, start, length);
+        path_acp[length] = '\0';
+        if (win_gui_acp_to_utf8(path_acp, path, sizeof(path)) == 0)
+            DoOpen(path);
     }
 
     while (GetMessageA(&msg, NULL, 0, 0)) {

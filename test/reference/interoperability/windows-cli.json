@@ -1,0 +1,55 @@
+{
+  "case": "Windows CLI interoperability runner; native Windows or Wine subset",
+  "names": {
+    "unicode_path": "資料-🧪/résumé-🧪.txt",
+    "archive_name_encoding": "UTF-8"
+  },
+  "files": {
+    "unicode": {
+      "bytes": 35,
+      "sha256": "1fcd16db8b68b72fa2176bf632ec2b09081570a31eea48aef2e4ce5546455cda"
+    },
+    "metadata": {
+      "bytes": 35,
+      "sha256": "b4b6aad7d3c813c05743a4f2e2dd5b98b6dbfe54f5bace9204bcd3c0d2590cb1"
+    },
+    "corrupt_destination_sentinel": {
+      "bytes": 56,
+      "sha256": "5155b7acb55c1f8af5c585c9000b91244f6fa75fce583ddcfbcc3136843635cd"
+    },
+    "profile_payload": {
+      "bytes": 262144,
+      "sha256": "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
+    },
+    "parallel_peer": {
+      "bytes": 32768,
+      "sha256": "1cf81ed555ba2620a42b553c1a1f5cdde505a625fdd2eb43042500fc2ed63f6f"
+    },
+    "original_member": {
+      "bytes": 24,
+      "sha256": "71d756345635d34e4310f021e7c5bd58236319b7b6bd52c14046977cc9911582"
+    },
+    "added_member": {
+      "bytes": 24,
+      "sha256": "4cce8e2109c25b0435b1844858718d37427ff3e45e46c3a4164bc40fcc22287b"
+    }
+  },
+  "metadata": {
+    "file_hidden_system": true,
+    "file_mtime_unix": 1700000123,
+    "directory_hidden_system": true,
+    "directory_mtime_unix": 1700000000,
+    "linux_extract_of_windows_metadata": "data succeeds; partial because Windows FAT flags are unsupported",
+    "windows_extract_of_linux_metadata": "data succeeds; partial because POSIX mode metadata is unsupported"
+  },
+  "expected_outcomes": {
+    "corrupt_block_over_existing_file": "checksum failure; original bytes preserved; staged temporary removed",
+    "reserved_device_name": "refused before output root creation",
+    "trailing_dot_or_space": "refused before output root creation",
+    "case_alias": "refused before output root creation",
+    "file_directory_prefix_conflict_both_orders": "refused before output root creation",
+    "multiply_linked_archive_edit": "append and delete refused; both names retain original archive bytes",
+    "append_then_test_then_delete": "published archives test; append adds member; delete removes only requested member",
+    "profile_1": "Windows creates BoltLite with 16 KiB blocks, accepted by Linux full and mini readers"
+  }
+}

@@ -25,6 +25,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,46 +47,294 @@
 
 /* ---- Windows path limit ---------------------------------------------------- */
 
-#define BP_MAX_PATH 260
+#define BP_MAX_PATH 1024
+#define BP_MAX_PATH_WIDE 260
 
 /* ---- codepage conversion helpers --------------------------------------- */
 
-/* Convert a string from the active ANSI codepage (ACP) to UTF-8.
- * Returns 0 on success, -1 on failure. */
-static int acp_to_utf8(const char *acp, char *utf8, int utf8_size)
+/* Filesystem paths are UTF-8 inside this frontend and UTF-16 at Win32 API
+ * boundaries. Keep the legacy ACP out of path conversion on NT systems. */
+static int win_utf8_to_wide(const char *utf8, wchar_t *wide, int capacity)
 {
-    wchar_t wbuf[BP_MAX_PATH];
-    int wlen, ulen;
+    int length, bytes;
+    char *roundtrip;
+    if (utf8 == NULL || wide == NULL || capacity <= 0) return -1;
+    length = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, capacity);
+    if (length <= 0) return -1;
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (bytes <= 0) return -1;
+    roundtrip = (char *)malloc((size_t)bytes);
+    if (roundtrip == NULL) return -1;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, roundtrip, bytes,
+                            NULL, NULL) != bytes || strcmp(roundtrip, utf8) != 0) {
+        free(roundtrip);
+        return -1;
+    }
+    free(roundtrip);
+    return length;
+}
 
-    wlen = MultiByteToWideChar(CP_ACP, 0, acp, -1, wbuf, BP_MAX_PATH);
-    if (wlen == 0) return -1;
+static int win_wide_is_valid_utf16(const wchar_t *wide)
+{
+    const wchar_t *p;
+    if (wide == NULL) return 0;
+    for (p = wide; *p != L'\0'; p++) {
+        if (*p >= 0xD800 && *p <= 0xDBFF) {
+            if (p[1] < 0xDC00 || p[1] > 0xDFFF) return 0;
+            p++;
+        } else if (*p >= 0xDC00 && *p <= 0xDFFF) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
-    ulen = WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen, utf8, utf8_size,
-                               NULL, NULL);
-    if (ulen == 0) return -1;
+static int win_wide_to_utf8(const wchar_t *wide, char *utf8, int capacity)
+{
+    int length;
+    if (wide == NULL || utf8 == NULL || capacity <= 0 ||
+        !win_wide_is_valid_utf16(wide)) return -1;
+    length = WideCharToMultiByte(CP_UTF8, 0, wide, -1,
+                                 utf8, capacity, NULL, NULL);
+    return length > 0 ? length : -1;
+}
 
+static int win_utf8_copy(const char *source, char *destination, int capacity)
+{
+    wchar_t check[BP_MAX_PATH_WIDE];
+    size_t length;
+    if (win_utf8_to_wide(source, check, BP_MAX_PATH_WIDE) < 0) return -1;
+    length = strlen(source) + 1;
+    if (length > (size_t)capacity) return -1;
+    memcpy(destination, source, length);
     return 0;
 }
 
-/* Convert a string from UTF-8 to the active ANSI codepage (ACP).
- * Returns 0 on success, -1 on failure. */
-static int utf8_to_acp(const char *utf8, char *acp, int acp_size)
+static FILE *win_fopen(const char *path, const char *mode)
 {
-    wchar_t wbuf[BP_MAX_PATH];
-    int wlen, alen;
-    BOOL used_default = FALSE;
-    UINT cp = GetACP();
+    wchar_t wide_path[BP_MAX_PATH_WIDE], wide_mode[8];
+    int i;
+    if (win_utf8_to_wide(path, wide_path, BP_MAX_PATH_WIDE) < 0) return NULL;
+    for (i = 0; mode[i] != '\0' && i < 7; i++) wide_mode[i] = (wchar_t)(unsigned char)mode[i];
+    if (mode[i] != '\0') return NULL;
+    wide_mode[i] = L'\0';
+    return _wfopen(wide_path, wide_mode);
+}
 
-    wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wbuf, BP_MAX_PATH);
-    if (wlen == 0) return -1;
+static int win_stat64(const char *path, struct _stat64 *st)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return -1;
+    return _wstat64(wide, st);
+}
 
-    alen = WideCharToMultiByte(CP_ACP, cp == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS,
-                               wbuf, wlen, acp, acp_size, NULL,
-                               cp == CP_UTF8 ? NULL : &used_default);
-    if (alen == 0 || used_default) return -1;
+static int win_mkdir(const char *path)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return -1;
+    return _wmkdir(wide);
+}
 
+static int win_utime(const char *path, struct _utimbuf *times)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return -1;
+    return _wutime(wide, times);
+}
+
+typedef struct {
+    char *d_name;
+} win_dirent;
+
+typedef struct {
+    HANDLE handle;
+    WIN32_FIND_DATAW data;
+    int first;
+    int error;
+    win_dirent entry;
+    char name[BP_MAX_PATH * 3];
+} win_DIR;
+
+static win_DIR *win_opendir(const char *path)
+{
+    win_DIR *directory;
+    wchar_t wide[BP_MAX_PATH_WIDE], pattern[BP_MAX_PATH_WIDE];
+    size_t length;
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return NULL;
+    length = wcslen(wide);
+    if (length + 3 > BP_MAX_PATH_WIDE) return NULL;
+    wcscpy(pattern, wide);
+    if (length > 0 && pattern[length - 1] != L'/' && pattern[length - 1] != L'\\')
+        pattern[length++] = L'\\';
+    pattern[length++] = L'*';
+    pattern[length] = L'\0';
+    directory = (win_DIR *)calloc(1, sizeof(*directory));
+    if (directory == NULL) return NULL;
+    directory->handle = FindFirstFileW(pattern, &directory->data);
+    if (directory->handle == INVALID_HANDLE_VALUE) {
+        free(directory);
+        return NULL;
+    }
+    directory->first = 1;
+    return directory;
+}
+
+static win_dirent *win_readdir(win_DIR *directory)
+{
+    if (directory == NULL) return NULL;
+    if (!directory->first && !FindNextFileW(directory->handle, &directory->data)) {
+        if (GetLastError() != ERROR_NO_MORE_FILES) directory->error = 1;
+        return NULL;
+    }
+    directory->first = 0;
+    if (win_wide_to_utf8(directory->data.cFileName, directory->name,
+                         sizeof(directory->name)) < 0) {
+        directory->error = 1;
+        return NULL;
+    }
+    directory->entry.d_name = directory->name;
+    return &directory->entry;
+}
+
+static int win_closedir(win_DIR *directory)
+{
+    int result;
+    if (directory == NULL) return -1;
+    result = FindClose(directory->handle) ? 0 : -1;
+    free(directory);
+    return result;
+}
+
+static DWORD win_GetFileAttributesA(const char *path)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(wide);
+}
+
+static BOOL win_SetFileAttributesA(const char *path, DWORD attributes)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return FALSE;
+    return SetFileAttributesW(wide, attributes);
+}
+
+static HANDLE win_CreateFileA(const char *path, DWORD access, DWORD share,
+                              LPSECURITY_ATTRIBUTES security, DWORD creation,
+                              DWORD flags, HANDLE template_file)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return INVALID_HANDLE_VALUE;
+    return CreateFileW(wide, access, share, security, creation, flags,
+                       template_file);
+}
+
+static BOOL win_DeleteFileA(const char *path)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return FALSE;
+    return DeleteFileW(wide);
+}
+
+static BOOL win_MoveFileExA(const char *source, const char *destination, DWORD flags)
+{
+    wchar_t wide_source[BP_MAX_PATH_WIDE], wide_destination[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(source, wide_source, BP_MAX_PATH_WIDE) < 0 ||
+        win_utf8_to_wide(destination, wide_destination, BP_MAX_PATH_WIDE) < 0)
+        return FALSE;
+    return MoveFileExW(wide_source, wide_destination, flags);
+}
+
+static BOOL win_ReplaceFileA(const char *target, const char *replacement,
+                             const char *backup, DWORD flags,
+                             LPVOID exclude, LPVOID reserved)
+{
+    wchar_t wide_target[BP_MAX_PATH_WIDE], wide_replacement[BP_MAX_PATH_WIDE];
+    wchar_t wide_backup[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(target, wide_target, BP_MAX_PATH_WIDE) < 0 ||
+        win_utf8_to_wide(replacement, wide_replacement, BP_MAX_PATH_WIDE) < 0 ||
+        win_utf8_to_wide(backup, wide_backup, BP_MAX_PATH_WIDE) < 0) return FALSE;
+    return ReplaceFileW(wide_target, wide_replacement, wide_backup, flags,
+                        exclude, reserved);
+}
+
+static DWORD win_GetTempPathA(DWORD capacity, char *path)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    DWORD length = GetTempPathW(BP_MAX_PATH_WIDE, wide);
+    if (length == 0 || length >= BP_MAX_PATH_WIDE ||
+        win_wide_to_utf8(wide, path, (int)capacity) < 0) return 0;
+    return (DWORD)strlen(path);
+}
+
+static UINT win_GetTempFileNameA(const char *directory, const char *prefix,
+                                 UINT unique, char *path)
+{
+    wchar_t wide_directory[BP_MAX_PATH_WIDE], wide_prefix[4], wide_path[BP_MAX_PATH_WIDE];
+    UINT result;
+    int i;
+    if (win_utf8_to_wide(directory, wide_directory, BP_MAX_PATH_WIDE) < 0) return 0;
+    for (i = 0; prefix[i] != '\0' && i < 3; i++) wide_prefix[i] = (wchar_t)(unsigned char)prefix[i];
+    if (prefix[i] != '\0') return 0;
+    wide_prefix[i] = L'\0';
+    result = GetTempFileNameW(wide_directory, wide_prefix, unique, wide_path);
+    if (result == 0 || win_wide_to_utf8(wide_path, path, BP_MAX_PATH) < 0) return 0;
+    return result;
+}
+
+static BOOL win_GetDiskFreeSpaceExA(const char *path, PULARGE_INTEGER available,
+                                    PULARGE_INTEGER total,
+                                    PULARGE_INTEGER free_bytes)
+{
+    wchar_t wide[BP_MAX_PATH_WIDE];
+    if (win_utf8_to_wide(path, wide, BP_MAX_PATH_WIDE) < 0) return FALSE;
+    return GetDiskFreeSpaceExW(wide, available, total, free_bytes);
+}
+
+static int win_make_utf8_argv(int *argc, char ***argv)
+{
+    int wide_argc, i;
+    LPWSTR *wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+    char **utf8_argv;
+    if (wide_argv == NULL || wide_argc < 0) return -1;
+    utf8_argv = (char **)calloc((size_t)wide_argc + 1U, sizeof(*utf8_argv));
+    if (utf8_argv == NULL) { LocalFree(wide_argv); return -1; }
+    for (i = 0; i < wide_argc; i++) {
+        int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                        wide_argv[i], -1, NULL, 0, NULL, NULL);
+        if (bytes <= 0) break;
+        utf8_argv[i] = (char *)malloc((size_t)bytes);
+        if (utf8_argv[i] == NULL ||
+            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1,
+                                utf8_argv[i], bytes, NULL, NULL) != bytes) break;
+    }
+    LocalFree(wide_argv);
+    if (i != wide_argc) {
+        while (i >= 0) free(utf8_argv[i--]);
+        free(utf8_argv);
+        return -1;
+    }
+    *argc = wide_argc;
+    *argv = utf8_argv;
     return 0;
 }
+
+#define fopen win_fopen
+#define _stat64(path, st) win_stat64((path), (st))
+#define _mkdir win_mkdir
+#define utime win_utime
+#define opendir win_opendir
+#define readdir win_readdir
+#define closedir win_closedir
+#define GetFileAttributesA win_GetFileAttributesA
+#define SetFileAttributesA win_SetFileAttributesA
+#define CreateFileA win_CreateFileA
+#define DeleteFileA win_DeleteFileA
+#define MoveFileExA win_MoveFileExA
+#define ReplaceFileA win_ReplaceFileA
+#define GetTempPathA win_GetTempPathA
+#define GetTempFileNameA win_GetTempFileNameA
+#define GetDiskFreeSpaceExA win_GetDiskFreeSpaceExA
 
 typedef struct {
     bp_uint8 data[BP_META_FAT_SIZE];
@@ -102,12 +351,12 @@ static long win_fat_read(void *handle, void *buffer, bp_uint32 count)
     return (long)count;
 }
 
-static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
-                                const char *path, bp_uint8 subject_type)
+static int add_win_fat_metadata_value(bp_archive_t *ar, const char *name,
+                                      bp_uint8 subject_type,
+                                      DWORD attributes)
 {
     win_fat_source_t source;
     bp_io_t io;
-    DWORD attributes = GetFileAttributesA(path);
     bp_uint8 value;
     int rc;
     if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
@@ -121,6 +370,13 @@ static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
     return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_META_PORTABLE,
                                    &io, bp_u64_from_u32(BP_META_FAT_SIZE),
                                    bp_u64_from_u32(0), 0);
+}
+
+static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
+                                const char *path, bp_uint8 subject_type)
+{
+    DWORD attributes = GetFileAttributesA(path);
+    return add_win_fat_metadata_value(ar, name, subject_type, attributes);
 }
 
 /* ---- verbosity --------------------------------------------------------- */
@@ -217,18 +473,82 @@ static void set_tmp_dir_from_archive(const char *archive_name)
     }
 }
 
-static int win_archive_info_equal(const BY_HANDLE_FILE_INFORMATION *left,
-                                  const BY_HANDLE_FILE_INFORMATION *right)
+static int win_archive_object_id_equal(
+    const BY_HANDLE_FILE_INFORMATION *left,
+    const BY_HANDLE_FILE_INFORMATION *right)
 {
     return left->dwVolumeSerialNumber == right->dwVolumeSerialNumber &&
            left->nFileIndexHigh == right->nFileIndexHigh &&
-           left->nFileIndexLow == right->nFileIndexLow &&
+           left->nFileIndexLow == right->nFileIndexLow;
+}
+
+static int win_archive_info_equal(const BY_HANDLE_FILE_INFORMATION *left,
+                                  const BY_HANDLE_FILE_INFORMATION *right)
+{
+    return win_archive_object_id_equal(left, right) &&
            left->nFileSizeHigh == right->nFileSizeHigh &&
            left->nFileSizeLow == right->nFileSizeLow &&
            left->ftLastWriteTime.dwHighDateTime ==
                right->ftLastWriteTime.dwHighDateTime &&
            left->ftLastWriteTime.dwLowDateTime ==
                right->ftLastWriteTime.dwLowDateTime;
+}
+
+static int win_open_source_info(const char *path,
+                                BY_HANDLE_FILE_INFORMATION *info_out,
+                                FILE_BASIC_INFO *basic_out,
+                                int expect_directory)
+{
+    HANDLE handle;
+    int ok;
+
+    handle = CreateFileA(path, FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    ok = GetFileInformationByHandle(handle, info_out) != 0 &&
+         GetFileInformationByHandleEx(handle, FileBasicInfo, basic_out,
+                                       sizeof(*basic_out)) != 0 &&
+         (info_out->dwFileAttributes & FILE_ATTRIBUTE_DEVICE) == 0 &&
+         (((info_out->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) ==
+          (expect_directory != 0));
+    CloseHandle(handle);
+    return ok;
+}
+
+static int win_source_snapshot_equal(const FILE_BASIC_INFO *before,
+                                     const FILE_BASIC_INFO *after);
+
+static int win_path_matches_snapshot(
+    const char *path, const BY_HANDLE_FILE_INFORMATION *expected_info,
+    const FILE_BASIC_INFO *expected_basic, int expect_directory)
+{
+    BY_HANDLE_FILE_INFORMATION current_info;
+    FILE_BASIC_INFO current_basic;
+
+    return win_open_source_info(path, &current_info, &current_basic,
+                                expect_directory) &&
+           win_archive_info_equal(expected_info, &current_info) &&
+           win_source_snapshot_equal(expected_basic, &current_basic);
+}
+
+static int win_filetime_to_archive_time(FILETIME source, bp_uint64 *mtime)
+{
+    ULARGE_INTEGER ticks;
+    ULONGLONG unix_epoch_ticks;
+    ULONGLONG seconds;
+
+    ticks.LowPart = source.dwLowDateTime;
+    ticks.HighPart = source.dwHighDateTime;
+    unix_epoch_ticks = (ULONGLONG)11644473600ULL * 10000000ULL;
+    *mtime = bp_u64_from_u32(0);
+    if (ticks.QuadPart < unix_epoch_ticks) return 0;
+    seconds = (ticks.QuadPart - unix_epoch_ticks) / 10000000ULL;
+    mtime->lo = (bp_uint32)seconds;
+    mtime->hi = (bp_uint32)(seconds >> 32);
+    return 1;
 }
 
 static int win_open_archive_snapshot(const char *path, HANDLE *handle_out,
@@ -243,7 +563,8 @@ static int win_open_archive_snapshot(const char *path, HANDLE *handle_out,
     if (handle == INVALID_HANDLE_VALUE) return 0;
     if (!GetFileInformationByHandle(handle, info_out) ||
         (info_out->dwFileAttributes &
-         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT |
+          FILE_ATTRIBUTE_READONLY)) != 0 ||
         info_out->nNumberOfLinks != 1) {
         CloseHandle(handle);
         return 0;
@@ -310,9 +631,14 @@ static int win_create_archive_stage(HANDLE source_handle, char *temporary,
 }
 
 static int win_publish_archive_stage(const char *target, const char *temporary,
-                                     char *backup, size_t backup_size)
+                                     char *backup, size_t backup_size,
+                                     DWORD original_attributes)
 {
     size_t temporary_len;
+    DWORD attribute_mask;
+    DWORD expected_attributes;
+    DWORD actual_attributes;
+    DWORD publish_error;
 
     temporary_len = strlen(temporary);
     if (temporary_len < 4 || temporary_len + 1 > backup_size ||
@@ -339,6 +665,42 @@ static int win_publish_archive_stage(const char *target, const char *temporary,
             }
         }
         SetLastError(error);
+        return 0;
+    }
+    attribute_mask = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
+                     FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE |
+                     FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_OFFLINE |
+                     FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+    expected_attributes = original_attributes & attribute_mask;
+    if (expected_attributes == 0) expected_attributes = FILE_ATTRIBUTE_NORMAL;
+    if (!SetFileAttributesA(target, expected_attributes)) {
+        publish_error = GetLastError();
+        if (!MoveFileExA(backup, target,
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            fprintf(stderr,
+                    "boltpack: archive attribute restore failed; original kept at: %s\n",
+                    backup);
+        } else {
+            g_tmp_archive[0] = '\0';
+        }
+        SetLastError(publish_error);
+        return 0;
+    }
+    actual_attributes = GetFileAttributesA(target);
+    if (actual_attributes == INVALID_FILE_ATTRIBUTES ||
+        (actual_attributes & attribute_mask) !=
+            (original_attributes & attribute_mask)) {
+        publish_error = actual_attributes == INVALID_FILE_ATTRIBUTES ?
+                        GetLastError() : ERROR_INVALID_DATA;
+        if (!MoveFileExA(backup, target,
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            fprintf(stderr,
+                    "boltpack: archive attribute verification failed; original kept at: %s\n",
+                    backup);
+        } else {
+            g_tmp_archive[0] = '\0';
+        }
+        SetLastError(publish_error);
         return 0;
     }
     g_tmp_archive[0] = '\0';
@@ -392,6 +754,7 @@ static const char *bp_strerror(int code)
 {
     switch (code) {
     case BP_OK:                    return "success";
+    case BP_ERR_PARTIAL:           return "partial success (some entries or attributes were not restored)";
     case BP_ERR_IO:                return "I/O error";
     case BP_ERR_NOMEM:             return "out of memory";
     case BP_ERR_MAGIC:             return "not a BoltPack archive (bad magic)";
@@ -552,11 +915,6 @@ static void normalize_separators(char *path)
 #define bp_mkdir(path) mkdir(path, 0755)
 #endif
 
-static int win_mkdir(const char *path)
-{
-    return bp_mkdir(path);
-}
-
 static int mkdirs(const char *path)
 {
     char tmp[BP_MAX_PATH];
@@ -687,6 +1045,10 @@ typedef struct {
     bp_uint8  entry_type;
     bp_uint64 file_size;
     bp_uint64 mtime;
+    bp_uint16 mtime_flags;
+    BY_HANDLE_FILE_INFORMATION source_info;
+    FILE_BASIC_INFO source_basic_info;
+    int      source_info_valid;
 } add_job_t;
 
 typedef struct {
@@ -706,6 +1068,20 @@ typedef struct {
 
 static int collect_path_jobs(add_job_list_t *list, const char *path,
                              const char *arcname);
+
+/* Format 6 stores nonnegative Unix seconds only. Keep negative or
+ * unrepresentable source times explicitly unknown instead of wrapping them
+ * through the legacy add-entry API's always-valid timestamp flag. */
+static int win_archive_mtime(time_t source, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+    *mtime = bp_u64_from_u32(0);
+    if (source < (time_t)0) return 0;
+    seconds = (bp_off_t)source;
+    if (seconds < (bp_off_t)0 || (time_t)seconds != source) return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return 1;
+}
 
 static void free_add_job(add_job_t *job)
 {
@@ -729,7 +1105,10 @@ static void free_job_list(add_job_list_t *list)
 
 static int append_job(add_job_list_t *list, const char *path,
                       const char *arcname, bp_uint8 entry_type,
-                      bp_uint64 file_size, bp_uint64 mtime)
+                      bp_uint64 file_size, bp_uint64 mtime,
+                      bp_uint16 mtime_flags,
+                      const BY_HANDLE_FILE_INFORMATION *source_info,
+                      const FILE_BASIC_INFO *source_basic_info)
 {
     add_job_t *new_items;
     char *path_copy;
@@ -760,6 +1139,18 @@ static int append_job(add_job_list_t *list, const char *path,
     list->items[list->count].entry_type = entry_type;
     list->items[list->count].file_size = file_size;
     list->items[list->count].mtime = mtime;
+    list->items[list->count].mtime_flags = mtime_flags;
+    list->items[list->count].source_info_valid =
+        source_info != NULL && source_basic_info != NULL;
+    if (list->items[list->count].source_info_valid) {
+        list->items[list->count].source_info = *source_info;
+        list->items[list->count].source_basic_info = *source_basic_info;
+    } else {
+        memset(&list->items[list->count].source_info, 0,
+               sizeof(list->items[list->count].source_info));
+        memset(&list->items[list->count].source_basic_info, 0,
+               sizeof(list->items[list->count].source_basic_info));
+    }
     list->count++;
     return BP_OK;
 }
@@ -796,6 +1187,39 @@ static void print_added_data_result(bp_archive_t *ar, const char *arcname,
     }
 }
 
+/* Detect in-place writes while a source file is being packed. Use the
+ * handle's NT change time rather than CRT st_mtime, whose one-second
+ * resolution can miss same-size writes on a busy source tree. */
+static int win_source_snapshot(FILE *fp, FILE_BASIC_INFO *info)
+{
+    intptr_t os_handle;
+
+    if (fp == NULL || info == NULL) return 0;
+    os_handle = _get_osfhandle(_fileno(fp));
+    if (os_handle == -1) return 0;
+    return GetFileInformationByHandleEx((HANDLE)os_handle, FileBasicInfo,
+                                        info, sizeof(*info)) != 0;
+}
+
+static int win_source_handle_info(FILE *fp,
+                                 BY_HANDLE_FILE_INFORMATION *info)
+{
+    intptr_t os_handle;
+
+    if (fp == NULL || info == NULL) return 0;
+    os_handle = _get_osfhandle(_fileno(fp));
+    if (os_handle == -1) return 0;
+    return GetFileInformationByHandle((HANDLE)os_handle, info) != 0;
+}
+
+static int win_source_snapshot_equal(const FILE_BASIC_INFO *before,
+                                     const FILE_BASIC_INFO *after)
+{
+    return before->ChangeTime.QuadPart == after->ChangeTime.QuadPart &&
+           before->LastWriteTime.QuadPart == after->LastWriteTime.QuadPart &&
+           before->FileAttributes == after->FileAttributes;
+}
+
 static int add_job(bp_archive_t *ar, const add_job_t *job)
 {
     char arcname_utf8[BP_MAX_PATH * 2];
@@ -805,18 +1229,34 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
     }
 
     if (job->entry_type == BP_TYPE_DIR) {
+        if (job->source_info_valid &&
+            !win_path_matches_snapshot(job->path, &job->source_info,
+                                       &job->source_basic_info, 1)) {
+            fprintf(stderr,
+                    "boltpack: source directory changed after enumeration: %s\n",
+                    job->path);
+            return BP_ERR_IO;
+        }
         if (g_verbosity == VERB_DEFAULT) {
             printf("   creating: %s\n", job->arcname);
         }
 
-        if (acp_to_utf8(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
+        if (win_utf8_copy(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
             fprintf(stderr, "boltpack: cannot encode filename: %s\n", job->arcname);
             return BP_ERR_INVALID_ARG;
         }
 
-        return bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DIR,
-                                    BP_OS_WINDOWS, NULL,
-                                    bp_u64_from_u32(0), job->mtime);
+        {
+            int rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DIR,
+                                             BP_OS_WINDOWS, NULL,
+                                             bp_u64_from_u32(0), job->mtime,
+                                             job->mtime_flags);
+            if (rc != BP_OK) return rc;
+        }
+        return job->source_info_valid
+            ? add_win_fat_metadata_value(ar, arcname_utf8, BP_TYPE_DIR,
+                                         job->source_info.dwFileAttributes)
+            : add_win_fat_metadata(ar, arcname_utf8, job->path, BP_TYPE_DIR);
     }
 
     if (job->entry_type == BP_TYPE_DATA) {
@@ -825,10 +1265,27 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
         int rc;
         bp_uint64 actual_size;
         struct _stat64 st;
+        BY_HANDLE_FILE_INFORMATION opened_info;
+        FILE_BASIC_INFO opened_basic_info;
+        FILE_BASIC_INFO source_before;
+        FILE_BASIC_INFO source_after;
 
         fp = fopen(job->path, "rb");
         if (fp == NULL) {
             fprintf(stderr, "boltpack: cannot open: %s\n", job->path);
+            return BP_ERR_IO;
+        }
+
+        if (job->source_info_valid &&
+            (!win_source_handle_info(fp, &opened_info) ||
+             !win_archive_info_equal(&job->source_info, &opened_info) ||
+             !win_source_snapshot(fp, &opened_basic_info) ||
+             !win_source_snapshot_equal(&job->source_basic_info,
+                                        &opened_basic_info))) {
+            fprintf(stderr,
+                    "boltpack: source path changed after enumeration: %s\n",
+                    job->path);
+            fclose(fp);
             return BP_ERR_IO;
         }
 
@@ -850,17 +1307,33 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
             }
         }
 
+        if (!win_source_snapshot(fp, &source_before)) {
+            fprintf(stderr, "boltpack: cannot inspect source file: %s\n",
+                    job->path);
+            fclose(fp);
+            return BP_ERR_IO;
+        }
+
         bp_io_from_file(&fio, fp);
 
-        if (acp_to_utf8(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
+        if (win_utf8_copy(job->arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
             fprintf(stderr, "boltpack: cannot encode filename: %s\n", job->arcname);
             fclose(fp);
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA,
-                                  BP_OS_WINDOWS, &fio,
-                                  actual_size, job->mtime);
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
+                                     BP_OS_WINDOWS, &fio,
+                                     actual_size, job->mtime,
+                                     job->mtime_flags);
+        if (rc == BP_OK &&
+            (!win_source_snapshot(fp, &source_after) ||
+             !win_source_snapshot_equal(&source_before, &source_after))) {
+            fprintf(stderr,
+                    "boltpack: source changed while archiving: %s\n",
+                    job->path);
+            rc = BP_ERR_IO;
+        }
         fclose(fp);
 
         if (rc != BP_OK) {
@@ -870,7 +1343,10 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
         }
 
         print_added_data_result(ar, job->arcname, actual_size);
-        return BP_OK;
+        return job->source_info_valid
+            ? add_win_fat_metadata_value(ar, arcname_utf8, BP_TYPE_DATA,
+                                         job->source_info.dwFileAttributes)
+            : add_win_fat_metadata(ar, arcname_utf8, job->path, BP_TYPE_DATA);
     }
 
     return BP_OK;
@@ -887,8 +1363,8 @@ static int sum_path_data_size(const char *path, bp_uint64 *total_size,
     }
 
     if (S_ISDIR(st.st_mode)) {
-        DIR *d;
-        struct dirent *ent;
+        win_DIR *d;
+        win_dirent *ent;
         char child_path[BP_MAX_PATH];
         int rc;
 
@@ -909,6 +1385,12 @@ static int sum_path_data_size(const char *path, bp_uint64 *total_size,
                 closedir(d);
                 return rc;
             }
+        }
+
+        if (d->error) {
+            closedir(d);
+            fprintf(stderr, "boltpack: directory contains an invalid or unreadable name: %s\n", path);
+            return BP_ERR_INVALID_ARG;
         }
 
         closedir(d);
@@ -985,13 +1467,22 @@ static int choose_fast_fluff_threads(bp_uint64 total_size, int data_count,
 }
 
 static int collect_directory_jobs(add_job_list_t *list, const char *dir_path,
-                                  const char *arc_prefix)
+                                  const char *arc_prefix,
+                                  const BY_HANDLE_FILE_INFORMATION *dir_info,
+                                  const FILE_BASIC_INFO *dir_basic_info)
 {
-    DIR *d;
-    struct dirent *ent;
+    win_DIR *d;
+    win_dirent *ent;
     int rc;
     char child_path[BP_MAX_PATH];
     char child_arc[BP_MAX_PATH];
+
+    if (!win_path_matches_snapshot(dir_path, dir_info, dir_basic_info, 1)) {
+        fprintf(stderr,
+                "boltpack: source directory changed during enumeration: %s\n",
+                dir_path);
+        return BP_ERR_IO;
+    }
 
     d = opendir(dir_path);
     if (d == NULL) {
@@ -1014,7 +1505,19 @@ static int collect_directory_jobs(add_job_list_t *list, const char *dir_path,
         }
     }
 
+    if (d->error) {
+        closedir(d);
+        fprintf(stderr, "boltpack: directory contains an invalid or unreadable name: %s\n", dir_path);
+        return BP_ERR_INVALID_ARG;
+    }
+
     closedir(d);
+    if (!win_path_matches_snapshot(dir_path, dir_info, dir_basic_info, 1)) {
+        fprintf(stderr,
+                "boltpack: source directory changed during enumeration: %s\n",
+                dir_path);
+        return BP_ERR_IO;
+    }
     return BP_OK;
 }
 
@@ -1023,14 +1526,31 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
 {
     struct _stat64 st;
     char dir_arc[BP_MAX_PATH];
+    bp_uint64 mtime;
+    bp_uint64 source_size;
+    bp_uint16 mtime_flags;
     int rc;
+    BY_HANDLE_FILE_INFORMATION source_info;
+    FILE_BASIC_INFO source_basic_info;
 
     if (_stat64(path, &st) != 0) {
         fprintf(stderr, "boltpack: cannot stat: %s\n", path);
         return BP_ERR_IO;
     }
-
     if (S_ISDIR(st.st_mode)) {
+        if (!win_open_source_info(path, &source_info, &source_basic_info, 1)) {
+            fprintf(stderr, "boltpack: cannot inspect source directory: %s\n",
+                    path);
+            return BP_ERR_IO;
+        }
+        mtime_flags = win_filetime_to_archive_time(
+            source_info.ftLastWriteTime, &mtime)
+                    ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+        if (mtime_flags == 0) {
+            fprintf(stderr,
+                    "boltpack: source time not representable; storing unknown: %s\n",
+                    path);
+        }
         if (!ends_with_sep(arcname)) {
             sprintf(dir_arc, "%s/", arcname);
         } else {
@@ -1039,15 +1559,32 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
 
         rc = append_job(list, path, dir_arc, BP_TYPE_DIR,
                         bp_u64_from_u32(0),
-                        bp_off_to_u64((bp_off_t)st.st_mtime));
+                        mtime, mtime_flags, &source_info,
+                        &source_basic_info);
         if (rc != BP_OK) return rc;
-        return collect_directory_jobs(list, path, dir_arc);
+        return collect_directory_jobs(list, path, dir_arc, &source_info,
+                                      &source_basic_info);
     }
 
     if (S_ISREG(st.st_mode)) {
+        if (!win_open_source_info(path, &source_info, &source_basic_info, 0)) {
+            fprintf(stderr, "boltpack: cannot inspect source file: %s\n",
+                    path);
+            return BP_ERR_IO;
+        }
+        mtime_flags = win_filetime_to_archive_time(
+            source_info.ftLastWriteTime, &mtime)
+                    ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+        if (mtime_flags == 0) {
+            fprintf(stderr,
+                    "boltpack: source time not representable; storing unknown: %s\n",
+                    path);
+        }
+        source_size.lo = source_info.nFileSizeLow;
+        source_size.hi = source_info.nFileSizeHigh;
         return append_job(list, path, arcname, BP_TYPE_DATA,
-                          bp_off_to_u64((bp_off_t)st.st_size),
-                          bp_off_to_u64((bp_off_t)st.st_mtime));
+                          source_size, mtime, mtime_flags, &source_info,
+                          &source_basic_info);
     }
 
     return BP_OK;
@@ -1250,7 +1787,11 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
         int local_rc;
         char arcname_utf8[BP_MAX_PATH * 2];
         struct _stat64 st_chk;
+        BY_HANDLE_FILE_INFORMATION opened_info;
+        FILE_BASIC_INFO opened_basic_info;
         bp_uint64 actual_sz;
+        FILE_BASIC_INFO source_before;
+        FILE_BASIC_INFO source_after;
 
         memset(&worker_ar, 0, sizeof(worker_ar));
         worker_ar.block_size = ar->block_size;
@@ -1273,6 +1814,18 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
             local_rc = BP_ERR_IO;
         }
 
+        if (local_rc == BP_OK && jobs[i].source_info_valid &&
+            (!win_source_handle_info(src_fp, &opened_info) ||
+             !win_archive_info_equal(&jobs[i].source_info, &opened_info) ||
+             !win_source_snapshot(src_fp, &opened_basic_info) ||
+             !win_source_snapshot_equal(&jobs[i].source_basic_info,
+                                        &opened_basic_info))) {
+            fprintf(stderr,
+                    "boltpack: source path changed after enumeration: %s\n",
+                    jobs[i].path);
+            local_rc = BP_ERR_IO;
+        }
+
         /* Recheck size through the open fd to close the TOCTOU window. */
         if (local_rc == BP_OK) {
             if (_fstat64(_fileno(src_fp), &st_chk) == 0) {
@@ -1290,6 +1843,14 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
                     actual_sz = real_sz;
                 }
             }
+            if (!win_source_snapshot(src_fp, &source_before)) {
+                fprintf(stderr,
+                        "boltpack: cannot inspect source file: %s\n",
+                        jobs[i].path);
+                local_rc = BP_ERR_IO;
+            }
+        }
+        if (local_rc == BP_OK) {
             tmp_fp = open_tmp_file_win_at(batch_use_sys_tmp);
             if (tmp_fp == NULL) {
                 local_rc = BP_ERR_IO;
@@ -1298,20 +1859,29 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
         if (local_rc == BP_OK) {
             bp_io_from_file(&src_io, src_fp);
             bp_io_from_file(&packed_jobs[i].tmp_io, tmp_fp);
-            if (acp_to_utf8(jobs[i].arcname, arcname_utf8,
+            if (win_utf8_copy(jobs[i].arcname, arcname_utf8,
                             sizeof(arcname_utf8)) != 0) {
                 local_rc = BP_ERR_INVALID_ARG;
             } else {
-                local_rc = bp_archive_pack_entry(&worker_ar,
-                                                 arcname_utf8,
-                                                 BP_TYPE_DATA,
-                                                 BP_OS_WINDOWS,
-                                                 &src_io,
-                                                 actual_sz,
-                                                 jobs[i].mtime,
-                                                 &packed_jobs[i].tmp_io,
-                                                 &packed_jobs[i].packed);
+                local_rc = bp_archive_pack_entry_ex(&worker_ar,
+                                                    arcname_utf8,
+                                                    BP_TYPE_DATA,
+                                                    BP_OS_WINDOWS,
+                                                    &src_io,
+                                                    actual_sz,
+                                                    jobs[i].mtime,
+                                                    &packed_jobs[i].tmp_io,
+                                                    &packed_jobs[i].packed,
+                                                    jobs[i].mtime_flags);
             }
+        }
+        if (local_rc == BP_OK &&
+            (!win_source_snapshot(src_fp, &source_after) ||
+             !win_source_snapshot_equal(&source_before, &source_after))) {
+            fprintf(stderr,
+                    "boltpack: source changed while archiving: %s\n",
+                    jobs[i].path);
+            local_rc = BP_ERR_IO;
         }
 
         if (src_fp != NULL) {
@@ -1356,6 +1926,31 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
         /* Use packed.original_size (reflects actual size used during pack). */
         print_added_data_result(ar, jobs[i].arcname,
                                 packed_jobs[i].packed.original_size);
+        {
+            char arcname_utf8[BP_MAX_PATH * 2];
+            if (win_utf8_copy(jobs[i].arcname, arcname_utf8,
+                              sizeof(arcname_utf8)) != 0) {
+                int j;
+                for (j = i; j < batch_n; j++)
+                    cleanup_packed_job(&packed_jobs[j]);
+                free(packed_jobs);
+                return BP_ERR_INVALID_ARG;
+            }
+            rc = jobs[i].source_info_valid
+                ? add_win_fat_metadata_value(
+                      ar, arcname_utf8, BP_TYPE_DATA,
+                      jobs[i].source_info.dwFileAttributes)
+                : add_win_fat_metadata(ar, arcname_utf8, jobs[i].path,
+                                       BP_TYPE_DATA);
+            if (rc != BP_OK) {
+                int j;
+                cleanup_packed_job(&packed_jobs[i]);
+                for (j = i + 1; j < batch_n; j++)
+                    cleanup_packed_job(&packed_jobs[j]);
+                free(packed_jobs);
+                return rc;
+            }
+        }
         cleanup_packed_job(&packed_jobs[i]);
     }
 
@@ -1429,6 +2024,8 @@ static int add_job_list_with_policy(bp_archive_t *ar,
     bp_uint64 total_size;
     int data_count;
     int threads;
+    int rc;
+    int i;
 
     summarize_data_jobs(list, &total_size, &data_count);
     threads = choose_fast_fluff_threads(total_size, data_count, method);
@@ -1438,11 +2035,44 @@ static int add_job_list_with_policy(bp_archive_t *ar,
         else if (method == BP_METHOD_FLUFF)
             bp_set_fast_fluff(ar, threads);
 #ifdef BOLTPACK_FAST_FLUFF
-        return add_job_list_parallel(ar, list, threads);
+        rc = add_job_list_parallel(ar, list, threads);
+        if (rc != BP_OK) return rc;
+#else
+        rc = add_job_list_serial(ar, list);
+        if (rc != BP_OK) return rc;
 #endif
+    } else {
+        rc = add_job_list_serial(ar, list);
+        if (rc != BP_OK) return rc;
     }
 
-    return add_job_list_serial(ar, list);
+    /* Recheck collected file state and directory identity immediately before
+     * the caller finalizes and publishes the staged archive. Directory
+     * metadata can change when our own archive and worker stages live in the
+     * source tree, so only identity is meaningful in this final pass. */
+    for (i = 0; i < list->count; i++) {
+        const add_job_t *job = &list->items[i];
+        int expect_directory = job->entry_type == BP_TYPE_DIR;
+        int matches;
+
+        if (!job->source_info_valid) continue;
+        if (expect_directory) {
+            BY_HANDLE_FILE_INFORMATION current_info;
+            FILE_BASIC_INFO current_basic;
+            matches = win_open_source_info(job->path, &current_info,
+                                           &current_basic, 1) &&
+                win_archive_object_id_equal(&job->source_info, &current_info);
+        } else {
+            matches = win_path_matches_snapshot(
+                job->path, &job->source_info, &job->source_basic_info, 0);
+        }
+        if (!matches) {
+            fprintf(stderr, "boltpack: source changed before archive "
+                    "publication: %s\n", job->path);
+            return BP_ERR_IO;
+        }
+    }
+    return BP_OK;
 }
 
 /* ---- recursive add ----------------------------------------------------- */
@@ -1452,8 +2082,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 static int add_directory(bp_archive_t *ar, const char *dir_path,
                          const char *arc_prefix)
 {
-    DIR *d;
-    struct dirent *ent;
+    win_DIR *d;
+    win_dirent *ent;
     int rc;
     char child_path[BP_MAX_PATH];
     char child_arc[BP_MAX_PATH];
@@ -1478,6 +2108,12 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
         }
     }
 
+    if (d->error) {
+        closedir(d);
+        fprintf(stderr, "boltpack: directory contains an invalid or unreadable name: %s\n", dir_path);
+        return BP_ERR_INVALID_ARG;
+    }
+
     closedir(d);
     return BP_OK;
 }
@@ -1485,11 +2121,20 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct _stat64 st;
+    bp_uint64 mtime;
+    bp_uint16 mtime_flags;
     int rc;
 
     if (_stat64(path, &st) != 0) {
         fprintf(stderr, "boltpack: cannot stat: %s\n", path);
         return BP_ERR_IO;
+    }
+    mtime_flags = win_archive_mtime(st.st_mtime, &mtime)
+                ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+    if (mtime_flags == 0) {
+        fprintf(stderr,
+                "boltpack: source time not representable; storing unknown: %s\n",
+                path);
     }
 
     if (S_ISDIR(st.st_mode)) {
@@ -1508,14 +2153,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 
         /* Store as UTF-8 in the archive */
-        if (acp_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8)) != 0) {
+        if (win_utf8_copy(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8)) != 0) {
             fprintf(stderr, "boltpack: cannot encode filename: %s\n", dir_arc);
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_WINDOWS,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_off_to_u64((bp_off_t)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                     BP_OS_WINDOWS, NULL,
+                                     bp_u64_from_u32(0), mtime, mtime_flags);
         if (rc != BP_OK) return rc;
 
         rc = add_win_fat_metadata(ar, dir_arc_utf8, path, BP_TYPE_DIR);
@@ -1542,15 +2187,15 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 
         /* Store as UTF-8 in the archive */
-        if (acp_to_utf8(arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
+        if (win_utf8_copy(arcname, arcname_utf8, sizeof(arcname_utf8)) != 0) {
             fprintf(stderr, "boltpack: cannot encode filename: %s\n", arcname);
             fclose(fp);
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_WINDOWS,
-                                  &fio, file_size,
-                                  bp_off_to_u64((bp_off_t)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
+                                     BP_OS_WINDOWS, &fio, file_size,
+                                     mtime, mtime_flags);
         fclose(fp);
 
         if (rc != BP_OK) return rc;
@@ -1619,7 +2264,7 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
     {
         char disp_name[BP_MAX_PATH];
-        if (utf8_to_acp(entry->name, disp_name, sizeof(disp_name)) != 0) {
+        if (win_utf8_copy(entry->name, disp_name, sizeof(disp_name)) != 0) {
             strncpy(disp_name, entry->name, BP_MAX_PATH - 1);
             disp_name[BP_MAX_PATH - 1] = '\0';
         }
@@ -1634,7 +2279,8 @@ typedef struct win_path_node_s {
     struct win_path_node_s *left;
     struct win_path_node_s *right;
     int height;
-    wchar_t name[BP_MAX_PATH];
+    bp_uint8 entry_type;
+    wchar_t name[BP_MAX_PATH_WIDE];
 } win_path_node_t;
 
 static int win_path_height(const win_path_node_t *node)
@@ -1677,6 +2323,43 @@ static int win_path_compare(const wchar_t *left, const wchar_t *right)
     return rc == CSTR_EQUAL ? 0 : 2;
 }
 
+static win_path_node_t *win_path_find_exact(win_path_node_t *root,
+                                            const wchar_t *name)
+{
+    while (root != NULL) {
+        int cmp = win_path_compare(name, root->name);
+        if (cmp == 2) return NULL;
+        if (cmp == 0) return root;
+        root = cmp < 0 ? root->left : root->right;
+    }
+    return NULL;
+}
+
+static win_path_node_t *win_path_lower_bound(win_path_node_t *root,
+                                             const wchar_t *name)
+{
+    win_path_node_t *best = NULL;
+    while (root != NULL) {
+        int cmp = win_path_compare(root->name, name);
+        if (cmp == 2) return NULL;
+        if (cmp >= 0) {
+            best = root;
+            root = root->left;
+        } else {
+            root = root->right;
+        }
+    }
+    return best;
+}
+
+static int win_path_has_prefix(const wchar_t *name, const wchar_t *prefix,
+                               size_t prefix_length)
+{
+    int rc = CompareStringOrdinal(name, (int)prefix_length, prefix,
+                                   (int)prefix_length, TRUE);
+    return rc == CSTR_EQUAL;
+}
+
 static int win_path_compare_n(const wchar_t *left, size_t left_length,
                               const char *right, size_t right_length)
 {
@@ -1693,7 +2376,7 @@ static int win_path_compare_n(const wchar_t *left, size_t left_length,
 
 static win_path_node_t *win_path_insert(win_path_node_t *root,
                                         const wchar_t *name,
-                                        int *result)
+                                        bp_uint8 entry_type, int *result)
 {
     int cmp, balance;
     win_path_node_t *child;
@@ -1702,6 +2385,7 @@ static win_path_node_t *win_path_insert(win_path_node_t *root,
         if (root == NULL) { *result = BP_ERR_NOMEM; return NULL; }
         wcscpy(root->name, name);
         root->height = 1;
+        root->entry_type = entry_type;
         *result = BP_OK;
         return root;
     }
@@ -1709,11 +2393,11 @@ static win_path_node_t *win_path_insert(win_path_node_t *root,
     if (cmp == 2) { *result = BP_ERR_INVALID_ARG; return root; }
     if (cmp == 0) { *result = BP_ERR_PARTIAL; return root; }
     if (cmp < 0) {
-        child = win_path_insert(root->left, name, result);
+        child = win_path_insert(root->left, name, entry_type, result);
         if (*result != BP_OK) return root;
         root->left = child;
     } else {
-        child = win_path_insert(root->right, name, result);
+        child = win_path_insert(root->right, name, entry_type, result);
         if (*result != BP_OK) return root;
         root->right = child;
     }
@@ -1766,7 +2450,7 @@ static int win_project_windows_path(const char *local_name, wchar_t *key,
                                     int key_capacity)
 {
     int length, i, start;
-    length = MultiByteToWideChar(CP_ACP, 0, local_name, -1,
+    length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, local_name, -1,
                                  key, key_capacity);
     if (length <= 0) return BP_ERR_INVALID_ARG;
     length--;
@@ -1806,16 +2490,91 @@ typedef struct {
     struct win_dir_attr_s *directories;
     win_path_node_t *projected_names;
     char        last_subject_path[BP_MAX_PATH];
+    bp_uint8    last_subject_type;
     int         last_subject_valid;
     int         last_subject_ok;
 } extract_ctx_t;
 
-static int win_register_output_path(extract_ctx_t *ctx, const char *local_name)
+static const char *extract_entry_name(const bp_entry_t *entry,
+                                      extract_ctx_t *ctx);
+
+static int win_register_output_path(extract_ctx_t *ctx, const char *local_name,
+                                    bp_uint8 entry_type)
 {
-    wchar_t key[BP_MAX_PATH];
-    int rc = win_project_windows_path(local_name, key, BP_MAX_PATH);
+    wchar_t key[BP_MAX_PATH_WIDE];
+    size_t i, length;
+    int rc = win_project_windows_path(local_name, key, BP_MAX_PATH_WIDE);
     if (rc != BP_OK) return rc;
-    ctx->projected_names = win_path_insert(ctx->projected_names, key, &rc);
+    length = wcslen(key);
+    for (i = 0; i < length; i++) {
+        if (key[i] == L'\\') {
+            wchar_t saved = key[i];
+            key[i] = L'\0';
+            {
+                win_path_node_t *ancestor =
+                    win_path_find_exact(ctx->projected_names, key);
+                if (ancestor != NULL && ancestor->entry_type == BP_TYPE_DATA) {
+                    key[i] = saved;
+                    return BP_ERR_PARTIAL;
+                }
+            }
+            key[i] = saved;
+        }
+    }
+    {
+        wchar_t descendant_prefix[BP_MAX_PATH_WIDE];
+        win_path_node_t *next;
+        if (entry_type == BP_TYPE_DATA && length + 1 < BP_MAX_PATH_WIDE) {
+            memcpy(descendant_prefix, key, length * sizeof(wchar_t));
+            descendant_prefix[length] = L'\\';
+            descendant_prefix[length + 1] = L'\0';
+            next = win_path_lower_bound(ctx->projected_names,
+                                        descendant_prefix);
+            if (next != NULL &&
+                win_path_has_prefix(next->name, descendant_prefix,
+                                    length + 1)) return BP_ERR_PARTIAL;
+        }
+    }
+    ctx->projected_names = win_path_insert(ctx->projected_names, key,
+                                           entry_type, &rc);
+    return rc;
+}
+
+/* Validate every primary path before extraction creates or replaces anything.
+ * The streaming extractor also registers each path as a defense in depth, but
+ * that check alone can discover a later case alias after an earlier entry has
+ * already been published. */
+static int win_preflight_path(const bp_entry_t *entry, void *user_data)
+{
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    const char *name;
+    int rc;
+
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR)
+        return 0;
+    name = extract_entry_name(entry, ctx);
+    if (!bp_name_is_safe(name)) {
+        fprintf(stderr, "boltpack: unsafe Windows destination name: %s\n",
+                entry->name);
+        return 1;
+    }
+    rc = win_register_output_path(ctx, name, entry->entry_type);
+    if (rc == BP_ERR_PARTIAL) {
+        fprintf(stderr, "boltpack: destination name collision: %s\n", name);
+        return 1;
+    }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: unsupported Windows filename: %s\n", name);
+        return 1;
+    }
+    return 0;
+}
+
+static int win_preflight_archive_paths(bp_io_t *aio, extract_ctx_t *ctx)
+{
+    int rc = bp_archive_list(aio, win_preflight_path, ctx);
+    if (rc == BP_OK && aio->seek(aio->handle, 0, SEEK_SET) != 0)
+        rc = BP_ERR_IO;
     return rc;
 }
 
@@ -1904,15 +2663,32 @@ static int win_open_staged_file(const char *target, char *temporary,
     return BP_ERR_IO;
 }
 
+static int win_copy_directory_path(char *out, size_t out_size,
+                                   const char *path)
+{
+    size_t length = strlen(path);
+    if (length > 0 &&
+        (path[length - 1] == '/' || path[length - 1] == '\\') &&
+        length != 1 && !(length == 3 && path[1] == ':'))
+        length--;
+    if (length >= out_size) return BP_ERR_NAME_TOO_LONG;
+    memcpy(out, path, length);
+    out[length] = '\0';
+    return BP_OK;
+}
+
 static int win_queue_directory_attributes(extract_ctx_t *ctx,
                                           const char *path,
                                           bp_uint8 valid, bp_uint8 value)
 {
+    char normalized[BP_MAX_PATH];
     win_dir_attr_t *node, **at;
-    size_t length = strlen(path);
-    if (length >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    size_t length;
+    int rc = win_copy_directory_path(normalized, sizeof(normalized), path);
+    if (rc != BP_OK) return rc;
+    length = strlen(normalized);
     for (node = ctx->directories; node != NULL; node = node->next) {
-        if (strcmp(node->path, path) == 0) {
+        if (strcmp(node->path, normalized) == 0) {
             node->valid = valid;
             node->value = value;
             return BP_OK;
@@ -1921,7 +2697,7 @@ static int win_queue_directory_attributes(extract_ctx_t *ctx,
     node = (win_dir_attr_t *)calloc(1, sizeof(*node));
     if (node == NULL) return BP_ERR_NOMEM;
     node->valid = valid; node->value = value;
-    memcpy(node->path, path, length + 1);
+    memcpy(node->path, normalized, length + 1);
     at = &ctx->directories;
     while (*at != NULL && strlen((*at)->path) >= length) at = &(*at)->next;
     node->next = *at; *at = node;
@@ -1931,11 +2707,14 @@ static int win_queue_directory_attributes(extract_ctx_t *ctx,
 static int win_queue_directory_time(extract_ctx_t *ctx, const char *path,
                                     bp_uint64 mtime, int valid)
 {
+    char normalized[BP_MAX_PATH];
     win_dir_attr_t *node, **at;
-    size_t length = strlen(path);
-    if (length >= BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    size_t length;
+    int rc = win_copy_directory_path(normalized, sizeof(normalized), path);
+    if (rc != BP_OK) return rc;
+    length = strlen(normalized);
     for (node = ctx->directories; node != NULL; node = node->next) {
-        if (strcmp(node->path, path) == 0) {
+        if (strcmp(node->path, normalized) == 0) {
             node->mtime = mtime;
             node->mtime_valid = valid;
             return BP_OK;
@@ -1943,13 +2722,42 @@ static int win_queue_directory_time(extract_ctx_t *ctx, const char *path,
     }
     node = (win_dir_attr_t *)calloc(1, sizeof(*node));
     if (node == NULL) return BP_ERR_NOMEM;
-    memcpy(node->path, path, length + 1);
+    memcpy(node->path, normalized, length + 1);
     node->mtime = mtime;
     node->mtime_valid = valid;
     at = &ctx->directories;
     while (*at != NULL && strlen((*at)->path) >= length) at = &(*at)->next;
     node->next = *at; *at = node;
     return BP_OK;
+}
+
+static int win_set_path_mtime(const char *path, bp_uint64 mtime)
+{
+    const ULONGLONG ticks_per_second = 10000000ULL;
+    const ULONGLONG unix_epoch_filetime = 11644473600ULL * 10000000ULL;
+    bp_off_t seconds = bp_u64_to_off(mtime);
+    time_t converted = (time_t)seconds;
+    ULONGLONG ticks;
+    FILETIME file_time;
+    HANDLE handle;
+    int result = BP_ERR_PARTIAL;
+
+    if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+        (bp_off_t)converted != seconds ||
+        (ULONGLONG)seconds >
+            ((ULONGLONG)~(ULONGLONG)0 - unix_epoch_filetime) /
+                ticks_per_second)
+        return BP_ERR_PARTIAL;
+    ticks = unix_epoch_filetime + (ULONGLONG)seconds * ticks_per_second;
+    file_time.dwLowDateTime = (DWORD)ticks;
+    file_time.dwHighDateTime = (DWORD)(ticks >> 32);
+    handle = CreateFileA(path, FILE_WRITE_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return BP_ERR_PARTIAL;
+    if (SetFileTime(handle, NULL, NULL, &file_time)) result = BP_OK;
+    if (!CloseHandle(handle)) result = BP_ERR_PARTIAL;
+    return result;
 }
 
 static int win_finish_directory_attributes(extract_ctx_t *ctx, int apply)
@@ -1961,18 +2769,8 @@ static int win_finish_directory_attributes(extract_ctx_t *ctx, int apply)
         win_dir_attr_t *next = node->next;
         if (apply) {
             if (node->mtime_valid) {
-                bp_off_t seconds = bp_u64_to_off(node->mtime);
-                time_t t = (time_t)seconds;
-                struct _stat64 st;
-                struct utimbuf ut;
-                if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), node->mtime) != 0 ||
-                    (bp_off_t)t != seconds || _stat64(node->path, &st) != 0) {
+                if (win_set_path_mtime(node->path, node->mtime) != BP_OK)
                     result = BP_ERR_PARTIAL;
-                } else {
-                    ut.actime = (time_t)st.st_atime;
-                    ut.modtime = t;
-                    if (utime(node->path, &ut) != 0) result = BP_ERR_PARTIAL;
-                }
                 if (result != BP_OK)
                     fprintf(stderr, "boltpack: directory timestamp not restored: %s\n",
                             node->path);
@@ -2042,7 +2840,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     }
 
     /* Convert UTF-8 archive name to ACP for filesystem and display */
-    if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
+    if (win_utf8_copy(name, local_name, sizeof(local_name)) != 0) {
         fprintf(stderr, "boltpack: cannot represent archive name: %s\n", name);
         ctx->unsafe_count++;
         return NULL;
@@ -2057,7 +2855,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR) {
         ctx->last_subject_valid = 0;
         ctx->last_subject_ok = 0;
-        rc = win_register_output_path(ctx, local_name);
+        rc = win_register_output_path(ctx, local_name, entry->entry_type);
         if (rc != BP_OK) {
             if (rc == BP_ERR_PARTIAL)
                 fprintf(stderr, "boltpack: destination name collision: %s\n", name);
@@ -2071,6 +2869,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             return NULL;
         }
         strcpy(ctx->last_subject_path, path);
+        ctx->last_subject_type = entry->entry_type;
         ctx->last_subject_valid = 1;
         ctx->last_subject_ok = 0;
     }
@@ -2191,7 +2990,11 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         if (status != BP_OK) { free(sink); return status; }
         parse_rc = bp_metadata_parse(sink->data, sink->length, &parsed);
         if (parse_rc == BP_ERR_CORRUPT) { free(sink); return parse_rc; }
-        if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
+        if (!bp_metadata_matches_subject(&parsed, ctx->last_subject_type)) {
+            free(sink);
+            return BP_ERR_PARTIAL;
+        }
+        if (win_utf8_copy(name, local_name, sizeof(local_name)) != 0) {
             free(sink); return BP_ERR_PARTIAL;
         }
         if (ctx->out_dir) path_join(path, sizeof(path), ctx->out_dir, local_name);
@@ -2216,7 +3019,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     {
         win_staged_file_t *staged = (win_staged_file_t *)out;
         FILE *fp = (FILE *)out->handle;
-        if (utf8_to_acp(name, local_name, sizeof(local_name)) != 0) {
+        if (win_utf8_copy(name, local_name, sizeof(local_name)) != 0) {
             fclose(fp); DeleteFileA(staged->temporary); free(staged);
             return BP_ERR_PARTIAL;
         }
@@ -2233,7 +3036,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
             bp_off_t seconds = bp_u64_to_off(entry->mtime);
             time_t t = (time_t)seconds;
             struct _stat64 st;
-            struct utimbuf ut;
+            struct _utimbuf ut;
             if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
                 (bp_off_t)t != seconds || _stat64(staged->temporary, &st) != 0) {
                 fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
@@ -2271,15 +3074,16 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
 
-    if (out_dir && out_dir[0]) {
-        mkdirs(out_dir);
-    }
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = 0;
     {
-        int rc = bp_archive_extract_all_ex(aio, extract_open, extract_done,
+        int rc = win_preflight_archive_paths(aio, &ctx);
+        if (rc == BP_OK && out_dir && out_dir[0] && mkdirs(out_dir) != 0)
+            rc = BP_ERR_IO;
+        if (rc == BP_OK)
+            rc = bp_archive_extract_all_ex(aio, extract_open, extract_done,
                                            NULL, &ctx);
         int dir_rc = win_finish_directory_attributes(&ctx,
                               rc == BP_OK || rc == BP_ERR_PARTIAL);
@@ -2304,7 +3108,7 @@ static void test_cb(const bp_entry_t *entry, int result, void *user_data)
 
     if (g_verbosity < VERB_SILENT) {
         char disp_name[BP_MAX_PATH];
-        if (utf8_to_acp(entry->name, disp_name, sizeof(disp_name)) != 0) {
+        if (win_utf8_copy(entry->name, disp_name, sizeof(disp_name)) != 0) {
             strncpy(disp_name, entry->name, BP_MAX_PATH - 1);
             disp_name[BP_MAX_PATH - 1] = '\0';
         }
@@ -2727,15 +3531,27 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
 
-    if (out_dir && !dry_run) {
-        mkdirs(out_dir);
-    }
-
     bp_io_from_file(&aio, fp);
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = dry_run;
+
+    rc = win_preflight_archive_paths(&aio, &ctx);
+    if (rc != BP_OK) {
+        fclose(fp);
+        win_path_free(ctx.projected_names);
+        fprintf(stderr, "boltpack: archive contains names that cannot be safely extracted: %s\n",
+                bp_strerror(rc));
+        return 1;
+    }
+    win_path_free(ctx.projected_names);
+    ctx.projected_names = NULL;
+    if (out_dir && !dry_run && mkdirs(out_dir) != 0) {
+        fclose(fp);
+        fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
+        return 1;
+    }
 
     start = wall_time_seconds();
 
@@ -3000,7 +3816,7 @@ static int cmd_delete(int argc, char **argv)
     if (!win_open_archive_snapshot(archive_name, &source_handle,
                                    &original_info)) {
         fprintf(stderr,
-                "boltpack: cannot use archive target (must be a regular, non-reparse, single-link file): %s\n",
+                "boltpack: cannot use archive target (must be a writable, regular, non-reparse, single-link file): %s\n",
                 archive_name);
         goto delete_cleanup_win;
     }
@@ -3071,7 +3887,8 @@ static int cmd_delete(int argc, char **argv)
     source_handle = INVALID_HANDLE_VALUE;
 
     if (!win_publish_archive_stage(archive_name, tmp_name, backup_name,
-                                   sizeof(backup_name))) {
+                                   sizeof(backup_name),
+                                   original_info.dwFileAttributes)) {
         fprintf(stderr, "boltpack: cannot publish deleted archive (error %lu)\n",
                 (unsigned long)GetLastError());
         goto delete_cleanup_win;
@@ -3140,7 +3957,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (!win_open_archive_snapshot(archive_name, &source_handle,
                                    &original_info)) {
         fprintf(stderr,
-                "boltpack: cannot use archive target (must be a regular, non-reparse, single-link file): %s\n",
+                "boltpack: cannot use archive target (must be a writable, regular, non-reparse, single-link file): %s\n",
                 archive_name);
         goto add_cleanup_win;
     }
@@ -3229,7 +4046,8 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     source_handle = INVALID_HANDLE_VALUE;
 
     if (!win_publish_archive_stage(archive_name, tmp_name, backup_name,
-                                   sizeof(backup_name))) {
+                                   sizeof(backup_name),
+                                   original_info.dwFileAttributes)) {
         fprintf(stderr, "boltpack: cannot publish appended archive (error %lu)\n",
                 (unsigned long)GetLastError());
         goto add_cleanup_win;
@@ -3265,12 +4083,17 @@ int main(int argc, char **argv)
     int interchange_profile = 0;
     int codec_given = 0;
     int i;
+    char **utf8_argv;
 
-    /* Match console output codepage to the ANSI codepage used by the
-     * C runtime for file names, so that non-ASCII characters (e.g.
-     * Swedish å ä ö) display correctly instead of being reinterpreted
-     * through the OEM codepage (CP850/CP437). */
-    SetConsoleOutputCP(GetACP());
+    (void)argv;
+    if (win_make_utf8_argv(&argc, &utf8_argv) != 0) {
+        fprintf(stderr, "boltpack: command line contains invalid Unicode\n");
+        return 1;
+    }
+    argv = utf8_argv;
+
+    /* Keep console path output in the same encoding used internally. */
+    SetConsoleOutputCP(CP_UTF8);
 
     if (argc < 2) {
         usage();
