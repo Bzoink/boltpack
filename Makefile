@@ -198,6 +198,11 @@ posix-dirfd-host-test: $(POSIX_DIRFD_HOST_BINS)
 	    python3 test/check_symlink_atomic.py --boltpack "$$binary" --cc "$(CC)"; \
 	done
 
+.PHONY: source-race-test
+source-race-test: modern
+	python3 test/check_source_race.py --boltpack build/linux/boltpack \
+	    --parallel-boltpack build/linux/boltpack
+
 hurd-host-test: $(POSIX_DIRFD_HOST_DIR)/hurd/boltpack
 	python3 test/check_extract_race.py --boltpack $<
 	python3 test/check_symlink_atomic.py --boltpack $< --cc "$(CC)"
@@ -240,6 +245,8 @@ $(TARGET): $(OBJS)
 
 $(BUILDDIR)/core/%.o: $(COREDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o $@ $<
+
+$(BUILDDIR)/core/bp_codepage.o: $(COREDIR)/bp_sjis_table.h
 
 # archiver.c uses OpenMP for both parallel Fluff and BoltLZ batch paths.
 $(BUILDDIR)/core/archiver.o: $(COREDIR)/archiver.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
@@ -395,11 +402,13 @@ WIN_RC     = $(WIN_SRCDIR)/boltpack.rc
 WIN_NET_CPPFLAGS = -DBOLTPACK_NET
 WIN_NET_LIBS     = -lws2_32 -liphlpapi
 WIN_FAST_FLUFF_CPPFLAGS = -DBOLTPACK_FAST_FLUFF
+# GCC appends its implicit OpenMP runtime after the source list; the final
+# linker state on each executable target must therefore also be static.
 WIN_FAST_FLUFF_LDFLAGS  = -fopenmp -static-libgcc -Wl,-Bstatic,-lgomp,-lwinpthread -Wl,-Bdynamic
 WIN_FAST_FLUFF_CFLAGS   = -Wall -Wextra -Wno-unused-function -O3 -std=c11 \
 	$(WIN_FAST_FLUFF_CPPFLAGS) $(WIN_FAST_FLUFF_LDFLAGS) -I$(COREDIR)
 
-.PHONY: win32 win64 win32-wcx win64-wcx win32-config win64-config win32-exe win64-exe
+.PHONY: win32 win64 win32-wcx win64-wcx win64-wcx-wine-test win32-config win64-config win32-exe win64-exe
 .PHONY: win32-totalcmd-plugin win64-totalcmd-plugin
 
 win32: win32-wcx win32-config win32-exe
@@ -433,6 +442,18 @@ win64-wcx:
 	    -shared -Wl,--kill-at \
 	    -o $(WIN64_BUILDDIR)/boltpack.wcx64
 	@echo "  OK    $(WIN64_BUILDDIR)/boltpack.wcx64"
+
+# Exercise the exported UTF-16 WCX API with a plugin-host-shaped caller under Wine.
+WINE ?= wine64
+.PHONY: win64-wcx-wine-test
+win64-wcx-wine-test: win64-wcx all
+	mkdir -p $(WIN64_BUILDDIR)
+	x86_64-w64-mingw32-gcc -Wall -Wextra -Wno-cast-function-type -municode \
+	    test/wcx_unicode_wine.c -o $(WIN64_BUILDDIR)/wcx_unicode_wine.exe
+	python3 test/check_wcx_unicode_wine.py --wine "$(WINE)" \
+	    --runner $(WIN64_BUILDDIR)/wcx_unicode_wine.exe \
+	    --wcx $(WIN64_BUILDDIR)/boltpack.wcx64 \
+	    --linux-boltpack build/linux/boltpack
 
 win32-config:
 	mkdir -p $(WIN32_BUILDDIR)
@@ -472,6 +493,8 @@ win32-exe:
 	    $(WIN32_BUILDDIR)/zstd.o $(WIN32_BUILDDIR)/zstd_wrap.o \
 	    $(WIN32_BUILDDIR)/boltpack-res.o \
 	    $(WIN_NET_LIBS) \
+	    -lshell32 \
+	    -Wl,-Bstatic \
 	    -o $(WIN32_BUILDDIR)/boltpack.exe
 	@echo "  OK    $(WIN32_BUILDDIR)/boltpack.exe"
 
@@ -491,6 +514,8 @@ win64-exe:
 	    $(WIN64_BUILDDIR)/zstd.o $(WIN64_BUILDDIR)/zstd_wrap.o \
 	    $(WIN64_BUILDDIR)/boltpack-res.o \
 	    $(WIN_NET_LIBS) \
+	    -lshell32 \
+	    -Wl,-Bstatic \
 	    -o $(WIN64_BUILDDIR)/boltpack.exe
 	@echo "  OK    $(WIN64_BUILDDIR)/boltpack.exe"
 
@@ -588,8 +613,11 @@ ATARI_CC       = m68k-atari-mint-gcc
 ATARI_CFLAGS   = -ansi -Wall -Wextra -Wno-unused-function -O2
 ATARI_BUILDDIR = build/atari
 ATARI_PATH_TEST_BIN = build/atari-path-test/test_atari_path
+HATARI ?= hatari
+HCONSOLE ?= /usr/share/hatari/hconsole/hconsole.py
+HATARI_TOS ?=
 
-.PHONY: atari atari-cli atari-path-test
+.PHONY: atari atari-cli atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -613,6 +641,23 @@ atari-cli:
 	    -o $(ATARI_BUILDDIR)/boltpack.tos
 	@echo "  OK    $(ATARI_BUILDDIR)/boltpack.tos"
 
+# Run the Atari/Linux FAT12 guest transfer fixture. Supply the TOS ROM path,
+# for example: make atari-hatari-fat-test HATARI_TOS=~/images/Atari/tos162se.img
+atari-hatari-fat-test: all atari-cli
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	python3 test/check_hatari_fat.py --hatari "$(HATARI)" \
+	    --hconsole "$(HCONSOLE)" --tos "$(HATARI_TOS)" \
+	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET)
+
+atari-amiga-interoperability-test: modern atari-cli amiga68k
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	python3 test/check_atari_amiga.py --hatari "$(HATARI)" \
+	    --hconsole "$(HCONSOLE)" --tos "$(HATARI_TOS)" \
+	    --rom "$(AMIGA_ROM)" --workbench "$(AMIGA_WORKBENCH)" \
+	    --fs-uae "$(FSUAE_BIN)" --xdftool "$(XDFTOOL)" \
+	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos \
+	    --amiga-cli build/amiga/boltpack --linux-cli $(TARGET)
+
 # Classic Mac OS 68k -- cross-compile from Linux using Retro68 (GCC 12).
 # Install: https://github.com/autc04/Retro68
 # -pedantic omitted: classic Mac Universal Headers are not strict C89.
@@ -633,14 +678,20 @@ MACOS68K_REZ      = $(RETRO68_ROOT)/bin/Rez
 MACOS68K_RINCLUDES = $(RETRO68_ROOT)/RIncludes
 MACOS68K_MULTIVERSAL_RINCLUDES = $(RETRO68_ROOT)/multiversal/RIncludes
 
-.PHONY: macos9-68k
-macos9-68k:
+.PHONY: macos9-core-sync-test macos9-68k
+macos9-core-sync-test:
+	python3 scripts/check_macos9_core_sync.py
+
+macos9-68k: macos9-core-sync-test
 	mkdir -p $(MACOS68K_BUILDDIR)
-	@if ! printf 'int main(void){return 0;}\n' | $(MACOS68K_ENV) $(MACOS68K_CC) -x c -o /dev/null - >/dev/null 2>&1; then \
+	@smoke='$(MACOS68K_BUILDDIR)/.link-smoke'; \
+	if ! printf 'int main(void){return 0;}\n' | $(MACOS68K_ENV) $(MACOS68K_CC) -x c -o "$$smoke" - >/dev/null 2>&1; then \
 	    rm -f $(MACOS68K_BUILDDIR)/.rsrc/BoltPack; \
+	    rm -f "$$smoke" "$$smoke.gdb"; \
 	    echo '  SKIP  macos9-68k (Retro68 compiler cannot link a test program)'; \
 	    exit 0; \
 	fi
+	rm -f '$(MACOS68K_BUILDDIR)/.link-smoke' '$(MACOS68K_BUILDDIR)/.link-smoke.gdb'
 	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
@@ -659,6 +710,12 @@ macos9-68k:
 	    $(MACOS68K_BUILDDIR)/.rsrc/boltpack_gui.rsrc \
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack
 	@echo "  OK    $(MACOS68K_BUILDDIR)/BoltPack"
+
+.PHONY: macos9-68k-kit
+macos9-68k-kit:
+	$(MAKE) CC=$(CC) COREDIR=$(MACOS68K_FRONTEND) \
+	    BOLTLZDIR=$(MACOS68K_FRONTEND) \
+	    MACOS68K_BUILDDIR=build/macos9-68k-kit macos9-68k
 
 # macOS (via OSXCross arm64-apple-macosx11-clang)
 MACOSX_CC      = arm64-apple-macosx11-clang
@@ -711,7 +768,8 @@ haiku:
 
 # RISC OS (ARM via GCCSDK)
 RISCOS_CC      = arm-unknown-riscos-gcc
-RISCOS_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+RISCOS_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	-DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32
 RISCOS_BUILDDIR = build/riscos
 
 .PHONY: riscos
@@ -1043,22 +1101,47 @@ os2-watcom:
 
 # Sinclair QL (QDOS / SMSQ/E)
 QL_CC ?= qcc
-QL_CFLAGS=-O
+QL_CFLAGS=-O -DBP_CREATOR_OS=BP_OS_QL -DBP_CREATOR_CPU=BP_CPU_M68K
 QL_BUILDDIR=build/ql
+QL_CC_EXEC=$(shell command -v $(firstword $(QL_CC)) 2>/dev/null)
+QL_CC_DIR=$(patsubst %/,%,$(dir $(QL_CC_EXEC)))
 
-.PHONY: ql ql-host-test
+.PHONY: ql ql-host-test ql-path-test ql-time-host-test
 ql:
-	$(call check_cc,$(QL_CC),ql)
+	@if [ -z "$(QL_CC_EXEC)" ]; then
+	    echo "  SKIP  ql ($(firstword $(QL_CC)) not found)"
+	    exit 0
+	fi
 	mkdir -p $(QL_BUILDDIR)
-	cd src/frontend/ql && $(QL_CC) $(QL_CFLAGS) \
+	printf 'int main(void){return 0;}\n' > $(QL_BUILDDIR)/cc_probe.c
+	if ! PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) -o $(QL_BUILDDIR)/cc_probe $(QL_BUILDDIR)/cc_probe.c >/dev/null 2>&1; then
+	    echo "  SKIP  ql ($(firstword $(QL_CC)) cannot link with its QDOS runtime)"
+	    rm -f $(QL_BUILDDIR)/cc_probe.c $(QL_BUILDDIR)/cc_probe
+	    exit 0
+	fi
+	rm -f $(QL_BUILDDIR)/cc_probe.c $(QL_BUILDDIR)/cc_probe
+	rm -f $(QL_BUILDDIR)/boltpack
+	cd src/frontend/ql
+	if ! PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) $(QL_CFLAGS) \
 	    -I../../core -I../../../$(BOLTLZDIR) \
 	    ../../core/archiver.c \
 	    ../../core/compress.c \
+	    ../../core/boltlite.c \
 	    ../../core/fluff.c \
 	    ../../core/bp_codepage.c \
 	    main.c \
 	    ../../../$(BOLTLZDIR)/boltlz.c \
-	    -o ../../../$(QL_BUILDDIR)/boltpack
+	    -o ../../../$(QL_BUILDDIR)/boltpack > ../../../$(QL_BUILDDIR)/qcc.log 2>&1; then \
+	    cat ../../../$(QL_BUILDDIR)/qcc.log; \
+	    exit 1; \
+	fi
+	cat ../../../$(QL_BUILDDIR)/qcc.log
+	@if grep -q 'Undefined Symbols:' ../../../$(QL_BUILDDIR)/qcc.log; then \
+	    rm -f ../../../$(QL_BUILDDIR)/boltpack; \
+	    echo "  ERROR ql unresolved symbols reported by $(firstword $(QL_CC))"; \
+	    exit 1; \
+	fi
+	test -s ../../../$(QL_BUILDDIR)/boltpack
 
 # Host-build the ANSI-C QL frontend to exercise profile wiring and archive
 # interoperability when the QDOS cross-compiler/runtime is unavailable.
@@ -1067,17 +1150,49 @@ QL_HOST_BIN = $(QL_HOST_DIR)/boltpack
 ql-host-test:
 	mkdir -p $(QL_HOST_DIR)
 	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_CREATOR_OS=BP_OS_QL -DBP_CREATOR_CPU=BP_CPU_M68K \
+	    -DBP_QL_HOST_TEST \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -Isrc/core src/core/archiver.c src/core/compress.c \
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/ql/main.c src/core/boltlz.c -o $(QL_HOST_BIN)
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -Isrc/core test/ql_host/create_collision_archive.c src/core/archiver.c \
+	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
+	    src/core/bp_codepage.c src/core/boltlz.c \
+	    -o $(QL_HOST_DIR)/create_collision_archive
 	$(MAKE) CC=$(CC) all linuxmini
-	python3 test/check_ql_profile.py $(QL_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
+	python3 test/check_ql_profile.py $(QL_HOST_BIN) build/linux/boltpack \
+	    build/linux32mini/bpmini $(QL_HOST_DIR)/create_collision_archive
+
+# Run the native QDOS binary in sQLux and transfer files to/from Linux.
+# Set QL_SQLUX and QL_ROM to the emulator and its Minerva ROM paths.
+QL_SQLUX ?= build/ql-sdk/sqlux-build3/sqlux
+QL_ROM ?= build/ql-sdk/source/sqlux/roms/Minerva_1.98a1.bin
+ql-sqlux-interoperability-test: ql all linuxmini
+	python3 test/check_sqlux_interop.py --sqlux "$(QL_SQLUX)" \
+	    --rom "$(QL_ROM)" --ql-binary build/ql/boltpack \
+	    --linux-binary build/linux/boltpack \
+	    --mini-binary build/linux32mini/bpmini
+
+ql-path-test:
+	mkdir -p build/ql-path-test
+	$(CC) -std=c89 -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_ql_path.c -o build/ql-path-test/test_ql_path
+	build/ql-path-test/test_ql_path
+
+ql-time-host-test:
+	mkdir -p build/ql-time-host-test
+	$(CC) -std=c89 -pedantic -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_ql_time.c -o build/ql-time-host-test/test_ql_time
+	build/ql-time-host-test/test_ql_time
 
 # Sharp X68000 (Human68k)
 # Toolchain: m68k-x680x-human-gcc (GCC cross-compiler for Human68k).
 X68K_CC ?= m68k-x680x-human-gcc
-X68K_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+X68K_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	-DBP_CREATOR_OS=BP_OS_X68K -DBP_CREATOR_CPU=BP_CPU_M68K
 X68K_BUILDDIR=build/x68k
 
 .PHONY: x68k x68k-host-test
@@ -1102,13 +1217,19 @@ X68K_HOST_BIN = $(X68K_HOST_DIR)/boltpack
 x68k-host-test:
 	mkdir -p $(X68K_HOST_DIR)
 	$(CC) -D_DEFAULT_SOURCE -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DX68K_HOST_TEST \
+	    -DBP_CREATOR_OS=BP_OS_X68K -DBP_CREATOR_CPU=BP_CPU_M68K \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -Itest/x68k_host -Isrc/core src/core/archiver.c src/core/compress.c \
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/x68k/main.c test/x68k_host/dos_stub.c src/core/boltlz.c \
 	    -o $(X68K_HOST_BIN)
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Isrc/core \
+	    test/x68k_host/create_collision_archive.c src/core/archiver.c \
+	    src/core/compress.c src/core/boltlite.c src/core/boltlz.c \
+	    src/core/fluff.c -o $(X68K_HOST_DIR)/create_collision_archive
 	$(MAKE) CC=$(CC) all linuxmini
-	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
+	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini test/reference/interoperability/x68k-host-shim.json $(X68K_HOST_DIR)/create_collision_archive
 
 # Build the Plan 9 frontend against host shims for profile CLI testing. The
 # Plan 9 native compiler and filesystem runtime are qualified separately.
@@ -1117,6 +1238,15 @@ PLAN9_HOST_BIN = $(PLAN9_HOST_DIR)/boltpack
 .PHONY: plan9-host-test
 plan9-host-test:
 	mkdir -p $(PLAN9_HOST_DIR)
+	$(CC) -std=gnu89 -Wall -Wextra -Wno-unused-function -O2 -Isrc/core \
+	    test/plan9_host/test_path_index.c -o $(PLAN9_HOST_DIR)/test_path_index
+	$(PLAN9_HOST_DIR)/test_path_index
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -Isrc/core test/plan9_host/create_collision_archive.c \
+	    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+	    src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c \
+	    -o $(PLAN9_HOST_DIR)/create_collision_archive
 	$(CC) -D_DEFAULT_SOURCE -std=gnu89 -Wno-main -Wall -Wextra \
 	    -Wno-unused-function -O2 \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
@@ -1125,8 +1255,77 @@ plan9-host-test:
 	    src/frontend/plan9/main.c test/plan9_host/plan9_stubs.c src/core/boltlz.c \
 	    -o $(PLAN9_HOST_BIN)
 	$(MAKE) CC=$(CC) all linuxmini
-	python3 test/check_plan9_profile.py $(PLAN9_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini
+	python3 test/check_plan9_profile.py $(PLAN9_HOST_BIN) build/linux/boltpack \
+	    build/linux32mini/bpmini $(PLAN9_HOST_DIR)/create_collision_archive \
+	    test/reference/interoperability/plan9-host.json
 
+.PHONY: haiku-host-stage-test
+haiku-host-stage-test: modern
+	python3 test/check_haiku_host.py --cc "$(CC)" \
+	    --linux-boltpack build/linux/boltpack
+
+.PHONY: haiku-gui-extract-host-test
+haiku-gui-extract-host-test:
+	mkdir -p build/haiku-gui-extract-test
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/archiver.c -o build/haiku-gui-extract-test/archiver.o
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/compress.c -o build/haiku-gui-extract-test/compress.o
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/boltlite.c -o build/haiku-gui-extract-test/boltlite.o
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/fluff.c -o build/haiku-gui-extract-test/fluff.o
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/bp_codepage.c -o build/haiku-gui-extract-test/bp_codepage.o
+	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
+	    -Isrc/core -c src/core/boltlz.c -o build/haiku-gui-extract-test/boltlz.o
+	$(CXX) -std=c++11 -D_DEFAULT_SOURCE -Wall -Wextra \
+	    -Wno-unused-function -ffunction-sections -fdata-sections \
+	    -Isrc/core test/unit/test_haiku_gui_extract_helpers.cpp \
+	    build/haiku-gui-extract-test/archiver.o \
+	    build/haiku-gui-extract-test/compress.o \
+	    build/haiku-gui-extract-test/boltlite.o \
+	    build/haiku-gui-extract-test/fluff.o \
+	    build/haiku-gui-extract-test/bp_codepage.o \
+	    build/haiku-gui-extract-test/boltlz.o -Wl,--gc-sections -lm \
+	    -o build/haiku-gui-extract-test/test
+	build/haiku-gui-extract-test/test
+
+.PHONY: riscos-path-test
+riscos-path-test:
+	mkdir -p build/riscos-path-test
+	$(CC) -std=c89 -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_riscos_path.c src/core/bp_codepage.c \
+	    -o build/riscos-path-test/test
+	build/riscos-path-test/test
+
+.PHONY: riscos-stage-host-test
+riscos-stage-host-test:
+	mkdir -p build/riscos-stage-test
+	$(CC) -m32 -D_DEFAULT_SOURCE -std=c89 -Wall -Wextra \
+	    -Wno-unused-function -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) \
+	    -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) -Itest/riscos_host -Isrc/core \
+	    test/unit/test_riscos_staged_extract.c src/core/archiver.c \
+	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
+	    src/core/bp_codepage.c src/core/boltlz.c -lm \
+	    -o build/riscos-stage-test/test
+	build/riscos-stage-test/test
+
+.PHONY: riscos-profile-host-test
+riscos-profile-host-test: modern linuxmini
+	mkdir -p build/riscos-profile-test
+	$(CC) -m32 -D_DEFAULT_SOURCE -std=c89 -Wall -Wextra \
+	    -Wno-unused-function -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) \
+	    -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
+	    -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32 \
+	    -Itest/riscos_host -Isrc/core test/riscos_host/profile_fixture.c \
+	    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+	    src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c -lm \
+	    -o build/riscos-profile-test/boltpack-riscos-host
+	python3 test/check_riscos_profile.py \
+	    --riscos-host build/riscos-profile-test/boltpack-riscos-host \
+	    --linux-boltpack build/linux/boltpack \
+	    --mini-boltpack build/linux32mini/bpmini
 
 
 # GNU Hurd (x86 / x86-64). Use a Hurd-targeting cross compiler, never the
@@ -1222,7 +1421,7 @@ asan: $(ASAN_TARGET)
 # Optional cross-runtime checks for environments with QEMU-i386, Open Watcom,
 # and DOSBox. These complement the host suite without making those tools
 # mandatory for every `make test` run.
-.PHONY: linuxmini-interoperability-test dos16-interoperability-test
+.PHONY: linuxmini-interoperability-test dos16-interoperability-test dos16-stack-interoperability-test dosboxx-fat12-interoperability-test dosboxx-fat12-cp850-interoperability-test freedos-cp850-interoperability-test dos-djgpp-dosboxx-fat12-test
 linuxmini-interoperability-test: modern linuxmini
 	BP_TEST_LINUXMINI_RUNNER=qemu-i386 python3 test/check_linuxmini_interop.py
 	python3 test/check_extract_race.py --boltpack build/linux/boltpack
@@ -1230,9 +1429,154 @@ linuxmini-interoperability-test: modern linuxmini
 	    --boltpack $(LINUXMINI_EXE) --mini
 
 dos16-interoperability-test: modern dos16 unit-test-dos16
+	$(BUILDDIR)/boltpack t build/unit-test-dos16/LIMIT.BLT
 	python3 test/check_dos16_interop.py
 
-.PHONY: amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
+dos16-stack-interoperability-test: modern dos16-stack-probe
+	BP_DOS16_EXE="$(CURDIR)/$(DOS16_STACK_EXE)" BP_DOS16_STACK_REPORT=1 \
+	    BP_DOS16_STACK_REPORT_FILE="$(CURDIR)/$(DOS16_STACK_BDIR)/resource-low-water.txt" \
+	    python3 test/check_dos16_interop.py
+
+dosboxx-fat12-interoperability-test: modern dos16
+	python3 test/check_dosboxx_cp437.py
+
+dosboxx-fat12-cp850-interoperability-test: modern dos16-cp850
+	python3 test/check_dosboxx_cp850.py
+
+# Set the boot image and the MODE.COM, DISPLAY.EXE, and EGA.CPX files from the
+# FreeDOS floppy/base packages to qualify lowercase CP850 names on DOS.
+FREEDOS_BOOT_IMAGE ?=
+FREEDOS_MODE ?=
+FREEDOS_DISPLAY ?=
+FREEDOS_EGA_CPX ?=
+.PHONY: freedos-cp850-interoperability-test
+freedos-cp850-interoperability-test: modern dos16-cp850
+	@test -f "$(FREEDOS_BOOT_IMAGE)" -a -f "$(FREEDOS_MODE)" -a \
+	    -f "$(FREEDOS_DISPLAY)" -a -f "$(FREEDOS_EGA_CPX)" || { \
+	    echo "Set FREEDOS_BOOT_IMAGE, FREEDOS_MODE, FREEDOS_DISPLAY, and FREEDOS_EGA_CPX" >&2; exit 2; }
+	python3 test/check_freedos_cp850.py --boot-image "$(FREEDOS_BOOT_IMAGE)" \
+	    --mode "$(FREEDOS_MODE)" --display "$(FREEDOS_DISPLAY)" \
+	    --cpx "$(FREEDOS_EGA_CPX)"
+
+# Set CWSDPMI to CWSDPMI.EXE from the DJGPP csdpmi package to qualify the
+# full 32-bit DOS frontend under DOSBox-X, independently from the DOS16 mini.
+dos-djgpp-dosboxx-fat12-test: modern dos-djgpp
+	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
+	python3 test/check_djgpp_dosboxx.py --cwsdpmi "$(CWSDPMI)" \
+	    --dos-cc "$(DOS_CC)"
+
+AMIGA_ROM ?= $(HOME)/images/Amiga/kickstart-2.04-a500plus.rom
+AMIGA_WORKBENCH ?= $(HOME)/images/Amiga/Workbench-2.04/1-Workbench.adf
+FSUAE_BIN ?= fs-uae
+XDFTOOL ?= xdftool
+AMIGA_INTERRUPT_SIZE_MIB ?= 64
+AMIGA_PUBLISH_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-publish-failure
+AMIGA_PUBLISH_PAUSE_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-publish-pause
+AMIGA_NATIVE_PUBLISH_PAUSE_BIN = $(AMIGA68K_BUILDDIR)/boltpack-native-publish-pause
+AMIGA_SOURCE_PAUSE_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-source-pause
+
+.PHONY: amiga68k-publish-failure-test amiga68k-publish-pause-test amiga68k-native-publish-pause-test amiga68k-source-pause-test fsuae-interruption-test fsuae-publish-rollback-test fsuae-publish-interruption-test fsuae-native-publish-recovery-test fsuae-native-interoperability-test fsuae-source-race-test
+amiga68k-publish-failure-test:
+	mkdir -p $(AMIGA68K_BUILDDIR)
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_FAIL_PUBLISH \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
+	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PUBLISH_TEST_BIN)
+	@echo "  OK    $(AMIGA_PUBLISH_TEST_BIN)"
+
+amiga68k-publish-pause-test:
+	mkdir -p $(AMIGA68K_BUILDDIR)
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_BACKUP \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
+	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PUBLISH_PAUSE_TEST_BIN)
+	@echo "  OK    $(AMIGA_PUBLISH_PAUSE_TEST_BIN)"
+
+amiga68k-native-publish-pause-test:
+	mkdir -p $(AMIGA68K_BUILDDIR)
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_BACKUP \
+	    -DBP_TEST_PAUSE_MARKER \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
+	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)
+	@echo "  OK    $(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)"
+
+amiga68k-source-pause-test:
+	mkdir -p $(AMIGA68K_BUILDDIR)
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_SOURCE_OPEN \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
+	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_SOURCE_PAUSE_TEST_BIN)
+	@echo "  OK    $(AMIGA_SOURCE_PAUSE_TEST_BIN)"
+
+fsuae-source-race-test: modern amiga68k-source-pause-test
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib 64 --operation source-replace \
+	    --amiga-cli "$(AMIGA_SOURCE_PAUSE_TEST_BIN)"
+
+fsuae-interruption-test: modern amiga68k
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib "$(AMIGA_INTERRUPT_SIZE_MIB)" \
+	    --operation extract
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib "$(AMIGA_INTERRUPT_SIZE_MIB)" \
+	    --operation append
+
+fsuae-publish-rollback-test: modern amiga68k-publish-failure-test
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib "$(AMIGA_INTERRUPT_SIZE_MIB)" \
+	    --amiga-cli "$(AMIGA_PUBLISH_TEST_BIN)" --operation publish-failure
+
+fsuae-publish-interruption-test: modern amiga68k-publish-pause-test amiga68k
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib "$(AMIGA_INTERRUPT_SIZE_MIB)" \
+	    --amiga-cli "$(AMIGA_PUBLISH_PAUSE_TEST_BIN)" \
+	    --recovery-cli "build/amiga/boltpack" --operation publish-interrupt
+
+fsuae-native-publish-recovery-test: modern amiga68k-native-publish-pause-test amiga68k
+	python3 test/check_fsuae_native_recovery.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --pause-cli "$(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)" \
+	    --recovery-cli "build/amiga/boltpack" --filesystem ofs
+	python3 test/check_fsuae_native_recovery.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --pause-cli "$(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)" \
+	    --recovery-cli "build/amiga/boltpack" --filesystem ffs
+
+fsuae-native-interoperability-test: modern amiga68k
+	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --filesystem ofs --skip-codecs --depth 4 --stack 0
+	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --filesystem ffs --skip-codecs --depth 4 --stack 0
+
+.PHONY: amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
+amiga-meta-host-test:
+	mkdir -p build/amiga-meta-test
+	$(CC) -std=c89 -pedantic -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_meta.c -o build/amiga-meta-test/test
+	build/amiga-meta-test/test
+
+amiga-gui-dirs-host-test:
+	mkdir -p build/amiga-gui-dirs-test
+	$(CC) -std=c89 -pedantic -Wall -Wextra -Wno-unused-function \
+	    test/unit/test_amiga_gui_dirs.c -o build/amiga-gui-dirs-test/test
+	build/amiga-gui-dirs-test/test
+
 amiga-gui-stage-host-test:
 	mkdir -p build/amiga-gui-stage-test
 	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-function \
@@ -1259,11 +1603,21 @@ amiga-gui-name-index-host-test:
 	    -o build/amiga-gui-name-index-test/test
 	build/amiga-gui-name-index-test/test
 
+.PHONY: os2-publish-host-test
+os2-publish-host-test:
+	mkdir -p build/os2-publish-host-test
+	$(CC) -std=c89 -pedantic -Wall -Wextra -Wno-unused-function -Isrc/core \
+	    test/unit/test_os2_publish.c -o build/os2-publish-host-test/test
+	build/os2-publish-host-test/test
+
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp posix-dirfd-host-test atari-path-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
+	@echo "=== source identity and mutation ==="
+	python3 test/check_source_race.py --boltpack build/linux/boltpack \
+	    --parallel-boltpack build/linux/boltpack
 	@echo "=== symlink timestamp and publication ==="
 	python3 test/check_symlink_atomic.py --boltpack build/linux/boltpack --cc "$(CC)"
 	@echo "=== legacy CLI profile interoperability ==="
@@ -1437,10 +1791,14 @@ linuxmini:
 	@echo "  OK    $(LINUXMINI_EXE)"
 
 # ---- dos16: Open Watcom, 16-bit DOS compact model -----------------------
-DOS16_CORE  = -bt=dos -mc -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_DOS
-DOS16_FRONT = -bt=dos -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_DOS
+DOS16_CODEPAGE_FLAGS ?=
+DOS16_CORE  = -bt=dos -mc -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS)
+DOS16_FRONT = -bt=dos -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS)
 DOS16_BDIR   = build/dos16
 DOS16_EXE    = $(DOS16_BDIR)/bpmini.exe
+DOS16_STACK_BDIR = build/dos16-stack
+DOS16_STACK_EXE = $(DOS16_STACK_BDIR)/bpmini.exe
+DOS16_STACK_BYTES ?= 8192
 
 .PHONY: dos16
 dos16:
@@ -1453,6 +1811,8 @@ dos16:
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/main.obj       src/frontend/dos16/main.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
+	    option stack=$(DOS16_STACK_BYTES) \
+	    option map=$(DOS16_BDIR)/bpmini.map \
 	    file {$(DOS16_BDIR)/archiver.obj} \
 	    file {$(DOS16_BDIR)/compress.obj} \
 	    file {$(DOS16_BDIR)/boltlite.obj} \
@@ -1462,6 +1822,41 @@ dos16:
 	    file {$(DOS16_BDIR)/main.obj} \
 	    name $(DOS16_EXE)
 	@echo "  OK    $(DOS16_EXE)"
+
+.PHONY: dos16-stack-probe
+dos16-stack-probe:
+	mkdir -p $(DOS16_STACK_BDIR)
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/archiver.obj $(MINI_COREDIR)/archiver.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/compress.obj $(MINI_COREDIR)/compress.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/main.obj src/frontend/dos16/main.c
+	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
+	    option stack=$(DOS16_STACK_BYTES) \
+	    option map=$(DOS16_STACK_BDIR)/bpmini.map \
+	    file {$(DOS16_STACK_BDIR)/archiver.obj} \
+	    file {$(DOS16_STACK_BDIR)/compress.obj} \
+	    file {$(DOS16_STACK_BDIR)/boltlite.obj} \
+	    file {$(DOS16_STACK_BDIR)/boltlz_decomp.obj} \
+	    file {$(DOS16_STACK_BDIR)/mini_common.obj} \
+	    file {$(DOS16_STACK_BDIR)/bp_codepage.obj} \
+	    file {$(DOS16_STACK_BDIR)/main.obj} \
+	    name $(DOS16_STACK_EXE)
+	@echo "  OK    $(DOS16_STACK_EXE)"
+
+.PHONY: dos16-cp850
+dos16-cp850:
+	$(MAKE) dos16 DOS16_BDIR=build/dos16-cp850 DOS16_EXE=build/dos16-cp850/bpmini.exe \
+	    DOS16_CODEPAGE_FLAGS=-DBP_MINI_CODEPAGE=BP_CP_850
 
 # ---- win16: Open Watcom, 16-bit Windows 3.x compact model ---------------
 # The format-6 validator and metadata support exceed a single 64 KiB code
@@ -1481,7 +1876,10 @@ win16:
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/main.obj       src/frontend/win16/main.c
+	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) \
+	    -fo=$(WIN16_BDIR)/resource_layout.obj test/unit/mini_test_resource16.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system windows option eliminate \
+	    option map=$(WIN16_BDIR)/bpmini.map \
 	    file {$(WIN16_BDIR)/archiver.obj} \
 	    file {$(WIN16_BDIR)/compress.obj} \
 	    file {$(WIN16_BDIR)/boltlite.obj} \
@@ -1510,7 +1908,10 @@ os2-16:
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/main.obj       src/frontend/os2_16/main.c
+	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) \
+	    -fo=$(OS2_16_BDIR)/resource_layout.obj test/unit/mini_test_resource16.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system os2 option eliminate \
+	    option map=$(OS2_16_BDIR)/bpmini.map \
 	    file {$(OS2_16_BDIR)/archiver.obj} \
 	    file {$(OS2_16_BDIR)/compress.obj} \
 	    file {$(OS2_16_BDIR)/boltlite.obj} \
@@ -1619,6 +2020,28 @@ linux-gui:
 	    $(GUI_FAST_FLUFF_LDFLAGS) \
 	    -o $(LINUX_GUI_BUILDDIR)/boltpack-gui
 	@echo "  OK    $(LINUX_GUI_BUILDDIR)/boltpack-gui"
+
+.PHONY: linux-gui-interoperability-test
+LINUX_GUI_PREFIX_FIXTURE = $(LINUX_GUI_BUILDDIR)/prefix-conflict-fixture
+$(LINUX_GUI_PREFIX_FIXTURE): test/haiku_name_conflict_fixture.c \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+	mkdir -p $(LINUX_GUI_BUILDDIR)
+	$(CC) -std=c89 -Wall -Wextra -Wno-unused-function \
+	    -I$(COREDIR) test/haiku_name_conflict_fixture.c \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c -lm -o $@
+
+linux-gui-interoperability-test: modern linuxmini linux-gui $(LINUX_GUI_PREFIX_FIXTURE)
+	python3 test/check_linux_gui_interop.py \
+	    --gui $(LINUX_GUI_BUILDDIR)/boltpack-gui \
+	    --cli build/linux/boltpack --mini $(LINUXMINI_EXE) \
+	    --mini-runner qemu-i386 --prefix-fixture $(LINUX_GUI_PREFIX_FIXTURE)
+
+.PHONY: linux-cli-extract-failure-test
+linux-cli-extract-failure-test: modern
+	python3 test/check_linux_extract_failures.py --boltpack build/linux/boltpack
 
 # ---- Install Linux GUI to desktop (XDG / freedesktop.org) ----
 # Usage: sudo make install-linux-gui
@@ -2219,6 +2642,7 @@ $(UNIT_BUILD_DIR)/test_compress_asan: \
 $(UNIT_BUILD_DIR)/test_codepage: \
     $(UNIT_TEST_DIR)/test_codepage.c \
     $(COREDIR)/bp_codepage.c \
+    $(COREDIR)/bp_sjis_table.h \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_codepage.c \
@@ -2227,6 +2651,7 @@ $(UNIT_BUILD_DIR)/test_codepage: \
 $(UNIT_BUILD_DIR)/test_codepage_asan: \
     $(UNIT_TEST_DIR)/test_codepage.c \
     $(COREDIR)/bp_codepage.c \
+    $(COREDIR)/bp_sjis_table.h \
     | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ \
 	    $(UNIT_TEST_DIR)/test_codepage.c \
@@ -2332,10 +2757,16 @@ UNIT_DOS16_BDIR = build/unit-test-dos16
 UNIT_DOS16_EXE  = $(UNIT_DOS16_BDIR)/minitst.exe
 UNIT_DOS16_CODEPAGE_EXE = $(UNIT_DOS16_BDIR)/minicp.exe
 UNIT_DOS16_CP850_EXE = $(UNIT_DOS16_BDIR)/minicp85.exe
+UNIT_DOS16_RESOURCE_EXE = $(UNIT_DOS16_BDIR)/minires.exe
+UNIT_DOS16_ALLOC_EXE = $(UNIT_DOS16_BDIR)/miniallo.exe
+UNIT_DOS16_ALLOC_CLI_EXE = $(UNIT_DOS16_BDIR)/miniacli.exe
+UNIT_DOS16_ALLOC_DIR = $(UNIT_DOS16_BDIR)/alloc
+UNIT_DOS16_ALLOC_FLAGS = -Dmalloc=bp_test_malloc -Dcalloc=bp_test_calloc \
+	-Drealloc=bp_test_realloc -Dfree=bp_test_free
 
 .PHONY: unit-build-dos16 unit-test-dos16
 
-unit-build-dos16:
+unit-build-dos16: dos16
 	mkdir -p $(UNIT_DOS16_BDIR)
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_ENABLE_ADLER32 \
 	    -i=$(WATCOM_ROOT)/h -i=$(COREDIR) -i=$(UNIT_TEST_DIR) \
@@ -2395,19 +2826,100 @@ unit-build-dos16:
 	    libpath $(WATCOM_ROOT)/lib286/dos \
 	    library clibc \
 	    name $(UNIT_DOS16_CP850_EXE)
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_BDIR)/mini_resource16.obj \
+	    test/unit/mini_test_resource16.c
+	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
+	    system dos option eliminate \
+	    file $(DOS16_BDIR)/archiver.obj \
+	    file $(DOS16_BDIR)/compress.obj \
+	    file $(DOS16_BDIR)/boltlite.obj \
+	    file $(DOS16_BDIR)/boltlz_decomp.obj \
+	    file $(DOS16_BDIR)/mini_common.obj \
+	    file $(DOS16_BDIR)/bp_codepage.obj \
+	    file $(UNIT_DOS16_BDIR)/mini_resource16.obj \
+	    name $(UNIT_DOS16_RESOURCE_EXE)
+	mkdir -p $(UNIT_DOS16_ALLOC_DIR)
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/archiver.obj $(MINI_COREDIR)/archiver.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/compress.obj $(MINI_COREDIR)/compress.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/boltlite.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(UNIT_DOS16_ALLOC_FLAGS) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/mini_test_alloc_fail.obj \
+	    test/unit/mini_test_alloc_fail.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/mini_test_allocator.obj \
+	    test/unit/mini_test_allocator.c
+	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
+	    system dos option eliminate \
+	    file $(UNIT_DOS16_ALLOC_DIR)/archiver.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/compress.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/boltlite.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/boltlz_decomp.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/mini_common.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/bp_codepage.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/mini_test_alloc_fail.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/mini_test_allocator.obj \
+	    name $(UNIT_DOS16_ALLOC_EXE)
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(UNIT_DOS16_ALLOC_FLAGS) \
+	    -DBP_TEST_ALLOC_CLI $(MINI_INCS) \
+	    -fo=$(UNIT_DOS16_ALLOC_DIR)/dos16_main.obj src/frontend/dos16/main.c
+	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
+	    system dos option eliminate \
+	    file $(UNIT_DOS16_ALLOC_DIR)/archiver.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/compress.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/boltlite.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/boltlz_decomp.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/mini_common.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/bp_codepage.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/dos16_main.obj \
+	    file $(UNIT_DOS16_ALLOC_DIR)/mini_test_allocator.obj \
+	    name $(UNIT_DOS16_ALLOC_CLI_EXE)
 	@echo "  OK    $(UNIT_DOS16_EXE)"
 	@echo "  OK    $(UNIT_DOS16_CODEPAGE_EXE)"
 	@echo "  OK    $(UNIT_DOS16_CP850_EXE)"
+	@echo "  OK    $(UNIT_DOS16_RESOURCE_EXE)"
+	@echo "  OK    $(UNIT_DOS16_ALLOC_EXE)"
+	@echo "  OK    $(UNIT_DOS16_ALLOC_CLI_EXE)"
 
 unit-test-dos16: unit-build-dos16
+	mkdir -p $(UNIT_DOS16_BDIR)/ALLOC_DIR
 	rm -f $(UNIT_DOS16_BDIR)/RESULT.TXT $(UNIT_DOS16_BDIR)/CODEPAGE.TXT \
-	    $(UNIT_DOS16_BDIR)/CP850.TXT
+	    $(UNIT_DOS16_BDIR)/CP850.TXT $(UNIT_DOS16_BDIR)/RESOURCE.TXT \
+	    $(UNIT_DOS16_BDIR)/ALLOCFL.TXT $(UNIT_DOS16_BDIR)/ALLOC.DAT \
+	    $(UNIT_DOS16_BDIR)/AF0.TXT $(UNIT_DOS16_BDIR)/AF1.TXT \
+	    $(UNIT_DOS16_BDIR)/AF2.TXT $(UNIT_DOS16_BDIR)/AF0.BLT \
+	    $(UNIT_DOS16_BDIR)/AF1.BLT $(UNIT_DOS16_BDIR)/AF2.BLT \
+	    $(UNIT_DOS16_BDIR)/AF0.LOG $(UNIT_DOS16_BDIR)/AF1.LOG \
+	    $(UNIT_DOS16_BDIR)/AF2.LOG \
+	    $(UNIT_DOS16_BDIR)/BPK????.TMP $(UNIT_DOS16_BDIR)/BK????.BAK \
+	    $(UNIT_DOS16_BDIR)/READ.BLT $(UNIT_DOS16_BDIR)/OUT.DAT \
+	    $(UNIT_DOS16_BDIR)/LIMIT.BLT $(UNIT_DOS16_BDIR)/FAIL0.BLT \
+	    $(UNIT_DOS16_BDIR)/FAIL1.BLT $(UNIT_DOS16_BDIR)/FAIL2.BLT \
+	    $(UNIT_DOS16_BDIR)/FAIL3.BLT $(UNIT_DOS16_BDIR)/FAIL4.BLT \
+	    $(UNIT_DOS16_BDIR)/FAIL5.BLT
+	printf 'preserve original archive bytes\n' > $(UNIT_DOS16_BDIR)/AF0.BLT
+	printf 'preserve original archive bytes\n' > $(UNIT_DOS16_BDIR)/AF1.BLT
+	printf 'preserve original archive bytes\n' > $(UNIT_DOS16_BDIR)/AF2.BLT
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy dosbox \
 	    -c "mount c $(abspath $(UNIT_DOS16_BDIR))" \
 	    -c "c:" \
 	    -c "minitst.exe > result.txt" \
 	    -c "minicp.exe > codepage.txt" \
 	    -c "minicp85.exe > cp850.txt" \
+	    -c "minires.exe > resource.txt" \
+	    -c "miniallo.exe > allocfl.log" \
+	    -c "miniacli.exe --fail-path-buffer 0 c AF0.BLT ALLOC_DIR > AF0.LOG" \
+	    -c "miniacli.exe --fail-path-buffer 1 c AF1.BLT ALLOC_DIR > AF1.LOG" \
+	    -c "miniacli.exe --fail-path-buffer 2 c AF2.BLT ALLOC_DIR > AF2.LOG" \
 	    -c "exit"
 	@cat $(UNIT_DOS16_BDIR)/RESULT.TXT
 	@grep -Eq '^Results: [0-9]+ passed, 0 failed' \
@@ -2416,6 +2928,23 @@ unit-test-dos16: unit-build-dos16
 	    $(UNIT_DOS16_BDIR)/CODEPAGE.TXT
 	@grep -Fq 'mini codepage mapping and refusal checks passed' \
 	    $(UNIT_DOS16_BDIR)/CP850.TXT
+	@cat $(UNIT_DOS16_BDIR)/RESOURCE.TXT
+	@grep -Fq 'PASS: size_t=2 entry_size=54 max_entries=1213 table overflow refused' \
+	    $(UNIT_DOS16_BDIR)/RESOURCE.TXT
+	@grep -Fq 'PASS: projected_index_entries=128 projected_key_bytes=4096' \
+	    $(UNIT_DOS16_BDIR)/RESOURCE.TXT
+	@grep -Fq 'PASS: deferred_directory_queue_entries=256 overflow refused' \
+	    $(UNIT_DOS16_BDIR)/RESOURCE.TXT
+	@cat $(UNIT_DOS16_BDIR)/ALLOCFL.TXT
+	@grep -Fq 'PASS: 26 writer/reader/extraction/index/queue/path-buffer/name allocation failures; temporary allocations released' \
+	    $(UNIT_DOS16_BDIR)/ALLOCFL.TXT
+	@grep -Fq 'result=1 error=-1 live=0' $(UNIT_DOS16_BDIR)/AF0.TXT
+	@grep -Fq 'result=1 error=-1 live=0' $(UNIT_DOS16_BDIR)/AF1.TXT
+	@grep -Fq 'result=1 error=-1 live=0' $(UNIT_DOS16_BDIR)/AF2.TXT
+	@grep -Fxq 'preserve original archive bytes' $(UNIT_DOS16_BDIR)/AF0.BLT
+	@grep -Fxq 'preserve original archive bytes' $(UNIT_DOS16_BDIR)/AF1.BLT
+	@grep -Fxq 'preserve original archive bytes' $(UNIT_DOS16_BDIR)/AF2.BLT
+	@test ! -e $(UNIT_DOS16_BDIR)/BPK0001.TMP
 
 # Experimental BoltLZ: isolated builds, unchanged BoltLZ baseline.
 BOLTLZ_CFLAGS ?= -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
