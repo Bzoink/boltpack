@@ -66,6 +66,22 @@ Platform-specific targets and native build instructions are listed in
 [`frontends.md`](frontends.md) and [`portability.md`](portability.md). No
 `build/Makefile.*` files are shipped for Plan 9, z/OS, or OpenVMS.
 
+### Total Commander WCX Unicode runtime check
+
+With the Win64 MinGW cross compiler and Wine installed, load the WCX DLL through
+its exported API and verify supplementary-Unicode archive paths and entry names:
+
+```bash
+make WINE=/usr/lib/wine/wine64 win64-wcx-wine-test
+```
+
+The fixture checks `OpenArchiveW`, `ReadHeaderExW`, `ProcessFileW`,
+`PackFilesW` creation and append, and `DeleteFilesW` against exact payload
+bytes. It checks deletion on Linux-created and WCX-created archives. With a
+non-UTF-8 Windows ANSI code page, it also verifies that the legacy ANSI header
+API refuses an unrepresentable entry name. The fixture is not a Total
+Commander host test.
+
 ### For Compile Packages
 
 When a target is not part of the aggregate Linux-hosted build workflow, create
@@ -170,6 +186,20 @@ Useful environment overrides:
 On older Macs, use the matching native target directly instead of `all`.
 
 #### Classic Mac OS compile packages
+
+The Retro68 68k application can be built from either the shared core or the
+checked-in self-contained source kit. The synchronization target verifies the
+copied core inventory and byte identity before building:
+
+```bash
+make macos9-core-sync-test
+make macos9-68k
+make macos9-68k-kit
+```
+
+`macos9-68k-kit` compiles from `src/frontend/macos9/68k/Source`. Both targets
+produce the application and merged resource file under `build/`; neither
+qualifies runtime behavior on Mac OS 9.
 
 Classic Mac OS 9 PowerPC now has a separate native source kit for CodeWarrior
 builds inside the target environment:
@@ -281,6 +311,11 @@ front-end build. In particular:
   because the wrapper `main.c` files include it directly.
 - `ql` prefers `qcc` and falls back to `m68k-qdos-gcc` if that is how the SDK
   is exposed.
+- `make ql-sqlux-interoperability-test` runs QDOS/Linux create and extraction
+  transfers through sQLux, including mini-reader verification, nested output
+  paths, explicit `-o`, and stage-name collision preservation. Set `QL_SQLUX`
+  and `QL_ROM` when the emulator or Minerva ROM is outside the default ignored
+  `build/ql-sdk/` paths.
 - `riscos` outputs `build/riscos/boltpack,ff8` and `x68k` outputs
   `build/x68k/boltpack.x`, matching the existing platform conventions.
 
@@ -477,14 +512,15 @@ make FRONTEND=hurd BUILDDIR=build/hurd TARGET=build/hurd/boltpack
 
 ---
 
-### Platforms without a build target
+### Platforms without a root Makefile target
 
-Plan 9 and OpenVMS frontends are present, but this repository does not ship
-platform Makefiles or complete documented manual link commands for them. The
-z/OS manual build command is documented under the z/OS frontend in
-`frontends.md`; it has not been target-built or runtime-qualified here. The
-build commands in this guide apply only to targets defined by the root
-`Makefile`.
+Plan 9 and OpenVMS frontends are present, but the root `Makefile` does not
+build them. The Plan 9 manual `6c`/`6l` command is documented under the Plan 9
+frontend in `frontends.md` and was built and run on 9front amd64 under QEMU
+TCG; native Plan 9 metadata restoration and other CPU targets remain
+unqualified. The z/OS manual build command is also documented there, but it
+has not been target-built or runtime-qualified. The build commands in this
+guide apply only to targets defined by the root `Makefile`.
 - Build on real z/OS host or Hercules emulator
 - Binary will not be portable to non-mainframe systems
 

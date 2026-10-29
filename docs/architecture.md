@@ -282,7 +282,7 @@ boltpack i backup.bolt                      Show format version, entry count, co
 boltpack d backup.bolt MyApp/config.txt     Remove an entry from the archive
 ```
 
-**Directory recursion is handled entirely in the frontend.** The archiver core has no concept of directories — it just receives entries one at a time. The frontend walks the directory tree (using `opendir`/`readdir` on Unix, `FindFirstFile`/`FindNextFile` on Windows, etc.) and feeds entries to the archiver in this order: **directory entries first, then files within.** This is a depth-first walk — for each directory encountered, emit an `entry_type=4` entry for the directory itself, then recurse into its contents. This guarantees directories exist in the archive before their children.
+**Directory traversal is handled entirely in the frontend.** The archiver core has no concept of directories — it just receives entries one at a time. Frontends walk directory trees (using `opendir`/`readdir` on Unix, `FindFirstFile`/`FindNextFile` on Windows, etc.) and feed entries to the archiver in depth-first order: **directory entries first, then their contents.** A frontend may use recursive calls or an explicit traversal stack. This guarantees directories exist in the archive before their children.
 
 On extraction, the frontend processes entries in archive order. Directory entries (`entry_type=4`) create the directory and apply metadata. File entries create parent directories implicitly if somehow missing (defensive), then write the file.
 
