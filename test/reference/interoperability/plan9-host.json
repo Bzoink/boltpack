@@ -1,0 +1,39 @@
+{
+  "case": "Plan 9 frontend host-shim archive interoperability and extraction safety",
+  "environment": "GCC host build with Plan 9 libc shims; this is not a native Plan 9 runtime result",
+  "profile": {
+    "number": 1,
+    "method": "BoltLite",
+    "block_size": 16384,
+    "files": {
+      "first.bin": {
+        "content": "Plan 9 profile transfer\n",
+        "repetitions": 2048,
+        "size": 49152,
+        "sha256": "56e9774775eafef7e080ab48fa1e52d007ac28aa6221354e42c856c9e5726b98"
+      },
+      "second.bin": {
+        "content": "Plan 9 append transfer\n",
+        "repetitions": 512,
+        "size": 11776,
+        "sha256": "66e0b4b2770e40cb6735937018bc552904ddff29fbc5364df35e4e5304b00c28"
+      }
+    }
+  },
+  "directory_metadata": {
+    "archive_name": "locked/",
+    "mode": "0550",
+    "mtime_epoch": 1700000000,
+    "file": {
+      "archive_name": "locked/child.txt",
+      "content": "payload",
+      "mode": "0640",
+      "mtime_epoch": 1700000001,
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  },
+  "collision_refusals": [
+    {"file_entry_first": true, "expected": "refuse before output-root creation"},
+    {"file_entry_first": false, "expected": "refuse before output-root creation"}
+  ]
+}

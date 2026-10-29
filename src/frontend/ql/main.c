@@ -11,8 +11,8 @@
  *   - Directory paths end with '_':  "win1_mydir_"
  *   - Files do not end with '_':     "win1_mydir_file"
  *   - The device prefix is stripped before building archive entry names.
- *   - Timestamps are seconds since 1961-01-01 00:00:00 UTC (QDOS epoch).
- *     Converted to Unix seconds by subtracting 283,996,800.
+ *   - Timestamps are seconds since 1961-01-01 (QDOS epoch) in local wall
+ *     time. BP_TZ_OFFSET supplies the offset east of UTC for conversion.
  *
  * Metadata: QL provides only a simple 3-bit "protection" field embedded in
  *   the directory entry's access byte.  Per format.md, this does NOT need a
@@ -32,12 +32,32 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "ql_time.h"
+#include "ql_path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#ifdef BP_QL_HOST_TEST
+#include <utime.h>
+#else
+/* Keep the QDOS calls local: qdos.h also declares qdirect_t, which this
+ * frontend defines from the on-disk 64-byte directory record. */
+extern long _io_open(const char *, long);
+extern int _fs_date(long, short, char, long *);
+extern int _io_close(long);
+#endif
+
+/* QDOS unistd.h maps these names to OS calls; keep bp_io_t member names
+ * intact while retaining the close declaration and the close() mapping. */
+#undef read
+#undef write
+
+/* fdopen is part of the C68 runtime but hidden by strict host ANSI headers. */
+extern FILE *fdopen(int, const char *);
 
 /* ---- constants -------------------------------------------------------- */
 
@@ -52,10 +72,10 @@
  *   9 years: 7 × 365 + 2 × 366 (1964, 1968 are leap) = 3287 days
  *   3287 × 86400 = 283,996,800 seconds
  */
-#define QDOS_EPOCH_OFFSET   283996800UL
+#define QDOS_EPOCH_OFFSET   BP_QL_EPOCH_OFFSET
 
 /* Maximum QDOS filename length */
-#define QDOS_NAME_MAX   36
+#define QDOS_NAME_MAX   QL_QDOS_PATH_MAX
 
 /* ---- qdirect: QDOS directory entry (64 bytes, big-endian) ------------- */
 
@@ -88,6 +108,7 @@ typedef struct {
 
 static int g_verbosity = VERB_DEFAULT;
 static int g_interchange_profile = 0;
+
 
 /* ======================================================================
  * bp_io_t  adapters  --  backed by FILE *
@@ -195,49 +216,70 @@ static void format_size64(bp_uint64 b, char *buf, size_t sz)
     (void)sz;
 }
 
-static void ql_strcpy_trunc(char *dst, size_t dstsz, const char *src)
-{
-    size_t i;
-    if (dstsz == 0) return;
-    if (!src) { dst[0] = '\0'; return; }
-    for (i = 0; i + 1 < dstsz && src[i] != '\0'; i++)
-        dst[i] = src[i];
-    dst[i] = '\0';
-}
-
-static void ql_strcat_trunc(char *dst, size_t dstsz, const char *src)
-{
-    size_t len;
-
-    if (dstsz == 0 || !src) return;
-    len = strlen(dst);
-    if (len >= dstsz - 1) return;
-    strncpy(dst + len, src, dstsz - len - 1);
-    dst[dstsz - 1] = '\0';
-}
-
-static void ql_join2(char *dst, size_t dstsz, const char *left,
-                     const char *right)
-{
-    ql_strcpy_trunc(dst, dstsz, left);
-    ql_strcat_trunc(dst, dstsz, right);
-}
-
-static void ql_join3(char *dst, size_t dstsz, const char *left,
-                     const char *middle, const char *right)
-{
-    ql_strcpy_trunc(dst, dstsz, left);
-    ql_strcat_trunc(dst, dstsz, middle);
-    ql_strcat_trunc(dst, dstsz, right);
-}
-
 /* ---- QDOS time conversion ---------------------------------------------- */
 
-static bp_uint32 qdos_to_unix(long qdos_time)
+static int ql_tz_warning_reported;
+static int ql_tz_override_set;
+static long ql_tz_override_seconds;
+
+static int ql_tz_offset_seconds(long *offset_seconds)
 {
-    unsigned long t = (unsigned long)qdos_time;
-    if (t > QDOS_EPOCH_OFFSET) return (bp_uint32)(t - QDOS_EPOCH_OFFSET);
+    if (ql_tz_override_set) {
+        *offset_seconds = ql_tz_override_seconds;
+        return 1;
+    }
+    if (bp_ql_parse_tz_offset(getenv("BP_TZ_OFFSET"), offset_seconds))
+        return 1;
+    if (!ql_tz_warning_reported) {
+        fprintf(stderr, "boltpack: invalid BP_TZ_OFFSET; use minutes east of UTC in -1439..1439\n");
+        ql_tz_warning_reported = 1;
+    }
     return 0;
+}
+
+static bp_uint16 qdos_to_archive_time(long qdos_time, bp_uint64 *mtime)
+{
+    long offset_seconds;
+    *mtime = bp_u64_from_u32(0);
+    if (!ql_tz_offset_seconds(&offset_seconds) ||
+        !bp_ql_qdos_to_utc(qdos_time, offset_seconds, mtime))
+        return 0;
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
+/* Apply an archived Unix timestamp through the QDOS filing-system date API.
+ * QDOS stores seconds since 1961 in a signed long; unsupported devices and
+ * values outside that range are reported to the caller as partial metadata. */
+static int ql_set_archive_time(const char *path, bp_uint64 mtime)
+{
+    if (path == NULL || mtime.hi != 0) return BP_ERR_PARTIAL;
+#ifdef BP_QL_HOST_TEST
+    {
+        struct utimbuf times;
+        if ((unsigned long)mtime.lo >
+            BP_QL_MAX_QDOS_SECONDS - QDOS_EPOCH_OFFSET)
+            return BP_ERR_PARTIAL;
+        times.actime = (time_t)mtime.lo;
+        times.modtime = (time_t)mtime.lo;
+        return utime(path, &times) == 0 ? BP_OK : BP_ERR_PARTIAL;
+    }
+#else
+    {
+        long offset_seconds;
+        long qdos_seconds;
+        long channel;
+        int result;
+        if (!ql_tz_offset_seconds(&offset_seconds) ||
+            !bp_ql_utc_to_qdos(mtime, offset_seconds, &qdos_seconds))
+            return BP_ERR_PARTIAL;
+        channel = _io_open(path, 0);
+        if (channel < 0) return BP_ERR_PARTIAL;
+        result = _fs_date(channel, -1, 0, &qdos_seconds);
+        if (_io_close(channel) != 0 && result == 0)
+            result = BP_ERR_IO;
+        return result == 0 ? BP_OK : BP_ERR_PARTIAL;
+    }
+#endif
 }
 
 /* ---- QDOS path utilities ----------------------------------------------- */
@@ -250,8 +292,7 @@ static bp_uint32 qdos_to_unix(long qdos_time)
  */
 static const char *ql_strip_device(const char *qdos_path)
 {
-    const char *p = strchr(qdos_path, '_');
-    return p ? p + 1 : qdos_path;
+    return ql_strip_disk_device(qdos_path);
 }
 
 /*
@@ -264,20 +305,31 @@ static const char *ql_strip_device(const char *qdos_path)
  * applied only at known directory-separator positions tracked during
  * recursive descent.  We pass `arcname` directly from the caller.
  */
-static void ql_to_arcname(const char *qdos_rel, char *out, size_t outsz,
-                           const char *parent_arc)
+static int ql_to_arcname(const char *qdos_rel, int is_directory, char *out,
+                         size_t outsz, const char *parent_arc)
 {
+    char component[QDOS_NAME_MAX + 1];
+    size_t parent_len;
+    size_t component_len;
+    if (ql_project_component(qdos_rel, is_directory, component,
+                             sizeof(component)) != 0)
+        return BP_ERR_INVALID_ARG;
+    parent_len = parent_arc ? strlen(parent_arc) : 0;
+    component_len = strlen(component);
     /* `parent_arc` is built by our recursive descent so uses '/'.
      * Just append the entry name to it. */
-    if (parent_arc && parent_arc[0]) {
-        int plen = (int)strlen(parent_arc);
-        if (parent_arc[plen - 1] == '/')
-            ql_join2(out, outsz, parent_arc, qdos_rel);
-        else
-            ql_join3(out, outsz, parent_arc, "/", qdos_rel);
+    if (parent_len != 0) {
+        int has_separator = parent_arc[parent_len - 1] == '/';
+        size_t needed = parent_len + (has_separator ? 0U : 1U) + component_len;
+        if (needed >= outsz) return BP_ERR_NAME_TOO_LONG;
+        memcpy(out, parent_arc, parent_len);
+        if (!has_separator) out[parent_len++] = '/';
+        memcpy(out + parent_len, component, component_len + 1U);
     } else {
-        strncpy(out, qdos_rel, outsz - 1); out[outsz - 1] = '\0';
+        if (component_len >= outsz) return BP_ERR_NAME_TOO_LONG;
+        memcpy(out, component, component_len + 1U);
     }
+    return BP_OK;
 }
 
 /*
@@ -334,15 +386,23 @@ static int mkdirs(const char *path)
     return ql_mkdir(tmp);
 }
 
-static int mkdirs_for_file(const char *arcname)
+static int mkdirs_for_file(const char *target, const char *member_path)
 {
-    /* Extract directory component from archive name and create it */
-    char tmp[BP_MAX_PATH]; char *sl;
-    if (strlen(arcname) >= sizeof(tmp)) return -1;
-    strcpy(tmp, arcname);
-    sl = strrchr(tmp, '/');
-    if (sl && sl != tmp) { *sl = '\0'; return mkdirs(tmp); }
-    return 0;
+    const char *slash = strrchr(member_path, '/');
+    const char *leaf;
+    char parent[BP_MAX_PATH];
+    size_t target_length, leaf_length, parent_length;
+    if (slash == NULL) return 0;
+    leaf = strrchr(member_path, '/');
+    leaf = leaf ? leaf + 1 : member_path;
+    target_length = strlen(target);
+    leaf_length = strlen(leaf);
+    if (target_length < leaf_length) return -1;
+    parent_length = target_length - leaf_length;
+    if (parent_length == 0 || parent_length >= sizeof(parent)) return -1;
+    memcpy(parent, target, parent_length);
+    parent[parent_length] = '\0';
+    return ql_mkdir(parent);
 }
 
 /* ---- block size parsing ----------------------------------------------- */
@@ -360,7 +420,8 @@ static bp_uint32 parse_block_size(const char *s)
 /* ---- recursive add ---------------------------------------------------- */
 
 static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
-                         const char *arcname);
+                         const char *arcname, long qdos_time,
+                         int qdos_time_known);
 
 static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
                                   const char *arc_prefix)
@@ -371,6 +432,7 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
     char       child_qdos[BP_MAX_PATH];
     char       child_arc[BP_MAX_PATH];
     int        rc = BP_OK;
+    int        is_directory;
 
     dp = fopen(qdos_dir, "r");
     if (!dp) {
@@ -383,33 +445,41 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
         if (!qdirect_get_name(&ent, ent_name, sizeof(ent_name))) continue;
 
         /* Build full QDOS path: device path ends with '_', so just append */
-        if (strlen(qdos_dir) + strlen(ent_name) >= sizeof(child_qdos)) continue;
-        strcpy(child_qdos, qdos_dir); strcat(child_qdos, ent_name);
+        if (ql_path_join2(child_qdos, sizeof(child_qdos), qdos_dir,
+                          ent_name) != 0) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
 
-        /* Archive name */
-        ql_to_arcname(ent_name, child_arc, sizeof(child_arc), arc_prefix);
+        is_directory = qdirect_is_dir(&ent);
+        /* Use the qdirect parent relation, rather than guessing that an
+         * embedded underscore is a path separator. */
+        rc = ql_to_arcname(ent_name, is_directory, child_arc,
+                           sizeof(child_arc), arc_prefix);
+        if (rc != BP_OK) break;
 
-        if (qdirect_is_dir(&ent)) {
+        if (is_directory) {
             /* Recurse into subdirectory.
              * qdos_path ends with '_', so child is qdos_dir + "subname_"
              * which is already in child_qdos. */
             char dir_arc[BP_MAX_PATH];
+            bp_uint64 mtime;
+            bp_uint16 mtime_flags;
             /* Ensure arc path ends with '/' */
-            ql_strcpy_trunc(dir_arc, sizeof(dir_arc), child_arc);
-            {
-                int al = (int)strlen(dir_arc);
-                if (al > 0 && dir_arc[al - 1] != '/')
-                    { dir_arc[al] = '/'; dir_arc[al + 1] = '\0'; }
+            if (ql_path_join2(dir_arc, sizeof(dir_arc), child_arc, "/") != 0) {
+                rc = BP_ERR_NAME_TOO_LONG;
+                break;
             }
 
             if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", dir_arc);
-            rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_OS_QL,
-                                      NULL, bp_u64_from_u32(0),
-                                      bp_u64_from_u32(qdos_to_unix(ent.d_update)));
+            mtime_flags = qdos_to_archive_time(ent.d_update, &mtime);
+            rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR, BP_OS_QL,
+                                         NULL, bp_u64_from_u32(0), mtime,
+                                         mtime_flags);
             if (rc == BP_OK)
                 rc = add_directory_contents(ar, child_qdos, dir_arc);
         } else {
-            rc = add_path_qdos(ar, child_qdos, child_arc);
+            rc = add_path_qdos(ar, child_qdos, child_arc, ent.d_update, 1);
         }
     }
 
@@ -418,13 +488,15 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
 }
 
 static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
-                         const char *arcname)
+                         const char *arcname, long qdos_time,
+                         int qdos_time_known)
 {
     FILE      *fp;
     long       sz;
     bp_io_t    fio;
-    bp_uint32  mtime;
     bp_uint64  fsize;
+    bp_uint64  mtime;
+    bp_uint16  mtime_flags;
     int        rc;
     /* Get file size and mtime via reading a directory entry.
      * QDOS C rt provides fopen/fseek/ftell for regular files. */
@@ -440,15 +512,21 @@ static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
     fseek(fp, 0L, SEEK_SET);
     fsize = bp_u64_from_ulong((unsigned long)sz);
 
-    /* QDOS doesn't expose mtime easily via fopen; default to 0. */
-    mtime = 0;
+    /* A direct file argument has no parent qdirect record, so its timestamp
+     * is unknown. Recursive callers pass the timestamp from that record. */
+    if (qdos_time_known)
+        mtime_flags = qdos_to_archive_time(qdos_time, &mtime);
+    else {
+        mtime = bp_u64_from_u32(0);
+        mtime_flags = 0;
+    }
 
     bp_io_from_file(&fio, fp);
 
     if (g_verbosity == VERB_DEFAULT) { printf("compressing: %s", arcname); fflush(stdout); }
 
-    rc = bp_archive_add_entry(ar, arcname, BP_TYPE_DATA, BP_OS_QL,
-                              &fio, fsize, bp_u64_from_u32(mtime));
+    rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA, BP_OS_QL,
+                                 &fio, fsize, mtime, mtime_flags);
     fclose(fp);
 
     if (rc == BP_OK && g_verbosity == VERB_DEFAULT) {
@@ -478,23 +556,26 @@ static int add_path(bp_archive_t *ar, const char *qdos_path, const char *arcname
     if (plen > 0 && qdos_path[plen - 1] == '_') {
         /* It's a directory */
         char dir_arc[BP_MAX_PATH];
+        bp_uint64 mtime = bp_u64_from_u32(0);
+        bp_uint16 mtime_flags = 0;
         int  al;
         int  rc;
 
-        strncpy(dir_arc, arcname, sizeof(dir_arc) - 2);
-        dir_arc[sizeof(dir_arc) - 2] = '\0';
+        if (ql_project_component(arcname, 1, dir_arc,
+                                 sizeof(dir_arc) - 2) != 0)
+            return BP_ERR_INVALID_ARG;
         al = (int)strlen(dir_arc);
         if (al == 0 || dir_arc[al - 1] != '/')
             { dir_arc[al] = '/'; dir_arc[al + 1] = '\0'; }
 
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", dir_arc);
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_OS_QL,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32(0));
+        rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR, BP_OS_QL,
+                                     NULL, bp_u64_from_u32(0), mtime,
+                                     mtime_flags);
         if (rc != BP_OK) return rc;
         return add_directory_contents(ar, qdos_path, dir_arc);
     }
-    return add_path_qdos(ar, qdos_path, arcname);
+    return add_path_qdos(ar, qdos_path, arcname, 0, 0);
 }
 
 /* ---- list callback ---------------------------------------------------- */
@@ -537,17 +618,298 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 typedef struct {
     const char *out_dir;
+    const char *archive_path;
     int         force;
     int         dry_run;
+    int         failed;
+    unsigned long stage_serial;
+    char        target[BP_MAX_PATH];
+    char        temporary[BP_MAX_PATH];
+    char        backup[BP_MAX_PATH];
     bp_uint32   file_count;
     bp_uint32   dir_count;
 } extract_ctx_t;
+
+typedef struct {
+    char path[QDOS_NAME_MAX + 1];
+    unsigned char type;
+} ql_extract_name_t;
+
+typedef struct {
+    const char *out_dir;
+    const char *archive_path;
+    ql_extract_name_t *names;
+    bp_uint32 count;
+    bp_uint32 capacity;
+    int error;
+} ql_extract_index_t;
+
+static int ql_build_output_path(const char *out_dir, const char *local_name,
+                                char *path, size_t path_size)
+{
+    size_t out_length;
+    if (out_dir == NULL || out_dir[0] == '\0') {
+        if (strlen(local_name) >= path_size) return -1;
+        strcpy(path, local_name);
+        return 0;
+    }
+    out_length = strlen(out_dir);
+    if (out_dir[out_length - 1] == '/')
+        return ql_path_join2(path, path_size, out_dir, local_name);
+    return ql_path_join3(path, path_size, out_dir, "/", local_name);
+}
+
+static int ql_build_extract_path(const char *out_dir, const char *archive_path,
+                                 const char *member_path, char *path,
+                                 size_t path_size)
+{
+#ifdef BP_QL_HOST_TEST
+    (void)archive_path;
+    return ql_build_output_path(out_dir, member_path, path, path_size);
+#else
+    return ql_native_output_path(out_dir, archive_path, member_path, path,
+                                 path_size);
+#endif
+}
+
+typedef struct {
+    const char *out_dir;
+    const char *archive_path;
+    int partial;
+    int find_depth;
+    int max_depth;
+    int restore_depth;
+} ql_dir_time_ctx_t;
+
+static int ql_restore_directory_time(const bp_entry_t *entry, void *user_data)
+{
+    ql_dir_time_ctx_t *ctx = (ql_dir_time_ctx_t *)user_data;
+    char local_name[BP_MAX_PATH];
+    char path[BP_MAX_PATH];
+    int depth = 0;
+    const char *p;
+    if (entry->entry_type != BP_TYPE_DIR ||
+        !(entry->flags & BP_ENTRY_FLAG_MTIME_VALID))
+        return 0;
+    for (p = entry->name; *p != '\0'; p++)
+        if (*p == '/') depth++;
+    if (ctx->find_depth) {
+        if (depth > ctx->max_depth) ctx->max_depth = depth;
+        return 0;
+    }
+    if (depth != ctx->restore_depth) return 0;
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                         QL_CP) != 0 ||
+        ql_build_extract_path(ctx->out_dir, ctx->archive_path, local_name,
+                              path, sizeof(path)) != 0 ||
+        ql_set_archive_time(path, entry->mtime) != BP_OK) {
+        fprintf(stderr, "boltpack: cannot restore QDOS directory date: %s\n",
+                entry->name);
+        ctx->partial = 1;
+    }
+    return 0;
+}
+
+static int ql_restore_directory_times(const char *archive_path,
+                                      const char *out_dir)
+{
+    ql_dir_time_ctx_t ctx;
+    int depth;
+    int rc;
+    ctx.out_dir = out_dir;
+    ctx.archive_path = archive_path;
+    ctx.partial = 0;
+    ctx.find_depth = 1;
+    ctx.max_depth = 0;
+    ctx.restore_depth = 0;
+    {
+        FILE *fp = fopen(archive_path, "rb");
+        bp_io_t io;
+        if (fp == NULL) return BP_ERR_PARTIAL;
+        bp_io_from_file(&io, fp);
+        rc = bp_archive_list(&io, ql_restore_directory_time, &ctx);
+        fclose(fp);
+    }
+    if (rc != BP_OK) return BP_ERR_PARTIAL;
+    ctx.find_depth = 0;
+    for (depth = ctx.max_depth; depth > 0; depth--) {
+        FILE *fp = fopen(archive_path, "rb");
+        bp_io_t io;
+        if (fp == NULL) return BP_ERR_PARTIAL;
+        bp_io_from_file(&io, fp);
+        ctx.restore_depth = depth;
+        rc = bp_archive_list(&io, ql_restore_directory_time, &ctx);
+        fclose(fp);
+        if (rc != BP_OK) ctx.partial = 1;
+    }
+    if (ctx.partial) return BP_ERR_PARTIAL;
+    return BP_OK;
+}
+
+static unsigned char ql_name_fold(unsigned char ch)
+{
+    if (ch >= 'A' && ch <= 'Z') return (unsigned char)(ch + ('a' - 'A'));
+    /* QDOS/SMS filenames are normally case-insensitive. Fold the one-byte
+     * Latin-1 uppercase ranges as well as ASCII before collision checks. */
+    if ((ch >= 0xC0 && ch <= 0xD6) || (ch >= 0xD8 && ch <= 0xDE))
+        return (unsigned char)(ch + 0x20);
+    return ch;
+}
+
+static int ql_extract_name_compare(const void *left, const void *right)
+{
+    const ql_extract_name_t *a = (const ql_extract_name_t *)left;
+    const ql_extract_name_t *b = (const ql_extract_name_t *)right;
+    return strcmp(a->path, b->path);
+}
+
+static int ql_extract_index_add(const bp_entry_t *entry, void *user_data)
+{
+    ql_extract_index_t *index = (ql_extract_index_t *)user_data;
+    ql_extract_name_t *grown;
+    char local_name[BP_MAX_PATH];
+    char output_path[BP_MAX_PATH];
+    size_t length, i, allocation_size;
+    bp_uint32 capacity;
+
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR)
+        return 0;
+    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name), QL_CP) != 0) {
+        fprintf(stderr, "boltpack: name is not representable on QL: %s\n",
+                entry->name);
+        index->error = BP_ERR_INVALID_ARG;
+        return 1;
+    }
+    length = strlen(local_name);
+    if (ql_build_extract_path(index->out_dir, index->archive_path, local_name,
+                              output_path, sizeof(output_path)) != 0) {
+        fprintf(stderr, "boltpack: output path is too long for QL: %s\n",
+                entry->name);
+        index->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+    /* The final slash maps to QDOS's trailing underscore for directories and
+     * occupies a byte in the native pathname limit. */
+    if (length > QDOS_NAME_MAX) {
+        fprintf(stderr, "boltpack: output path is too long for QL: %s\n",
+                entry->name);
+        index->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+    if (entry->entry_type == BP_TYPE_DIR && length != 0 &&
+        local_name[length - 1] == '/')
+        local_name[--length] = '\0';
+    /* QDOS/SMS stores the complete relative directory and file path in a
+     * 36-byte name field. Refuse it before creating any output. */
+    if (length == 0) {
+        fprintf(stderr, "boltpack: output path is too long for QL: %s\n",
+                entry->name);
+        index->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+    if (index->count == index->capacity) {
+        capacity = index->capacity == 0 ? 16U : index->capacity * 2U;
+        allocation_size = (size_t)capacity * sizeof(*grown);
+        if (capacity < index->capacity ||
+            allocation_size / sizeof(*grown) != (size_t)capacity) {
+            index->error = BP_ERR_OVERFLOW;
+            return 1;
+        }
+        grown = (ql_extract_name_t *)realloc(
+            index->names, allocation_size);
+        if (grown == NULL) {
+            index->error = BP_ERR_NOMEM;
+            return 1;
+        }
+        index->names = grown;
+        index->capacity = capacity;
+    }
+    memcpy(index->names[index->count].path, local_name, length + 1U);
+    for (i = 0; i < length; i++)
+        index->names[index->count].path[i] =
+            (char)ql_name_fold((unsigned char)index->names[index->count].path[i]);
+    index->names[index->count].type = entry->entry_type;
+    index->count++;
+    return 0;
+}
+
+static int ql_extract_preflight(bp_io_t *archive, const char *out_dir,
+                                const char *archive_path)
+{
+    ql_extract_index_t index;
+    bp_uint32 i;
+    int rc;
+
+    memset(&index, 0, sizeof(index));
+    index.out_dir = out_dir;
+    index.archive_path = archive_path;
+    rc = bp_archive_list(archive, ql_extract_index_add, &index);
+    if (rc == BP_ERR_ABORTED && index.error != 0) rc = index.error;
+    if (rc == BP_OK) {
+        if (index.count > 1U)
+            qsort(index.names, index.count, sizeof(*index.names),
+                  ql_extract_name_compare);
+        for (i = 0; i < index.count; i++) {
+            size_t length = strlen(index.names[i].path);
+            if (i != 0 && strcmp(index.names[i - 1].path,
+                                 index.names[i].path) == 0) {
+                fprintf(stderr, "boltpack: destination name collision: %s\n",
+                        index.names[i].path);
+                rc = BP_ERR_PARTIAL;
+                break;
+            }
+            if (index.names[i].type == BP_TYPE_DATA && length + 1U <
+                sizeof(index.names[i].path)) {
+                char prefix[QDOS_NAME_MAX + 2];
+                bp_uint32 low = i + 1U, high = index.count;
+                size_t prefix_len;
+                memcpy(prefix, index.names[i].path, length);
+                prefix[length] = '/';
+                prefix[length + 1U] = '\0';
+                prefix_len = length + 1U;
+                while (low < high) {
+                    bp_uint32 middle = low + (high - low) / 2U;
+                    if (strcmp(index.names[middle].path, prefix) < 0)
+                        low = middle + 1U;
+                    else
+                        high = middle;
+                }
+                if (low < index.count &&
+                    strncmp(index.names[low].path, prefix, prefix_len) == 0) {
+                    fprintf(stderr,
+                            "boltpack: file/directory name conflict: %s\n",
+                            index.names[i].path);
+                    rc = BP_ERR_PARTIAL;
+                    break;
+                }
+            }
+        }
+    }
+    free(index.names);
+    return rc;
+}
+
+/* Build a same-directory stage/backup name within the frontend path buffer. */
+static int extract_sibling_name(const char *target, size_t target_leaf_length,
+                                const char *leaf, char *out, size_t out_size)
+{
+    size_t target_length = strlen(target);
+    size_t parent_length;
+    size_t leaf_length = strlen(leaf);
+    if (target_length < target_leaf_length) return -1;
+    parent_length = target_length - target_leaf_length;
+    if (parent_length + leaf_length >= out_size) return -1;
+    memcpy(out, target, parent_length);
+    memcpy(out + parent_length, leaf, leaf_length + 1U);
+    return 0;
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char  path[BP_MAX_PATH];
     char  local_name[BP_MAX_PATH];
+    const char *local_leaf;
     FILE *fp; bp_io_t *io;
 
     if (!bp_name_is_safe(entry->name)) return NULL;
@@ -555,21 +917,19 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
                          QL_CP) != 0) return NULL;
 
-    if (ctx->out_dir && ctx->out_dir[0]) {
-        size_t odn = strlen(ctx->out_dir);
-        if (ctx->out_dir[odn - 1] == '/')
-            ql_join2(path, sizeof(path), ctx->out_dir, local_name);
-        else
-            ql_join3(path, sizeof(path), ctx->out_dir, "/", local_name);
-    } else {
-        strncpy(path, local_name, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
+    if (ql_build_extract_path(ctx->out_dir, ctx->archive_path, local_name,
+                              path, sizeof(path)) != 0) {
+        fprintf(stderr, "boltpack: output path too long: %s\n", entry->name);
+        return NULL;
     }
 
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run) mkdirs(path);
+        if (!ctx->dry_run && mkdirs(path) != 0) {
+            fprintf(stderr, "boltpack: cannot create directory: %s\n", path);
+            ctx->failed = 1;
+        }
         return NULL;
     }
 
@@ -589,23 +949,159 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (chk) { fclose(chk); fprintf(stderr, "boltpack: exists (use -f): %s\n", path); return NULL; }
     }
 
-    mkdirs_for_file(local_name);
-    fp = fopen(path, "wb");
-    if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", path); return NULL; }
+    if (mkdirs_for_file(path, local_name) != 0) {
+        fprintf(stderr, "boltpack: cannot create parent directory: %s\n", path);
+        ctx->failed = 1;
+        return NULL;
+    }
+    /* Keep incomplete data invisible until the core reports a verified
+     * checksum and fclose succeeds. Create each short sibling name
+     * exclusively so concurrent extractions cannot truncate the same stage. */
+    {
+        unsigned long tries;
+        unsigned long candidate_limit;
+        size_t leaf_length;
+        int opened = 0;
+        local_leaf = strrchr(local_name, '/');
+        local_leaf = local_leaf ? local_leaf + 1 : local_name;
+        leaf_length = ql_stage_leaf_length_for_target(path,
+                                                     strlen(local_leaf));
+        if (leaf_length == 0U) {
+            fprintf(stderr, "boltpack: no room for QL staging name: %s\n", path);
+            ctx->failed = 1;
+            return NULL;
+        }
+        candidate_limit = ql_stage_candidate_count(leaf_length);
+        for (tries = 0; tries < candidate_limit; tries++) {
+            char temp_leaf[16], backup_leaf[16];
+            FILE *probe;
+            int fd;
+            int flags;
+            unsigned long serial = ctx->stage_serial++ % candidate_limit;
+            ql_stage_leaf('B', serial, leaf_length, temp_leaf);
+            if (leaf_length == 1U)
+                ql_stage_leaf('K', (serial + 1UL) % 36UL,
+                              leaf_length, backup_leaf);
+            else
+                ql_stage_leaf('K', serial, leaf_length, backup_leaf);
+            if (extract_sibling_name(path, strlen(local_leaf), temp_leaf,
+                                     ctx->temporary,
+                                     sizeof(ctx->temporary)) != 0 ||
+                extract_sibling_name(path, strlen(local_leaf), backup_leaf,
+                                     ctx->backup,
+                                     sizeof(ctx->backup)) != 0) {
+                fprintf(stderr, "boltpack: staging path too long: %s\n", path);
+                return NULL;
+            }
+            probe = fopen(ctx->backup, "rb");
+            if (probe) { fclose(probe); continue; }
+            flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_BINARY
+            flags |= O_BINARY;
+#endif
+            fd = open(ctx->temporary, flags, 0666);
+            if (fd < 0) continue;
+            fp = fdopen(fd, "wb");
+            if (!fp) {
+                close(fd);
+                remove(ctx->temporary);
+                continue;
+            }
+            opened = 1;
+            break;
+        }
+        if (!opened) {
+            fprintf(stderr, "boltpack: cannot create staging file for: %s\n", path);
+            ctx->failed = 1;
+            return NULL;
+        }
+    }
+    strcpy(ctx->target, path);
     io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
+    if (!io) { fclose(fp); remove(ctx->temporary); ctx->failed = 1; return NULL; }
     bp_io_from_file(io, fp);
     return io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
-    (void)user_data;
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    int rc = BP_OK;
+    int had_target = 0;
     if (out) {
-        fclose((FILE *)out->handle);
+        FILE *fp = (FILE *)out->handle;
+        if (fclose(fp) != 0) status = BP_ERR_IO;
         free(out);
     }
     (void)entry;
+    if (status != BP_OK) {
+        remove(ctx->temporary);
+        return status;
+    }
+    if (ctx->force) {
+        FILE *probe = fopen(ctx->target, "rb");
+        if (probe) {
+            fclose(probe);
+            if (rename(ctx->target, ctx->backup) != 0) {
+                remove(ctx->temporary);
+                fprintf(stderr, "boltpack: cannot preserve existing target: %s\n", ctx->target);
+                return BP_ERR_IO;
+            }
+            had_target = 1;
+        }
+    } else {
+        FILE *probe = fopen(ctx->target, "rb");
+        if (probe) {
+            fclose(probe);
+            remove(ctx->temporary);
+            fprintf(stderr, "boltpack: exists (use -f): %s\n", ctx->target);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    {
+        int publish_result;
+        int rollback_result = 0;
+#ifdef BP_QL_HOST_TEST
+        /* Exercise recovery after the old target has moved aside without
+         * changing the native QDOS implementation or its runtime. */
+        const char *fail_publish = getenv("BP_QL_FAIL_PUBLISH");
+        if (fail_publish != NULL && fail_publish[0] == '1' &&
+            fail_publish[1] == '\0')
+            publish_result = -1;
+        else
+#endif
+            publish_result = rename(ctx->temporary, ctx->target);
+        if (publish_result != 0) {
+            if (had_target) {
+#ifdef BP_QL_HOST_TEST
+                const char *fail_rollback = getenv("BP_QL_FAIL_ROLLBACK");
+                if (fail_rollback != NULL && fail_rollback[0] == '1' &&
+                    fail_rollback[1] == '\0')
+                    rollback_result = -1;
+                else
+#endif
+                    rollback_result = rename(ctx->backup, ctx->target);
+            }
+            if (had_target && rollback_result != 0)
+                fprintf(stderr, "boltpack: recovery copy retained at: %s\n", ctx->backup);
+            else
+                remove(ctx->temporary);
+            fprintf(stderr, "boltpack: cannot publish extracted file: %s\n", ctx->target);
+            return BP_ERR_IO;
+        }
+    }
+    if (had_target && remove(ctx->backup) != 0) {
+        fprintf(stderr, "boltpack: published file but cannot remove backup: %s\n", ctx->backup);
+        rc = BP_ERR_PARTIAL;
+    }
+    if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+        ql_set_archive_time(ctx->target, entry->mtime) != BP_OK) {
+        fprintf(stderr, "boltpack: cannot restore QDOS file date: %s\n",
+                entry->name);
+        rc = BP_ERR_PARTIAL;
+    }
+    return rc;
 }
 
 /* ---- test callback ---------------------------------------------------- */
@@ -638,9 +1134,11 @@ static void usage(void)
         "  -0        store only    -F fluff   -q quiet   -qq silent\n"
         "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output path for extraction\n"
-        "  -f        force overwrite    -n dry run\n"
-        "\nNote: device prefixes (win1_, mdv1_ etc.) are stripped from archive names.\n",
+        "  -f        force overwrite    -n dry run\n",
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
+    fprintf(stderr,
+        "  --tz-offset MINUTES     fixed local offset east of UTC\n"
+        "\nNote: device prefixes (win1_, mdv1_ etc.) are stripped from archive names.\n");
 }
 
 /* ---- os_name / cpu_name ----------------------------------------------- */
@@ -823,16 +1321,50 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
     FILE *fp; bp_io_t aio; extract_ctx_t ctx; int rc;
+#ifndef BP_QL_HOST_TEST
+    char output_root[BP_MAX_PATH];
+#endif
     fp = fopen(archive_name, "rb");
     if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", archive_name); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
-    if (out_dir && !dry_run) mkdirs(out_dir);
     bp_io_from_file(&aio, fp);
+    rc = ql_extract_preflight(&aio, out_dir, archive_name);
+    if (rc != BP_OK) {
+        if (rc != BP_ERR_PARTIAL)
+            fprintf(stderr, "boltpack: cannot preflight archive: %s\n",
+                    bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "boltpack: cannot rewind archive\n");
+        fclose(fp);
+        return 1;
+    }
+    if (out_dir && !dry_run) {
+#ifdef BP_QL_HOST_TEST
+        if (mkdirs(out_dir) != 0) {
+#else
+        if (ql_native_output_path(out_dir, archive_name, "", output_root,
+                                  sizeof(output_root)) != 0 ||
+            ql_mkdir(output_root) != 0) {
+#endif
+            fprintf(stderr, "boltpack: cannot create output directory: %s\n",
+                    out_dir);
+            fclose(fp);
+            return 1;
+        }
+    }
     memset(&ctx, 0, sizeof(ctx));
-    ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done, NULL, &ctx);
+    ctx.out_dir = out_dir; ctx.archive_path = archive_name;
+    ctx.force = force; ctx.dry_run = dry_run;
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done, NULL, &ctx);
     fclose(fp);
+    if (ctx.failed && rc == BP_OK) rc = BP_ERR_PARTIAL;
+    if (!dry_run && (rc == BP_OK || rc == BP_ERR_PARTIAL) &&
+        ql_restore_directory_times(archive_name, out_dir) != BP_OK)
+        rc = BP_ERR_PARTIAL;
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     if (g_verbosity < VERB_SILENT)
         printf("%lu file%s, %lu dir%s\n",
@@ -875,7 +1407,11 @@ static int cmd_delete(int argc, char **argv)
     del = (const char **)&argv[1]; del_count = argc - 1;
     sf = fopen(argv[0], "rb");
     if (!sf) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
-    ql_join2(tmp, sizeof(tmp), argv[0], ".tmp");
+    if (ql_path_join2(tmp, sizeof(tmp), argv[0], ".tmp") != 0) {
+        fclose(sf);
+        fprintf(stderr, "boltpack: archive path too long for delete stage\n");
+        return 1;
+    }
     df = fopen(tmp, "w+b");
     if (!df) { fclose(sf); fprintf(stderr, "boltpack: cannot create temp\n"); return 1; }
     bp_io_from_file(&sio, sf); bp_io_from_file(&dio, df);
@@ -908,7 +1444,16 @@ int main(int argc, char **argv)
     command = argv[1][0];
     i = 2;
     while (i < argc && argv[i][0] == '-') {
-        if (!strcmp(argv[i], "-b")) {
+        if (!strcmp(argv[i], "--tz-offset")) {
+            if (++i >= argc ||
+                !bp_ql_parse_tz_offset(argv[i], &ql_tz_override_seconds)) {
+                fprintf(stderr,
+                        "boltpack: --tz-offset needs minutes in -1439..1439\n");
+                return 1;
+            }
+            ql_tz_override_set = 1;
+            i++;
+        } else if (!strcmp(argv[i], "-b")) {
             if (++i >= argc) { fprintf(stderr, "boltpack: -b needs arg\n"); return 1; }
             block_size = parse_block_size(argv[i++]);
             if (!block_size) { fprintf(stderr, "boltpack: invalid block size\n"); return 1; }

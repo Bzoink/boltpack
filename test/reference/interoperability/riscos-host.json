@@ -1,0 +1,23 @@
+{
+  "files": {
+    "new": {
+      "bytes": 20,
+      "sha256": "8e9d7fb6afdfe05fa2b166fac8d4ac5d75c5fe7d691a52924bf8fee00b476449",
+      "type": "file"
+    },
+    "tree/empty": {
+      "type": "directory"
+    },
+    "tree/nested/payload": {
+      "bytes": 526,
+      "sha256": "07cccdd63470803e062122d9219fbf84ef13e13a95c073c815f9af96f2f7aeef",
+      "type": "file"
+    },
+    "tree/nested/readme": {
+      "bytes": 19,
+      "sha256": "18a2ce0c33fd1619840e204b4e3d5e9d2e97c288dad3dd582df42e5413f590d1",
+      "type": "file"
+    }
+  },
+  "writer": "RISC OS host SWI shim; Profile 1 Stored/BoltLite"
+}

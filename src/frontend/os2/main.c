@@ -38,6 +38,7 @@
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
 #include "../../core/bp_metadata.h"
+#include "os2_publish.h"
 #include "../mini_shared/dos_time.h"
 
 /* OS/2 Toolkit headers */
@@ -1117,88 +1118,56 @@ static int os2_copy_archive_attributes(const char *temporary,
                           sizeof(staged), DSPI_WRTTHRU) == NO_ERROR ? 0 : -1;
 }
 
+static int os2_publish_query(void *context, const char *path, int *is_directory)
+{
+    FILESTATUS3 fs;
+    APIRET rc;
+    (void)context;
+    rc = DosQueryPathInfo((PSZ)path, FIL_STANDARD, &fs, sizeof(fs));
+    if (rc == NO_ERROR) {
+        *is_directory = (fs.attrFile & FILE_DIRECTORY) != 0;
+        return 1;
+    }
+    if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) return 0;
+    return -1;
+}
+
+static int os2_publish_move(void *context, const char *from, const char *to)
+{
+    (void)context;
+    return DosMove((PSZ)from, (PSZ)to) == NO_ERROR ? 0 : -1;
+}
+
+static int os2_publish_remove(void *context, const char *path)
+{
+    (void)context;
+    return DosDelete((PSZ)path) == NO_ERROR ? 0 : -1;
+}
+
 static int os2_commit_staged(os2_staged_output_t *output, int force)
 {
     static unsigned long sequence = 0;
-    FILESTATUS3 fs;
-    char backup[BP_MAX_PATH];
-    int has_backup = 0;
-    unsigned int attempt;
-    APIRET rc;
-    HFILE source = (HFILE)-1, destination = (HFILE)-1;
-    ULONG action = 0;
-    unsigned char buffer[8192];
-    int copy_error = 0;
-    if (DosQueryPathInfo((PSZ)output->target, FIL_STANDARD, &fs, sizeof(fs))
-        == NO_ERROR) {
-        if (fs.attrFile & FILE_DIRECTORY) return BP_ERR_PARTIAL;
-        if (!force) return BP_ERR_PARTIAL;
-        for (attempt = 0; attempt < 128U; attempt++) {
-            const char *slash = strrchr(output->target, '\\');
-            const char *forward = strrchr(output->target, '/');
-            size_t prefix;
-            if (forward != NULL && (slash == NULL || forward > slash)) slash = forward;
-            prefix = slash != NULL ? (size_t)(slash - output->target + 1) : 0;
-            if (prefix + 13U >= sizeof(backup)) return BP_ERR_NAME_TOO_LONG;
-            memcpy(backup, output->target, prefix);
-            sprintf(backup + prefix, "BO%06lX.BAK", sequence++ & 0xFFFFFFUL);
-            if (DosQueryPathInfo((PSZ)backup, FIL_STANDARD, &fs, sizeof(fs)) == NO_ERROR)
-                continue;
-            rc = DosMove((PSZ)output->target, (PSZ)backup);
-            if (rc == NO_ERROR) { has_backup = 1; break; }
-        }
-        if (!has_backup) return BP_ERR_IO;
-    }
+    static const os2_publish_ops_t ops = {
+        os2_publish_query, os2_publish_move, os2_publish_remove
+    };
+    char recovery[BP_MAX_PATH];
+    int committed = 0;
+    int rc;
 
-    /* Reserve the final name without replacing a file created by another
-     * process after preflight. Payload bytes have already passed the archive
-     * checksum before this copy begins. */
-    rc = DosOpen((PSZ)output->target, &destination, &action, 0, FILE_NORMAL,
-                 OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_FAIL_IF_EXISTS,
-                 OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYREADWRITE |
-                 OPEN_FLAGS_SEQUENTIAL, NULL);
-    if (rc != NO_ERROR) {
-        if (has_backup && os2_restore_backup(backup, output->target) != 0)
-            fprintf(stderr, "boltpack: original file remains at recovery path: %s\n", backup);
-        return force ? BP_ERR_IO : BP_ERR_PARTIAL;
+    /* The verified sibling stage is already closed. Publish it by rename so
+     * interruption cannot leave a partially copied target file. */
+    rc = os2_publish_staged_file(output->temporary, output->target, force,
+                                 recovery, sizeof(recovery), &sequence, &ops,
+                                 NULL, &committed);
+    if (committed) {
+        output->committed = 1;
+        output->temporary[0] = '\0';
     }
-    rc = DosOpen((PSZ)output->temporary, &source, &action, 0, FILE_NORMAL,
-                 OPEN_ACTION_FAIL_IF_NEW | OPEN_ACTION_OPEN_IF_EXISTS,
-                 OPEN_ACCESS_READONLY | OPEN_SHARE_DENYNONE |
-                 OPEN_FLAGS_SEQUENTIAL, NULL);
-    if (rc != NO_ERROR) copy_error = 1;
-    while (!copy_error) {
-        ULONG read_count = 0, written_total = 0;
-        rc = DosRead(source, buffer, sizeof(buffer), &read_count);
-        if (rc != NO_ERROR) { copy_error = 1; break; }
-        if (read_count == 0) break;
-        while (written_total < read_count) {
-            ULONG written = 0;
-            rc = DosWrite(destination, buffer + written_total,
-                          read_count - written_total, &written);
-            if (rc != NO_ERROR || written == 0) { copy_error = 1; break; }
-            written_total += written;
-        }
-    }
-    if (!copy_error && DosResetBuffer(destination) != NO_ERROR) copy_error = 1;
-    if (source != (HFILE)-1 && DosClose(source) != NO_ERROR) copy_error = 1;
-    if (DosClose(destination) != NO_ERROR) copy_error = 1;
-    if (copy_error) {
-        (void)DosDelete((PSZ)output->target);
-        if (has_backup && os2_restore_backup(backup, output->target) != 0)
-            fprintf(stderr, "boltpack: original file remains at recovery path: %s\n", backup);
-        return BP_ERR_IO;
-    }
-    output->committed = 1;
-    if (DosDelete((PSZ)output->temporary) != NO_ERROR) {
-        return BP_ERR_PARTIAL;
-    }
-    output->temporary[0] = '\0';
-    if (has_backup && DosDelete((PSZ)backup) != NO_ERROR) {
-        fprintf(stderr, "boltpack: cannot remove replaced-file backup: %s\n", backup);
-        return BP_ERR_PARTIAL;
-    }
-    return BP_OK;
+    if (recovery[0] != '\0')
+        fprintf(stderr,
+                "boltpack: original file remains at recovery path: %s\n",
+                recovery);
+    return rc;
 }
 
 static os2_dir_restore_t *os2_queue_directory(extract_ctx_t *ctx,
@@ -1400,6 +1369,9 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status, void 
             bp_portable_metadata_t parsed;
             rc = bp_metadata_parse(mex->buf, (unsigned)mex->wctx.len, &parsed);
             if (rc == BP_ERR_CORRUPT) { free(mex); return rc; }
+            if (!bp_metadata_matches_subject(&parsed, ctx->subject_type)) {
+                ctx->metadata_errors++; free(mex); return BP_ERR_PARTIAL;
+            }
             if (parsed.has_fat && !ctx->subject_native_seen) {
                 if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DIR &&
                     ctx->subject_directory != NULL) {

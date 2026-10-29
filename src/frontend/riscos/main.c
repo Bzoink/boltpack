@@ -67,6 +67,12 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "riscos_path.h"
+
+/* Keep whole-archive extraction preflight bounded on this small target. */
+#define BP_POSIX_PREFLIGHT_MAX_ENTRIES 65535U
+#define BP_POSIX_PREFLIGHT_MAX_KEY_BYTES (8U * 1024U * 1024U)
+#include "../posix/archive_preflight.h"
 
 #include <kernel.h>
 #include <swis.h>
@@ -261,12 +267,14 @@ static int riscos_open(const char *path, int reason)
     return r.r[0];
 }
 
-static void riscos_close(int fh)
+static int riscos_close(int fh)
 {
     _kernel_swi_regs r;
+    _kernel_oserror *err;
     r.r[0] = OS_Find_Close;
     r.r[1] = fh;
-    _kernel_swi(OS_Find, &r, &r);
+    err = _kernel_swi(OS_Find, &r, &r);
+    return err == NULL ? 0 : -1;
 }
 
 static void bp_io_from_riscos(bp_io_t *io, int fh)
@@ -484,83 +492,87 @@ static int progress_cb(const bp_progress_t *p, void *user_data)
  * arc_to_riscos: convert '/' → '.' in archive name.
  * (Operates in-place on a copy; caller must supply dest buffer.)
  */
-static void arc_to_riscos(const char *arc, char *riscos, size_t bufsize)
+static int arc_to_riscos(const char *arc, char *riscos, size_t bufsize)
 {
-    size_t i;
-    for (i = 0; i < bufsize - 1 && arc[i] != '\0'; i++)
-        riscos[i] = (arc[i] == '/') ? '.' : arc[i];
-    riscos[i] = '\0';
+    return bp_riscos_arc_to_path(arc, riscos, bufsize);
 }
 
 /*
  * riscos_to_arc: convert '.' → '/' in RISC OS name.
  */
-static void riscos_to_arc(const char *riscos, char *arc, size_t bufsize)
+static int riscos_to_arc(const char *riscos, char *arc, size_t bufsize)
 {
-    size_t i;
-    for (i = 0; i < bufsize - 1 && riscos[i] != '\0'; i++)
-        arc[i] = (riscos[i] == '.') ? '/' : riscos[i];
-    arc[i] = '\0';
+    return bp_riscos_path_to_arc(riscos, arc, bufsize);
 }
 
 /*
  * riscos_join: join a RISC OS directory path with a leafname using '.'.
  */
-static void riscos_join(char *buf, size_t bufsize,
-                        const char *dir, const char *name)
+static int riscos_join(char *buf, size_t bufsize,
+                       const char *dir, const char *name)
 {
-    size_t dlen = strlen(dir);
-    if (dlen > 0 && dir[dlen - 1] == '.')
-        snprintf(buf, bufsize, "%s%s", dir, name);
-    else
-        snprintf(buf, bufsize, "%s.%s", dir, name);
+    return bp_riscos_path_join(buf, bufsize, dir, name);
 }
 
 /*
  * riscos_create_dir: create a directory (and parents if needed).
  * Uses OS_File reason 8.
  */
-static void riscos_create_dir(const char *path)
+static int riscos_create_one_dir(const char *path)
 {
     _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = OS_File_CreateDir;
+    r.r[1] = (int)path;
+    r.r[4] = 10;
+    err = _kernel_swi(OS_File, &r, &r);
+    if (err == NULL) return 0;
+
+    /* Existing directories are harmless; files and other SWI failures are
+     * not. Verify the object type instead of treating every error as EEXIST. */
+    r.r[0] = OS_File_ReadCat;
+    r.r[1] = (int)path;
+    err = _kernel_swi(OS_File, &r, &r);
+    return err == NULL && r.r[0] == RISCOS_OBJ_DIR ? 0 : -1;
+}
+
+static int riscos_create_dir(const char *path)
+{
     char tmp[1024];
     char *p;
 
+    if (path == NULL || strlen(path) >= sizeof(tmp)) return -1;
     strncpy(tmp, path, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
 
     /* Walk path, creating each component */
     for (p = tmp + 1; *p; p++) {
-        if (*p == '.') {
+        if (*p == '.' && p[1] != '$' && p[-1] != '$') {
             *p = '\0';
-            r.r[0] = OS_File_CreateDir;
-            r.r[1] = (int)tmp;
-            r.r[4] = 10; /* default number of entries */
-            _kernel_swi(OS_File, &r, &r);
+            if (riscos_create_one_dir(tmp) != 0) return -1;
             *p = '.';
         }
     }
-    r.r[0] = OS_File_CreateDir;
-    r.r[1] = (int)path;
-    r.r[4] = 10;
-    _kernel_swi(OS_File, &r, &r);
+    return riscos_create_one_dir(path);
 }
 
 /*
  * riscos_create_parent: create the parent directory for a file path.
  */
-static void riscos_create_parent(const char *path)
+static int riscos_create_parent(const char *path)
 {
     char tmp[1024];
     char *dot;
 
+    if (path == NULL || strlen(path) >= sizeof(tmp)) return -1;
     strncpy(tmp, path, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
     dot = strrchr(tmp, '.');
     if (dot != NULL && dot != tmp) {
         *dot = '\0';
-        riscos_create_dir(tmp);
+        return riscos_create_dir(tmp);
     }
+    return 0;
 }
 
 /* ====================================================================
@@ -595,6 +607,139 @@ static int riscos_stat(const char *path, riscos_stat_t *st)
     return r.r[0];
 }
 
+typedef struct {
+    bp_io_t io;                 /* Must remain first for callback casts. */
+    char target[1024];
+    char stage[1024];
+    char backup[1024];
+    int force;
+} riscos_staged_output_t;
+
+static int riscos_delete(const char *path)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = OS_File_Delete;
+    r.r[1] = (int)path;
+    err = _kernel_swi(OS_File, &r, &r);
+    return err == NULL ? 0 : -1;
+}
+
+static void riscos_discard_stage(const char *path)
+{
+    if (riscos_delete(path) != 0)
+        fprintf(stderr, "boltpack: could not remove extraction stage: %s\n",
+                path);
+}
+
+static int riscos_rename(const char *from, const char *to)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = 25; /* OS_FSControl rename */
+    r.r[1] = (int)from;
+    r.r[2] = (int)to;
+    err = _kernel_swi(OS_FSControl, &r, &r);
+    return err == NULL ? 0 : -1;
+}
+
+static int riscos_unused_sibling(const char *target, const char *prefix,
+                                 char *path, size_t path_size)
+{
+    unsigned int i;
+    for (i = 0; i < 65536U; i++) {
+        char leaf[16];
+        riscos_stat_t st;
+        sprintf(leaf, "%s%04X", prefix, i);
+        if (bp_riscos_sibling_path(path, path_size, target, leaf) != 0)
+            return -1;
+        if (riscos_stat(path, &st) == RISCOS_OBJ_NONE) return 0;
+    }
+    return -1;
+}
+
+static riscos_staged_output_t *riscos_open_staged_output(
+    const char *target, int force)
+{
+    riscos_staged_output_t *out;
+    riscos_stat_t st;
+    int object_type, fh;
+
+    object_type = riscos_stat(target, &st);
+    if (object_type == RISCOS_OBJ_DIR ||
+        (object_type == RISCOS_OBJ_FILE && !force)) {
+        fprintf(stderr, "boltpack: destination exists: %s\n", target);
+        return NULL;
+    }
+    if (riscos_create_parent(target) != 0) return NULL;
+    out = (riscos_staged_output_t *)calloc(1, sizeof(*out));
+    if (out == NULL) return NULL;
+    if (strlen(target) >= sizeof(out->target) ||
+        riscos_unused_sibling(target, "BPT", out->stage,
+                              sizeof(out->stage)) != 0) {
+        free(out);
+        return NULL;
+    }
+    strcpy(out->target, target);
+    out->force = force;
+    fh = riscos_open(out->stage, OS_Find_OpenOut);
+    if (fh == 0) {
+        free(out);
+        return NULL;
+    }
+    bp_io_from_riscos(&out->io, fh);
+    return out;
+}
+
+static int riscos_finish_staged_output(riscos_staged_output_t *out,
+                                       int status)
+{
+    int fh, close_rc, target_type, had_backup = 0;
+    riscos_stat_t st;
+
+    fh = riscos_handle_to_fh(out->io.handle);
+    close_rc = riscos_close(fh);
+    if (status != BP_OK || close_rc != 0) {
+        riscos_discard_stage(out->stage);
+        free(out);
+        return status != BP_OK ? status : BP_ERR_IO;
+    }
+
+    target_type = riscos_stat(out->target, &st);
+    if (target_type == RISCOS_OBJ_DIR ||
+        (target_type == RISCOS_OBJ_FILE && !out->force)) {
+        fprintf(stderr, "boltpack: destination appeared during extraction: %s\n",
+                out->target);
+        riscos_discard_stage(out->stage);
+        free(out);
+        return BP_ERR_IO;
+    }
+    if (target_type == RISCOS_OBJ_FILE) {
+        if (riscos_unused_sibling(out->target, "BPR", out->backup,
+                                  sizeof(out->backup)) != 0 ||
+            riscos_rename(out->target, out->backup) != 0) {
+            riscos_discard_stage(out->stage);
+            free(out);
+            return BP_ERR_IO;
+        }
+        had_backup = 1;
+    }
+    if (riscos_rename(out->stage, out->target) != 0) {
+        if (had_backup && riscos_rename(out->backup, out->target) != 0)
+            fprintf(stderr, "boltpack: original destination is preserved as %s\n",
+                    out->backup);
+        riscos_discard_stage(out->stage);
+        free(out);
+        return BP_ERR_IO;
+    }
+    if (had_backup && riscos_delete(out->backup) != 0) {
+        free(out);
+        return BP_ERR_PARTIAL;
+    }
+    free(out);
+    return BP_OK;
+}
+
 /* ====================================================================
  * RISC OS timestamp helpers
  * ==================================================================== */
@@ -604,8 +749,11 @@ static int riscos_stat(const char *path, riscos_stat_t *st)
  * If the file has a datestamp (load_addr bits 20-31 == 0xFFF), decode it.
  * Returns 0 if the file has no datestamp.
  */
-static bp_uint32 riscos_get_mtime(unsigned int load_addr, unsigned int exec_addr)
+static bp_uint16 riscos_get_mtime(unsigned int load_addr,
+                                  unsigned int exec_addr,
+                                  bp_uint64 *mtime)
 {
+    *mtime = bp_u64_from_u32(0);
     if ((load_addr & 0xFFF00000U) == 0xFFF00000U) {
         /* 5-byte centisecond timestamp:
          *   hi byte = low 8 bits of load_addr
@@ -618,7 +766,10 @@ static bp_uint32 riscos_get_mtime(unsigned int load_addr, unsigned int exec_addr
         if (cs < RISCOS_EPOCH_CS) return 0;
         cs -= RISCOS_EPOCH_CS;
         /* Convert centiseconds to seconds */
-        return (bp_uint32)(cs / 100ULL);
+        cs /= 100ULL;
+        mtime->lo = (bp_uint32)(cs & 0xFFFFFFFFULL);
+        mtime->hi = (bp_uint32)(cs >> 32);
+        return BP_ENTRY_FLAG_MTIME_VALID;
     }
     return 0;
 }
@@ -697,19 +848,21 @@ static int riscos_decode_meta(const unsigned char *buf, int len,
  * via OS_File reason 1 (write catalogue info).
  * R0=1, R1=name, R2=load, R3=exec, R5=attributes
  */
-static void riscos_apply_meta(const char *path,
-                              unsigned int load_addr,
-                              unsigned int exec_addr,
-                              unsigned int attributes)
+static int riscos_apply_meta(const char *path,
+                             unsigned int load_addr,
+                             unsigned int exec_addr,
+                             unsigned int attributes)
 {
     _kernel_swi_regs r;
+    _kernel_oserror *err;
     r.r[0] = OS_File_WriteCat;
     r.r[1] = (int)path;
     r.r[2] = (int)load_addr;
     r.r[3] = (int)exec_addr;
     r.r[4] = 0;             /* don't change length */
     r.r[5] = (int)attributes;
-    _kernel_swi(OS_File, &r, &r);
+    err = _kernel_swi(OS_File, &r, &r);
+    return err == NULL ? 0 : -1;
 }
 
 /* ====================================================================
@@ -771,22 +924,9 @@ static int riscos_enum_dir(const char *ros_path, const char *arc_prefix,
                 const unsigned int *rec = (const unsigned int *)p;
                 int obj_type_entry;
                 const char *leaf;
-                char ros_child[512], arc_child[512];
 
                 obj_type_entry = (int)rec[4];
                 leaf = (const char *)(rec + 5);  /* 20 bytes in */
-
-                riscos_join(ros_child, sizeof(ros_child), ros_path, leaf);
-                {
-                    /* build arc_child = arc_prefix + '/' + leaf_as_arc */
-                    char leaf_arc[256];
-                    riscos_to_arc(leaf, leaf_arc, sizeof(leaf_arc));
-                    if (strlen(arc_prefix) > 0)
-                        snprintf(arc_child, sizeof(arc_child), "%s/%s",
-                                 arc_prefix, leaf_arc);
-                    else
-                        snprintf(arc_child, sizeof(arc_child), "%s", leaf_arc);
-                }
 
                 rc = cb(leaf, obj_type_entry, ros_path, arc_prefix, user_data);
                 if (rc != BP_OK) return rc;
@@ -799,7 +939,6 @@ static int riscos_enum_dir(const char *ros_path, const char *arc_prefix,
                     if (recsize & 3) recsize = (recsize + 3) & ~3U;
                     p += recsize;
                 }
-                (void)ros_child; (void)arc_child;
             }
         }
     }
@@ -829,12 +968,13 @@ static int add_enum_cb(const char *leaf, int obj_type,
     char ros_child[512], arc_child[512];
     char leaf_arc[256];
 
-    riscos_join(ros_child, sizeof(ros_child), ros_parent, leaf);
-    riscos_to_arc(leaf, leaf_arc, sizeof(leaf_arc));
-    if (strlen(arc_parent) > 0)
-        snprintf(arc_child, sizeof(arc_child), "%s/%s", arc_parent, leaf_arc);
-    else
-        snprintf(arc_child, sizeof(arc_child), "%s", leaf_arc);
+    if (riscos_join(ros_child, sizeof(ros_child), ros_parent, leaf) != 0 ||
+        riscos_to_arc(leaf, leaf_arc, sizeof(leaf_arc)) != 0 ||
+        bp_riscos_arc_join(arc_child, sizeof(arc_child), arc_parent,
+                           leaf_arc) != 0) {
+        fprintf(stderr, "boltpack: source path is too long or unmappable\n");
+        return BP_ERR_NAME_TOO_LONG;
+    }
 
     (void)obj_type; /* resolved again inside add_riscos_path */
     return add_riscos_path(ctx->ar, ros_child, arc_child);
@@ -860,6 +1000,8 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
         bp_io_t    meta_io;
         rbuf_ctx_t rctx;
         add_ctx_t  sub;
+        bp_uint64  mtime;
+        bp_uint16  mtime_flags;
 
         if (arcname[strlen(arcname) - 1] != '/')
             snprintf(dir_arc, sizeof(dir_arc), "%s/", arcname);
@@ -869,10 +1011,10 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", dir_arc);
 
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32(riscos_get_mtime(
-                                      st.load_addr, st.exec_addr)));
+        mtime_flags = riscos_get_mtime(st.load_addr, st.exec_addr, &mtime);
+        rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
+                                     NULL, bp_u64_from_u32(0), mtime,
+                                     mtime_flags);
         if (rc != BP_OK) return rc;
 
         /* Add META for the directory */
@@ -895,6 +1037,8 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
         int fh;
         bp_io_t fio;
         bp_uint64 file_size;
+        bp_uint64 mtime;
+        bp_uint16 mtime_flags;
         unsigned char meta_buf[RISCOS_META_SIZE];
         bp_io_t    meta_io;
         rbuf_ctx_t rctx;
@@ -912,10 +1056,9 @@ static int add_riscos_path(bp_archive_t *ar, const char *ros_path,
             fflush(stdout);
         }
 
-        rc = bp_archive_add_entry(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
-                                  &fio, file_size,
-                                  bp_u64_from_u32(riscos_get_mtime(
-                                      st.load_addr, st.exec_addr)));
+        mtime_flags = riscos_get_mtime(st.load_addr, st.exec_addr, &mtime);
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
+                                     &fio, file_size, mtime, mtime_flags);
         riscos_close(fh);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", ros_path,
@@ -1003,25 +1146,82 @@ typedef struct {
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    int         error;
 } extract_ctx_t;
+
+typedef struct {
+    bp_posix_preflight_t names;
+    int result;
+} riscos_preflight_t;
+
+/* FileSwitch normally folds case, so detect archive names which project to
+ * the same Latin-1 path before creating any output. */
+static void riscos_preflight_fold(char *path)
+{
+    unsigned char *p = (unsigned char *)path;
+    while (*p != '\0') {
+        if (*p >= 'A' && *p <= 'Z') *p = (unsigned char)(*p + 32U);
+        else if ((*p >= 0xC0U && *p <= 0xD6U) ||
+                 (*p >= 0xD8U && *p <= 0xDEU))
+            *p = (unsigned char)(*p + 0x20U);
+        if (*p == '.') *p = '/';
+        p++;
+    }
+}
+
+static int riscos_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    riscos_preflight_t *ctx = (riscos_preflight_t *)user_data;
+    char path[512];
+
+    if (entry->entry_type == BP_TYPE_META ||
+        entry->entry_type == BP_TYPE_SYMLINK) return 0;
+    /* RISC OS has no resource forks. The current sidecar projection is not
+     * portable or collision-safe, so refuse the archive before any writes. */
+    if (entry->entry_type == BP_TYPE_RSRC) {
+        ctx->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR) {
+        ctx->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    if (bp_riscos_arc_to_path(entry->name, path, sizeof(path)) != 0) {
+        ctx->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    riscos_preflight_fold(path);
+    ctx->result = bp_posix_preflight_add(&ctx->names, path, strlen(path),
+                                         entry->entry_type == BP_TYPE_DIR);
+    return ctx->result == BP_OK ? 0 : 1;
+}
+
+static int riscos_preflight_finish(riscos_preflight_t *ctx)
+{
+    int rc = ctx->result;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&ctx->names);
+    bp_posix_preflight_free(&ctx->names);
+    return rc;
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
     char            ros_path[1024];
     char            ros_name[512];
-    int             fh;
-    bp_io_t        *io;
+    riscos_staged_output_t *staged;
     meta_extract_t *mex;
     bp_uint32       meta_sz;
 
-    /* Convert archive name (/) to RISC OS name (.) */
-    arc_to_riscos(entry->name, ros_name, sizeof(ros_name));
-
-    if (ctx->out_dir)
-        riscos_join(ros_path, sizeof(ros_path), ctx->out_dir, ros_name);
-    else
-        snprintf(ros_path, sizeof(ros_path), "%s", ros_name);
+    /* Refuse lossy or overlong target projection before touching output. */
+    if (arc_to_riscos(entry->name, ros_name, sizeof(ros_name)) != 0 ||
+        (ctx->out_dir
+         ? riscos_join(ros_path, sizeof(ros_path), ctx->out_dir, ros_name)
+         : bp_riscos_path_join(ros_path, sizeof(ros_path), "", ros_name)) != 0) {
+        fprintf(stderr, "boltpack: target path is too long or unmappable: %s\n",
+                entry->name);
+        return NULL;
+    }
 
     /* --- Directory ---------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_DIR) {
@@ -1034,7 +1234,11 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         }
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", entry->name);
-        if (!ctx->dry_run) riscos_create_dir(ros_path);
+        if (!ctx->dry_run && riscos_create_dir(ros_path) != 0) {
+            fprintf(stderr, "boltpack: cannot create directory: %s\n",
+                    ros_path);
+            ctx->error = 1;
+        }
         return NULL;
     }
 
@@ -1077,16 +1281,12 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (g_verbosity == VERB_DEFAULT)
             printf(" extracting: %s [resource fork]\n", entry->name);
         if (ctx->dry_run) return bp_archive_dry_run_stream();
-        riscos_create_parent(rsrc_path);
-        fh = riscos_open(rsrc_path, OS_Find_OpenOut);
-        if (fh == 0) {
+        staged = riscos_open_staged_output(rsrc_path, ctx->force);
+        if (staged == NULL) {
             fprintf(stderr, "boltpack: cannot create: %s\n", rsrc_path);
             return NULL;
         }
-        io = (bp_io_t *)malloc(sizeof(bp_io_t));
-        if (!io) { riscos_close(fh); return NULL; }
-        bp_io_from_riscos(io, fh);
-        return io;
+        return &staged->io;
     }
 
     /* --- Regular file ------------------------------------------------- */
@@ -1095,29 +1295,16 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         printf(" extracting: %s\n", entry->name);
     if (ctx->dry_run) return bp_archive_dry_run_stream();
 
-    if (!ctx->force) {
-        riscos_stat_t st_buf;
-        if (riscos_stat(ros_path, &st_buf) != RISCOS_OBJ_NONE) {
-            fprintf(stderr,
-                    "boltpack: file exists (use -f to overwrite): %s\n",
-                    ros_path);
-            return NULL;
-        }
-    }
-    riscos_create_parent(ros_path);
-    fh = riscos_open(ros_path, OS_Find_OpenOut);
-    if (fh == 0) {
+    staged = riscos_open_staged_output(ros_path, ctx->force);
+    if (staged == NULL) {
         fprintf(stderr, "boltpack: cannot create: %s\n", ros_path);
         return NULL;
     }
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { riscos_close(fh); return NULL; }
-    bp_io_from_riscos(io, fh);
-    return io;
+    return &staged->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
+                               int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
 
@@ -1125,34 +1312,47 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
 
+        /* Never apply metadata whose payload did not pass its checksum. */
+        if (status != BP_OK) {
+            free(mex);
+            return status;
+        }
         if (entry->platform == BP_OS_RISCOS && !ctx->dry_run) {
             char            ros_name[512];
             char            ros_path[1024];
             unsigned int    load_addr, exec_addr, attributes;
 
-            arc_to_riscos(entry->name, ros_name, sizeof(ros_name));
-            if (ctx->out_dir)
-                riscos_join(ros_path, sizeof(ros_path),
-                            ctx->out_dir, ros_name);
-            else
-                snprintf(ros_path, sizeof(ros_path), "%s", ros_name);
+            if (arc_to_riscos(entry->name, ros_name, sizeof(ros_name)) != 0 ||
+                (ctx->out_dir
+                 ? riscos_join(ros_path, sizeof(ros_path),
+                               ctx->out_dir, ros_name)
+                 : bp_riscos_path_join(ros_path, sizeof(ros_path),
+                                       "", ros_name)) != 0) {
+                fprintf(stderr, "boltpack: metadata path is unmappable: %s\n",
+                        entry->name);
+                free(mex);
+                return BP_ERR_PARTIAL;
+            }
 
             if (riscos_decode_meta(mex->wctx.buf, (int)mex->wctx.len,
                                    &load_addr, &exec_addr,
                                    &attributes) == 0) {
-                riscos_apply_meta(ros_path, load_addr, exec_addr, attributes);
+                if (riscos_apply_meta(ros_path, load_addr, exec_addr,
+                                      attributes) != 0) {
+                    free(mex);
+                    return BP_ERR_PARTIAL;
+                }
+            } else {
+                free(mex);
+                return BP_ERR_PARTIAL;
             }
         }
         free(mex);
-        return;
+        return BP_OK;
     }
 
-    /* --- Regular file / resource fork: close handle ------------------- */
-    {
-        int fh = riscos_handle_to_fh(out->handle);
-        riscos_close(fh);
-        free(out);
-    }
+    /* --- Regular file / resource fork: close, verify, and publish stage. */
+    return riscos_finish_staged_output((riscos_staged_output_t *)out, status);
 }
 
 /* ====================================================================
@@ -1484,7 +1684,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     for (i = 1; i < argc; i++) {
         const char *ros_path = argv[i];
         char arcname[512];
-        riscos_to_arc(ros_path, arcname, sizeof(arcname));
+        if (riscos_to_arc(ros_path, arcname, sizeof(arcname)) != 0) {
+            fprintf(stderr, "boltpack: source path is too long: %s\n", ros_path);
+            bp_archive_close(&ar); riscos_close(fh); return 1;
+        }
         rc = add_riscos_path(&ar, ros_path, arcname);
         if (rc != BP_OK) {
             bp_archive_close(&ar); riscos_close(fh); return 1;
@@ -1505,7 +1708,11 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
 
         for (j = 0; j < ar.entries_written; j++) {
             if (ar.entry_list[j].entry_type == BP_TYPE_DIR) dir_count++;
-            else                                            file_count++;
+            else if (ar.entry_list[j].entry_type == BP_TYPE_DATA ||
+                     ar.entry_list[j].entry_type == BP_TYPE_SYMLINK)
+                file_count++;
+            else
+                continue;
             total_orig = bp_u64_add(total_orig, ar.entry_list[j].original_size);
             total_comp = bp_u64_add(total_comp, ar.entry_list[j].compressed_size);
         }
@@ -1578,7 +1785,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     for (i = 1; i < argc; i++) {
         const char *ros_path = argv[i];
         char arcname[512];
-        riscos_to_arc(ros_path, arcname, sizeof(arcname));
+        if (riscos_to_arc(ros_path, arcname, sizeof(arcname)) != 0) {
+            fprintf(stderr, "boltpack: source path is too long: %s\n", ros_path);
+            bp_archive_close(&ar); riscos_close(fh); return 1;
+        }
         rc = add_riscos_path(&ar, ros_path, arcname);
         if (rc != BP_OK) {
             bp_archive_close(&ar); riscos_close(fh); return 1;
@@ -1646,6 +1856,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     int fh;
     bp_io_t aio;
     extract_ctx_t ctx;
+    riscos_preflight_t preflight;
     int rc;
     clock_t start;
     double elapsed;
@@ -1661,19 +1872,49 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                 bp_strerror(rc));
         riscos_close(fh); return 1;
     }
-    if (out_dir && !dry_run) riscos_create_dir(out_dir);
-
     bp_io_from_riscos(&aio, fh);
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.result = BP_OK;
+    rc = bp_archive_list(&aio, riscos_preflight_entry, &preflight);
+    if (rc == BP_ERR_ABORTED && preflight.result != BP_OK)
+        rc = preflight.result;
+    if (rc == BP_OK) rc = riscos_preflight_finish(&preflight);
+    else bp_posix_preflight_free(&preflight.names);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: archive cannot be represented safely on RISC OS: %s\n",
+                bp_strerror(rc));
+        riscos_close(fh);
+        return 1;
+    }
+    /* Verify every payload before making the output root or any directories.
+     * Extraction still checks each stream again while writing its stage. */
+    if (!dry_run) {
+        rc = bp_archive_test(&aio, NULL, NULL);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: archive verification failed: %s\n",
+                    bp_strerror(rc));
+            riscos_close(fh);
+            return 1;
+        }
+    }
+    if (out_dir && !dry_run && riscos_create_dir(out_dir) != 0) {
+        fprintf(stderr, "boltpack: cannot create output directory: %s\n",
+                out_dir);
+        riscos_close(fh);
+        return 1;
+    }
+
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir  = out_dir;
     ctx.force    = force;
     ctx.dry_run  = dry_run;
     start = clock();
 
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
-                                g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
-                                &ctx);
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done_status,
+                                   g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
+                                   &ctx);
     riscos_close(fh);
+    if (rc == BP_OK && ctx.error) rc = BP_ERR_PARTIAL;
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         return 1;

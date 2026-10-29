@@ -1,0 +1,69 @@
+{
+  "case": "X68000 frontend host-shim archive interoperability and metadata",
+  "environment": "GCC C89 host build with Human68k DOS-call stubs; not native X68000 runtime evidence",
+  "profile": {
+    "number": 1,
+    "method": "BoltLite",
+    "block_size": 16384,
+    "files": {
+      "first.bin": {
+        "content": "X68000 profile transfer\n",
+        "repetitions": 2048,
+        "size": 49152,
+        "sha256": "dfd0b4afca0a42cd98717693a10cd644378425ce29519793c01e646e17966890"
+      },
+      "second.bin": {
+        "content": "X68000 append transfer\n",
+        "repetitions": 512,
+        "size": 11776,
+        "sha256": "2f959ef641bdc065455b81eb097c0b78198f392560138b15a9f4deddda82ad61"
+      }
+    }
+  },
+  "timestamp": {
+    "content": "timestamp transfer\n",
+    "sha256": "60d84022c248990f09a2e8dcae406b03e22215184181f3505479fdfeb0928761",
+    "utc_epoch": 1709210096,
+    "offset_minutes_east_of_utc": 0
+  },
+  "portable_fat": {
+    "file": {
+      "content": "portable attributes\n",
+      "sha256": "274bb370315baec06cb6bd5970fe6a83e1ecb24b2573d1d29e336a83a5521d4e",
+      "valid": 39,
+      "value": 33
+    },
+    "directory": {
+      "valid": 39,
+      "value": 1,
+      "native_directory_bit": 16,
+      "child_content": "child written before readonly directory\n",
+      "child_sha256": "495a589c2b34043153d15d4ebbd75ba9eae6c9542ed708d751a14c0e02910fc2"
+    }
+  },
+  "shift_jis": {
+    "local_name_hex": "815c",
+    "unicode_name": "―",
+    "payload": "shift-jis directory payload\n",
+    "payload_sha256": "329707e673490a123bf43dd4e1e830209957dd98066ad5cdf9e77d56ef28bf3e",
+    "undefined_pair_hex": "81ad"
+  },
+  "missing_timezone": "encode time as unknown; extraction reports partial and preserves verified bytes",
+  "collision_refusals": [
+    {
+      "case": "case",
+      "entries": ["Case.txt", "case.TXT"],
+      "expected": "refuse before output-root creation"
+    },
+    {
+      "case": "prefix",
+      "entries": ["NODE", "node/child"],
+      "expected": "refuse before output-root creation"
+    },
+    {
+      "case": "prefix-reverse",
+      "entries": ["node/child", "NODE"],
+      "expected": "refuse before output-root creation"
+    }
+  ]
+}

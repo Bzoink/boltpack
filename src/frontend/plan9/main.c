@@ -37,6 +37,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "p9_path.h"
 
 /* Plan 9 uses UTF-8 natively; archive names are already UTF-8 */
 #define P9_CP  BP_CP_UTF8
@@ -244,6 +245,17 @@ static int ends_with_sep(const char *s)
     return n > 0 && s[n - 1] == '/';
 }
 
+static int output_path_fits(const char *dir, const char *name)
+{
+    size_t length = strlen(name);
+    if (dir != nil) {
+        size_t dir_length = strlen(dir);
+        length += dir_length;
+        if (!ends_with_sep(dir)) length++;
+    }
+    return length < P9_MAX_PATH;
+}
+
 static void path_join(char *buf, int sz, const char *dir, const char *name)
 {
     if (ends_with_sep(dir)) snprint(buf, sz, "%s%s", dir, name);
@@ -347,12 +359,23 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname, u32int mode)
 
 /* ---- restore mode via dirwstat --------------------------------------- */
 
-static void p9_apply_mode(const char *path, u16int mode)
+static int p9_apply_mode(const char *path, u16int mode)
 {
     Dir nd;
+    Dir *current;
+    u32int restored_mode = (u32int)(mode & 0x01FF);
+
+    /* Plan 9 keeps the directory type in Dir.mode.  A wstat that supplies
+     * only the Unix permission bits can be rejected for directories because
+     * it appears to clear DMDIR.  Preserve the type of the object on disk. */
+    current = dirstat(path);
+    if (!current) return -1;
+    if (current->mode & DMDIR) restored_mode |= DMDIR;
+    free(current);
+
     nulldir(&nd);
-    nd.mode = (u32int)(mode & 0x01FF);
-    dirwstat(path, &nd);
+    nd.mode = restored_mode;
+    return dirwstat(path, &nd);
 }
 
 /* ---- recursive add ---------------------------------------------------- */
@@ -497,12 +520,124 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 /* ---- extract callbacks ------------------------------------------------ */
 
 typedef struct {
+    char       *name;
+    u16int      mode;
+    u32int      mtime;
+    int         mode_valid;
+    int         mtime_valid;
+} p9_deferred_dir_t;
+
+typedef struct {
     const char *out_dir;
     int         force;
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    int         failed;
+    p9_deferred_dir_t *deferred_dirs;
+    bp_uint32   deferred_count;
+    bp_uint32   deferred_capacity;
+    unsigned long deferred_name_bytes;
 } extract_ctx_t;
+
+#define P9_DEFERRED_MAX_ENTRIES 65535U
+#define P9_DEFERRED_MAX_NAME_BYTES (16UL * 1024UL * 1024UL)
+
+static int defer_directory(extract_ctx_t *ctx, const bp_entry_t *entry)
+{
+    p9_deferred_dir_t *item;
+    bp_uint32 capacity;
+    size_t length = strlen(entry->name);
+    if (ctx->deferred_count >= P9_DEFERRED_MAX_ENTRIES ||
+        length + 1U > P9_DEFERRED_MAX_NAME_BYTES - ctx->deferred_name_bytes)
+        return BP_ERR_PARTIAL;
+    if (ctx->deferred_count == ctx->deferred_capacity) {
+        capacity = ctx->deferred_capacity ? ctx->deferred_capacity * 2U : 16U;
+        if (capacity > P9_DEFERRED_MAX_ENTRIES)
+            capacity = P9_DEFERRED_MAX_ENTRIES;
+#ifdef __PLAN9__
+        item = (p9_deferred_dir_t *)mallocz(capacity * sizeof(*item), 1);
+#else
+        item = (p9_deferred_dir_t *)calloc(capacity, sizeof(*item));
+#endif
+        if (item == nil) return BP_ERR_NOMEM;
+        if (ctx->deferred_count != 0)
+            memcpy(item, ctx->deferred_dirs,
+                   ctx->deferred_count * sizeof(*item));
+        free(ctx->deferred_dirs);
+        ctx->deferred_dirs = item;
+        ctx->deferred_capacity = capacity;
+    }
+    item = &ctx->deferred_dirs[ctx->deferred_count];
+    memset(item, 0, sizeof(*item));
+    item->name = (char *)malloc(length + 1U);
+    if (item->name == nil) return BP_ERR_NOMEM;
+    memcpy(item->name, entry->name, length + 1U);
+    if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+        if (entry->mtime.hi != 0) {
+            free(item->name);
+            item->name = nil;
+            return BP_ERR_PARTIAL;
+        }
+        item->mtime = entry->mtime.lo;
+        item->mtime_valid = 1;
+    }
+    ctx->deferred_name_bytes += (unsigned long)(length + 1U);
+    ctx->deferred_count++;
+    return BP_OK;
+}
+
+static int defer_directory_mode(extract_ctx_t *ctx, const char *name,
+                                u16int mode)
+{
+    bp_uint32 i;
+    for (i = ctx->deferred_count; i > 0; i--) {
+        p9_deferred_dir_t *item = &ctx->deferred_dirs[i - 1U];
+        if (strcmp(item->name, name) == 0) {
+            item->mode = mode;
+            item->mode_valid = 1;
+            return BP_OK;
+        }
+    }
+    return BP_ERR_PARTIAL;
+}
+
+static int apply_deferred_directories(extract_ctx_t *ctx)
+{
+    bp_uint32 i;
+    int rc = BP_OK;
+    for (i = ctx->deferred_count; i > 0; i--) {
+        p9_deferred_dir_t *item = &ctx->deferred_dirs[i - 1U];
+        char name[P9_MAX_PATH];
+        char path[P9_MAX_PATH];
+        size_t length = strlen(item->name);
+        Dir nd;
+        if (length >= sizeof(name)) { rc = BP_ERR_PARTIAL; continue; }
+        memcpy(name, item->name, length + 1U);
+        if (length > 0 && name[length - 1U] == '/') name[length - 1U] = '\0';
+        if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, name);
+        else snprint(path, sizeof(path), "%s", name);
+        /* Set the timestamp while the directory is still writable, then
+         * restore its final permissions as the last operation. */
+        if (item->mtime_valid) {
+            nulldir(&nd);
+            nd.mtime = item->mtime;
+            if (dirwstat(path, &nd) < 0) rc = BP_ERR_PARTIAL;
+        }
+        if (item->mode_valid && p9_apply_mode(path, item->mode) < 0)
+            rc = BP_ERR_PARTIAL;
+    }
+    return rc;
+}
+
+static void free_deferred_directories(extract_ctx_t *ctx)
+{
+    bp_uint32 i;
+    for (i = 0; i < ctx->deferred_count; i++) free(ctx->deferred_dirs[i].name);
+    free(ctx->deferred_dirs);
+    ctx->deferred_dirs = nil;
+    ctx->deferred_count = ctx->deferred_capacity = 0;
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
@@ -513,18 +648,32 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     int             fd;
 
     if (!bp_name_is_safe(entry->name)) return nil;
-    if (strlen(entry->name) >= sizeof(path) ||
-        (ctx->out_dir && strlen(ctx->out_dir) + strlen(entry->name) + 2 >= sizeof(path)))
+    if (!output_path_fits(ctx->out_dir, entry->name))
         return nil;
 
     if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, entry->name);
     else              snprint(path, sizeof(path), "%s", entry->name);
 
     if (entry->entry_type == BP_TYPE_DIR) {
+        Dir *existing;
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) print("   creating: %s\n", entry->name);
-        if (!ctx->dry_run) mkdirs(path);
-        return nil;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        if (mkdirs(path) < 0) {
+            existing = dirstat(path);
+            if (!existing || !(existing->mode & DMDIR)) {
+                if (existing) free(existing);
+                ctx->failed = 1;
+                return nil;
+            }
+            free(existing);
+        }
+        fd = open(path, OREAD);
+        if (fd < 0) { ctx->failed = 1; return nil; }
+        fctx = (p9_io_t *)malloc(sizeof(p9_io_t));
+        if (!fctx) { close(fd); ctx->failed = 1; return nil; }
+        bp_io_from_p9(&fctx->io, fd, fctx);
+        return &fctx->io;
     }
 
     if (entry->entry_type == BP_TYPE_META) {
@@ -565,7 +714,10 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         }
     }
 
-    mkdirs_for_file(path);
+    if (mkdirs_for_file(path) < 0) {
+        fprint(2, "boltpack: cannot create parent directory for: %s\n", path);
+        return nil;
+    }
     fd = create(path, OWRITE, 0666);
     if (fd < 0) { fprint(2, "boltpack: cannot create: %s\n", path); return nil; }
     fctx = (p9_io_t *)malloc(sizeof(p9_io_t));
@@ -574,43 +726,61 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     return &fctx->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
 
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
-        if (entry->platform == BP_OS_PLAN9 && !ctx->dry_run
-            && mex->wctx.len >= P9_META_PAYLOAD) {
+        int rc = status;
+        if (status == BP_OK && entry->platform == BP_OS_PLAN9 &&
+            !ctx->dry_run && mex->wctx.len >= P9_META_PAYLOAD) {
             char path[P9_MAX_PATH];
             /* Strip trailing slash added to directory names */
             char nm[P9_MAX_PATH]; int nl;
             strcpy(nm, entry->name);
             nl = strlen(nm);
-            if (nl > 1 && nm[nl-1] == '/') nm[nl-1] = '\0';
-            if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, nm);
-            else              strcpy(path, nm);
-            p9_apply_mode(path, decode_meta(mex->buf));
+            if (nl > 1 && nm[nl-1] == '/') {
+                if (defer_directory_mode(ctx, entry->name,
+                                         decode_meta(mex->buf)) != BP_OK)
+                    rc = BP_ERR_PARTIAL;
+            } else {
+                if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, nm);
+                else              strcpy(path, nm);
+                if (p9_apply_mode(path, decode_meta(mex->buf)) < 0)
+                    rc = BP_ERR_PARTIAL;
+            }
         }
         free(mex);
-        return;
+        return rc;
     }
 
     {
         p9_io_t *fctx = (p9_io_t *)out;
         char     path[P9_MAX_PATH];
-        close(fctx->fd);
-        if (!ctx->dry_run && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-            entry->mtime.hi == 0) {
-            /* Restore mtime via dirwstat */
+        int rc = status;
+        if (close(fctx->fd) < 0 && rc == BP_OK) rc = BP_ERR_PARTIAL;
+        if (status == BP_OK && !ctx->dry_run &&
+            entry->entry_type == BP_TYPE_DIR) {
+            int deferred_rc = defer_directory(ctx, entry);
+            if (deferred_rc != BP_OK) rc = deferred_rc;
+        } else if (status == BP_OK && !ctx->dry_run &&
+            entry->entry_type != BP_TYPE_DIR &&
+            (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
             Dir nd;
-            nulldir(&nd);
-            nd.mtime = (u32int)entry->mtime.lo;
-            if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, entry->name);
-            else              strcpy(path, entry->name);
-            dirwstat(path, &nd);
+            if (entry->mtime.hi != 0) {
+                rc = BP_ERR_PARTIAL;
+            } else {
+                nulldir(&nd);
+                nd.mtime = (u32int)entry->mtime.lo;
+                if (ctx->out_dir) path_join(path, P9_MAX_PATH, ctx->out_dir, entry->name);
+                else              strcpy(path, entry->name);
+                if (dirwstat(path, &nd) < 0) rc = BP_ERR_PARTIAL;
+            }
         }
         free(fctx);
+        return rc;
     }
 }
 
@@ -823,14 +993,21 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
             bp_archive_close(&ar); close(fd); return 1;
         }
     }
-    rc = bp_archive_finalize(&ar); bp_archive_close(&ar); close(fd);
-    if (rc != BP_OK) { fprint(2, "boltpack: finalize: %s\n", bp_strerror(rc)); return 1; }
+    rc = bp_archive_finalize(&ar);
+    if (rc != BP_OK) {
+        bp_archive_close(&ar);
+        close(fd);
+        fprint(2, "boltpack: finalize: %s\n", bp_strerror(rc));
+        return 1;
+    }
     if (g_verbosity < VERB_SILENT) {
         bp_uint32 j, fc = 0, dc = 0; bp_uint64 to = {0,0}, tc = {0,0};
         char nb[32];
         for (j = 0; j < ar.entries_written; j++) {
             if (ar.entry_list[j].entry_type == BP_TYPE_DIR) dc++;
-            else fc++;
+            else if (ar.entry_list[j].entry_type == BP_TYPE_DATA ||
+                     ar.entry_list[j].entry_type == BP_TYPE_SYMLINK) fc++;
+            else continue;
             to = bp_u64_add(to, ar.entry_list[j].original_size);
             tc = bp_u64_add(tc, ar.entry_list[j].compressed_size);
         }
@@ -838,6 +1015,8 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         print("%lud file%s, %lud dir%s, %s\n",
               (ulong)fc, fc == 1 ? "" : "s", (ulong)dc, dc == 1 ? "" : "s", nb);
     }
+    bp_archive_close(&ar);
+    close(fd);
     return 0;
 }
 
@@ -878,21 +1057,83 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     return 0;
 }
 
+typedef struct {
+    p9_path_index_t index;
+    const char *out_dir;
+    int error;
+} p9_extract_preflight_t;
+
+/* Validate every path Plan 9 will materialize before creating the output root.
+ * Resource forks, metadata, and symlinks are skipped by this frontend. */
+static int extract_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    p9_extract_preflight_t *check = (p9_extract_preflight_t *)user_data;
+    int is_directory;
+    int rc;
+
+    if (entry->entry_type == BP_TYPE_META ||
+        entry->entry_type == BP_TYPE_RSRC ||
+        entry->entry_type == BP_TYPE_SYMLINK)
+        return 0;
+
+    if (!bp_name_is_safe(entry->name)) {
+        check->error = BP_ERR_PARTIAL;
+        return 1;
+    }
+    if (!output_path_fits(check->out_dir, entry->name)) {
+        check->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    }
+
+    is_directory = entry->entry_type == BP_TYPE_DIR;
+    rc = p9_path_index_add(&check->index, entry->name, is_directory);
+    if (rc != BP_OK) {
+        check->error = rc;
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- cmd_extract ------------------------------------------------------ */
 
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
     p9_io_t arc_ctx; int fd; extract_ctx_t ctx; int rc;
+    p9_extract_preflight_t preflight;
     fd = open(archive_name, OREAD);
     if (fd < 0) { fprint(2, "boltpack: cannot open: %s\n", archive_name); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprint(2, "boltpack: %s\n", bp_strerror(rc)); close(fd); return 1; }
-    if (out_dir && !dry_run) mkdirs(out_dir);
     bp_io_from_p9(&arc_ctx.io, fd, &arc_ctx);
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.out_dir = out_dir;
+    rc = p9_path_index_init(&preflight.index);
+    if (rc == BP_OK) rc = bp_archive_list(&arc_ctx.io, extract_preflight_entry,
+                                          &preflight);
+    if (rc != BP_OK || preflight.error != 0) {
+        if (preflight.error != 0) rc = preflight.error;
+        p9_path_index_free(&preflight.index);
+        close(fd);
+        fprint(2, "boltpack: extraction preflight: %s\n", bp_strerror(rc));
+        return 1;
+    }
+    p9_path_index_free(&preflight.index);
+    if (out_dir && !dry_run && mkdirs(out_dir) < 0) {
+        close(fd);
+        fprint(2, "boltpack: cannot create output directory: %s\n", out_dir);
+        return 1;
+    }
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
-    rc = bp_archive_extract_all(&arc_ctx.io, extract_open, extract_done, nil, &ctx);
+    rc = bp_archive_extract_all_ex(&arc_ctx.io, extract_open, extract_done,
+                                   nil, &ctx);
+    if (rc == BP_OK || rc == BP_ERR_PARTIAL) {
+        if (apply_deferred_directories(&ctx) != BP_OK && rc == BP_OK)
+            rc = BP_ERR_PARTIAL;
+    }
+    if (rc == BP_OK && ctx.failed) rc = BP_ERR_PARTIAL;
+    free_deferred_directories(&ctx);
     close(fd);
     if (rc != BP_OK) { fprint(2, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     if (g_verbosity < VERB_SILENT)
