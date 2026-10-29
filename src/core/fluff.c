@@ -13,9 +13,14 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#else
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#endif
 
 #ifdef FLUFF_DEBUG_PARSE
 #include <stdio.h>
@@ -73,6 +78,9 @@ static void *fl_calloc(size_t count, size_t size)
     return ptr;
 }
 
+#ifdef calloc
+#undef calloc
+#endif
 #define malloc  fl_malloc
 #define free    fl_free
 #define calloc  fl_calloc

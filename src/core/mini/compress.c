@@ -12,6 +12,7 @@
  */
 
 #include "compress.h"
+#include "stack_probe.h"
 #include "../boltlite.h"
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@ int bp_mini_compress_block(const bp_uint8 *src, bp_uint32 src_len,
                            bp_uint8 *dst, bp_uint32 *dst_len,
                            bp_uint8 method)
 {
+    BP_STACK_PROBE();
     if (src == NULL || dst == NULL || dst_len == NULL)
         return BP_ERR_INVALID_ARG;
     if (src_len > BP_MINI_MAX_BLOCK_SIZE)
@@ -68,6 +70,7 @@ int bp_mini_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
                              bp_uint8 *dst, bp_uint32 *dst_len,
                              bp_uint8 method)
 {
+    BP_STACK_PROBE();
     if (src == NULL || dst == NULL || dst_len == NULL)
         return BP_ERR_INVALID_ARG;
     if (method == BP_METHOD_STORED) {

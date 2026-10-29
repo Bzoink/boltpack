@@ -7,6 +7,11 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "archiver.h"
 #include "archive_name.h"
 #include "bp_metadata.h"
@@ -16,10 +21,12 @@
 #ifdef BOLTPACK_ZSTD
 #include "zstd_wrap.h"
 #endif
+#if !defined(__PLAN9__)
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#endif
 #ifdef BOLTPACK_FAST_FLUFF
 #include <omp.h>
 #endif
@@ -469,12 +476,20 @@ int bp_archive_create(bp_archive_t *ar, bp_io_t *io,
     ar->creator_os = BP_OS_AMIGA;
 #elif defined(__atarist__)
     ar->creator_os = BP_OS_ATARI;
+#elif defined(__PLAN9__)
+    ar->creator_os = BP_OS_PLAN9;
 #endif
 #endif /* BP_CREATOR_OS */
 
     /* detect CPU at compile time (override with -DBP_CREATOR_CPU=BP_CPU_xxx) */
 #ifdef BP_CREATOR_CPU
     ar->creator_cpu = BP_CREATOR_CPU;
+#elif defined(PLAN9_CPU_X86_64)
+    ar->creator_cpu = BP_CPU_X86_64;
+#elif defined(PLAN9_CPU_X86)
+    ar->creator_cpu = BP_CPU_X86;
+#elif defined(PLAN9_CPU_ARM32)
+    ar->creator_cpu = BP_CPU_ARM32;
 #else
 #if defined(__x86_64__) || defined(_M_X64) || defined(__amd64__)
     ar->creator_cpu = BP_CPU_X86_64;
@@ -540,7 +555,15 @@ static int entry_list_grow(bp_archive_t *ar)
         byte_cap / sizeof(bp_entry_t) != (size_t)new_cap) {
         return BP_ERR_NOMEM;
     }
+#ifdef __PLAN9__
+    new_list = (bp_entry_t *)malloc(byte_cap);
+    if (new_list != NULL && ar->entries_written != 0)
+        memcpy(new_list, ar->entry_list,
+               (size_t)ar->entries_written * sizeof(*new_list));
+    if (new_list != NULL) free(ar->entry_list);
+#else
     new_list = (bp_entry_t *)realloc(ar->entry_list, byte_cap);
+#endif
     if (new_list == NULL) {
         return BP_ERR_NOMEM;
     }
@@ -937,11 +960,17 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                                                batch_srcs[batch_n], chunk);
                         if (n_read != (long)chunk) {
                             char lbuf[512];
+#ifdef __PLAN9__
+                            snprint(lbuf, sizeof(lbuf),
+                                "boltpack: low-level read failed for entry %s: requested=%u read=%d",
+                                name, (unsigned)chunk, (int)n_read);
+#else
                             sprintf(lbuf,
                                 "boltpack: low-level read failed for entry %.200s: "
                                 "requested=%u read=%ld errno=%d (%s)",
                                 name, (unsigned)chunk, n_read,
                                 errno, strerror(errno));
+#endif
                             bp_core_log(ar, lbuf);
                             return BP_ERR_IO;
                         }
@@ -1098,11 +1127,17 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                                                batch_srcs[batch_n], chunk);
                         if (n_read != (long)chunk) {
                             char lbuf[512];
+#ifdef __PLAN9__
+                            snprint(lbuf, sizeof(lbuf),
+                                "boltpack: low-level read failed for entry %s: requested=%u read=%d",
+                                name, (unsigned)chunk, (int)n_read);
+#else
                             sprintf(lbuf,
                                 "boltpack: low-level read failed for entry %.200s: "
                                 "requested=%u read=%ld errno=%d (%s)",
                                 name, (unsigned)chunk, n_read,
                                 errno, strerror(errno));
+#endif
                             bp_core_log(ar, lbuf);
                             return BP_ERR_IO;
                         }
@@ -1248,11 +1283,17 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                 n = file_io->read(file_io->handle, in_buf, chunk);
                 if (n != (long)chunk) {
                     char lbuf[512];
+#ifdef __PLAN9__
+                    snprint(lbuf, sizeof(lbuf),
+                        "boltpack: low-level read failed for entry %s: requested=%u read=%d",
+                        name, (unsigned)chunk, (int)n);
+#else
                     long pos = file_io->tell(file_io->handle);
                     sprintf(lbuf,
                         "boltpack: low-level read failed for entry %.200s: "
                         "requested=%u read=%ld pos=%ld errno=%d (%s)",
                         name, (unsigned)chunk, n, pos, errno, strerror(errno));
+#endif
                     bp_core_log(ar, lbuf);
                     rc = BP_ERR_IO;
                     goto seq_done;

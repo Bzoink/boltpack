@@ -3,7 +3,9 @@
 #define BP_ARCHIVE_NAME_H
 
 #include "bp_types.h"
+#if !defined(__PLAN9__)
 #include <string.h>
+#endif
 
 static int bp_archive_name_valid(const char *name, bp_uint32 len)
 {

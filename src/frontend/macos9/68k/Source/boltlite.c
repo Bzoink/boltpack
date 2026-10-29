@@ -1,8 +1,15 @@
 /* Low-memory C89 BoltLite encoder/decoder for BoltPack method 1. */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "boltlite.h"
 #include "archiver.h"
+#if !defined(__PLAN9__)
 #include <string.h>
+#endif
 
 #define BOLTLITE_WINDOW_MASK (BOLTLITE_WINDOW_SIZE - 1U)
 #define BOLTLITE_NIL  0xFFFFU
