@@ -35,15 +35,17 @@
 #include <Roster.h>
 #include <String.h>
 #include <FindDirectory.h>
+#include <fs_attr.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <utime.h>
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <vector>
@@ -56,6 +58,15 @@ extern "C" {
 #include "boltlite.h"
 }
 #include "help_text.h"
+#include "extract_helpers.h"
+
+#ifndef B_MIME_STRING_TYPE
+#define B_MIME_STRING_TYPE 'MIMS'
+#endif
+
+#define HAIKU_GUI_MIME_MAX 256
+#define HAIKU_GUI_META_MAX (3 + HAIKU_GUI_MIME_MAX)
+#define HAIKU_GUI_TYPE_ATTR "BEOS:TYPE"
 
 /* ====================================================================== */
 /*  Constants                                                             */
@@ -117,6 +128,96 @@ static bp_io_t make_io(FILE *fp)
     io.tell   = file_tell;
     io.handle = fp;
     return io;
+}
+
+struct HaikuMetaBuffer {
+    bp_io_t io;
+    unsigned char data[HAIKU_GUI_META_MAX];
+    bp_uint32 length;
+    bp_uint32 position;
+};
+
+static long haiku_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    HaikuMetaBuffer *meta = (HaikuMetaBuffer *)handle;
+    bp_uint32 available = meta->position < meta->length
+        ? meta->length - meta->position : 0;
+    if (count > available) count = available;
+    if (count != 0) memcpy(buffer, meta->data + meta->position, count);
+    meta->position += count;
+    return (long)count;
+}
+
+static long haiku_meta_write(void *handle, const void *buffer, bp_uint32 count)
+{
+    HaikuMetaBuffer *meta = (HaikuMetaBuffer *)handle;
+    if (count > sizeof(meta->data) - meta->position) return -1;
+    if (count != 0) memcpy(meta->data + meta->position, buffer, count);
+    meta->position += count;
+    if (meta->position > meta->length) meta->length = meta->position;
+    return (long)count;
+}
+
+static int haiku_meta_seek(void *handle, bp_off_t offset, int origin)
+{
+    HaikuMetaBuffer *meta = (HaikuMetaBuffer *)handle;
+    bp_off_t base = origin == SEEK_SET ? 0 :
+                    origin == SEEK_CUR ? meta->position : meta->length;
+    bp_off_t position = base + offset;
+    if (position < 0 || position > (bp_off_t)sizeof(meta->data)) return -1;
+    meta->position = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t haiku_meta_tell(void *handle)
+{
+    return (bp_off_t)((HaikuMetaBuffer *)handle)->position;
+}
+
+static void haiku_meta_init(HaikuMetaBuffer *meta)
+{
+    memset(meta, 0, sizeof(*meta));
+    meta->io.read = haiku_meta_read;
+    meta->io.write = haiku_meta_write;
+    meta->io.seek = haiku_meta_seek;
+    meta->io.tell = haiku_meta_tell;
+    meta->io.handle = meta;
+}
+
+static int haiku_add_native_meta(bp_archive_t *archive, const char *arc_name,
+                                 const char *path, const struct stat *st)
+{
+    char mime[HAIKU_GUI_MIME_MAX + 1];
+    int mime_length = 0, fd, rc;
+    bp_uint16 mode = (bp_uint16)(st->st_mode & 0x1ff);
+    bp_io_t io;
+    HaikuMetaBuffer buffer;
+
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        ssize_t count = fs_read_attr(fd, HAIKU_GUI_TYPE_ATTR,
+            B_MIME_STRING_TYPE, 0, mime, HAIKU_GUI_MIME_MAX);
+        close(fd);
+        if (count > HAIKU_GUI_MIME_MAX) count = HAIKU_GUI_MIME_MAX;
+        if (count > 0) {
+            mime_length = (int)count;
+            while (mime_length > 0 && mime[mime_length - 1] == '\0')
+                mime_length--;
+            if (mime_length > 255) mime_length = 255;
+        }
+    }
+    if (mode == 0 && mime_length == 0) return BP_OK;
+    haiku_meta_init(&buffer);
+    buffer.data[0] = (unsigned char)(mode & 0xff);
+    buffer.data[1] = (unsigned char)(mode >> 8);
+    buffer.data[2] = (unsigned char)mime_length;
+    if (mime_length) memcpy(buffer.data + 3, mime, (size_t)mime_length);
+    buffer.length = (bp_uint32)(3 + mime_length);
+    io = buffer.io;
+    rc = bp_archive_add_entry_ex(archive, arc_name, BP_TYPE_META,
+        BP_OS_BEOS, &io, bp_u64_from_u32((bp_uint32)(3 + mime_length)),
+        bp_u64_from_u32(0), 0);
+    return rc;
 }
 
 /* ====================================================================== */
@@ -303,22 +404,6 @@ static std::string format_time(bp_uint64 mtime)
     return std::string(buf);
 }
 
-static void makedirs(const char *path)
-{
-    char tmp[4096];
-    char *p;
-    strncpy(tmp, path, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, 0755);
-}
-
 static const char *path_leaf(const char *path)
 {
     const char *slash;
@@ -413,16 +498,6 @@ static std::string path_with_suffix(const std::string &filename,
 
     snprintf(suffix, sizeof(suffix), "-%02u", index);
     return base + suffix + ext;
-}
-
-static std::string join_dest_path(const std::string &dir,
-                                  const std::string &name)
-{
-    if (dir.empty())
-        return name;
-    if (dir[dir.size() - 1] == '/')
-        return dir + name;
-    return dir + "/" + name;
 }
 
 class BPEntryRow : public BRow {
@@ -1045,16 +1120,31 @@ struct ListCtx {
     int count;
 };
 
+struct HaikuDirectoryTime {
+    std::string name;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    bp_uint16 nativeMode;
+    std::string mime;
+    bool hasNativeMeta;
+};
+
 struct ExtractCtx {
     std::string           destDir;
     std::set<std::string> filter;
     ExtractMode           mode;
-    std::map<void *, std::string> resolvedPaths;
     std::set<std::string> reservedFlatPaths;
+    std::map<void *, bp_haiku_extract_output_t *> outputs;
+    std::map<std::string, std::string> resolvedNames;
+    std::vector<HaikuDirectoryTime> directories;
+    int                   rootFd;
+    int                   openError;
+    unsigned int          partialCount;
     unsigned long         extractedFileCount;
 
     ExtractCtx()
-        : mode(EXTRACT_KEEP_FOLDERS), extractedFileCount(0)
+        : mode(EXTRACT_KEEP_FOLDERS), rootFd(-1), openError(BP_OK),
+          partialCount(0), extractedFileCount(0)
     {
     }
 };
@@ -1093,122 +1183,349 @@ static bool extract_filter_matches(const ExtractCtx *ctx,
     return false;
 }
 
+static int reserve_flattened_name(ExtractCtx *ctx,
+                                  const std::string &candidate)
+{
+    std::string key;
+    struct stat st;
+    key = candidate;
+    for (size_t i = 0; i < key.size(); i++)
+        if (key[i] >= 'A' && key[i] <= 'Z') key[i] += 'a' - 'A';
+    if (ctx->reservedFlatPaths.find(key) != ctx->reservedFlatPaths.end())
+        return 0;
+    if (fstatat(ctx->rootFd, candidate.c_str(), &st,
+                AT_SYMLINK_NOFOLLOW) == 0) return 0;
+    if (errno != ENOENT) {
+        ctx->openError = BP_ERR_IO;
+        return -1;
+    }
+    try { ctx->reservedFlatPaths.insert(key); }
+    catch (...) { ctx->openError = BP_ERR_NOMEM; return -1; }
+    return 1;
+}
+
 static std::string reserve_flattened_path(ExtractCtx *ctx,
                                           const std::string &entryName)
 {
     std::string filename = leaf_name(entryName);
-    std::string path;
     unsigned int index;
-
-    if (filename.empty())
-        filename = "unnamed";
-
-    path = join_dest_path(ctx->destDir, filename);
-    if (ctx->reservedFlatPaths.find(path) == ctx->reservedFlatPaths.end() &&
-        access(path.c_str(), 0) != 0) {
-        ctx->reservedFlatPaths.insert(path);
-        return path;
+    if (filename.empty()) filename = "unnamed";
+    if (reserve_flattened_name(ctx, filename) == 1) return filename;
+    if (ctx->openError != BP_OK) return std::string();
+    for (index = 1; index <= 65535U; index++) {
+        std::string candidate = path_with_suffix(filename, index);
+        int rc = reserve_flattened_name(ctx, candidate);
+        if (rc == 1) return candidate;
+        if (rc < 0) return std::string();
     }
-
-    for (index = 1;; index++) {
-        std::string candidate = join_dest_path(ctx->destDir,
-            path_with_suffix(filename, index));
-        if (ctx->reservedFlatPaths.find(candidate) == ctx->reservedFlatPaths.end() &&
-            access(candidate.c_str(), 0) != 0) {
-            ctx->reservedFlatPaths.insert(candidate);
-            return candidate;
-        }
-    }
+    ctx->openError = BP_ERR_OVERFLOW;
+    return std::string();
 }
 
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
 {
     ExtractCtx *ctx = (ExtractCtx *)ud;
     std::string entryName(entry->name ? entry->name : "");
-    std::string path;
-    FILE *fp;
+    std::string outputName;
+    bp_haiku_extract_output_t *output;
     bp_io_t *out;
 
-    if (entry->entry_type == BP_TYPE_DIR) {
-        if (!ctx->filter.empty())
-            return NULL;
-        path = join_dest_path(ctx->destDir, entryName);
-        if (strstr(path.c_str(), "/../") != NULL)
-            return NULL;
-        makedirs(path.c_str());
+    if (!entry->name || !bp_name_is_safe(entry->name)) {
+        ctx->openError = BP_ERR_CORRUPT;
         return NULL;
     }
 
-    if (entry->entry_type == BP_TYPE_META ||
-        entry->entry_type == BP_TYPE_RSRC)
+    if (entry->entry_type == BP_TYPE_DIR) {
+        int dir_fd;
+        if (!ctx->filter.empty() &&
+            (ctx->mode == EXTRACT_FILES_ONLY ||
+             !extract_filter_matches(ctx, entryName)))
+            return NULL;
+        dir_fd = extract_open_directory(ctx->rootFd, entryName.c_str(), 1);
+        if (dir_fd < 0) {
+            ctx->openError = BP_ERR_IO;
+            return NULL;
+        }
+        close(dir_fd);
+        if (entry->flags & (BP_ENTRY_FLAG_MTIME_VALID |
+                            BP_ENTRY_FLAG_MODE_VALID)) {
+            try {
+                HaikuDirectoryTime directory;
+                directory.name = entryName;
+                directory.mtime = entry->mtime;
+                directory.flags = entry->flags;
+                directory.nativeMode = 0;
+                directory.hasNativeMeta = false;
+                ctx->directories.push_back(directory);
+            } catch (...) {
+                ctx->openError = BP_ERR_NOMEM;
+            }
+        } else {
+            try {
+                HaikuDirectoryTime directory;
+                directory.name = entryName;
+                directory.mtime = bp_u64_from_u32(0);
+                directory.flags = 0;
+                directory.nativeMode = 0;
+                directory.hasNativeMeta = false;
+                ctx->directories.push_back(directory);
+            } catch (...) {
+                ctx->openError = BP_ERR_NOMEM;
+            }
+        }
         return NULL;
+    }
+
+    if (entry->entry_type == BP_TYPE_META) {
+        bp_uint32 metaSize = bp_u64_to_u32(entry->original_size);
+        HaikuMetaBuffer *meta;
+        if (entry->platform != BP_OS_BEOS) {
+            ctx->partialCount++;
+            return NULL;
+        }
+        if (metaSize < 3 || metaSize > HAIKU_GUI_META_MAX) {
+            ctx->partialCount++;
+            return NULL;
+        }
+        meta = new (std::nothrow) HaikuMetaBuffer;
+        if (!meta) { ctx->openError = BP_ERR_NOMEM; return NULL; }
+        haiku_meta_init(meta);
+        return &meta->io;
+    }
+    if (entry->entry_type == BP_TYPE_RSRC)
+        return NULL;
+
+    if (entry->entry_type != BP_TYPE_DATA) {
+        ctx->partialCount++;
+        return NULL;
+    }
 
     if (!extract_filter_matches(ctx, entryName))
         return NULL;
 
     if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY)
-        path = reserve_flattened_path(ctx, entryName);
+        outputName = reserve_flattened_path(ctx, entryName);
     else
-        path = join_dest_path(ctx->destDir, entryName);
-
-    if (strstr(path.c_str(), "/../") != NULL)
+        outputName = entryName;
+    if (outputName.empty()) {
+        if (ctx->openError == BP_OK) ctx->openError = BP_ERR_IO;
         return NULL;
-
-    {
-        size_t slash = path.find_last_of('/');
-        if (slash != std::string::npos) {
-            std::string dir = path.substr(0, slash);
-            if (!dir.empty())
-                makedirs(dir.c_str());
-        }
     }
+    try { ctx->resolvedNames[entryName] = outputName; }
+    catch (...) { ctx->openError = BP_ERR_NOMEM; return NULL; }
 
-    fp = fopen(path.c_str(), "wb");
-    if (!fp) return NULL;
+    output = new (std::nothrow) bp_haiku_extract_output_t;
+    if (output == NULL) { ctx->openError = BP_ERR_NOMEM; return NULL; }
+    if (bp_haiku_extract_output_open(ctx->rootFd, outputName.c_str(),
+                                     output) != BP_OK) {
+        delete output;
+        ctx->openError = BP_ERR_IO;
+        return NULL;
+    }
 
     out = (bp_io_t *)malloc(sizeof(bp_io_t));
     if (!out) {
-        fclose(fp);
+        bp_haiku_extract_output_finish(output, 0);
+        delete output;
+        ctx->openError = BP_ERR_NOMEM;
         return NULL;
     }
 
-    *out = make_io(fp);
-    ctx->resolvedPaths[out->handle] = path;
+    *out = make_io(output->stream);
+    try { ctx->outputs[output->stream] = output; }
+    catch (...) {
+        free(out);
+        bp_haiku_extract_output_finish(output, 0);
+        delete output;
+        ctx->openError = BP_ERR_NOMEM;
+        return NULL;
+    }
     return out;
 }
 
-static void extract_done_cb(const bp_entry_t *entry, bp_io_t *out, void *ud)
+static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
+                           void *ud)
 {
     ExtractCtx *ctx = (ExtractCtx *)ud;
-
-    if (out) {
-        std::string path;
-        std::map<void *, std::string>::iterator it = ctx->resolvedPaths.find(out->handle);
-
-        if (it != ctx->resolvedPaths.end()) {
-            path = it->second;
-            ctx->resolvedPaths.erase(it);
+    std::map<void *, bp_haiku_extract_output_t *>::iterator it;
+    bp_haiku_extract_output_t *output;
+    int rc;
+    if (out == NULL) return BP_OK;
+    if (entry->entry_type == BP_TYPE_META) {
+        HaikuMetaBuffer *meta = (HaikuMetaBuffer *)out->handle;
+        bp_uint16 mode;
+        int mimeLength;
+        char mime[HAIKU_GUI_MIME_MAX + 1];
+        std::string subject(entry->name ? entry->name : "");
+        if (status != BP_OK) {
+            ctx->partialCount++;
+            delete meta;
+            return BP_OK;
+        }
+        if (meta->length < 3 || meta->length > HAIKU_GUI_META_MAX) {
+            ctx->partialCount++;
+            delete meta;
+            return BP_OK;
+        }
+        mode = (bp_uint16)((unsigned)meta->data[0] |
+                           ((unsigned)meta->data[1] << 8));
+        mimeLength = meta->data[2];
+        if (meta->length < (bp_uint32)(3 + mimeLength)) {
+            ctx->partialCount++;
+            delete meta;
+            return BP_OK;
+        }
+        if (mimeLength) memcpy(mime, meta->data + 3, (size_t)mimeLength);
+        mime[mimeLength] = '\0';
+        if (!subject.empty() && subject[subject.size() - 1] == '/') {
+            for (size_t i = 0; i < ctx->directories.size(); i++) {
+                if (ctx->directories[i].name == subject) {
+                    ctx->directories[i].nativeMode = mode;
+                    ctx->directories[i].mime.assign(mime, (size_t)mimeLength);
+                    ctx->directories[i].hasNativeMeta = true;
+                    break;
+                }
+            }
         } else {
-            path = join_dest_path(ctx->destDir, entry->name ? entry->name : "");
+            std::map<std::string, std::string>::const_iterator nameIt =
+                ctx->resolvedNames.find(subject);
+            if (nameIt == ctx->resolvedNames.end()) {
+                /* The data entry was filtered out or was not extractable. */
+            } else {
+                char leaf[BP_POSIX_PREFLIGHT_MAX_COMPONENT + 1U];
+                int parent = extract_open_parent(ctx->rootFd,
+                    nameIt->second.c_str(), leaf, sizeof(leaf));
+                int fd = parent >= 0
+                    ? openat(parent, leaf, O_RDWR | O_NOFOLLOW | O_CLOEXEC) : -1;
+                if (fd < 0) {
+                    ctx->partialCount++;
+                } else {
+                    if (fchmod(fd, (mode_t)(mode & 0x1ff)) != 0)
+                        ctx->partialCount++;
+                    if (mimeLength > 0 && fs_write_attr(fd,
+                            HAIKU_GUI_TYPE_ATTR, B_MIME_STRING_TYPE, 0,
+                            mime, (size_t)mimeLength + 1) < 0)
+                        ctx->partialCount++;
+                    close(fd);
+                }
+                if (parent >= 0) close(parent);
+            }
         }
-
-        fclose((FILE *)out->handle);
-
-        if (entry->entry_type != BP_TYPE_DIR &&
-            entry->entry_type != BP_TYPE_META &&
-            entry->entry_type != BP_TYPE_RSRC) {
-            ctx->extractedFileCount++;
-        }
-
-        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) && !path.empty()) {
-            struct utimbuf ut;
-            ut.actime = (time_t)bp_u64_to_ulong(entry->mtime);
-            ut.modtime = (time_t)bp_u64_to_ulong(entry->mtime);
-            utime(path.c_str(), &ut);
-        }
-
-        free(out);
+        delete meta;
+        return BP_OK;
     }
+    it = ctx->outputs.find(out->handle);
+    if (it == ctx->outputs.end()) {
+        free(out);
+        ctx->openError = BP_ERR_IO;
+        return BP_ERR_IO;
+    }
+    output = it->second;
+    ctx->outputs.erase(it);
+    rc = bp_haiku_extract_output_complete(output, status, entry->flags,
+                                          entry->mtime);
+    if (status == BP_OK && (rc == BP_OK || rc == BP_ERR_PARTIAL))
+        ctx->extractedFileCount++;
+    if (rc == BP_ERR_PARTIAL) ctx->partialCount++;
+    delete output;
+    free(out);
+    return status == BP_OK ? rc : BP_OK;
+}
+
+struct HaikuPreflightCtx {
+    bp_posix_preflight_t paths;
+    int error;
+};
+
+static int haiku_preflight_entry(const bp_entry_t *entry, void *user_data)
+{
+    HaikuPreflightCtx *ctx = (HaikuPreflightCtx *)user_data;
+    int rc = bp_haiku_preflight_add(&ctx->paths, entry);
+    if (rc != BP_OK) {
+        ctx->error = rc;
+        return 1;
+    }
+    return 0;
+}
+
+static int extract_finish_directories(ExtractCtx *ctx, int apply)
+{
+    int rc = BP_OK;
+    std::sort(ctx->directories.begin(), ctx->directories.end(),
+        [](const HaikuDirectoryTime &left, const HaikuDirectoryTime &right) {
+            return left.name.size() > right.name.size();
+        });
+    if (apply) {
+        for (size_t i = 0; i < ctx->directories.size(); i++) {
+            const HaikuDirectoryTime &directory = ctx->directories[i];
+            int fd = extract_open_directory(ctx->rootFd,
+                                            directory.name.c_str(), 0);
+            int item_rc = BP_OK;
+            if (fd < 0) {
+                item_rc = BP_ERR_IO;
+            } else {
+                int mode_rc = bp_posix_restore_mode_fd(fd, directory.flags);
+                if (mode_rc != BP_OK) item_rc = BP_ERR_PARTIAL;
+                if (directory.hasNativeMeta) {
+                    if (fchmod(fd, (mode_t)(directory.nativeMode & 0x1ff)) != 0)
+                        item_rc = BP_ERR_PARTIAL;
+                    if (!directory.mime.empty() && fs_write_attr(fd,
+                            HAIKU_GUI_TYPE_ATTR, B_MIME_STRING_TYPE, 0,
+                            directory.mime.c_str(), directory.mime.size() + 1) < 0)
+                        item_rc = BP_ERR_PARTIAL;
+                }
+                if (directory.flags & BP_ENTRY_FLAG_MTIME_VALID) {
+                    bp_off_t seconds = bp_u64_to_off(directory.mtime);
+                    time_t timestamp = (time_t)seconds;
+                    struct timespec times[2];
+                    if (seconds < 0 ||
+                        bp_u64_cmp(bp_off_to_u64(seconds), directory.mtime) != 0 ||
+                        (bp_off_t)timestamp != seconds) {
+                        item_rc = BP_ERR_PARTIAL;
+                    } else {
+                        times[0].tv_sec = 0;
+                        times[0].tv_nsec = UTIME_OMIT;
+                        times[1].tv_sec = timestamp;
+                        times[1].tv_nsec = 0;
+                        if (futimens(fd, times) != 0) item_rc = BP_ERR_PARTIAL;
+                    }
+                }
+            }
+            if (fd >= 0) close(fd);
+            if (item_rc != BP_OK) rc = BP_ERR_PARTIAL;
+        }
+    }
+    ctx->directories.clear();
+    return rc;
+}
+
+static int extract_run(bp_io_t *io, ExtractCtx *ctx)
+{
+    HaikuPreflightCtx preflight;
+    int rc, dir_rc;
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.error = BP_OK;
+    if (fseeko((FILE *)io->handle, 0, SEEK_SET) != 0) return BP_ERR_IO;
+    rc = bp_archive_list(io, haiku_preflight_entry, &preflight);
+    if (preflight.error != BP_OK) rc = preflight.error;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&preflight.paths);
+    bp_posix_preflight_free(&preflight.paths);
+    if (rc != BP_OK) return rc;
+    if (fseeko((FILE *)io->handle, 0, SEEK_SET) != 0) return BP_ERR_IO;
+    ctx->rootFd = bp_haiku_extract_root_open(ctx->destDir.c_str());
+    if (ctx->rootFd < 0) return BP_ERR_IO;
+    rc = bp_archive_extract_all_ex(io, extract_open_cb, extract_done_cb,
+                                   NULL, ctx);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx->openError != BP_OK)
+        rc = ctx->openError;
+    dir_rc = extract_finish_directories(ctx,
+        (rc == BP_OK || rc == BP_ERR_PARTIAL) && ctx->openError == BP_OK);
+    if ((rc == BP_OK || rc == BP_ERR_PARTIAL) && dir_rc != BP_OK)
+        rc = BP_ERR_PARTIAL;
+    if (rc == BP_OK && ctx->partialCount != 0) rc = BP_ERR_PARTIAL;
+    close(ctx->rootFd);
+    ctx->rootFd = -1;
+    return rc;
 }
 
 static void validate_entry_cb(const bp_entry_t *entry, int result, void *ud)
@@ -1446,12 +1763,14 @@ void BPWindow::DoExtract(const char *destDir)
     ExtractCtx ctx;
     ctx.destDir = destDir;
 
-    int rc = bp_archive_extract_all(&io, extract_open_cb, extract_done_cb,
-        NULL, &ctx);
+    int rc = extract_run(&io, &ctx);
 
     if (rc != BP_OK && rc != BP_ERR_ABORTED) {
         BAlert *a = new BAlert("Error",
-            "Extraction error.", "OK");
+            rc == BP_ERR_PARTIAL
+                ? "Extraction completed with unsupported or unrestored metadata."
+                : "Extraction failed; incomplete files were not published.",
+            "OK");
         a->Go();
     } else if (rc == BP_OK) {
         char msg[128];
@@ -1467,8 +1786,6 @@ void BPWindow::DoExtractSelected(const char *destDir)
     if (!fArchiveFp || fPendingExtractSelection.empty())
         return;
 
-    fseeko(fArchiveFp, 0, SEEK_SET);
-
     bp_io_t io = make_io(fArchiveFp);
     ExtractCtx ctx;
     size_t i;
@@ -1481,12 +1798,14 @@ void BPWindow::DoExtractSelected(const char *destDir)
             ctx.filter.insert(fPendingExtractSelection[i]);
     }
 
-    rc = bp_archive_extract_all(&io, extract_open_cb, extract_done_cb,
-        NULL, &ctx);
+    rc = extract_run(&io, &ctx);
 
     if (rc != BP_OK && rc != BP_ERR_ABORTED) {
         BAlert *a = new BAlert("Error",
-            "Extraction error.", "OK");
+            rc == BP_ERR_PARTIAL
+                ? "Selected extraction finished with skipped or unsupported entries."
+                : "Extraction failed; incomplete files were not published.",
+            "OK");
         a->Go();
     } else if (rc == BP_OK) {
         char msg[128];
@@ -1542,10 +1861,18 @@ int BPWindow::AddFileToArchive(bp_archive_t *ar, const char *path,
         if (dirName.empty() || dirName[dirName.size() - 1] != '/')
             dirName += "/";
 
-        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        rc = bp_archive_add_entry(ar, dirName.c_str(), BP_TYPE_DIR,
-                                  BP_OS_BEOS, NULL,
-                                  bp_u64_from_u32(0), mtime);
+        bp_off_t seconds = (bp_off_t)st.st_mtime;
+        bp_uint16 flags = 0;
+        mtime = bp_u64_from_u32(0);
+        if (seconds >= 0 && (time_t)seconds == st.st_mtime) {
+            mtime = bp_off_to_u64(seconds);
+            flags = BP_ENTRY_FLAG_MTIME_VALID;
+        }
+        rc = bp_archive_add_entry_ex(ar, dirName.c_str(), BP_TYPE_DIR,
+                                     BP_OS_BEOS, NULL,
+                                     bp_u64_from_u32(0), mtime, flags);
+        if (rc != BP_OK) return rc;
+        rc = haiku_add_native_meta(ar, dirName.c_str(), path, &st);
         if (rc != BP_OK) return rc;
 
         return AddDirRecursive(ar, path, dirName.c_str());
@@ -1556,10 +1883,18 @@ int BPWindow::AddFileToArchive(bp_archive_t *ar, const char *path,
 
     bp_io_t fio = make_io(fp);
     bp_uint64 fsize = bp_off_to_u64((bp_off_t)st.st_size);
-    bp_uint64 mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-    int rc = bp_archive_add_entry(ar, arcName, BP_TYPE_DATA,
-                                  BP_OS_BEOS, &fio, fsize, mtime);
+    bp_off_t seconds = (bp_off_t)st.st_mtime;
+    bp_uint64 mtime = bp_u64_from_u32(0);
+    bp_uint16 flags = 0;
+    if (seconds >= 0 && (time_t)seconds == st.st_mtime) {
+        mtime = bp_off_to_u64(seconds);
+        flags = BP_ENTRY_FLAG_MTIME_VALID;
+    }
+    int rc = bp_archive_add_entry_ex(ar, arcName, BP_TYPE_DATA,
+                                     BP_OS_BEOS, &fio, fsize, mtime, flags);
     fclose(fp);
+    if (rc == BP_OK)
+        rc = haiku_add_native_meta(ar, arcName, path, &st);
     return rc;
 }
 

@@ -48,6 +48,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "../posix/archive_preflight.h"
 
 #ifdef BOLTPACK_NET
 #include "../common/bp_net_cli.h"
@@ -334,19 +335,30 @@ static int ends_with_slash(const char *s)
     return len > 0 && s[len - 1] == '/';
 }
 
-static void path_join(char *buf, size_t bufsize, const char *dir,
-                      const char *name)
+static int path_join(char *buf, size_t bufsize, const char *dir,
+                     const char *name)
 {
+    int n;
     if (ends_with_slash(dir))
-        snprintf(buf, bufsize, "%s%s", dir, name);
+        n = snprintf(buf, bufsize, "%s%s", dir, name);
     else
-        snprintf(buf, bufsize, "%s/%s", dir, name);
+        n = snprintf(buf, bufsize, "%s/%s", dir, name);
+    return n < 0 || (size_t)n >= bufsize ? -1 : 0;
 }
 
 static const char *clean_path(const char *path)
 {
     while (path[0] == '.' && path[1] == '/') path += 2;
     return path;
+}
+
+static int mkdir_component(const char *path)
+{
+    struct stat st;
+    if (mkdir(path, 0755) == 0) return 0;
+    if (errno != EEXIST || lstat(path, &st) != 0 ||
+        !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return -1;
+    return 0;
 }
 
 /* ---- mkdir -p ---------------------------------------------------------- */
@@ -360,11 +372,11 @@ static int mkdirs(const char *path)
     for (p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) { free(tmp); return -1; }
+            if (mkdir_component(tmp) != 0) { free(tmp); return -1; }
             *p = '/';
         }
     }
-    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) { free(tmp); return -1; }
+    if (mkdir_component(tmp) != 0) { free(tmp); return -1; }
     free(tmp);
     return 0;
 }
@@ -490,6 +502,8 @@ static int haiku_read_meta(const char *path, bp_uint16 *mode_out,
     mime_buf[n] = '\0';
     /* strip trailing null if present */
     while (n > 0 && mime_buf[n - 1] == '\0') n--;
+    /* The payload length field is one byte, so at most 255 bytes fit. */
+    if (n > 255) n = 255;
     mime_buf[n] = '\0';
     return (int)n;
 }
@@ -497,22 +511,28 @@ static int haiku_read_meta(const char *path, bp_uint16 *mode_out,
 /*
  * haiku_apply_meta: restore mode and MIME type to a file on disk.
  */
-static void haiku_apply_meta(const char *path, bp_uint16 mode,
-                             const char *mime, int mime_len)
+static int haiku_apply_meta(const char *path, bp_uint16 mode,
+                            const char *mime, int mime_len)
 {
     int fd;
 
-    chmod(path, (mode_t)(mode & 0x1FF));
+    if (chmod(path, (mode_t)(mode & 0x1FF)) != 0) return BP_ERR_PARTIAL;
 
-    if (mime_len <= 0) return;
+    if (mime_len <= 0) return BP_OK;
 
-    fd = open(path, O_RDWR);
-    if (fd < 0) return;
+    /* Attribute writes apply to nodes, including directories; O_RDWR cannot
+     * open a directory on POSIX/Haiku. fs_write_attr operates on the node. */
+    fd = open(path, O_RDONLY);
+    if (fd < 0) return BP_ERR_PARTIAL;
 
     /* Write with a null terminator (Haiku convention for MIME strings) */
-    fs_write_attr(fd, BEOS_TYPE_ATTR, B_MIME_STRING_TYPE,
-                  0, mime, (size_t)(mime_len + 1));
-    close(fd);
+    if (fs_write_attr(fd, BEOS_TYPE_ATTR, B_MIME_STRING_TYPE,
+                      0, mime, (size_t)(mime_len + 1)) < 0) {
+        close(fd);
+        return BP_ERR_PARTIAL;
+    }
+    if (close(fd) != 0) return BP_ERR_PARTIAL;
+    return BP_OK;
 }
 
 /* ---- add a meta entry after the data entry ----------------------------- */
@@ -547,6 +567,19 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
 
 /* ---- recursive add ----------------------------------------------------- */
 
+/* Format 6 stores nonnegative Unix seconds only. Do not truncate Haiku's
+ * wider time_t to 32 bits or wrap pre-epoch times into a known timestamp. */
+static int haiku_archive_mtime(time_t source, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+    *mtime = bp_u64_from_u32(0);
+    if (source < (time_t)0) return 0;
+    seconds = (bp_off_t)source;
+    if (seconds < (bp_off_t)0 || (time_t)seconds != source) return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return 1;
+}
+
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 
 static int add_directory(bp_archive_t *ar, const char *dir_path,
@@ -567,8 +600,11 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
-        path_join(child_arc,  sizeof(child_arc),  arc_prefix, ent->d_name);
+        if (path_join(child_path, sizeof(child_path), dir_path, ent->d_name) != 0 ||
+            path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name) != 0) {
+            closedir(d);
+            return BP_ERR_INVALID_ARG;
+        }
         rc = add_path(ar, child_path, child_arc);
         if (rc != BP_OK) { closedir(d); return rc; }
     }
@@ -579,12 +615,21 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct stat st;
+    bp_uint64 mtime;
+    bp_uint16 mtime_flags;
     int rc;
 
     if (lstat(path, &st) != 0) {
         fprintf(stderr, "boltpack: cannot stat: %s\n", path);
         return BP_ERR_IO;
     }
+
+    mtime_flags = haiku_archive_mtime(st.st_mtime, &mtime)
+                ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+    if (mtime_flags == 0)
+        fprintf(stderr,
+                "boltpack: source time not representable; storing unknown: %s\n",
+                path);
 
     if (S_ISDIR(st.st_mode)) {
         char dir_arc[4096];
@@ -596,9 +641,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", dir_arc);
 
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR,
+                                     BP_CREATOR_OS, NULL,
+                                     bp_u64_from_u32(0), mtime, mtime_flags);
         if (rc != BP_OK) return rc;
         rc = add_meta_entry(ar, dir_arc, path);
         if (rc != BP_OK) return rc;
@@ -621,9 +666,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             fflush(stdout);
         }
 
-        rc = bp_archive_add_entry(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
-                                  &fio, file_size,
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA,
+                                     BP_CREATOR_OS, &fio, file_size,
+                                     mtime, mtime_flags);
         fclose(fp);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
@@ -675,10 +720,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s -> %s\n", arcname, target);
 
-        rc = bp_archive_add_entry(ar, arcname, BP_TYPE_SYMLINK, BP_CREATOR_OS,
-                                  &dummy_io,
-                                  bp_u64_from_u32((bp_uint32)tlen),
-                                  bp_u64_from_u32((bp_uint32)st.st_mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_SYMLINK,
+                                     BP_CREATOR_OS, &dummy_io,
+                                     bp_u64_from_u32((bp_uint32)tlen),
+                                     mtime, mtime_flags);
         fclose(tmp);
         if (rc != BP_OK)
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
@@ -735,9 +780,147 @@ typedef struct {
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
-    bp_uint32   unsafe_count;  /* entries skipped for unsafe names/targets */
+    bp_uint32   partial_count;  /* skipped or partially restored entries */
     int         slash_warned;  /* printed the leading-'/' warning once */
 } extract_ctx_t;
+
+typedef struct {
+    bp_io_t io;                 /* Must remain first for callback casts. */
+    FILE *fp;
+    int entry_type;
+    char final_path[4096];
+    char stage_path[4096];
+} extract_output_t;
+
+static int create_sibling_stage(const char *final_path, char *stage_path,
+                                size_t stage_size, FILE **fp_out)
+{
+    char parent[4096];
+    char *slash;
+    int fd;
+
+    if (strlen(final_path) >= sizeof(parent)) return -1;
+    strcpy(parent, final_path);
+    slash = strrchr(parent, '/');
+    if (slash == NULL) strcpy(parent, ".");
+    else if (slash == parent) slash[1] = '\0';
+    else *slash = '\0';
+    if (snprintf(stage_path, stage_size, "%s/.boltpack-XXXXXX", parent) >=
+        (int)stage_size) return -1;
+    fd = mkstemp(stage_path);
+    if (fd < 0) return -1;
+    *fp_out = fdopen(fd, "w+b");
+    if (*fp_out == NULL) {
+        close(fd);
+        unlink(stage_path);
+        return -1;
+    }
+    return 0;
+}
+
+static int publish_sibling_stage(extract_output_t *output, int force)
+{
+    if (force) {
+        if (rename(output->stage_path, output->final_path) != 0) return -1;
+    } else {
+        /* link() is an atomic no-clobber publish on the same filesystem. */
+        if (link(output->stage_path, output->final_path) != 0) return -1;
+        if (unlink(output->stage_path) != 0) return -1;
+    }
+    output->stage_path[0] = '\0';
+    return 0;
+}
+
+typedef struct {
+    int exists;
+    mode_t mode;
+    char mime[HAIKU_MIME_MAX + 1];
+    int mime_len;
+    struct stat identity;
+} archive_target_meta_t;
+
+static int capture_archive_target(const char *path, archive_target_meta_t *meta)
+{
+    struct stat st;
+    bp_uint16 archived_mode;
+    memset(meta, 0, sizeof(*meta));
+    if (lstat(path, &st) != 0) {
+        if (errno == ENOENT) return 0;
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode) || st.st_nlink != 1) return -1;
+    meta->exists = 1;
+    meta->identity = st;
+    meta->mode = st.st_mode & 0777;
+    archived_mode = 0;
+    meta->mime_len = haiku_read_meta(path, &archived_mode, meta->mime);
+    meta->mode = (mode_t)archived_mode;
+    return 0;
+}
+
+static int set_new_archive_mode(FILE *fp)
+{
+    mode_t mask = umask(0);
+    mode_t mode;
+    (void)umask(mask);
+    mode = (mode_t)(0666 & ~mask);
+    return fchmod(fileno(fp), mode);
+}
+
+static int preserve_archive_target_meta(const char *stage_path,
+                                        const archive_target_meta_t *meta)
+{
+    mode_t mode;
+    if (!meta->exists) {
+        FILE *fp = fopen(stage_path, "r+b");
+        int rc;
+        if (fp == NULL) return BP_ERR_IO;
+        rc = set_new_archive_mode(fp);
+        if (fclose(fp) != 0 && rc == 0) rc = -1;
+        return rc == 0 ? BP_OK : BP_ERR_PARTIAL;
+    }
+    mode = meta->mode;
+    if (haiku_apply_meta(stage_path, (bp_uint16)mode,
+                         meta->mime, meta->mime_len) != BP_OK)
+        return BP_ERR_PARTIAL;
+    return BP_OK;
+}
+
+static int copy_file_contents(FILE *src, FILE *dst)
+{
+    unsigned char buffer[16384];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), src)) != 0) {
+        if (fwrite(buffer, 1, n, dst) != n) return -1;
+    }
+    return ferror(src) ? -1 : 0;
+}
+
+static int publish_archive_stage(FILE *fp, const char *stage_path,
+                                 const char *archive_name,
+                                 const archive_target_meta_t *meta)
+{
+    struct stat now;
+    int rc = BP_OK;
+    if (fflush(fp) != 0) rc = BP_ERR_IO;
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK && meta->exists) {
+        if (lstat(archive_name, &now) != 0 || !S_ISREG(now.st_mode) ||
+            now.st_dev != meta->identity.st_dev ||
+            now.st_ino != meta->identity.st_ino ||
+            now.st_size != meta->identity.st_size ||
+            now.st_mtime != meta->identity.st_mtime ||
+            now.st_ctime != meta->identity.st_ctime ||
+            now.st_nlink != 1 || rename(stage_path, archive_name) != 0)
+            rc = BP_ERR_IO;
+    } else if (rc == BP_OK) {
+        if (lstat(archive_name, &now) == 0 || errno != ENOENT ||
+            link(stage_path, archive_name) != 0 || unlink(stage_path) != 0)
+            rc = BP_ERR_IO;
+    }
+    if (rc != BP_OK) unlink(stage_path);
+    return rc;
+}
 
 /* Strip leading '/' from an entry name (tar-style), warning once. */
 static const char *extract_entry_name(const bp_entry_t *entry,
@@ -759,7 +942,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
     char            path[4096];
     FILE           *fp;
-    bp_io_t        *io;
+    extract_output_t *output;
     meta_extract_t *mex;
     bp_uint32       meta_sz;
     const char     *name;
@@ -770,12 +953,16 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (!bp_name_is_safe(name)) {
         fprintf(stderr, "boltpack: skipping entry with unsafe name: %s\n",
                 entry->name);
-        ctx->unsafe_count++;
+        ctx->partial_count++;
         return NULL;
     }
 
-    if (ctx->out_dir)
-        path_join(path, sizeof(path), ctx->out_dir, name);
+    if (ctx->out_dir) {
+        if (path_join(path, sizeof(path), ctx->out_dir, name) != 0) {
+            ctx->partial_count++;
+            return NULL;
+        }
+    }
     else
         snprintf(path, sizeof(path), "%s", name);
 
@@ -784,7 +971,10 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", entry->name);
-        if (!ctx->dry_run) mkdirs(path);
+        if (!ctx->dry_run && mkdirs(path) != 0) {
+            fprintf(stderr, "boltpack: cannot create directory: %s\n", path);
+            ctx->partial_count++;
+        }
         return NULL;
     }
 
@@ -796,7 +986,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (meta_sz == 0 || meta_sz > HAIKU_META_MAX + 4) return NULL;
 
         mex = (meta_extract_t *)malloc(sizeof(meta_extract_t));
-        if (!mex) return NULL;
+        if (!mex) { ctx->partial_count++; return NULL; }
 
         mex->wctx.buf = mex->buf;
         mex->wctx.cap = sizeof(mex->buf);
@@ -826,12 +1016,20 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s\n", entry->name);
         if (ctx->dry_run) return bp_archive_dry_run_stream();
-        fp = tmpfile();
-        if (fp == NULL) return NULL;
-        io = (bp_io_t *)malloc(sizeof(bp_io_t));
-        if (io == NULL) { fclose(fp); return NULL; }
-        bp_io_from_file(io, fp);
-        return io;
+        output = (extract_output_t *)calloc(1, sizeof(*output));
+        if (output == NULL) { ctx->partial_count++; return NULL; }
+        output->entry_type = BP_TYPE_SYMLINK;
+        strcpy(output->final_path, path);
+        if (mkdirs_for_file(path) != 0 ||
+            create_sibling_stage(path, output->stage_path,
+                                 sizeof(output->stage_path), &fp) != 0) {
+            free(output);
+            ctx->partial_count++;
+            return NULL;
+        }
+        output->fp = fp;
+        bp_io_from_file(&output->io, fp);
+        return &output->io;
     }
 
     /* --- Regular file ------------------------------------------------- */
@@ -842,26 +1040,35 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     if (!ctx->force) {
         struct stat st_buf;
-        if (stat(path, &st_buf) == 0) {
+        if (lstat(path, &st_buf) == 0) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
+            ctx->partial_count++;
             return NULL;
         }
     }
-    mkdirs_for_file(path);
-    fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", path);
+    if (mkdirs_for_file(path) != 0) {
+        fprintf(stderr, "boltpack: cannot create parent directory: %s\n", path);
+        ctx->partial_count++;
         return NULL;
     }
-    io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (io == NULL) { fclose(fp); return NULL; }
-    bp_io_from_file(io, fp);
-    return io;
+    output = (extract_output_t *)calloc(1, sizeof(*output));
+    if (output == NULL) { ctx->partial_count++; return NULL; }
+    output->entry_type = BP_TYPE_DATA;
+    strcpy(output->final_path, path);
+    if (create_sibling_stage(path, output->stage_path,
+                             sizeof(output->stage_path), &fp) != 0) {
+        fprintf(stderr, "boltpack: cannot create: %s\n", path);
+        free(output);
+        return NULL;
+    }
+    output->fp = fp;
+    bp_io_from_file(&output->io, fp);
+    return &output->io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out,
-                         void *user_data)
+static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
+                               int status, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     const char *name = extract_entry_name(entry, ctx);
@@ -869,90 +1076,108 @@ static void extract_done(const bp_entry_t *entry, bp_io_t *out,
     /* --- Haiku metadata: apply mode and MIME type --------------------- */
     if (entry->entry_type == BP_TYPE_META) {
         meta_extract_t *mex = (meta_extract_t *)out;
+        int rc = BP_OK;
+        if (status != BP_OK) {
+            free(mex);
+            return status;
+        }
         if (entry->platform == BP_OS_BEOS && !ctx->dry_run) {
             char      path[4096];
             bp_uint16 mode;
             char      mime[HAIKU_MIME_MAX + 1];
             int       mime_len;
 
-            if (ctx->out_dir)
-                path_join(path, sizeof(path), ctx->out_dir, name);
+            if (ctx->out_dir) {
+                if (path_join(path, sizeof(path), ctx->out_dir, name) != 0)
+                    rc = BP_ERR_PARTIAL;
+            }
             else
                 snprintf(path, sizeof(path), "%s", name);
 
-            if (haiku_decode_meta(mex->wctx.buf, (int)mex->wctx.len,
-                                  &mode, mime, &mime_len) == 0) {
-                haiku_apply_meta(path, mode, mime, mime_len);
-            }
+            if (rc == BP_OK && haiku_decode_meta(mex->wctx.buf, (int)mex->wctx.len,
+                                  &mode, mime, &mime_len) == 0)
+                rc = haiku_apply_meta(path, mode, mime, mime_len);
+            else if (rc == BP_OK) rc = BP_ERR_PARTIAL;
         }
         free(mex);
-        return;
+        if (rc != BP_OK) ctx->partial_count++;
+        return rc;
     }
 
-    /* --- Symlink ------------------------------------------------------- */
-    if (entry->entry_type == BP_TYPE_SYMLINK) {
-        FILE *fp = (FILE *)out->handle;
-        char  target[4096];
-        char  path[4096];
-        long  len;
-
-        fseek(fp, 0, SEEK_END);
-        len = ftell(fp);
-        if (len > 0 && len < (long)sizeof(target)) {
-            rewind(fp);
-            if (fread(target, 1, (size_t)len, fp) == (size_t)len) {
-                target[len] = '\0';
-                /* Refuse targets that point outside the extraction root:
-                 * a hostile archive could otherwise plant a link and write
-                 * through it with a later entry. */
-                if (!bp_symlink_target_is_safe(name, target)) {
-                    fprintf(stderr,
-                            "boltpack: skipping symlink with unsafe target: "
-                            "%s -> %s\n", entry->name, target);
-                    ctx->unsafe_count++;
-                } else {
-                    if (ctx->out_dir)
-                        path_join(path, sizeof(path), ctx->out_dir, name);
-                    else
-                        snprintf(path, sizeof(path), "%s", name);
-                    mkdirs_for_file(path);
-                    symlink(target, path);
-                }
-            }
-        }
-        fclose(fp);
-        free(out);
-        return;
-    }
-
-    /* --- Regular file: close, set mtime ------------------------------- */
+    /* --- Staged file or symlink publication --------------------------- */
     {
-        FILE *fp = (FILE *)out->handle;
-        char path[4096];
+        extract_output_t *output = (extract_output_t *)out;
+        int rc = status;
+        int publish_allowed = 1;
 
-        fclose(fp);
-        if (ctx->out_dir)
-            path_join(path, sizeof(path), ctx->out_dir, name);
-        else
-            snprintf(path, sizeof(path), "%s", name);
-        if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-            bp_restore_mtime(path, entry->mtime) != BP_OK) {
-            fprintf(stderr, "boltpack: cannot restore timestamp: %s\n", path);
-            ctx->unsafe_count++;
+        if (output->fp != NULL) {
+            if (status == BP_OK && fflush(output->fp) != 0) rc = BP_ERR_IO;
+            if (fclose(output->fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+            output->fp = NULL;
         }
-        free(out);
+        if (rc != BP_OK) {
+            if (output->stage_path[0] != '\0') unlink(output->stage_path);
+            free(output);
+            return rc;
+        }
+
+        if (entry->entry_type == BP_TYPE_SYMLINK) {
+            char target[4096];
+            FILE *stage_fp = fopen(output->stage_path, "rb");
+            size_t len;
+            if (stage_fp == NULL) rc = BP_ERR_IO;
+            else {
+                len = fread(target, 1, sizeof(target) - 1, stage_fp);
+                if (ferror(stage_fp) || fgetc(stage_fp) != EOF) rc = BP_ERR_PARTIAL;
+                if (fclose(stage_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+                target[len] = '\0';
+            }
+            if (rc == BP_OK && memchr(target, '\0', len) != NULL) {
+                rc = BP_ERR_PARTIAL;
+                publish_allowed = 0;
+            }
+            if (rc == BP_OK && !bp_symlink_target_is_safe(name, target)) {
+                publish_allowed = 0;
+                rc = BP_ERR_PARTIAL;
+            }
+            if (rc == BP_OK) {
+                if (unlink(output->stage_path) != 0 ||
+                    symlink(target, output->stage_path) != 0)
+                    rc = BP_ERR_IO;
+            }
+        } else if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                   bp_restore_mtime(output->stage_path, entry->mtime) != BP_OK) {
+            rc = BP_ERR_PARTIAL;
+        }
+
+        if (publish_allowed && (rc == BP_OK || rc == BP_ERR_PARTIAL) &&
+            publish_sibling_stage(output, ctx->force) != 0)
+            rc = BP_ERR_IO;
+        if (rc != BP_OK && output->stage_path[0] != '\0')
+            unlink(output->stage_path);
+        if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
+        free(output);
+        return rc;
     }
 }
 
 #ifdef BOLTPACK_NET
 /* Extract a verified network-received archive using the Haiku callbacks. */
+static int haiku_extract_preflight(bp_io_t *io, const char *out_dir);
+
 int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
+    int rc;
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
     ctx.force = force;
-    return bp_archive_extract_all(aio, extract_open, extract_done, NULL, &ctx);
+    rc = haiku_extract_preflight(aio, out_dir);
+    if (rc != BP_OK) return rc;
+    rc = bp_archive_extract_all_ex(aio, extract_open, extract_done_status,
+                                   NULL, &ctx);
+    if (rc == BP_OK && ctx.partial_count != 0) return BP_ERR_PARTIAL;
+    return rc;
 }
 #endif
 
@@ -1132,9 +1357,11 @@ static int cmd_delete(int argc, char **argv)
     int del_count;
     FILE *src_fp, *dst_fp;
     bp_io_t src_io, dst_io;
+    archive_target_meta_t target_meta;
     char tmp_name[4096];
     bp_uint32 deleted = 0;
-    int rc;
+    struct stat src_st;
+    int rc, partial = 0;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: delete requires archive name and file(s)\n");
@@ -1144,15 +1371,28 @@ static int cmd_delete(int argc, char **argv)
     del_names    = (const char **)&argv[1];
     del_count    = argc - 1;
 
+    if (capture_archive_target(archive_name, &target_meta) != 0 ||
+        !target_meta.exists) {
+        fprintf(stderr, "boltpack: archive target is not a replaceable regular file: %s\n",
+                archive_name);
+        return 1;
+    }
+
     src_fp = fopen(archive_name, "rb");
     if (!src_fp) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
         return 1;
     }
-    snprintf(tmp_name, sizeof(tmp_name), "%s.bp_tmp", archive_name);
-    dst_fp = fopen(tmp_name, "w+b");
-    if (!dst_fp) {
-        fprintf(stderr, "boltpack: cannot create temp file: %s\n", tmp_name);
+    if (fstat(fileno(src_fp), &src_st) != 0 ||
+        src_st.st_dev != target_meta.identity.st_dev ||
+        src_st.st_ino != target_meta.identity.st_ino ||
+        src_st.st_size != target_meta.identity.st_size ||
+        src_st.st_mtime != target_meta.identity.st_mtime ||
+        src_st.st_ctime != target_meta.identity.st_ctime ||
+        create_sibling_stage(archive_name, tmp_name, sizeof(tmp_name),
+                             &dst_fp) != 0) {
+        fprintf(stderr, "boltpack: archive changed or cannot create stage: %s\n",
+                archive_name);
         fclose(src_fp);
         return 1;
     }
@@ -1161,39 +1401,56 @@ static int cmd_delete(int argc, char **argv)
     bp_io_from_file(&dst_io, dst_fp);
     rc = bp_archive_delete(&src_io, &dst_io, del_names, (bp_uint32)del_count,
                            &deleted);
-    fclose(src_fp);
-    fclose(dst_fp);
+    if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
+        fclose(dst_fp);
         remove(tmp_name);
         return 1;
     }
     if (deleted == 0) {
         fprintf(stderr, "boltpack: no matching entries found\n");
+        fclose(dst_fp);
         remove(tmp_name);
         return 1;
     }
-    if (remove(archive_name) != 0 || rename(tmp_name, archive_name) != 0) {
-        fprintf(stderr, "boltpack: cannot replace archive\n");
+    if (fflush(dst_fp) != 0) {
+        fclose(dst_fp); remove(tmp_name);
+        fprintf(stderr, "boltpack: cannot flush archive stage\n");
+        return 1;
+    }
+    if (preserve_archive_target_meta(tmp_name, &target_meta) != BP_OK)
+        partial = 1;
+    rc = publish_archive_stage(dst_fp, tmp_name, archive_name, &target_meta);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive replacement\n");
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%lu entr%s deleted\n",
                (unsigned long)deleted, deleted == 1 ? "y" : "ies");
+    if (partial) {
+        fprintf(stderr, "boltpack: archive data saved, but some archive attributes were not preserved\n");
+        return 1;
+    }
     return 0;
 }
 
 /* ---- cmd_add ----------------------------------------------------------- */
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
-                   int level)
+                   int level, int interchange_profile)
 {
     const char *archive_name;
+    FILE *src_fp;
     FILE *fp;
     bp_io_t io;
     bp_archive_t ar;
-    int rc, i;
+    archive_target_meta_t target_meta;
+    char stage_path[4096];
+    struct stat src_st;
+    int rc, i, copy_rc, src_close_rc, partial = 0;
 
     if (argc < 2) {
         fprintf(stderr, "boltpack: add requires archive name and files\n");
@@ -1201,23 +1458,66 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     }
     archive_name = argv[0];
 
+    if (capture_archive_target(archive_name, &target_meta) != 0 ||
+        !target_meta.exists) {
+        fprintf(stderr, "boltpack: archive target is not a replaceable regular file: %s\n",
+                archive_name);
+        return 1;
+    }
+
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
         return 1;
     }
-    fp = fopen(archive_name, "r+b");
-    if (!fp) {
+    src_fp = fopen(archive_name, "rb");
+    if (!src_fp) {
         fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
+        return 1;
+    }
+    if (fstat(fileno(src_fp), &src_st) != 0 ||
+        src_st.st_dev != target_meta.identity.st_dev ||
+        src_st.st_ino != target_meta.identity.st_ino ||
+        src_st.st_size != target_meta.identity.st_size ||
+        src_st.st_mtime != target_meta.identity.st_mtime ||
+        src_st.st_ctime != target_meta.identity.st_ctime) {
+        fclose(src_fp);
+        fprintf(stderr, "boltpack: archive changed before staging: %s\n",
+                archive_name);
+        return 1;
+    }
+    if (create_sibling_stage(archive_name, stage_path, sizeof(stage_path),
+                             &fp) != 0) {
+        fclose(src_fp);
+        fprintf(stderr, "boltpack: cannot create archive stage: %s\n", archive_name);
+        return 1;
+    }
+    copy_rc = copy_file_contents(src_fp, fp);
+    src_close_rc = fclose(src_fp);
+    if (copy_rc != 0 || src_close_rc != 0 || fflush(fp) != 0 ||
+        fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp); unlink(stage_path);
+        fprintf(stderr, "boltpack: cannot stage existing archive: %s\n", archive_name);
         return 1;
     }
     bp_io_from_file(&io, fp);
     rc = bp_archive_open_append(&ar, &io, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp);
+        fclose(fp); unlink(stage_path);
         return 1;
+    }
+    if (interchange_profile) {
+        rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(stage_path);
+            return 1;
+        }
+        if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
     if (level > 0) ar.method_level = (bp_uint8)level;
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
@@ -1228,32 +1528,51 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp);
+            bp_archive_close(&ar); fclose(fp); unlink(stage_path);
             return 1;
         }
     }
     rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    fclose(fp);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        fclose(fp); unlink(stage_path);
+        return 1;
+    }
+    if (fflush(fp) != 0) {
+        fclose(fp); unlink(stage_path);
+        fprintf(stderr, "boltpack: cannot flush archive stage: %s\n", archive_name);
+        return 1;
+    }
+    if (preserve_archive_target_meta(stage_path, &target_meta) != BP_OK)
+        partial = 1;
+    rc = publish_archive_stage(fp, stage_path, archive_name, &target_meta);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive replacement: %s\n",
+                archive_name);
         return 1;
     }
     if (g_verbosity < VERB_SILENT)
         printf("%d file%s added\n", argc - 1, (argc - 1) == 1 ? "" : "s");
+    if (partial) {
+        fprintf(stderr, "boltpack: archive data saved, but some archive attributes were not preserved\n");
+        return 1;
+    }
     return 0;
 }
 
 /* ---- cmd_create -------------------------------------------------------- */
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method, int level)
+                      bp_uint8 method, int level, int interchange_profile)
 {
     const char *archive_name;
     FILE *fp;
     bp_io_t aio;
     bp_archive_t ar;
-    int rc, i;
+    archive_target_meta_t target_meta;
+    char stage_path[4096];
+    int rc, i, partial = 0;
     clock_t start;
     double elapsed;
 
@@ -1267,23 +1586,34 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
+    if (capture_archive_target(archive_name, &target_meta) != 0) {
+        fprintf(stderr, "boltpack: archive target is not a replaceable regular file: %s\n",
+                archive_name);
+        return 1;
+    }
+
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
         return 1;
     }
-    fp = fopen(archive_name, "w+b");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot create: %s\n", archive_name);
+    if (create_sibling_stage(archive_name, stage_path, sizeof(stage_path),
+                             &fp) != 0) {
+        fprintf(stderr, "boltpack: cannot create archive stage for: %s\n",
+                archive_name);
         return 1;
     }
     bp_io_from_file(&aio, fp);
-    rc = bp_archive_create(&ar, &aio, block_size, method);
+    rc = interchange_profile
+        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+        : bp_archive_create(&ar, &aio, block_size, method);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); return 1;
+        fclose(fp); unlink(stage_path); return 1;
     }
+    if (interchange_profile && method == BP_METHOD_STORED)
+        ar.method = BP_METHOD_STORED;
     if (level > 0) ar.method_level = (bp_uint8)level;
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
 
@@ -1295,13 +1625,13 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding %s: %s\n", path,
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); fclose(fp); unlink(stage_path); return 1;
         }
     }
     rc = bp_archive_finalize(&ar);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
-        bp_archive_close(&ar); fclose(fp); return 1;
+        bp_archive_close(&ar); fclose(fp); unlink(stage_path); return 1;
     }
 
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
@@ -1339,7 +1669,18 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         printf("\n");
     }
     bp_archive_close(&ar);
-    fclose(fp);
+    if (fflush(fp) != 0) {
+        fclose(fp); unlink(stage_path);
+        fprintf(stderr, "boltpack: cannot flush archive stage: %s\n", archive_name);
+        return 1;
+    }
+    if (preserve_archive_target_meta(stage_path, &target_meta) != BP_OK)
+        partial = 1;
+    rc = publish_archive_stage(fp, stage_path, archive_name, &target_meta);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot publish archive: %s\n", archive_name);
+        return 1;
+    }
 #ifdef BOLTPACK_NET
     if (bp_net_cli_maybe_send(archive_name) != 0) {
         fprintf(stderr,
@@ -1347,6 +1688,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 #endif
+    if (partial) {
+        fprintf(stderr, "boltpack: archive saved, but some archive attributes were not preserved\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -1394,6 +1739,50 @@ static int cmd_list(const char *archive_name)
 
 /* ---- cmd_extract ------------------------------------------------------- */
 
+typedef struct {
+    bp_posix_preflight_t paths;
+    const char *out_dir;
+    int error;
+} haiku_extract_preflight_t;
+
+static int haiku_extract_preflight_entry(const bp_entry_t *entry,
+                                         void *user_data)
+{
+    haiku_extract_preflight_t *ctx = (haiku_extract_preflight_t *)user_data;
+    const char *name = entry->name;
+    size_t name_len = entry->name_len;
+    int rc;
+    char joined_path[4096];
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
+        entry->entry_type != BP_TYPE_SYMLINK) return 0;
+    while (name_len > 0 && *name == '/') { name++; name_len--; }
+    if (name_len == 0 || !bp_name_is_safe(name)) {
+        rc = BP_ERR_PARTIAL;
+    } else if (ctx->out_dir != NULL &&
+               path_join(joined_path, sizeof(joined_path), ctx->out_dir,
+                         name) != 0) {
+        rc = BP_ERR_NAME_TOO_LONG;
+    } else {
+        rc = bp_posix_preflight_add(&ctx->paths, name, name_len,
+                                    entry->entry_type == BP_TYPE_DIR);
+    }
+    if (rc != BP_OK) { ctx->error = rc; return 1; }
+    return 0;
+}
+
+static int haiku_extract_preflight(bp_io_t *io, const char *out_dir)
+{
+    haiku_extract_preflight_t ctx;
+    int rc;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.out_dir = out_dir;
+    rc = bp_archive_list(io, haiku_extract_preflight_entry, &ctx);
+    if (ctx.error != BP_OK) rc = ctx.error;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&ctx.paths);
+    bp_posix_preflight_free(&ctx.paths);
+    return rc;
+}
+
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
@@ -1415,20 +1804,31 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                 bp_strerror(rc));
         fclose(fp); return 1;
     }
-    if (out_dir && !dry_run) mkdirs(out_dir);
-
     bp_io_from_file(&aio, fp);
+    rc = haiku_extract_preflight(&aio, out_dir);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: destination name preflight failed: %s\n",
+                bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+    if (out_dir && !dry_run && mkdirs(out_dir) != 0) {
+        fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
+        fclose(fp);
+        return 1;
+    }
+
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir  = out_dir;
     ctx.force    = force;
     ctx.dry_run  = dry_run;
     start = clock();
 
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done,
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done_status,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
     fclose(fp);
-    if (rc != BP_OK) {
+    if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         return 1;
     }
@@ -1440,11 +1840,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         if (elapsed > 0.0) printf(", %.2fs", elapsed);
         printf("\n");
     }
-    if (ctx.unsafe_count != 0) {
-        fprintf(stderr,
-                "boltpack: %lu entr%s skipped (unsafe name or link target)\n",
-                (unsigned long)ctx.unsafe_count,
-                ctx.unsafe_count == 1 ? "y" : "ies");
+    if (ctx.partial_count != 0 || rc == BP_ERR_PARTIAL) {
+        if (ctx.partial_count != 0)
+            fprintf(stderr,
+                    "boltpack: %lu entr%s skipped or partially restored\n",
+                    (unsigned long)ctx.partial_count,
+                    ctx.partial_count == 1 ? "y" : "ies");
+        else
+            fprintf(stderr,
+                    "boltpack: some entries or attributes were not restored\n");
         return 1;
     }
     return 0;
@@ -1519,6 +1923,7 @@ static void usage_basic(void)
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
         "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
+        "  --interchange-profile-1  Create/append a broadly portable archive\n"
         "  -o PATH    Output directory for extraction\n"
         "  -f         Force overwrite existing files\n"
         "  -n         Dry run\n"
@@ -1561,6 +1966,7 @@ static void usage_advanced(void)
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
         "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
         "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
+        "  --interchange-profile-1  Create/append a broadly portable archive\n"
         "  --block-size N   Long-form alias for -b\n"
         "  --output PATH    Long-form alias for -o\n");
     fprintf(stderr,
@@ -1583,6 +1989,9 @@ int main(int argc, char **argv)
     bp_uint32 block_size = 0;
     bp_uint8  method     = BP_METHOD_BOLTLZ;
     int opt_level = 0;
+    int method_given = 0;
+    int block_size_given = 0;
+    int interchange_profile = 0;
     const char *out_dir  = NULL;
     int force   = 0;
     int dry_run = 0;
@@ -1642,22 +2051,25 @@ int main(int argc, char **argv)
                         argv[i + 1]);
                 return 1;
             }
+            block_size_given = 1;
             i += 2;
         } else if (strcmp(argv[i], "-0") == 0 ||
                    strcmp(argv[i], "--store") == 0) {
-            method = BP_METHOD_STORED; i++;
+            method = BP_METHOD_STORED; method_given = 1; i++;
         } else if (strcmp(argv[i], "-1") == 0 ||
                    strcmp(argv[i], "--boltlite") == 0) {
-            method = BP_METHOD_BOLTLITE; i++;
+            method = BP_METHOD_BOLTLITE; method_given = 1; i++;
         } else if (strcmp(argv[i], "-2") == 0 ||
                    strcmp(argv[i], "--boltlz") == 0) {
-            method = BP_METHOD_BOLTLZ; i++;
+            method = BP_METHOD_BOLTLZ; method_given = 1; i++;
         } else if (strcmp(argv[i], "-F") == 0 ||
                    strcmp(argv[i], "--fluff") == 0) {
-            method = BP_METHOD_FLUFF; i++;
+            method = BP_METHOD_FLUFF; method_given = 1; i++;
         } else if (strcmp(argv[i], "-Z") == 0 ||
                    strcmp(argv[i], "--zstd") == 0) {
-            method = BP_METHOD_ZSTD; i++;
+            method = BP_METHOD_ZSTD; method_given = 1; i++;
+        } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
+            interchange_profile = 1; i++;
         } else if (strcmp(argv[i], "-l") == 0 ||
                    strcmp(argv[i], "--level") == 0) {
             if (i + 1 >= argc) {
@@ -1733,6 +2145,19 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (interchange_profile &&
+        ((method_given && method != BP_METHOD_STORED &&
+          method != BP_METHOD_BOLTLITE) || opt_level != 0 ||
+         (block_size_given && block_size != BP_BLOCK_16K))) {
+        fprintf(stderr,
+                "boltpack: Interchange Profile 1 requires Stored or BoltLite, 16 KiB blocks, and default codec level\n");
+        return 1;
+    }
+    if (interchange_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: Interchange Profile 1 applies only to create and add\n");
+        return 1;
+    }
     if (command == 'x' && i + 1 < argc) {
         fprintf(stderr,
                 "boltpack: extract options must precede the archive name\n");
@@ -1745,8 +2170,10 @@ int main(int argc, char **argv)
     }
 
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method, opt_level);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method, opt_level);
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method,
+                                opt_level, interchange_profile);
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method,
+                             opt_level, interchange_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n");
