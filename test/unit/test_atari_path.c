@@ -160,6 +160,8 @@ static void test_tree_collisions(void)
 int main(void)
 {
     char deep[BP_ATARI_GEMDOS_PATH_MAX + 2];
+    char selector_pattern[BP_ATARI_GEMDOS_PATH_MAX + 2U];
+    char selector_path[BP_ATARI_GEMDOS_PATH_MAX + 1];
     unsigned int length = 0;
     char key[BP_ATARI_GEMDOS_PATH_MAX + 2];
     int rc;
@@ -198,6 +200,27 @@ int main(void)
     check(bp_atari_project_name(deep, 0, key, sizeof(key), &length) ==
           BP_ERR_OVERFLOW,
           "126-byte GEMDOS path is refused");
+
+    check(bp_atari_selector_join("C:\\*.BLT", sizeof("C:\\*.BLT"),
+                                 "ARCHIVE.BLT",
+                                 selector_path, sizeof(selector_path)) == BP_OK &&
+          strcmp(selector_path, "C:\\ARCHIVE.BLT") == 0,
+          "selector directory and filename join exactly");
+    memcpy(selector_pattern, "C:\\", 3U);
+    memset(selector_pattern + 3, 'D', 117U);
+    selector_pattern[120] = '\\';
+    memcpy(selector_pattern + 121, "*.BLT", 6U);
+    check(bp_atari_selector_join(selector_pattern, sizeof(selector_pattern),
+                                 "AB.T", selector_path,
+                                 sizeof(selector_path)) == BP_OK &&
+          strlen(selector_path) == BP_ATARI_GEMDOS_PATH_MAX,
+          "selector accepts an exact 125-byte GEMDOS path");
+    memset(selector_pattern, 'D', sizeof(selector_pattern) - 1U);
+    selector_pattern[sizeof(selector_pattern) - 1U] = '\0';
+    check(bp_atari_selector_join(selector_pattern, sizeof(selector_pattern),
+                                 "FILE.BLT", selector_path,
+                                 sizeof(selector_path)) == BP_ERR_OVERFLOW,
+          "selector path beyond GEMDOS limit is refused");
 
     test_collision_set();
     test_index_bounds();

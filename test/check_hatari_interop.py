@@ -2,6 +2,7 @@
 """Exercise Linux/Atari CLI exchange on Hatari's GEMDOS host-directory drive."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,21 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+EXPECTED = json.loads((ROOT / "test/reference/interoperability/atari-host-directory.json").read_text())
+
+
+def check_manifest_file(path, relative_name):
+    expected = EXPECTED["files"][relative_name]
+    if expected.get("type") == "directory":
+        if not path.is_dir():
+            raise RuntimeError("independent expected-result mismatch: missing directory %s" %
+                               relative_name)
+        return
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if len(data) != expected["bytes"] or digest != expected["sha256"]:
+        raise RuntimeError("independent expected-result mismatch for %s: %d bytes, sha256=%s" %
+                           (relative_name, len(data), digest))
 
 
 def run(args, cwd, log, env=None, timeout=60, expected=(0,)):
@@ -51,6 +67,10 @@ def main():
     tree = drive / "TREE"
     (tree / "NEST" / "EMPTY").mkdir(parents=True)
     (tree / "NEST" / "FILE.TXT").write_bytes(added)
+    check_manifest_file(drive / "SRC.TXT", "SRC.TXT")
+    check_manifest_file(drive / "NEW.TXT", "NEW.TXT")
+    check_manifest_file(tree / "NEST" / "FILE.TXT", "TREE/NEST/FILE.TXT")
+    check_manifest_file(tree / "NEST" / "EMPTY", "TREE/NEST/EMPTY")
     run([str(linux), "c", "--interchange-profile-1", "TREEIN.BLT", "TREE"], drive, log)
     name_fixture = output / "names"
     name_fixture.mkdir()
@@ -121,12 +141,11 @@ def main():
         if expected not in (drive / ("LOG%02d.TXT" % index)).read_text(errors="replace"):
             raise RuntimeError("guest failure did not reach expected check: " + expected)
     for suffix in ("0", "1"):
-        if (drive / ("OUT" + suffix) / "SRC.TXT").read_bytes() != data:
-            raise RuntimeError("guest extracted bytes differ for " + suffix)
-    if ((drive / "ADDOUT" / "SRC.TXT").read_bytes() != data or
-            (drive / "ADDOUT" / "NEW.TXT").read_bytes() != added or
-            (drive / "DELOUT" / "NEW.TXT").read_bytes() != added or
-            (drive / "DELOUT" / "SRC.TXT").exists()):
+        check_manifest_file(drive / ("OUT" + suffix) / "SRC.TXT", "SRC.TXT")
+    check_manifest_file(drive / "ADDOUT" / "SRC.TXT", "SRC.TXT")
+    check_manifest_file(drive / "ADDOUT" / "NEW.TXT", "NEW.TXT")
+    check_manifest_file(drive / "DELOUT" / "NEW.TXT", "NEW.TXT")
+    if (drive / "DELOUT" / "SRC.TXT").exists():
         raise RuntimeError("guest append/delete produced incorrect archive contents")
     if (drive / "LINUX0.BLT").read_bytes() != original:
         raise RuntimeError("failed append or delete modified the original archive")
@@ -135,7 +154,8 @@ def main():
     if sorted(p.name for p in (drive / "BADOUT").iterdir()) != ["SRC.TXT"]:
         raise RuntimeError("checksum failure left a stage in the extraction directory")
     guest_tree = drive / "TREEOUT" / "TREE" / "NEST"
-    if not (guest_tree / "EMPTY").is_dir() or (guest_tree / "FILE.TXT").read_bytes() != added:
+    check_manifest_file(guest_tree / "FILE.TXT", "TREE/NEST/FILE.TXT")
+    if not (guest_tree / "EMPTY").is_dir():
         raise RuntimeError("guest tree extraction lost an empty directory or file")
     for directory in ("LONGOUT", "COLOUT", "PAROUT"):
         if list((drive / directory).iterdir()):
@@ -147,7 +167,8 @@ def main():
     if "some entries or attributes were not restored" not in message:
         raise RuntimeError("expected Atari metadata preservation report for tree")
     linux_tree = tree_target / "TREE" / "nest"
-    if not (linux_tree / "empty").is_dir() or (linux_tree / "file.txt").read_bytes() != added:
+    check_manifest_file(linux_tree / "file.txt", "TREE/NEST/FILE.TXT")
+    if not (linux_tree / "empty").is_dir():
         raise RuntimeError("Linux tree extraction lost an empty directory or file")
     for archive in ("STORED.BLT", "LITE.BLT"):
         target = output / ("linux-" + archive)
@@ -156,8 +177,7 @@ def main():
                       ROOT, log, expected=(1,))
         if "some entries or attributes were not restored" not in message:
             raise RuntimeError("expected partial metadata preservation: " + archive)
-        if (target / "SRC.TXT").read_bytes() != data:
-            raise RuntimeError("Linux extracted bytes differ for " + archive)
+        check_manifest_file(target / "SRC.TXT", "SRC.TXT")
     for archive in ("LINUX1.BLT", "LITE.BLT"):
         info = run([str(linux), "i", str(drive / archive)], ROOT, log)
         if "BoltLite" not in info or (drive / archive).stat().st_size >= len(data) // 2:

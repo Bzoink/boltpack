@@ -91,6 +91,14 @@ extern FILE *fdopen(int fd, const char *mode);
 #define MN_COMPRESS   5
 #define MN_HELP       6
 
+#define MENU_APP_TITLE_CHARS       10
+#define MENU_ARCHIVE_TITLE_CHARS    9
+#define MENU_COMPRESS_TITLE_CHARS  13
+#define MENU_HELP_TITLE_CHARS       6
+#define MENU_ARCHIVE_X              MENU_APP_TITLE_CHARS
+#define MENU_COMPRESS_X             (MENU_ARCHIVE_X + MENU_ARCHIVE_TITLE_CHARS)
+#define MENU_HELP_X                 (MENU_COMPRESS_X + MENU_COMPRESS_TITLE_CHARS)
+
 #define MENU_DA_SLOTS 6
 #define MENU_PULLDOWNS 7
 #define MENU_DESK_BOX 8
@@ -852,7 +860,7 @@ static void build_menu(void)
     menu_objs[0].ob_height = scr_h;
 
     /* 1: menu bar */
-    menu_objs[1].ob_type   = G_IBOX;
+    menu_objs[1].ob_type   = G_BOX;
     menu_objs[1].ob_next   = MENU_PULLDOWNS;
     menu_objs[1].ob_head   = 2;
     menu_objs[1].ob_tail   = 2;
@@ -860,6 +868,7 @@ static void build_menu(void)
     menu_objs[1].ob_y      = 0;
     menu_objs[1].ob_width  = scr_w;
     menu_objs[1].ob_height = font_h + 2;
+    menu_objs[1].ob_spec.index = 0x00FF1100L;
 
     /* 2: active title strip */
     menu_objs[2].ob_type   = G_IBOX;
@@ -868,23 +877,22 @@ static void build_menu(void)
     menu_objs[2].ob_tail   = MN_HELP;
     menu_objs[2].ob_x      = 0;
     menu_objs[2].ob_y      = 0;
-    menu_objs[2].ob_width  = (short)(34 * font_w);
-    menu_objs[2].ob_height = font_h + 2;
+    menu_objs[2].ob_width  = scr_w;
+    menu_objs[2].ob_height = font_h;
 
-    /* 3-6: actual titles. Keep Desk as a disabled blank placeholder for AES. */
+    /* 3-6: actual titles. The Desk title identifies this application. */
     menu_objs[MN_DESK].ob_type   = G_TITLE;
     menu_objs[MN_DESK].ob_next   = MN_ARCHIVE;
-    menu_objs[MN_DESK].ob_spec.free_string = "      ";
+    menu_objs[MN_DESK].ob_spec.free_string = " BoltPack ";
     menu_objs[MN_DESK].ob_x      = 0;
     menu_objs[MN_DESK].ob_y      = 0;
-    menu_objs[MN_DESK].ob_width  = (short)(6 * font_w);
+    menu_objs[MN_DESK].ob_width  = (short)(MENU_APP_TITLE_CHARS * font_w);
     menu_objs[MN_DESK].ob_height = font_h + 2;
-    menu_objs[MN_DESK].ob_state  = OS_DISABLED;
 
     menu_objs[MN_ARCHIVE].ob_type   = G_TITLE;
     menu_objs[MN_ARCHIVE].ob_next   = MN_COMPRESS;
     menu_objs[MN_ARCHIVE].ob_spec.free_string = " Archive ";
-    menu_objs[MN_ARCHIVE].ob_x      = (short)(6 * font_w);
+    menu_objs[MN_ARCHIVE].ob_x      = (short)(MENU_ARCHIVE_X * font_w);
     menu_objs[MN_ARCHIVE].ob_y      = 0;
     menu_objs[MN_ARCHIVE].ob_width  = (short)(9 * font_w);
     menu_objs[MN_ARCHIVE].ob_height = font_h + 2;
@@ -892,7 +900,7 @@ static void build_menu(void)
     menu_objs[MN_COMPRESS].ob_type   = G_TITLE;
     menu_objs[MN_COMPRESS].ob_next   = MN_HELP;
     menu_objs[MN_COMPRESS].ob_spec.free_string = " Compression ";
-    menu_objs[MN_COMPRESS].ob_x      = (short)(15 * font_w);
+    menu_objs[MN_COMPRESS].ob_x      = (short)(MENU_COMPRESS_X * font_w);
     menu_objs[MN_COMPRESS].ob_y      = 0;
     menu_objs[MN_COMPRESS].ob_width  = (short)(13 * font_w);
     menu_objs[MN_COMPRESS].ob_height = font_h + 2;
@@ -900,7 +908,7 @@ static void build_menu(void)
     menu_objs[MN_HELP].ob_type   = G_TITLE;
     menu_objs[MN_HELP].ob_next   = 2;
     menu_objs[MN_HELP].ob_spec.free_string = " Help ";
-    menu_objs[MN_HELP].ob_x      = (short)(28 * font_w);
+    menu_objs[MN_HELP].ob_x      = (short)(MENU_HELP_X * font_w);
     menu_objs[MN_HELP].ob_y      = 0;
     menu_objs[MN_HELP].ob_width  = (short)(6 * font_w);
     menu_objs[MN_HELP].ob_height = font_h + 2;
@@ -964,7 +972,7 @@ static void build_menu(void)
     menu_objs[MENU_ARCH_BOX].ob_next   = MENU_COMP_BOX;
     menu_objs[MENU_ARCH_BOX].ob_head   = MN_OPEN;
     menu_objs[MENU_ARCH_BOX].ob_tail   = MN_QUIT;
-    menu_objs[MENU_ARCH_BOX].ob_x      = (short)(6 * font_w);
+    menu_objs[MENU_ARCH_BOX].ob_x      = (short)(MENU_ARCHIVE_X * font_w);
     menu_objs[MENU_ARCH_BOX].ob_y      = 0;
     menu_objs[MENU_ARCH_BOX].ob_width  = (short)(22 * font_w);
     menu_objs[MENU_ARCH_BOX].ob_height = (short)(7 * (font_h + 2));
@@ -1000,7 +1008,7 @@ static void build_menu(void)
     menu_objs[MENU_COMP_BOX].ob_next   = MENU_HELP_BOX;
     menu_objs[MENU_COMP_BOX].ob_head   = MN_CREATE;
     menu_objs[MENU_COMP_BOX].ob_tail   = MN_INTERCHANGE_PROFILE;
-    menu_objs[MENU_COMP_BOX].ob_x      = (short)(15 * font_w);
+    menu_objs[MENU_COMP_BOX].ob_x      = (short)(MENU_COMPRESS_X * font_w);
     menu_objs[MENU_COMP_BOX].ob_y      = 0;
     menu_objs[MENU_COMP_BOX].ob_width  = (short)(26 * font_w);
     menu_objs[MENU_COMP_BOX].ob_height = (short)(7 * (font_h + 2));
@@ -1036,7 +1044,7 @@ static void build_menu(void)
     menu_objs[MENU_HELP_BOX].ob_next   = MENU_PULLDOWNS;
     menu_objs[MENU_HELP_BOX].ob_head   = MN_HELP_ABOUT;
     menu_objs[MENU_HELP_BOX].ob_tail   = MN_DOC;
-    menu_objs[MENU_HELP_BOX].ob_x      = (short)(28 * font_w);
+    menu_objs[MENU_HELP_BOX].ob_x      = (short)(MENU_HELP_X * font_w);
     menu_objs[MENU_HELP_BOX].ob_y      = 0;
     menu_objs[MENU_HELP_BOX].ob_width  = (short)(20 * font_w);
     menu_objs[MENU_HELP_BOX].ob_height = (short)(2 * (font_h + 2));
@@ -1184,6 +1192,11 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     double orig, comp;
     (void)user_data;
 
+    /* Supplementary records describe a file; they are not separate items. */
+    if (entry->entry_type == BP_TYPE_META ||
+        entry->entry_type == BP_TYPE_RSRC)
+        return 0;
+
     if (entry_count >= entries_capacity) return 1;
     e = &entries[entry_count++];
 
@@ -1272,12 +1285,16 @@ static void do_open(const char *path)
     redraw_window(win_x, win_y, win_w, win_h);
 }
 
+static void selector_set_default_pattern(char *path, const char *pattern);
+static int selector_build_path(const char *pattern, const char *fname,
+                               char *full, size_t capacity);
+
 static void do_open_dialog(void)
 {
     char path[BP_MAX_PATH];
     char fname[128];
 
-    strcpy(path, "A:\\*.BLT");
+    selector_set_default_pattern(path, "*.BLT");
     fname[0] = '\0';
 
     {
@@ -1287,39 +1304,36 @@ static void do_open_dialog(void)
         if (button == 0) return;
     }
 
-    /* Build full path from directory + filename */
-    {
-        char *sl = strrchr(path, '\\');
-        if (sl) *(sl + 1) = '\0';
-        strcat(path, fname);
+    if (selector_build_path(path, fname, path, sizeof(path)) != BP_OK) {
+        show_alert("Selected path exceeds GEMDOS limit");
+        return;
     }
     do_open(path);
 }
 
-static void selector_dir_from_pattern(const char *pattern, char *dir)
+static int selector_dir_from_pattern(const char *pattern, char *dir,
+                                     size_t capacity)
 {
-    char *sl;
-
-    strncpy(dir, pattern, BP_MAX_PATH - 1);
-    dir[BP_MAX_PATH - 1] = '\0';
-
-    sl = strrchr(dir, '\\');
-    if (sl)
-        *sl = '\0';
+    return bp_atari_selector_dir(pattern, BP_MAX_PATH, dir, capacity);
 }
 
-static void selector_build_path(const char *pattern, const char *fname,
-                                char *full)
+static void selector_set_default_pattern(char *path, const char *pattern)
 {
-    char dir[BP_MAX_PATH];
+    short drive = Dgetdrv();
 
-    selector_dir_from_pattern(pattern, dir);
-    if (fname && fname[0])
-        sprintf(full, "%s\\%s", dir, fname);
-    else {
-        strncpy(full, dir, BP_MAX_PATH - 1);
-        full[BP_MAX_PATH - 1] = '\0';
-    }
+    if (drive < 0 || drive >= 26)
+        drive = 0;
+    path[0] = (char)('A' + drive);
+    path[1] = ':';
+    path[2] = '\\';
+    strcpy(path + 3, pattern);
+}
+
+static int selector_build_path(const char *pattern, const char *fname,
+                               char *full, size_t capacity)
+{
+    return bp_atari_selector_join(pattern, BP_MAX_PATH, fname, full,
+                                  capacity);
 }
 
 /* ---- Extract ---- */
@@ -2126,7 +2140,7 @@ static void do_extract(void)
             path[dlen] = '\0';
             strncat(path, "*.*", sizeof(path) - (size_t)dlen - 1);
         } else {
-            strcpy(path, "A:\\*.*");
+            selector_set_default_pattern(path, "*.*");
         }
     }
     fname[0] = '\0';
@@ -2134,7 +2148,10 @@ static void do_extract(void)
     restore_main_window_after_dialog();
     if (button == 0) return;
 
-    selector_build_path(path, fname, selected);
+    if (selector_build_path(path, fname, selected, sizeof(selected)) != BP_OK) {
+        show_alert("Selected path exceeds GEMDOS limit");
+        return;
+    }
     memset(&ctx, 0, sizeof(ctx));
     {
         struct stat st;
@@ -2142,7 +2159,11 @@ static void do_extract(void)
             strncpy(ctx.dest_dir, selected, sizeof(ctx.dest_dir) - 1);
             ctx.dest_dir[sizeof(ctx.dest_dir) - 1] = '\0';
         } else {
-            selector_dir_from_pattern(path, ctx.dest_dir);
+            if (selector_dir_from_pattern(path, ctx.dest_dir,
+                                          sizeof(ctx.dest_dir)) != BP_OK) {
+                show_alert("Selected path exceeds GEMDOS limit");
+                return;
+            }
         }
     }
     if (lstat(ctx.dest_dir, &dest_stat) != 0 || !S_ISDIR(dest_stat.st_mode) ||
@@ -2527,7 +2548,7 @@ static void do_create_from_paths(char **paths, int path_count)
 
     total_bytes = gathered_total_bytes();
 
-    strcpy(out_path, "A:\\*.BLT");
+    selector_set_default_pattern(out_path, "*.BLT");
     strcpy(out_fname, "ARCHIVE.BLT");
     fsel_exinput(out_path, out_fname, &button, "Save archive as");
     restore_main_window_after_dialog();
@@ -2760,7 +2781,7 @@ static void do_create(void)
     int i;
     int path_count;
 
-    strcpy(in_path, "A:\\*.*");
+    selector_set_default_pattern(in_path, "*.*");
     path_count = 0;
 
     for (i = 0; i < 64; i++)
@@ -2780,7 +2801,11 @@ static void do_create(void)
             break;
         }
 
-        selector_build_path(in_path, in_fname, selected);
+        if (selector_build_path(in_path, in_fname, selected,
+                                sizeof(selected)) != BP_OK) {
+            show_alert("Selected path exceeds GEMDOS limit");
+            continue;
+        }
         if (stat(selected, &st) != 0) {
             show_alert("Select a file or folder");
             continue;
@@ -2875,18 +2900,25 @@ static void handle_menu(short title, short item)
 static void event_loop(void)
 {
     short msg[8];
-    short mx, my, mb, mk, kr;
+    short mk, kr;
     short events;
+    EVMULT_IN ev_in;
+    EVMULT_OUT ev_out;
+
+    /* The legacy evnt_multi wrapper does not match this mintlib's MT AES
+       prototype (16-bit timer halves vs. one long interval plus click count),
+       which shifts the keyboard outputs. The structure API keeps them aligned. */
+    memset(&ev_in, 0, sizeof(ev_in));
+    ev_in.emi_flags = MU_MESAG | MU_KEYBD;
+    ev_in.emi_bclicks = 1;
+    ev_in.emi_bmask = 1;
+    ev_in.emi_bstate = 1;
 
     for (;;) {
-        events = evnt_multi(
-            MU_MESAG | MU_KEYBD,
-            1, 1, 1,             /* mouse clicks */
-            0, 0, 0, 0, 0,      /* rect 1 */
-            0, 0, 0, 0, 0,      /* rect 2 */
-            msg,
-            0, 0,                /* timer */
-            &mx, &my, &mb, &mk, &kr);
+        memset(&ev_out, 0, sizeof(ev_out));
+        events = evnt_multi_fast(&ev_in, msg, &ev_out);
+        mk = ev_out.emo_kmeta;
+        kr = ev_out.emo_kreturn;
 
         if (events & MU_MESAG) {
             switch (msg[0]) {

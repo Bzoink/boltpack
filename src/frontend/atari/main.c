@@ -1004,14 +1004,19 @@ static void atari_discard_staged(atari_staged_output_t *out)
 }
 
 static int atari_archive_target_state(const char *path, int allow_missing,
-                                     struct stat *snapshot, int *exists)
+                                     struct stat *snapshot, int *exists,
+                                     int *is_read_only)
 {
+    *is_read_only = 0;
     if (lstat(path, snapshot) == 0) {
         unsigned char attributes;
         if (!S_ISREG(snapshot->st_mode)) return BP_ERR_IO;
-        if (atari_get_attrib(path, &attributes) != 0 ||
-            (attributes & FA_RDONLY) != 0)
+        if (atari_get_attrib(path, &attributes) != 0)
             return BP_ERR_IO;
+        if ((attributes & FA_RDONLY) != 0) {
+            *is_read_only = 1;
+            return BP_ERR_IO;
+        }
         *exists = 1;
         return BP_OK;
     }
@@ -1490,6 +1495,14 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                 free(mex);
                 return parse_rc;
             }
+            if (!bp_metadata_matches_subject(&parsed, ctx->subject_type)) {
+                fprintf(stderr,
+                        "boltpack: portable metadata subject type does not match: %s\n",
+                        entry->name);
+                ctx->metadata_errors++;
+                free(mex);
+                return BP_ERR_PARTIAL;
+            }
             if (parsed.has_fat && !ctx->subject_native_seen) {
                 if (ctx->subject_type == BP_TYPE_DIR) {
                     if (ctx->subject_directory != NULL) {
@@ -1717,6 +1730,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     atari_staged_output_t stage;
     struct stat  snapshot;
     int          existed;
+    int          is_read_only;
     int          archive_open = 0;
     int          rc, i;
     clock_t      start;
@@ -1733,9 +1747,12 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
-    rc = atari_archive_target_state(archive_name, 1, &snapshot, &existed);
+    rc = atari_archive_target_state(archive_name, 1, &snapshot, &existed,
+                                    &is_read_only);
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: archive target must be a regular file: %s\n",
+        fprintf(stderr, is_read_only
+                ? "boltpack: archive is read-only: %s\n"
+                : "boltpack: archive target must be a regular file: %s\n",
                 archive_name);
         return 1;
     }
@@ -2106,6 +2123,7 @@ static int cmd_delete(int argc, char **argv)
     struct stat  snapshot;
     struct stat  opened;
     int          existed;
+    int          is_read_only;
     bp_uint32    deleted = 0;
     int          rc;
 
@@ -2117,9 +2135,12 @@ static int cmd_delete(int argc, char **argv)
     del_names    = (const char **)&argv[1];
     del_count    = argc - 1;
 
-    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed);
+    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed,
+                                    &is_read_only);
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+        fprintf(stderr, is_read_only
+                ? "boltpack: archive is read-only: %s\n"
+                : "boltpack: archive must be a regular file: %s\n",
                 archive_name);
         return 1;
     }
@@ -2188,6 +2209,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     struct stat  snapshot;
     struct stat  opened;
     int          existed;
+    int          is_read_only;
     int          archive_open = 0;
     int          rc, i;
 
@@ -2197,9 +2219,12 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     }
     archive_name = argv[0];
 
-    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed);
+    rc = atari_archive_target_state(archive_name, 0, &snapshot, &existed,
+                                    &is_read_only);
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: archive must be a regular file: %s\n",
+        fprintf(stderr, is_read_only
+                ? "boltpack: archive is read-only: %s\n"
+                : "boltpack: archive must be a regular file: %s\n",
                 archive_name);
         return 1;
     }

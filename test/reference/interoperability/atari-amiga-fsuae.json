@@ -1,0 +1,44 @@
+{
+  "case": "Bidirectional Atari TOS FAT12 and Amiga FS-UAE archive transfer",
+  "archive_profile": 1,
+  "archive_member_names": [
+    "SRC.TXT",
+    "TREE/NESTED/FILE.TXT",
+    "TREE/EMPTY"
+  ],
+  "amiga_archive_member_names": ["SRC.TXT"],
+  "files": {
+    "AMIGA/SRC.TXT": {
+      "amiga_archive_name": "SRC.TXT",
+      "atari_name": "SRC.TXT",
+      "content": "Amiga and Linux exchange\n",
+      "repetitions": 128,
+      "bytes": 3200,
+      "sha256": "f04775ec26607c321ee3beb0caad7ecbcefe74f673082c881342f5864f0a8ed6"
+    },
+    "SRC.TXT": {
+      "amiga_name": "SRC.TXT",
+      "content": "Atari FAT filesystem exchange\n",
+      "repetitions": 150,
+      "bytes": 4500,
+      "sha256": "ca685d1450cb15f4ec0020f3917f1d253fe781815f65aa712f9c7768f907b1ed"
+    },
+    "TREE/NESTED/FILE.TXT": {
+      "amiga_name": "TREE/nested/file.txt",
+      "content": "Nested Atari FAT file\n",
+      "repetitions": 1,
+      "bytes": 22,
+      "sha256": "62d580eb9eef3754cb1ee8e19f0a0f987e8919d43d1070f40f5c7fc073bf470a"
+    },
+    "TREE/EMPTY": {
+      "amiga_name": "TREE/empty",
+      "type": "directory",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "expected_outcomes": {
+    "amiga_extracts_atari_archive": "payload bytes and empty directory match this independent manifest; returns partial for unsupported Atari-native metadata",
+    "atari_extracts_amiga_archive": "payload bytes match this independent manifest; returns partial for unsupported Amiga-native metadata"
+  }
+}

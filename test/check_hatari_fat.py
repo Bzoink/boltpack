@@ -2,6 +2,7 @@
 """Exercise Atari/Linux archive transfers on a disposable FAT12 floppy."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,15 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+ATARI_AMIGA = json.loads((ROOT / "test/reference/interoperability/atari-amiga-fsuae.json").read_text(encoding="utf-8"))
+
+
+def manifest_bytes(archive_name):
+    record = ATARI_AMIGA["files"][archive_name]
+    data = record["content"].encode("utf-8") * record["repetitions"]
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise RuntimeError("independent Atari-Amiga manifest is inconsistent for " + archive_name)
+    return data
 
 
 def main():
@@ -20,8 +30,12 @@ def main():
     p.add_argument("--hconsole", type=Path,
                     default=Path("/usr/share/hatari/hconsole/hconsole.py"))
     p.add_argument("--cc", default="m68k-atari-mint-gcc")
+    p.add_argument("--host-cc", default="cc",
+                    help="host compiler for the malformed-metadata archive fixture")
     p.add_argument("--atari-cli", type=Path, default=ROOT / "build/atari/boltpack.tos")
     p.add_argument("--linux-cli", type=Path, default=ROOT / "build/linux/boltpack")
+    p.add_argument("--amiga-archive", type=Path,
+                   help="also extract an Amiga-created archive on the FAT12 guest")
     p.add_argument("--output", type=Path)
     args = p.parse_args()
     out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-atari-fat-"))
@@ -32,17 +46,19 @@ def main():
     tos = args.tos.expanduser().resolve(strict=True)
     linux = args.linux_cli.resolve(strict=True)
     shutil.copyfile(args.atari_cli.resolve(strict=True), host / "BOLTPACK.TOS")
-    data = b"Atari FAT filesystem exchange\n" * 150
+    data = manifest_bytes("SRC.TXT")
+    nested_data = manifest_bytes("TREE/NESTED/FILE.TXT")
     extra = b"Atari FAT append\n" * 90
     (host / "SRC.TXT").write_bytes(data)
     os.utime(host / "SRC.TXT", (951786000, 951786000))
     tree = host / "TREE"
     (tree / "NESTED").mkdir(parents=True)
     (tree / "EMPTY").mkdir()
-    (tree / "NESTED" / "FILE.TXT").write_bytes(b"Nested Atari FAT file\n")
+    (tree / "NESTED" / "FILE.TXT").write_bytes(nested_data)
     for path in (tree / "NESTED" / "FILE.TXT", tree / "NESTED", tree / "EMPTY", tree):
         os.utime(path, (951786000, 951786000))
     (host / "NEW.TXT").write_bytes(extra)
+    wrong_type_archive = out / "BADMETA.BLT"
     with (out / "commands.log").open("wb") as log:
         def run(command, cwd=None, env=None, expected=(0,), timeout=80):
             log.write((repr(command) + "\n").encode()); log.flush()
@@ -52,16 +68,58 @@ def main():
             if result.returncode not in expected:
                 raise RuntimeError("command failed; evidence: " + str(out))
             return result.stdout
+        run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
+             "-Isrc/core",
+             str(ROOT / "test/atari/wrong_type_metadata_fixture.c"),
+             str(ROOT / "src/core/archiver.c"),
+             str(ROOT / "src/core/compress.c"),
+             str(ROOT / "src/core/boltlite.c"),
+             str(ROOT / "src/core/fluff.c"),
+             str(ROOT / "src/core/bp_codepage.c"),
+             str(ROOT / "src/core/boltlz.c"), "-lm", "-o",
+             str(out / "make-wrong-type-metadata")])
+        run([str(out / "make-wrong-type-metadata"), str(wrong_type_archive)])
+        run([str(linux), "t", str(wrong_type_archive)], expected=(1,))
+        run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
+             "-Isrc/core",
+             str(ROOT / "test/atari/conflicting_metadata_fixture.c"),
+             str(ROOT / "src/core/archiver.c"),
+             str(ROOT / "src/core/compress.c"),
+             str(ROOT / "src/core/boltlite.c"),
+             str(ROOT / "src/core/fluff.c"),
+             str(ROOT / "src/core/bp_codepage.c"),
+             str(ROOT / "src/core/boltlz.c"), "-lm", "-o",
+             str(out / "make-conflicting-metadata")])
+        native_first_archive = out / "NATFST.BLT"
+        portable_first_archive = out / "PORTFST.BLT"
+        run([str(out / "make-conflicting-metadata"),
+             str(native_first_archive), "native-first"])
+        run([str(out / "make-conflicting-metadata"),
+             str(portable_first_archive), "portable-first"])
+        run([str(linux), "t", str(native_first_archive)])
+        run([str(linux), "t", str(portable_first_archive)])
         run([args.cc, "-O2", str(ROOT / "test/atari/guest_runner.c"), "-o", str(host / "RUN.TOS")])
         run([str(linux), "c", "--interchange-profile-1", "-1", "LINUX.BLT", "SRC.TXT"], host)
         run(["mformat", "-i", str(image), "-C", "-f", "720", "::"])
         for name in ("SRC.TXT", "NEW.TXT", "LINUX.BLT"):
             run(["mcopy", "-m", "-i", str(image), str(host / name), "::/" + name])
+        run(["mcopy", "-i", str(image), str(host / "LINUX.BLT"), "::/EDIT.BLT"])
+        run(["mcopy", "-i", str(image), str(host / "LINUX.BLT"), "::/READONLY.BLT"])
+        run(["mattrib", "-i", str(image), "+h", "+s", "::/EDIT.BLT"])
+        run(["mattrib", "-i", str(image), "+r", "::/READONLY.BLT"])
+        if args.amiga_archive:
+            run(["mcopy", "-i", str(image),
+                 str(args.amiga_archive.expanduser().resolve(strict=True)),
+                 "::/AMIGA.BLT"])
+        run(["mcopy", "-i", str(image), str(wrong_type_archive), "::/BADMETA.BLT"])
+        run(["mcopy", "-i", str(image), str(native_first_archive), "::/NATFST.BLT"])
+        run(["mcopy", "-i", str(image), str(portable_first_archive), "::/PORTFST.BLT"])
         run(["mcopy", "-s", "-m", "-i", str(image), str(tree), "::/TREE"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/SRC.TXT"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/TREE"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/TREE/EMPTY"])
-        for name in ("OUT", "RESTORE"):
+        for name in (("OUT", "RESTORE", "METAOUT", "NATOUT", "PORTOUT") +
+                     (("AMIOUT",) if args.amiga_archive else ())):
             run(["mmd", "-i", str(image), "::/" + name])
         before = out / "floppy-before.st"
         shutil.copyfile(image, before)
@@ -72,7 +130,17 @@ def main():
             r"x -o A:\RESTORE A:\ATARI.BLT",
             r"d A:\ATARI.BLT NEW.TXT",
             r"t A:\ATARI.BLT",
+            r"x -o A:\METAOUT A:\BADMETA.BLT",
+            r"x -o A:\NATOUT A:\NATFST.BLT",
+            r"x -o A:\PORTOUT A:\PORTFST.BLT",
+            r"a A:\EDIT.BLT A:\NEW.TXT",
+            r"d A:\EDIT.BLT SRC.TXT",
+            r"a A:\READONLY.BLT A:\NEW.TXT",
+            r"d A:\READONLY.BLT SRC.TXT",
+            r"c A:\READONLY.BLT A:\NEW.TXT",
         ]
+        if args.amiga_archive:
+            commands.append(r"x -o A:\AMIOUT A:\AMIGA.BLT")
         (host / "COMMANDS.TXT").write_text("\n".join(commands) + "\n", encoding="ascii")
         env = os.environ.copy()
         env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
@@ -84,7 +152,10 @@ def main():
              "--harddrive", str(host), "--disk-a", str(image), "--protect-floppy", "off",
              "--auto", r"C:\RUN.TOS"], ROOT, env, timeout=80)
         statuses = (host / "RESULT.TXT").read_text().splitlines()
-        expected_statuses = ["0", "0", "0", "1", "0", "0"]
+        expected_statuses = ["0", "0", "0", "1", "0", "0", "1", "0", "0",
+                             "0", "0", "1", "1", "1"]
+        if args.amiga_archive:
+            expected_statuses.append("1")
         if statuses != expected_statuses:
             raise RuntimeError("guest command statuses %r; evidence: %s" % (statuses, out))
         extract_log = (host / "LOG03.TXT").read_text(errors="replace")
@@ -105,12 +176,53 @@ def main():
             "\n".join("sector=%d changed_bytes=%d" % row for row in changed) + "\n")
         if not changed:
             raise RuntimeError("Hatari did not save any floppy sectors; evidence: " + str(out))
+        edited_attributes = run(["mattrib", "-X", "-i", str(image), "::/EDIT.BLT"]).decode("ascii").strip()
+        readonly_attributes = run(["mattrib", "-X", "-i", str(image), "::/READONLY.BLT"]).decode("ascii").strip()
+        if not {"H", "S"}.issubset(set(edited_attributes)) or "R" in edited_attributes:
+            raise RuntimeError("Atari append/delete did not preserve archive HIDDEN/SYSTEM flags: %r; evidence: %s" %
+                               (edited_attributes, out))
+        if "R" not in readonly_attributes:
+            raise RuntimeError("Atari read-only archive lost its flag; evidence: " + str(out))
+        if not all("archive is read-only" in (host / ("LOG%02d.TXT" % index)).read_text(errors="replace")
+                   for index in (11, 12, 13)):
+            raise RuntimeError("Atari did not report expected read-only archive refusal; evidence: " + str(out))
         for src, dst in (("::/OUT/SRC.TXT", "linux-to-atari"),
                          ("::/RESTORE/SRC.TXT", "restored"),
                          ("::/RESTORE/NEW.TXT", "added"),
                          ("::/RESTORE/TREE/NESTED/FILE.TXT", "nested"),
+                         ("::/METAOUT/CONFLICT.TXT", "wrong-type-restored"),
+                         ("::/NATOUT/CONFLICT.TXT", "native-first-restored"),
+                         ("::/PORTOUT/CONFLICT.TXT", "portable-first-restored"),
                          ("::/ATARI.BLT", "atari.blt")):
             run(["mcopy", "-i", str(image), src, str(out / dst)])
+        run(["mcopy", "-i", str(image), "::/EDIT.BLT", str(out / "edited-atari.blt")])
+        run(["mcopy", "-i", str(image), "::/READONLY.BLT", str(out / "readonly-atari.blt")])
+        if (out / "readonly-atari.blt").read_bytes() != (host / "LINUX.BLT").read_bytes():
+            raise RuntimeError("Atari refused read-only archive edits but changed its bytes; evidence: " + str(out))
+        if args.amiga_archive:
+            amiga_member = ATARI_AMIGA["amiga_archive_member_names"][0]
+            amiga_record = ATARI_AMIGA["files"]["AMIGA/" + amiga_member]
+            run(["mcopy", "-i", str(image),
+                 "::/AMIOUT/" + amiga_record["atari_name"],
+                 str(out / "amiga-to-atari")])
+        wrong_type_attr = run(["mattrib", "-p", "-i", str(image),
+                               "::/METAOUT/CONFLICT.TXT"]).decode("ascii")
+        if "+h" in wrong_type_attr:
+            raise RuntimeError("Atari applied directory FAT metadata to a file; evidence: " + str(out))
+        precedence = {}
+        for label, path in (("native-first", "::/NATOUT/CONFLICT.TXT"),
+                            ("portable-first", "::/PORTOUT/CONFLICT.TXT")):
+            attr_text = run(["mattrib", "-p", "-i", str(image), path]).decode("ascii")
+            attributes = set(re.findall(r"\+(?:r|h|s|a)", attr_text))
+            if "+h" not in attributes or "+a" in attributes or "+s" in attributes:
+                raise RuntimeError("native metadata did not win %s conflict: %r; evidence: %s" %
+                                   (label, attributes, out))
+            precedence[label] = sorted(attributes)
+        (out / "metadata-precedence.txt").write_text(
+            "native TOS metadata wins over conflicting portable FAT metadata\n"
+            "native-first=%r\nportable-first=%r\n" %
+            (precedence["native-first"], precedence["portable-first"]),
+            encoding="ascii")
         def fat_metadata(path, parent, short_name, is_dir=False):
             attr_text = run(["mattrib", "-p", "-i", str(image), path]).decode("ascii")
             attributes = set(re.findall(r"\+(?:r|h|s|a)", attr_text))
@@ -143,8 +255,34 @@ def main():
     if ((out / "linux-to-atari").read_bytes() != data or
             (out / "restored").read_bytes() != data or (out / "added").read_bytes() != extra):
         raise RuntimeError("FAT floppy bytes differ; evidence: " + str(out))
-    if (out / "nested").read_bytes() != b"Nested Atari FAT file\n":
+    if (out / "nested").read_bytes() != nested_data:
         raise RuntimeError("FAT directory transfer bytes differ; evidence: " + str(out))
+    if args.amiga_archive:
+        amiga_member = ATARI_AMIGA["amiga_archive_member_names"][0]
+        expected = manifest_bytes("AMIGA/" + amiga_member)
+        if (out / "amiga-to-atari").read_bytes() != expected:
+            raise RuntimeError("Amiga-to-Atari FAT12 payload mismatch; evidence: " + str(out))
+    if (out / "wrong-type-restored").read_bytes() != b"Wrong type metadata test\n":
+        raise RuntimeError("Atari metadata-subject refusal changed payload bytes; evidence: " + str(out))
+    for label, path in (("native-first", "native-first-restored"),
+                        ("portable-first", "portable-first-restored")):
+        if (out / path).read_bytes() != b"native metadata wins\n":
+            raise RuntimeError("metadata precedence changed %s payload; evidence: %s" %
+                               (label, out))
+    edited_listing = subprocess.run([str(linux), "l", str(out / "edited-atari.blt")],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    check=True).stdout
+    if b"NEW.TXT" not in edited_listing or b"SRC.TXT" in edited_listing:
+        raise RuntimeError("Atari archive attribute edit result has incorrect contents; evidence: " + str(out))
+    edited_extract = out / "edited-atari-extract"
+    edited_extract.mkdir()
+    edited_result = subprocess.run(
+        [str(linux), "x", "-o", str(edited_extract), str(out / "edited-atari.blt")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if (edited_result.returncode != 1 or
+            b"some entries or attributes were not restored" not in edited_result.stdout or
+            (edited_extract / "NEW.TXT").read_bytes() != extra):
+        raise RuntimeError("Atari edited archive payload mismatch; evidence: " + str(out))
     listing = subprocess.run([str(linux), "l", str(out / "atari.blt")], stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, check=True).stdout
     (out / "linux-list.log").write_bytes(listing)
@@ -157,7 +295,7 @@ def main():
     (out / "linux-extract.log").write_bytes(result.stdout)
     if (result.returncode != 1 or b"some entries or attributes were not restored" not in result.stdout or
             (extracted / "SRC.TXT").read_bytes() != data or
-            (extracted / "TREE/nested/file.txt").read_bytes() != b"Nested Atari FAT file\n" or
+            (extracted / "TREE/nested/file.txt").read_bytes() != nested_data or
             not (extracted / "TREE/empty").is_dir() or (extracted / "NEW.TXT").exists()):
         raise RuntimeError("Linux extraction of Atari archive failed; evidence: " + str(out))
     (out / "manifest.txt").write_text(

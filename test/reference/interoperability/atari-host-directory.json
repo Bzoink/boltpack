@@ -1,0 +1,34 @@
+{
+  "case": "Atari GEMDOS host-directory exchange under Hatari",
+  "profile": 1,
+  "files": {
+    "SRC.TXT": {
+      "bytes": 14256,
+      "sha256": "d149898a5b72946bd8a9795cac34df2f4ef7e51531674ebec7bd94374e0f2154"
+    },
+    "NEW.TXT": {
+      "bytes": 2300,
+      "sha256": "412dcbcb171cc0ef5d58655765368c06a2ddf789d87bbc89b4e5ee97818e729d"
+    },
+    "TREE/NEST/FILE.TXT": {
+      "bytes": 2300,
+      "sha256": "412dcbcb171cc0ef5d58655765368c06a2ddf789d87bbc89b4e5ee97818e729d"
+    },
+    "TREE/NEST/EMPTY": {
+      "type": "directory",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "expected_outcomes": {
+    "linux_to_atari_stored_and_boltlite": "success; exact file bytes",
+    "atari_to_linux_stored_and_boltlite": "success; exact file bytes; partial because Atari metadata is unsupported on Linux",
+    "atari_nested_directory_timestamp": "partial; TOS host-directory utime cannot restore directory timestamp",
+    "long_8_3_name": "refused before output",
+    "case_collision": "refused before output",
+    "implicit_parent_case_collision": "refused before output",
+    "corrupt_payload_over_existing_file": "checksum failure; existing bytes preserved; no extraction stage remains",
+    "missing_append_source": "failure; original archive preserved",
+    "missing_delete_entry": "failure; original archive preserved"
+  }
+}

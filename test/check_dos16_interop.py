@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-DOS = ROOT / "build/dos16/bpmini.exe"
+DOS = Path(os.environ.get("BP_DOS16_EXE", ROOT / "build/dos16/bpmini.exe"))
 LINUX = ROOT / "build/linux/boltpack"
 
 
@@ -21,12 +21,20 @@ def main():
         shutil.copy(DOS, root / "BPMINI.EXE")
         (root / "INPUT.TXT").write_bytes(b"DOS format six\n")
         os.utime(root / "INPUT.TXT", (951786000, 951786000))
+        (root / "OTHER.TXT").write_bytes(b"replacement archive\n")
         (root / "OUT").mkdir()
         (root / "SRC" / "SUB").mkdir(parents=True)
         (root / "SRC" / "SUB" / "A.TXT").write_bytes(b"nested\n")
         (root / "SRC" / "B.TXT").write_bytes(b"sibling\n")
         os.utime(root / "SRC" / "SUB", (951786000, 951786000))
         os.utime(root / "SRC", (951786000, 951786000))
+        # Exercise the recursive DOS16 source walker near the projected-index
+        # key budget while keeping every component inside the 8.3 profile.
+        deep_parts = ["D"] * 33
+        deep_source = root / "DEEP" / Path(*deep_parts) / "LEAF.TXT"
+        deep_source.parent.mkdir(parents=True)
+        deep_payload = b"DOS16 deep traversal stack fixture\n"
+        deep_source.write_bytes(deep_payload)
         (root / "TREEOUT").mkdir()
         (root / "CASE" / "Dir").mkdir(parents=True)
         (root / "CASE" / "dir").mkdir()
@@ -55,10 +63,18 @@ def main():
             f"mount c {directory}", "c:", "set BP_TZ_OFFSET=60",
             "bpmini c TEST.BLT INPUT.TXT > CREATE.TXT",
             "if errorlevel 1 echo FAIL > CREATE.BAD",
+            "bpmini c REPLACE.BLT INPUT.TXT > REPLACE1.TXT",
+            "if errorlevel 1 echo FAIL > REPLACE1.BAD",
+            "bpmini c REPLACE.BLT OTHER.TXT > REPLACE2.TXT",
+            "if errorlevel 1 echo FAIL > REPLACE2.BAD",
             "bpmini x TEST.BLT OUT > EXTRACT.TXT",
             "if errorlevel 1 echo PARTIAL > EXTRACT.BAD",
             "bpmini c TREE.BLT SRC > TREE.TXT",
             "if errorlevel 1 echo FAIL > TREE.BAD",
+            "bpmini c DEEP.BLT DEEP > DEEP.TXT",
+            "if errorlevel 1 echo FAIL > DEEP.BAD",
+            "bpmini c TOO-DEEP.BLT DEEP > TOO-DEEP.TXT",
+            "if errorlevel 1 echo FAIL > TOO-DEEP.BAD",
             "bpmini x TREE.BLT TREEOUT > TREEX.TXT",
             "if errorlevel 1 echo PARTIAL > TREEX.BAD",
             "bpmini x LONG.BLT LONGOUT > LONG.TXT",
@@ -85,6 +101,10 @@ def main():
             return path.exists() and bool(path.read_text().strip())
 
         assert not marked("CREATE.BAD"), (root / "CREATE.TXT").read_text(errors="replace")
+        assert not marked("REPLACE1.BAD"), \
+            (root / "REPLACE1.TXT").read_text(errors="replace")
+        assert not marked("REPLACE2.BAD"), \
+            (root / "REPLACE2.TXT").read_text(errors="replace")
         assert marked("UNKNOWN.BAD"), "missing timezone was not reported"
         assert not marked("TREE.BAD"), (root / "TREE.TXT").read_text(errors="replace")
         assert marked("LONG.BAD"), "DOS16 accepted a filename requiring an 8.3 alias"
@@ -118,9 +138,44 @@ def main():
         tree_listing = subprocess.run([str(LINUX), "l", str(root / "TREE.BLT")],
                                       capture_output=True, check=True)
         assert tree_listing.stdout.count(b"META") >= 4, "directory metadata was not archived"
+        deep_listing = subprocess.run([str(LINUX), "l", str(root / "DEEP.BLT")],
+                                      capture_output=True)
+        if deep_listing.returncode != 0:
+            raise AssertionError("DOS16 deep archive rejected by Linux: " +
+                                 deep_listing.stderr.decode(errors="replace") +
+                                 "\nDOS16 output:\n" +
+                                 (root / "DEEP.TXT").read_text(errors="replace") +
+                                 "\nDOS16 diagnostics:\n" +
+                                 ((root / "DEEP.ERR").read_text(errors="replace")
+                                  if (root / "DEEP.ERR").exists() else "(no stderr file)") +
+                                 "\nDOSBox output:\n" +
+                                 result.stdout.decode(errors="replace") +
+                                 result.stderr.decode(errors="replace"))
+        assert b"LEAF.TXT" in deep_listing.stdout, "DOS16 deep traversal omitted its leaf"
+        deep_output = root / "DEEP-LINUX"
+        deep_output.mkdir()
+        deep_extract = subprocess.run([str(LINUX), "x", "-o", str(deep_output),
+                                       str(root / "DEEP.BLT")], capture_output=True)
+        if deep_extract.returncode != 1 or b"not restored" not in deep_extract.stderr:
+            raise AssertionError("Linux deep extraction did not report DOS metadata partial: " +
+                                 deep_extract.stderr.decode(errors="replace"))
+        if (deep_output / "DEEP" / Path(*deep_parts) / "LEAF.TXT").read_bytes() != deep_payload:
+            raise AssertionError("DOS16 deep traversal changed the leaf bytes")
         output = root / "LINUX" / "INPUT.TXT"
         assert output.read_bytes() == b"DOS format six\n", "Linux bytes differ"
         assert int(output.stat().st_mtime) == 951782400, "UTC offset was not applied"
+
+        replacement_listing = subprocess.run(
+            [str(LINUX), "l", str(root / "REPLACE.BLT")],
+            capture_output=True, check=True).stdout
+        assert b"OTHER.TXT" in replacement_listing and b"INPUT.TXT" not in replacement_listing, \
+            "DOS16 did not publish the replacement archive contents"
+        (root / "REPLACEOUT").mkdir()
+        subprocess.run([str(LINUX), "x", "-o", str(root / "REPLACEOUT"),
+                        str(root / "REPLACE.BLT")], capture_output=True, check=False)
+        assert (root / "REPLACEOUT" / "OTHER.TXT").read_bytes() == b"replacement archive\n"
+        assert not list(root.glob("BPK*.TMP")), "DOS16 left an archive stage after replacement"
+        assert not list(root.glob("BK*.BAK")), "DOS16 left a backup after successful replacement"
 
         # Flip an encoded byte without updating the block CRC. The mini reader
         # must remove the newly created file after the callback closes it.
@@ -153,6 +208,43 @@ def main():
         assert marked("CASE.BAD"), "case-folded DOS destination collision was not reported"
         assert not (root / "CASEOUT" / "CASE").exists(), \
             "case-folded DOS directory collision modified the destination before refusal"
+        if os.environ.get("BP_DOS16_STACK_REPORT"):
+            import re
+            samples = []
+            heap_samples = []
+            for path in sorted(root.glob("*.TXT")):
+                text = path.read_text(errors="replace")
+                values = [(int(value), source, int(line))
+                          for value, source, line in re.findall(
+                    r"BP_STACK_LOW_WATER=(\d+) FILE=([^ ]+) LINE=(\d+)", text)]
+                if values:
+                    samples.append((path.name, min(values)))
+                heap_values = [int(value) for value in re.findall(
+                    r"BP_DOS_LARGEST_BLOCK_LOW_BYTES=(\d+)", text)]
+                if heap_values:
+                    heap_samples.append((path.name, min(heap_values)))
+            if not samples:
+                raise AssertionError("instrumented DOS16 binary produced no resource samples")
+            if not heap_samples:
+                raise AssertionError("instrumented DOS16 binary produced no DOS heap samples")
+            report = Path(os.environ.get("BP_DOS16_STACK_REPORT_FILE",
+                                        root / "STACKLOW.TXT"))
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("DOS16 instrumented stack low-water bytes\n" +
+                              "\n".join("%s=%d at %s:%d" %
+                                         (name, value, source, line)
+                                         for name, (value, source, line) in samples) +
+                              "\nminimum=%d\n\n" %
+                              min(value for _, (value, _, _) in samples) +
+                              "DOS16 DOS-manager largest-block low-water bytes\n" +
+                              "\n".join("%s=%d" % (name, value)
+                                         for name, value in heap_samples) +
+                              "\nminimum=%d\n" % min(value for _, value in heap_samples))
+            print("DOS16 stack probe minimum available bytes:",
+                  min(value for _, (value, _, _) in samples), "report:", report)
+            print("DOS16 DOS-manager largest-block minimum bytes:",
+                  min(value for _, value in heap_samples))
+        assert not marked("DEEP.BAD"), (root / "DEEP.TXT").read_text(errors="replace")
         print("DOS16/DOSBox to Linux interoperability checks passed")
 
 

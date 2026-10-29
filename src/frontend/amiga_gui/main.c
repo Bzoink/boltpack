@@ -33,6 +33,9 @@
 #include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
 #include "amiga_source_name.h"
+#include "amiga_gui_dirs.h"
+#include "../amiga/amiga_source_stat.h"
+#include "../amiga/amiga_meta.h"
 
 #ifndef BP_CREATOR_OS
 #  define BP_CREATOR_OS BP_OS_AMIGA_68K
@@ -1513,8 +1516,6 @@ static void do_info(void)
 
 #define GUI_NAME_INDEX_MAX       1024U
 #define GUI_NAME_INDEX_BYTES_MAX 32768UL
-#define GUI_DIR_QUEUE_MAX        256U
-#define GUI_DIR_QUEUE_BYTES_MAX  32768UL
 
 #include "amiga_stage.h"
 
@@ -1525,17 +1526,6 @@ typedef struct {
     unsigned char data[84];
 } gui_meta_output_t;
 
-typedef struct gui_dir_restore {
-    struct gui_dir_restore *next;
-    char *path;
-    size_t path_len;
-    bp_uint64 mtime;
-    int mtime_valid;
-    int native_seen;
-    unsigned long protection;
-    char comment[80];
-} gui_dir_restore_t;
-
 #include "amiga_name_index.h"
 
 struct amiga_extract_ctx {
@@ -1545,12 +1535,10 @@ struct amiga_extract_ctx {
     int invalid_entry;
     int subject_ok;
     char subject_name[BP_MAX_PATH];
-    gui_dir_restore_t *subject_directory;
+    bp_amiga_gui_dir_restore_t *subject_directory;
     unsigned long file_count;
     unsigned long dir_count;
-    gui_dir_restore_t *directories;
-    unsigned int directory_count;
-    unsigned long directory_path_bytes;
+    bp_amiga_gui_dir_queue_t directory_queue;
 };
 
 static int gui_check_dir(const char *path, int create)
@@ -1625,22 +1613,6 @@ static long gui_meta_buffer_write(void *handle, const void *data,
     return (long)count;
 }
 
-static int gui_decode_native_meta(const unsigned char *data, bp_uint32 len,
-                                  unsigned long *protection, char *comment)
-{
-    unsigned int comment_len;
-    if (len < 5) return -1;
-    comment_len = data[4];
-    if (comment_len > 79 || len != 5U + comment_len) return -1;
-    *protection = (unsigned long)data[0] |
-                  ((unsigned long)data[1] << 8) |
-                  ((unsigned long)data[2] << 16) |
-                  ((unsigned long)data[3] << 24);
-    if (comment_len) memcpy(comment, data + 5, comment_len);
-    comment[comment_len] = '\0';
-    return 0;
-}
-
 static int gui_apply_native_meta(const char *path, unsigned long protection,
                                  const char *comment)
 {
@@ -1656,64 +1628,38 @@ static int gui_set_default_mode(const char *path)
     return chmod(path, (mode_t)(0666 & ~mask));
 }
 
-static gui_dir_restore_t *gui_queue_dir(struct amiga_extract_ctx *ctx,
-                                        const char *path,
-                                        const bp_entry_t *entry)
+static bp_amiga_gui_dir_restore_t *gui_queue_dir(
+    struct amiga_extract_ctx *ctx, const char *path,
+    const bp_entry_t *entry)
 {
-    gui_dir_restore_t *node;
-    size_t len = strlen(path);
-    if (ctx->directory_count >= GUI_DIR_QUEUE_MAX ||
-        ctx->directory_path_bytes + (unsigned long)len + 1UL >
-            GUI_DIR_QUEUE_BYTES_MAX) return NULL;
-    node = (gui_dir_restore_t *)calloc(1, sizeof(*node));
-    if (!node) return NULL;
-    node->path = (char *)malloc(len + 1);
-    if (!node->path) { free(node); return NULL; }
-    memcpy(node->path, path, len + 1);
-    node->path_len = len;
-    node->mtime = entry->mtime;
-    node->mtime_valid = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0;
-    node->next = ctx->directories;
-    ctx->directories = node;
-    ctx->directory_count++;
-    ctx->directory_path_bytes += (unsigned long)len + 1UL;
-    return node;
+    return bp_amiga_gui_dir_queue_add(&ctx->directory_queue, path,
+        entry->mtime, (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0);
 }
 
-static int gui_path_depth(const char *path)
+static int gui_restore_dir_time(const char *path, bp_uint64 mtime,
+                                void *user_data)
 {
-    int depth = 0;
-    while (*path) if (*path++ == '/') depth++;
-    return depth;
+    (void)user_data;
+    if (bp_restore_mtime(path, mtime) == BP_OK) return 0;
+    log_message("Cannot restore directory time: %s", path);
+    return -1;
+}
+
+static int gui_restore_dir_native(const char *path,
+                                  unsigned long protection,
+                                  const char *comment, void *user_data)
+{
+    (void)user_data;
+    if (gui_apply_native_meta(path, protection, comment) == 0) return 0;
+    log_message("Cannot restore Amiga directory metadata: %s", path);
+    return -1;
 }
 
 static void gui_finalize_dirs(struct amiga_extract_ctx *ctx)
 {
-    while (ctx->directories) {
-        gui_dir_restore_t **best = &ctx->directories, **link;
-        gui_dir_restore_t *node;
-        int best_depth = -1;
-        for (link = &ctx->directories; *link; link = &(*link)->next) {
-            int depth = gui_path_depth((*link)->path);
-            if (depth > best_depth) { best_depth = depth; best = link; }
-        }
-        node = *best;
-        *best = node->next;
-        if (node->mtime_valid && bp_restore_mtime(node->path, node->mtime) != BP_OK) {
-            log_message("Cannot restore directory time: %s", node->path);
-            ctx->partial = 1;
-        }
-        if (node->native_seen &&
-            gui_apply_native_meta(node->path, node->protection,
-                                  node->comment) != 0) {
-            log_message("Cannot restore Amiga directory metadata: %s", node->path);
-            ctx->partial = 1;
-        }
-        free(node->path);
-        free(node);
-    }
-    ctx->directory_count = 0;
-    ctx->directory_path_bytes = 0;
+    if (bp_amiga_gui_dir_queue_finalize(&ctx->directory_queue,
+            gui_restore_dir_time, gui_restore_dir_native, NULL) != 0)
+        ctx->partial = 1;
 }
 
 static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
@@ -1765,7 +1711,7 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
         return NULL;
     }
     if (entry->entry_type == BP_TYPE_DIR) {
-        gui_dir_restore_t *dir;
+        bp_amiga_gui_dir_restore_t *dir;
         if (!bp_u64_is_zero(entry->original_size) ||
             !bp_u64_is_zero(entry->compressed_size) || entry->checksum != 0) {
             ctx->invalid_entry = 1;
@@ -1834,17 +1780,17 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
         char comment[80];
         int rc = BP_OK;
         if (status == BP_OK &&
-            gui_decode_native_meta(meta->data, meta->length,
-                                   &protection, comment) != 0) {
+            bp_amiga_meta_decode(meta->data, (size_t)meta->length,
+                                 &protection, comment) != 0) {
             free(meta);
             return BP_ERR_CORRUPT;
         }
         if (status == BP_OK && ctx->subject_ok &&
             strcmp(ctx->subject_name, entry->name) == 0) {
             if (ctx->subject_directory != NULL) {
-                ctx->subject_directory->native_seen = 1;
-                ctx->subject_directory->protection = protection;
-                strcpy(ctx->subject_directory->comment, comment);
+                if (bp_amiga_gui_dir_set_native(ctx->subject_directory,
+                                                protection, comment) != 0)
+                    rc = BP_ERR_PARTIAL;
             } else {
                 char local[BP_MAX_PATH], full[BP_MAX_PATH];
                 if (bp_utf8_to_local(entry->name, local, sizeof(local),
@@ -2382,7 +2328,7 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     for (i = 0; i < gather_count; i++) {
         char name[BP_MAX_PATH * 3 + 1];
-        struct stat st;
+        struct stat st, opened_st;
         bp_uint64 fsize, mtime;
         bp_uint16 mtime_flags;
         bp_uint8 type;
@@ -2437,9 +2383,29 @@ static void do_create_from_paths(const char **paths, int path_count)
                 rc = BP_ERR_IO;
                 break;
             }
+            if (fstat(fileno(fp), &opened_st) != 0 ||
+                !bp_amiga_stat_same_file(&st, &opened_st)) {
+                log_message("Create failed: source changed while opening '%s'",
+                            gather_files[i]);
+                (void)fclose(fp);
+                update_create_queue_state(base_dir, i, "[!]");
+                rc = BP_ERR_IO;
+                break;
+            }
             fio = make_io(fp);
             rc = bp_archive_add_entry_ex(&ar, name, type, BP_CREATOR_OS,
                                          &fio, fsize, mtime, mtime_flags);
+            if (rc == BP_OK) {
+                struct stat final_st, path_st;
+                if (fstat(fileno(fp), &final_st) != 0 ||
+                    !bp_amiga_stat_same_file(&opened_st, &final_st) ||
+                    lstat(gather_files[i], &path_st) != 0 ||
+                    !bp_amiga_stat_same_file(&opened_st, &path_st)) {
+                    log_message("Create failed: source changed while packing '%s'",
+                                gather_files[i]);
+                    rc = BP_ERR_IO;
+                }
+            }
             if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         }
 
@@ -2450,6 +2416,18 @@ static void do_create_from_paths(const char **paths, int path_count)
                 log_message("Could not read Amiga metadata for '%s'",
                             gather_files[i]);
                 preservation_partial = 1;
+            }
+        }
+        if (rc == BP_OK) {
+            struct stat path_st;
+            int same = lstat(gather_files[i], &path_st) == 0 &&
+                (type == BP_TYPE_DIR
+                    ? bp_amiga_stat_same_directory(&st, &path_st)
+                    : bp_amiga_stat_same_file(&opened_st, &path_st));
+            if (!same) {
+                log_message("Create failed: source changed during metadata capture '%s'",
+                            gather_files[i]);
+                rc = BP_ERR_IO;
             }
         }
 
