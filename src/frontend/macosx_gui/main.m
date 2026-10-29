@@ -39,6 +39,7 @@
 #define BP_EXTRACT_PATHS_NO_NOREPLACE 1
 #include "../posix/extract_paths.h"
 #undef BP_EXTRACT_PATHS_NO_NOREPLACE
+#include "../posix/restore_mode.h"
 
 #ifndef BP_LEGACY_COCOA
 #define BP_LEGACY_COCOA 0
@@ -789,6 +790,8 @@ typedef struct {
     char      *name;
     bp_uint64  mtime;
     int        mtime_valid;
+    bp_uint16  mode_flags;
+    int        mode_valid;
 } cocoa_dir_restore;
 
 typedef struct {
@@ -939,6 +942,8 @@ static int cocoa_queue_directory(cocoa_extract_ctx *ctx, const char *path,
     memcpy(item->name, path, n + 1);
     item->mtime = entry->mtime;
     item->mtime_valid = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0;
+    item->mode_flags = entry->flags;
+    item->mode_valid = (entry->flags & BP_ENTRY_FLAG_MODE_VALID) != 0;
     ctx->directory_count++;
     return BP_OK;
 }
@@ -958,22 +963,40 @@ static void cocoa_finish_directories(cocoa_extract_ctx *ctx)
             ctx->directories[done] = ctx->directories[best];
             ctx->directories[best] = swap;
         }
-        if (ctx->directories[done].mtime_valid) {
-            int rc;
+        if (ctx->directories[done].mode_valid ||
+            ctx->directories[done].mtime_valid) {
+            int rc = BP_OK;
             if (ctx->dirfd_enabled) {
                 int fd = extract_open_directory(ctx->root_fd,
                                                 ctx->directories[done].name, 0);
-                rc = fd < 0 ? BP_ERR_IO :
-                     cocoa_restore_fd_mtime(fd,
-                         ctx->directories[done].mtime);
+                rc = fd < 0 ? BP_ERR_IO : BP_OK;
+                if (rc == BP_OK && ctx->directories[done].mode_valid)
+                    rc = bp_posix_restore_mode_fd(fd,
+                        ctx->directories[done].mode_flags);
+                if (rc == BP_ERR_PARTIAL) {
+                    ctx->partial_count++;
+                    rc = BP_OK;
+                }
+                if (rc == BP_OK && ctx->directories[done].mtime_valid)
+                    rc = cocoa_restore_fd_mtime(fd,
+                        ctx->directories[done].mtime);
                 if (fd >= 0) close(fd);
             } else {
                 char path[4096];
                 int n = snprintf(path, sizeof(path), "%s/%s", ctx->dest,
                                  ctx->directories[done].name);
                 rc = (n < 0 || (size_t)n >= sizeof(path))
-                    ? BP_ERR_NAME_TOO_LONG
-                    : bp_restore_mtime(path, ctx->directories[done].mtime);
+                    ? BP_ERR_NAME_TOO_LONG : BP_OK;
+                if (rc == BP_OK && ctx->directories[done].mode_valid)
+                    rc = bp_posix_restore_mode_path(path,
+                        ctx->directories[done].mode_flags);
+                if (rc == BP_ERR_PARTIAL) {
+                    ctx->partial_count++;
+                    rc = BP_OK;
+                }
+                if (rc == BP_OK && ctx->directories[done].mtime_valid)
+                    rc = bp_restore_mtime(path,
+                        ctx->directories[done].mtime);
             }
             if (rc != BP_OK) ctx->partial_count++;
         }
@@ -1531,7 +1554,13 @@ static int cocoa_extract_done(const bp_entry_t *entry, bp_io_t *out,
     }
 
     if (fp == NULL || fflush(fp) != 0) rc = BP_ERR_IO;
-    if (rc == BP_OK) {
+    if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MODE_VALID)) {
+        rc = bp_posix_restore_mode_fd(fileno(fp), entry->flags);
+        if (rc == BP_ERR_PARTIAL) {
+            ctx->partial_count++;
+            rc = BP_OK;
+        }
+    } else if (rc == BP_OK) {
         mask = umask(0);
         (void)umask(mask);
         if (fchmod(fileno(fp), (mode_t)(0666 & ~mask)) != 0)
@@ -2633,6 +2662,20 @@ static int cocoa_add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                                    const char *prefix,
                                    cocoa_create_ctx *ctx);
 
+static bp_uint16 cocoa_archive_mtime(time_t source_time, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+
+    *mtime = bp_u64_from_u32(0);
+    if (source_time < (time_t)0)
+        return 0;
+    seconds = (bp_off_t)source_time;
+    if (seconds < 0 || (time_t)seconds != source_time)
+        return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
 static int cocoa_add_path_to_archive(bp_archive_t *ar, const char *disk_path,
                                      const char *arc_name,
                                      cocoa_create_ctx *ctx)
@@ -2647,15 +2690,16 @@ static int cocoa_add_path_to_archive(bp_archive_t *ar, const char *disk_path,
     if (S_ISDIR(st.st_mode)) {
         char dir_name[4096];
         bp_uint64 mtime;
+        bp_uint16 flags;
         int rc;
 
         snprintf(dir_name, sizeof(dir_name), "%s%s",
                  arc_name,
                  (arc_name[0] != '\0' && arc_name[strlen(arc_name) - 1] == '/')
                     ? "" : "/");
-        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        rc = bp_archive_add_entry(ar, dir_name, BP_TYPE_DIR, BP_OS_MACOSX,
-                                  NULL, bp_u64_from_u32(0), mtime);
+        flags = cocoa_archive_mtime(st.st_mtime, &mtime);
+        rc = bp_archive_add_entry_ex(ar, dir_name, BP_TYPE_DIR, BP_OS_MACOSX,
+                                     NULL, bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) {
             bp_gui_dev_log("cocoa_add_path_to_archive: add dir failed arc=%s rc=%d (%s)",
                            dir_name, rc, bp_strerror_local(rc));
@@ -2669,6 +2713,7 @@ static int cocoa_add_path_to_archive(bp_archive_t *ar, const char *disk_path,
         bp_io_t fio;
         bp_uint64 fsize;
         bp_uint64 mtime;
+        bp_uint16 flags;
         int rc;
 
         if (!fp) {
@@ -2678,11 +2723,11 @@ static int cocoa_add_path_to_archive(bp_archive_t *ar, const char *disk_path,
         }
         fio = make_io(fp);
         fsize = bp_off_to_u64((bp_off_t)st.st_size);
-        mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+        flags = cocoa_archive_mtime(st.st_mtime, &mtime);
         if (ctx != NULL)
             ctx->current_file++;
-        rc = bp_archive_add_entry(ar, arc_name, BP_TYPE_DATA, BP_OS_MACOSX,
-                                  &fio, fsize, mtime);
+        rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA, BP_OS_MACOSX,
+                                     &fio, fsize, mtime, flags);
         fclose(fp);
         if (rc != BP_OK) {
             bp_gui_dev_log("cocoa_add_path_to_archive: add file failed arc=%s rc=%d (%s)",

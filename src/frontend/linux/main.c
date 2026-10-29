@@ -12,10 +12,12 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define BP_USE_DIRFD_EXTRACTION 1
+#define BP_STAT_HAS_NSEC 1
 #elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define BP_USE_DIRFD_EXTRACTION 1
+#define BP_STAT_HAS_NSEC 1
 #elif defined(BP_POSIX_USE_DIRFD_EXTRACTION)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -23,6 +25,7 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define BP_USE_DIRFD_EXTRACTION 1
+#define BP_STAT_HAS_NSEC 1
 #else
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 200112L
@@ -584,10 +587,19 @@ static int parse_thread_count_arg(const char *s)
 typedef struct {
     char      *path;
     char      *arcname;
+    char      *symlink_target;
     bp_uint8   entry_type;
     bp_uint64  file_size;
     bp_uint64  mtime;
     bp_uint16  flags; /* BP_ENTRY_FLAG_MODE_VALID | (mode & BP_ENTRY_FLAG_MODE_MASK) */
+    dev_t      source_dev;
+    ino_t      source_ino;
+    off_t      source_size;
+    mode_t     source_mode;
+    time_t     source_mtime;
+    time_t     source_ctime;
+    long       source_mtime_nsec;
+    long       source_ctime_nsec;
 } add_job_t;
 
 typedef struct {
@@ -617,6 +629,7 @@ static void free_add_job(add_job_t *job)
     if (job == NULL) return;
     free(job->path);
     free(job->arcname);
+    free(job->symlink_target);
     memset(job, 0, sizeof(*job));
 }
 
@@ -634,11 +647,14 @@ static void free_job_list(add_job_list_t *list)
 
 static int append_job(add_job_list_t *list, const char *path,
                       const char *arcname, bp_uint8 entry_type,
-                      bp_uint64 file_size, bp_uint64 mtime, bp_uint16 flags)
+                      bp_uint64 file_size, bp_uint64 mtime, bp_uint16 flags,
+                      const struct stat *source_stat,
+                      const char *symlink_target)
 {
     add_job_t *new_items;
     char *path_copy;
     char *arc_copy;
+    char *target_copy = NULL;
     int new_cap;
 
     if (list->count == list->cap) {
@@ -654,19 +670,119 @@ static int append_job(add_job_list_t *list, const char *path,
 
     path_copy = dup_string(path);
     arc_copy = dup_string(arcname);
-    if (path_copy == NULL || arc_copy == NULL) {
+    if (symlink_target != NULL) target_copy = dup_string(symlink_target);
+    if (path_copy == NULL || arc_copy == NULL ||
+        (symlink_target != NULL && target_copy == NULL)) {
         free(path_copy);
         free(arc_copy);
+        free(target_copy);
         return BP_ERR_NOMEM;
     }
 
     list->items[list->count].path = path_copy;
     list->items[list->count].arcname = arc_copy;
+    list->items[list->count].symlink_target = target_copy;
     list->items[list->count].entry_type = entry_type;
     list->items[list->count].file_size = file_size;
     list->items[list->count].mtime = mtime;
     list->items[list->count].flags = flags;
+    list->items[list->count].source_dev = source_stat->st_dev;
+    list->items[list->count].source_ino = source_stat->st_ino;
+    list->items[list->count].source_size = source_stat->st_size;
+    list->items[list->count].source_mode = source_stat->st_mode;
+    list->items[list->count].source_mtime = source_stat->st_mtime;
+    list->items[list->count].source_ctime = source_stat->st_ctime;
+#ifdef BP_STAT_HAS_NSEC
+    list->items[list->count].source_mtime_nsec = source_stat->st_mtim.tv_nsec;
+    list->items[list->count].source_ctime_nsec = source_stat->st_ctim.tv_nsec;
+#else
+    list->items[list->count].source_mtime_nsec = 0;
+    list->items[list->count].source_ctime_nsec = 0;
+#endif
     list->count++;
+    return BP_OK;
+}
+
+static int source_stat_matches(const add_job_t *job, const struct stat *st)
+{
+    if (job == NULL || st == NULL || st->st_dev != job->source_dev ||
+        st->st_ino != job->source_ino || st->st_size != job->source_size ||
+        st->st_mode != job->source_mode ||
+        st->st_mtime != job->source_mtime ||
+        st->st_ctime != job->source_ctime)
+        return 0;
+#ifdef BP_STAT_HAS_NSEC
+    if (st->st_mtim.tv_nsec != job->source_mtime_nsec ||
+        st->st_ctim.tv_nsec != job->source_ctime_nsec)
+        return 0;
+#endif
+    return 1;
+}
+
+static int source_stat_snapshot_matches(const struct stat *a,
+                                        const struct stat *b)
+{
+    if (a == NULL || b == NULL || a->st_dev != b->st_dev ||
+        a->st_ino != b->st_ino || a->st_size != b->st_size ||
+        a->st_mode != b->st_mode ||
+        a->st_mtime != b->st_mtime ||
+        a->st_ctime != b->st_ctime)
+        return 0;
+#ifdef BP_STAT_HAS_NSEC
+    if (a->st_mtim.tv_nsec != b->st_mtim.tv_nsec ||
+        a->st_ctim.tv_nsec != b->st_ctim.tv_nsec)
+        return 0;
+#endif
+    return 1;
+}
+
+static int source_readlink_snapshot(int parent_fd, const char *leaf,
+                                    const char *path,
+                                    const struct stat *expected,
+                                    char *target, size_t target_size,
+                                    ssize_t *target_len)
+{
+    struct stat current;
+    ssize_t n;
+#ifdef __linux__
+    int link_fd;
+    int link_flags;
+    if (parent_fd >= 0) {
+        link_flags = O_PATH | O_NOFOLLOW | O_CLOEXEC;
+        link_fd = openat(parent_fd, leaf, link_flags);
+        if (link_fd < 0) return BP_ERR_IO;
+        if (fstat(link_fd, &current) != 0 || !S_ISLNK(current.st_mode) ||
+            !source_stat_snapshot_matches(expected, &current)) {
+            close(link_fd);
+            return BP_ERR_IO;
+        }
+        n = readlinkat(link_fd, "", target, target_size);
+        if (n < 0 || (size_t)n >= target_size ||
+            fstat(link_fd, &current) != 0 ||
+            !source_stat_snapshot_matches(expected, &current)) {
+            close(link_fd);
+            return BP_ERR_IO;
+        }
+        close(link_fd);
+        *target_len = n;
+        return BP_OK;
+    }
+#endif
+    if (parent_fd >= 0) {
+        n = readlinkat(parent_fd, leaf, target, target_size);
+        if (n < 0 || (size_t)n >= target_size ||
+            fstatat(parent_fd, leaf, &current, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISLNK(current.st_mode) ||
+            !source_stat_snapshot_matches(expected, &current))
+            return BP_ERR_IO;
+    } else {
+        n = readlink(path, target, target_size);
+        if (n < 0 || (size_t)n >= target_size || lstat(path, &current) != 0 ||
+            !S_ISLNK(current.st_mode) ||
+            !source_stat_snapshot_matches(expected, &current))
+            return BP_ERR_IO;
+    }
+    *target_len = n;
     return BP_OK;
 }
 
@@ -737,12 +853,20 @@ static void print_added_data_result(bp_archive_t *ar, const char *arcname,
 static int add_job(bp_archive_t *ar, const add_job_t *job)
 {
     int rc;
+    struct stat st;
 
     if (job == NULL) {
         return BP_ERR_INVALID_ARG;
     }
 
     if (job->entry_type == BP_TYPE_DIR) {
+        if (lstat(job->path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+            !source_stat_matches(job, &st)) {
+            fprintf(stderr,
+                    "boltpack: source changed during archive creation: %s\n",
+                    job->path);
+            return BP_ERR_IO;
+        }
         if (g_verbosity == VERB_DEFAULT) {
             printf("   creating: %s\n", job->arcname);
         }
@@ -768,25 +892,15 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
             return BP_ERR_IO;
         }
 
-        /* Re-stat through the open fd to close the TOCTOU window between
-         * the earlier stat (used for job->file_size) and the actual read.
-         * If the file changed size, warn and use the real size so the
-         * archive header is consistent with what was actually read. */
+        /* Compare the opened source with its enumeration snapshot. */
         actual_size = job->file_size;
-        if (fstat(fileno(fp), &st) == 0) {
-            bp_uint64 real_size = bp_off_to_u64((bp_off_t)st.st_size);
-            if (real_size.lo != job->file_size.lo ||
-                real_size.hi != job->file_size.hi) {
-                char was_buf[32];
-                char now_buf[32];
-                format_size64(job->file_size, was_buf, sizeof(was_buf));
-                format_size64(real_size, now_buf, sizeof(now_buf));
-                fprintf(stderr,
-                        "boltpack: warning: %s changed size during archive "
-                        "(was %s, now %s) -- archiving current size\n",
-                        job->path, was_buf, now_buf);
-                actual_size = real_size;
-            }
+        if (fstat(fileno(fp), &st) != 0 || !S_ISREG(st.st_mode) ||
+            !source_stat_matches(job, &st)) {
+            fprintf(stderr,
+                    "boltpack: source changed during archive creation: %s\n",
+                    job->path);
+            fclose(fp);
+            return BP_ERR_IO;
         }
 
         bp_io_from_file(&fio, fp);
@@ -808,6 +922,13 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
         rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_DATA,
                                    BP_CREATOR_OS, &fio,
                                    actual_size, job->mtime, job->flags);
+        if (rc == BP_OK &&
+            (fstat(fileno(fp), &st) != 0 || !source_stat_matches(job, &st))) {
+            fprintf(stderr,
+                    "boltpack: source changed while archiving: %s\n",
+                    job->path);
+            rc = BP_ERR_IO;
+        }
         fclose(fp);
 
         ar->progress_fn   = saved_fn;
@@ -829,21 +950,20 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
     }
 
     if (job->entry_type == BP_TYPE_SYMLINK) {
-        char target[4096];
-        ssize_t tlen;
+        const char *target = job->symlink_target;
+        size_t target_len;
         bp_io_t dummy_io;
         FILE *tmp;
 
-        tlen = readlink(job->path, target, sizeof(target) - 1);
-        if (tlen < 0) {
-            fprintf(stderr, "boltpack: cannot read symlink: %s\n", job->path);
-            return BP_ERR_IO;
-        }
-        target[tlen] = '\0';
+        if (target == NULL) return BP_ERR_INVALID_ARG;
+        target_len = strlen(target);
 
         tmp = tmpfile();
         if (tmp == NULL) return BP_ERR_IO;
-        fwrite(target, 1, (size_t)tlen, tmp);
+        if (fwrite(target, 1, target_len, tmp) != target_len) {
+            fclose(tmp);
+            return BP_ERR_IO;
+        }
         rewind(tmp);
         bp_io_from_file(&dummy_io, tmp);
 
@@ -853,7 +973,7 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
 
         rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_SYMLINK,
                                    BP_CREATOR_OS, &dummy_io,
-                                   bp_u64_from_u32((bp_uint32)tlen),
+                                   bp_u64_from_u32((bp_uint32)target_len),
                                    job->mtime, job->flags);
         fclose(tmp);
         if (rc != BP_OK) {
@@ -925,6 +1045,19 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     job.path = (char *)path;
     job.flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
     job.mtime = archive_mtime(st.st_mtime, &job.flags);
+    job.source_dev = st.st_dev;
+    job.source_ino = st.st_ino;
+    job.source_size = st.st_size;
+    job.source_mode = st.st_mode;
+    job.source_mtime = st.st_mtime;
+    job.source_ctime = st.st_ctime;
+#ifdef BP_STAT_HAS_NSEC
+    job.source_mtime_nsec = st.st_mtim.tv_nsec;
+    job.source_ctime_nsec = st.st_ctim.tv_nsec;
+#else
+    job.source_mtime_nsec = 0;
+    job.source_ctime_nsec = 0;
+#endif
 
     if (S_ISDIR(st.st_mode)) {
         if (!ends_with_slash(arcname)) {
@@ -957,8 +1090,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     return BP_OK;
 }
 
-static int collect_directory_jobs(add_job_list_t *list, const char *dir_path,
-                                  const char *arc_prefix)
+static int collect_path_jobs_from_stat(add_job_list_t *list, const char *path,
+                                       const char *arcname,
+                                       const struct stat *st,
+                                       int parent_fd, const char *leaf);
+
+static int collect_directory_jobs_path(add_job_list_t *list,
+                                       const char *dir_path,
+                                       const char *arc_prefix)
 {
     DIR *d;
     struct dirent *ent;
@@ -990,24 +1129,71 @@ static int collect_directory_jobs(add_job_list_t *list, const char *dir_path,
     return BP_OK;
 }
 
-static int collect_path_jobs(add_job_list_t *list, const char *path,
-                             const char *arcname)
+static int collect_directory_jobs_fd(add_job_list_t *list, int dir_fd,
+                                     const char *dir_path,
+                                     const char *arc_prefix)
 {
-    struct stat st;
+#ifdef BP_USE_DIRFD_EXTRACTION
+    DIR *d;
+    struct dirent *ent;
+    int scan_fd, rc;
+    char child_path[4096];
+    char child_arc[4096];
+
+    scan_fd = dup(dir_fd);
+    if (scan_fd < 0) return BP_ERR_IO;
+    d = fdopendir(scan_fd);
+    if (d == NULL) { close(scan_fd); return BP_ERR_IO; }
+    rc = BP_OK;
+    while ((ent = readdir(d)) != NULL) {
+        struct stat st;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (fstatat(dir_fd, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            rc = BP_ERR_IO;
+            break;
+        }
+        if (strlen(dir_path) + strlen(ent->d_name) +
+                (ends_with_slash(dir_path) ? 1U : 2U) > sizeof(child_path) ||
+            strlen(arc_prefix) + strlen(ent->d_name) +
+                (ends_with_slash(arc_prefix) ? 1U : 2U) > sizeof(child_arc)) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
+        path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
+        path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name);
+        rc = collect_path_jobs_from_stat(list, child_path, child_arc, &st,
+                                         dir_fd, ent->d_name);
+        if (rc != BP_OK) break;
+    }
+    if (closedir(d) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    return rc;
+#else
+    (void)dir_fd;
+    return collect_directory_jobs_path(list, dir_path, arc_prefix);
+#endif
+}
+
+static int collect_path_jobs_from_stat(add_job_list_t *list, const char *path,
+                                       const char *arcname,
+                                       const struct stat *st,
+                                       int parent_fd, const char *leaf)
+{
     char dir_arc[4096];
     bp_uint16 mode_flags;
     bp_uint64 mtime;
     int rc;
 
-    if (lstat(path, &st) != 0) {
-        fprintf(stderr, "boltpack: cannot stat: %s\n", path);
-        return BP_ERR_IO;
-    }
-
     mode_flags = BP_ENTRY_FLAG_MODE_VALID
-               | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
-    mtime = archive_mtime(st.st_mtime, &mode_flags);
-    if (S_ISDIR(st.st_mode)) {
+               | (bp_uint16)(st->st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    mtime = archive_mtime(st->st_mtime, &mode_flags);
+    if (S_ISDIR(st->st_mode)) {
+        int child_fd;
+        struct stat opened;
+        int open_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+#ifdef O_NOFOLLOW
+        open_flags |= O_NOFOLLOW;
+#endif
         if (!ends_with_slash(arcname)) {
             snprintf(dir_arc, sizeof(dir_arc), "%s/", arcname);
         } else {
@@ -1015,24 +1201,109 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
         }
         rc = append_job(list, path, dir_arc, BP_TYPE_DIR,
                         bp_u64_from_u32(0),
-                        mtime, mode_flags);
+                        mtime, mode_flags, st, NULL);
         if (rc != BP_OK) return rc;
-        return collect_directory_jobs(list, path, dir_arc);
+        if (parent_fd >= 0)
+            child_fd = openat(parent_fd, leaf, open_flags);
+        else
+            child_fd = open(path, open_flags);
+        if (child_fd < 0 || fstat(child_fd, &opened) != 0 ||
+            !S_ISDIR(opened.st_mode) || opened.st_dev != st->st_dev ||
+            opened.st_ino != st->st_ino) {
+            if (child_fd >= 0) close(child_fd);
+            fprintf(stderr,
+                    "boltpack: source directory changed during enumeration: %s\n",
+                    path);
+            return BP_ERR_IO;
+        }
+        rc = collect_directory_jobs_fd(list, child_fd, path, dir_arc);
+        close(child_fd);
+        return rc;
     }
 
-    if (S_ISREG(st.st_mode)) {
+    if (S_ISREG(st->st_mode)) {
         return append_job(list, path, arcname, BP_TYPE_DATA,
-                          bp_off_to_u64((bp_off_t)st.st_size),
-                          mtime, mode_flags);
+                          bp_off_to_u64((bp_off_t)st->st_size),
+                          mtime, mode_flags, st, NULL);
     }
 
-    if (S_ISLNK(st.st_mode)) {
+    if (S_ISLNK(st->st_mode)) {
+        char target[4096];
+        ssize_t target_len;
+        int target_rc;
+        target_rc = source_readlink_snapshot(parent_fd, leaf, path, st,
+                                             target, sizeof(target),
+                                             &target_len);
+        if (target_rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: source symlink changed during enumeration: %s\n",
+                    path);
+            return target_rc;
+        }
+        target[target_len] = '\0';
         return append_job(list, path, arcname, BP_TYPE_SYMLINK,
-                          bp_u64_from_u32(0),
-                          mtime, mode_flags);
+                          bp_u64_from_u32(0), mtime, mode_flags, st, target);
     }
 
     return BP_OK;
+}
+
+static int collect_path_jobs(add_job_list_t *list, const char *path,
+                             const char *arcname)
+{
+    struct stat st;
+#ifdef BP_USE_DIRFD_EXTRACTION
+    char parent[4096];
+    char leaf[4096];
+    size_t path_len;
+    size_t leaf_start;
+    size_t slash_pos;
+    int parent_fd;
+    int rc;
+    int open_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+
+    path_len = strlen(path);
+    while (path_len > 1 && path[path_len - 1] == '/') path_len--;
+    slash_pos = path_len;
+    while (slash_pos > 0 && path[slash_pos - 1] != '/') slash_pos--;
+    leaf_start = slash_pos;
+    if ((path_len == 1 && path[0] == '/') ||
+        path_len - leaf_start == 0) {
+        /* The root path itself is represented by "." relative to "/". */
+        strcpy(parent, "/");
+        strcpy(leaf, ".");
+    } else {
+        if (path_len - leaf_start >= sizeof(leaf)) return BP_ERR_NAME_TOO_LONG;
+        memcpy(leaf, path + leaf_start, path_len - leaf_start);
+        leaf[path_len - leaf_start] = '\0';
+        if (slash_pos == 0) {
+            strcpy(parent, ".");
+        } else if (slash_pos == 1) {
+            strcpy(parent, "/");
+        } else {
+            if (slash_pos - 1 >= sizeof(parent)) return BP_ERR_NAME_TOO_LONG;
+            memcpy(parent, path, slash_pos - 1);
+            parent[slash_pos - 1] = '\0';
+        }
+    }
+    parent_fd = open(parent, open_flags);
+    if (parent_fd < 0 ||
+        fstatat(parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (parent_fd >= 0) close(parent_fd);
+        fprintf(stderr, "boltpack: cannot stat: %s\n", path);
+        return BP_ERR_IO;
+    }
+    rc = collect_path_jobs_from_stat(list, path, arcname, &st,
+                                     parent_fd, leaf);
+    close(parent_fd);
+    return rc;
+#else
+    if (lstat(path, &st) != 0) {
+        fprintf(stderr, "boltpack: cannot stat: %s\n", path);
+        return BP_ERR_IO;
+    }
+    return collect_path_jobs_from_stat(list, path, arcname, &st, -1, NULL);
+#endif
 }
 
 static int collect_arg_jobs(add_job_list_t *list, int argc, char **argv)
@@ -1067,6 +1338,33 @@ static int add_job_list_serial(bp_archive_t *ar, const add_job_list_t *list)
         }
     }
 
+    return BP_OK;
+}
+
+static int validate_source_jobs(const add_job_list_t *list)
+{
+    int i;
+    for (i = 0; i < list->count; i++) {
+        const add_job_t *job = &list->items[i];
+        struct stat st;
+        int type_matches;
+        if (lstat(job->path, &st) != 0 || !source_stat_matches(job, &st))
+            type_matches = 0;
+        else if (job->entry_type == BP_TYPE_DIR)
+            type_matches = S_ISDIR(st.st_mode);
+        else if (job->entry_type == BP_TYPE_DATA)
+            type_matches = S_ISREG(st.st_mode);
+        else if (job->entry_type == BP_TYPE_SYMLINK)
+            type_matches = S_ISLNK(st.st_mode);
+        else
+            type_matches = 0;
+        if (!type_matches) {
+            fprintf(stderr,
+                    "boltpack: source changed during archive creation: %s\n",
+                    job->path);
+            return BP_ERR_IO;
+        }
+    }
     return BP_OK;
 }
 
@@ -1138,6 +1436,7 @@ static int add_job_list_with_policy(bp_archive_t *ar,
                                     bp_uint8 method)
 {
     int threads;
+    int rc;
 
     threads = choose_parallel_compression_threads(list, method);
     if (threads > 1) {
@@ -1154,12 +1453,15 @@ static int add_job_list_with_policy(bp_archive_t *ar,
             g_fast_threads = threads;
             rc = add_job_list_parallel(ar, list);
             g_fast_threads = saved_threads;
-            return rc;
+            if (rc != BP_OK) return rc;
+            return validate_source_jobs(list);
         }
 #endif
     }
 
-    return add_job_list_serial(ar, list);
+    rc = add_job_list_serial(ar, list);
+    if (rc != BP_OK) return rc;
+    return validate_source_jobs(list);
 }
 
 #ifdef BOLTPACK_FAST_FLUFF
@@ -1287,23 +1589,15 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
             local_rc = BP_ERR_IO;
         }
 
-        /* Recheck size through the open fd to close the TOCTOU window. */
+        /* Compare the opened source with its enumeration snapshot. */
         if (local_rc == BP_OK) {
-            if (fstat(fileno(src_fp), &st_chk) == 0) {
-                bp_uint64 real_sz = bp_off_to_u64((bp_off_t)st_chk.st_size);
-                if (real_sz.lo != jobs[i].file_size.lo ||
-                    real_sz.hi != jobs[i].file_size.hi) {
-                    char was_buf[32];
-                    char now_buf[32];
-                    format_size64(jobs[i].file_size, was_buf, sizeof(was_buf));
-                    format_size64(real_sz, now_buf, sizeof(now_buf));
-                    /* fprintf to stderr is thread-safe on Linux (glibc) */
-                    fprintf(stderr,
-                            "boltpack: warning: %s changed size during archive "
-                            "(was %s, now %s) -- archiving current size\n",
-                            jobs[i].path, was_buf, now_buf);
-                    actual_sz = real_sz;
-                }
+            if (fstat(fileno(src_fp), &st_chk) != 0 ||
+                !S_ISREG(st_chk.st_mode) ||
+                !source_stat_matches(&jobs[i], &st_chk)) {
+                fprintf(stderr,
+                        "boltpack: source changed during archive creation: %s\n",
+                        jobs[i].path);
+                local_rc = BP_ERR_IO;
             }
             tmp_fp = open_tmp_file_at(batch_use_sys_tmp);
             if (tmp_fp == NULL) {
@@ -1323,6 +1617,15 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
                                                &packed_jobs[i].tmp_io,
                                                &packed_jobs[i].packed,
                                                jobs[i].flags);
+        }
+
+        if (local_rc == BP_OK &&
+            (fstat(fileno(src_fp), &st_chk) != 0 ||
+             !source_stat_matches(&jobs[i], &st_chk))) {
+            fprintf(stderr,
+                    "boltpack: source changed while archiving: %s\n",
+                    jobs[i].path);
+            local_rc = BP_ERR_IO;
         }
 
         if (src_fp != NULL) {

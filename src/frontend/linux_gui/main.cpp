@@ -58,6 +58,7 @@
 #endif
 
 #include "../posix/extract_paths.h"
+#include "../posix/archive_preflight.h"
 
 /* BoltPack core (C linkage) */
 extern "C" {
@@ -2482,6 +2483,38 @@ static int extract_run(bp_io_t *archive_io, ExtractCtx *ctx,
                        bp_progress_fn progress_fn)
 {
     int rc, dir_rc;
+    struct GuiExtractPreflight {
+        bp_posix_preflight_t names;
+        int error;
+    } preflight;
+    /* Reject unsafe or conflicting primary paths before mkdirs() can create
+       the selected destination root or any output beneath it. */
+    memset(&preflight, 0, sizeof(preflight));
+    rc = bp_archive_list(archive_io,
+        [](const bp_entry_t *entry, void *user_data) -> int {
+            GuiExtractPreflight *state = (GuiExtractPreflight *)user_data;
+            int result;
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR &&
+                entry->entry_type != BP_TYPE_SYMLINK)
+                return 0;
+            if (!bp_name_is_safe(entry->name))
+                result = BP_ERR_PARTIAL;
+            else
+                result = bp_posix_preflight_add(
+                    &state->names, entry->name, entry->name_len,
+                    entry->entry_type == BP_TYPE_DIR);
+            if (result != BP_OK) {
+                state->error = result;
+                return 1;
+            }
+            return 0;
+        }, &preflight);
+    if (preflight.error != BP_OK) rc = preflight.error;
+    if (rc == BP_OK) rc = bp_posix_preflight_finish(&preflight.names);
+    bp_posix_preflight_free(&preflight.names);
+    if (rc != BP_OK) return rc;
+
     rc = extract_open_root(ctx);
     if (rc != BP_OK) return rc;
     rc = bp_archive_extract_all_ex(archive_io, extract_open_cb,
@@ -2652,6 +2685,19 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                              const char *prefix);
 
+/* Format 6 encodes only nonnegative Unix seconds. Preserve an unknown source
+ * time explicitly rather than wrapping a pre-epoch time into an unsigned u64. */
+static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+    *mtime = bp_u64_from_u32(0);
+    if (source < (time_t)0) return 0;
+    seconds = (bp_off_t)source;
+    if (seconds < (bp_off_t)0 || (time_t)seconds != source) return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return 1;
+}
+
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                const char *arc_name)
 {
@@ -2663,10 +2709,13 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         std::string dname = std::string(arc_name);
         if (dname.empty() || dname[dname.size()-1] != '/')
             dname += '/';
-        bp_uint64 mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-        int rc = bp_archive_add_entry(ar, dname.c_str(), BP_TYPE_DIR,
-                                      BP_OS_LINUX, NULL,
-                                      bp_u64_from_u32(0), mtime);
+        bp_uint64 mtime;
+        bp_uint16 mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
+                              ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+        int rc = bp_archive_add_entry_ex(ar, dname.c_str(), BP_TYPE_DIR,
+                                         BP_OS_LINUX, NULL,
+                                         bp_u64_from_u32(0), mtime,
+                                         mtime_flags);
         if (rc != BP_OK) return rc;
         return add_dir_recursive(ar, filepath, dname.c_str());
     }
@@ -2678,9 +2727,12 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     bp_io_from_file(&fio, fp);
 
     bp_uint64 fsize = bp_off_to_u64((bp_off_t)st.st_size);
-    bp_uint64 mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
-    int rc = bp_archive_add_entry(ar, arc_name, BP_TYPE_DATA,
-                                  BP_OS_LINUX, &fio, fsize, mtime);
+    bp_uint64 mtime;
+    bp_uint16 mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
+                          ? BP_ENTRY_FLAG_MTIME_VALID : 0;
+    int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
+                                     BP_OS_LINUX, &fio, fsize, mtime,
+                                     mtime_flags);
     fclose(fp);
     return rc;
 }
@@ -2760,6 +2812,7 @@ struct GuiDataJob {
     bool        is_dir;
     bp_uint64   file_size;
     bp_uint64   mtime;
+    bp_uint16   mtime_flags;
 };
 
 static void gui_collect_jobs(const std::string &fpath, const std::string &arcname,
@@ -2774,7 +2827,8 @@ static void gui_collect_jobs(const std::string &fpath, const std::string &arcnam
         GuiDataJob dj;
         dj.path = fpath; dj.arcname = dname; dj.is_dir = true;
         dj.file_size = bp_u64_from_u32(0);
-        dj.mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+        dj.mtime_flags = gui_archive_mtime(st.st_mtime, &dj.mtime)
+                       ? BP_ENTRY_FLAG_MTIME_VALID : 0;
         jobs.push_back(dj);
         DIR *d = opendir(fpath.c_str());
         if (!d) return;
@@ -2791,7 +2845,8 @@ static void gui_collect_jobs(const std::string &fpath, const std::string &arcnam
         GuiDataJob j;
         j.path = fpath; j.arcname = arcname; j.is_dir = false;
         j.file_size = bp_off_to_u64((bp_off_t)st.st_size);
-        j.mtime = bp_off_to_u64((bp_off_t)st.st_mtime);
+        j.mtime_flags = gui_archive_mtime(st.st_mtime, &j.mtime)
+                      ? BP_ENTRY_FLAG_MTIME_VALID : 0;
         jobs.push_back(j);
     }
 }
@@ -2829,10 +2884,10 @@ static int gui_zstd_batch(bp_archive_t *ar, const std::vector<GuiDataJob> &jobs,
             bp_io_t src_io;
             bp_io_from_file(&src_io, src_fp);
             bp_io_from_file(&tmp_ios[(size_t)j], tmp_fp);
-            rcs[(size_t)j] = bp_archive_pack_entry(
+            rcs[(size_t)j] = bp_archive_pack_entry_ex(
                 &worker_ar, job.arcname.c_str(), BP_TYPE_DATA,
                 BP_OS_LINUX, &src_io, job.file_size, job.mtime,
-                &tmp_ios[(size_t)j], &packed[(size_t)j]);
+                &tmp_ios[(size_t)j], &packed[(size_t)j], job.mtime_flags);
             fclose(src_fp);
             bp_archive_close(&worker_ar);
             if (rcs[(size_t)j] == BP_OK) {
@@ -2968,9 +3023,10 @@ static void create_worker(CreateWork *w)
             int ji = 0;
             while (ji < (int)jobs.size() && !w->pctx->cancelled.load() && rc == BP_OK) {
                 if (jobs[(size_t)ji].is_dir) {
-                    rc = bp_archive_add_entry(&ar, jobs[(size_t)ji].arcname.c_str(),
-                                              BP_TYPE_DIR, BP_OS_LINUX, nullptr,
-                                              bp_u64_from_u32(0), jobs[(size_t)ji].mtime);
+                    rc = bp_archive_add_entry_ex(
+                        &ar, jobs[(size_t)ji].arcname.c_str(), BP_TYPE_DIR,
+                        BP_OS_LINUX, nullptr, bp_u64_from_u32(0),
+                        jobs[(size_t)ji].mtime, jobs[(size_t)ji].mtime_flags);
                     ji++;
                     continue;
                 }
