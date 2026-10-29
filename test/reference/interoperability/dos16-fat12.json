@@ -1,0 +1,27 @@
+{
+  "case": "DOS16 mini CLI transfer on a DOSBox-X FAT12 floppy",
+  "guest_filename": "CAFé.TXT",
+  "mdir_filename": "CAFé     TXT",
+  "guest_filename_cp437_hex": "434146822e545854",
+  "fat_timestamp": "2000-02-29 1:00",
+  "files": {
+    "cafe": {
+      "bytes": 24,
+      "sha256": "f5899192cce8ecca93ca804de78cecacab76fad1cd312243be04e1caabc69f3a"
+    },
+    "src": {
+      "bytes": 21,
+      "sha256": "ced383ba2011ad4185c7d021367671940049385f916a9e457dd64ddf6ab04bb0"
+    },
+    "new": {
+      "bytes": 24,
+      "sha256": "8e41bd638a4794ef808aecfa7c0b084f3d86817d0cb9d084453c52881fd9ad46"
+    }
+  },
+  "expected_outcomes": {
+    "linux_archive_to_dos16": "CP437 filename and DOS FAT timestamp restored",
+    "dos16_archive_to_linux": "SRC.TXT bytes intact; DOS metadata reported partial",
+    "dos16_archive_replacement": "REPL.BLT contains NEW.TXT instead of SRC.TXT; FAT archive/hidden/system flags preserved",
+    "linux_extract_of_replacement": "NEW.TXT bytes intact; SRC.TXT absent; metadata may be partial"
+  }
+}

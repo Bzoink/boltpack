@@ -39,6 +39,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "amiga_meta.h"
 
 #ifndef BP_CREATOR_OS
 #  define BP_CREATOR_OS BP_OS_AMIGA_68K
@@ -57,6 +58,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -64,6 +66,35 @@
 #include <errno.h>
 #include <unistd.h>
 #include <utime.h>
+
+/* AmigaDOS does not grow a process stack on demand.  The cookie is honored by
+ * newer shells; libnix also gets an explicit startup stack expansion below so
+ * this CLI remains safe on the Workbench 2.04 shell used by our baseline. */
+#if defined(__GNUC__)
+static const char amiga_min_stack_cookie[] __attribute__((used)) = "$STACK:8192";
+#endif
+
+#if defined(__GNUC__) && defined(__libnix__)
+/* libnix's swapstack support moves this process to a larger stack if needed. */
+unsigned long __stack = 8192UL;
+extern void __stkinit(void);
+extern void __stkexit(void);
+
+static void amiga_restore_stack(void)
+{
+    __stkexit();
+}
+
+static int amiga_expand_stack(void)
+{
+    __stkinit();
+    if (atexit(amiga_restore_stack) != 0) {
+        __stkexit();
+        return -1;
+    }
+    return 0;
+}
+#endif
 
 /* ---- constants --------------------------------------------------------- */
 
@@ -85,6 +116,9 @@
 #define VERB_SILENT  2
 
 static int g_verbosity = VERB_DEFAULT;
+#ifdef BP_TEST_FAIL_PUBLISH
+static int g_test_fail_publish = 0;
+#endif
 
 /* ---- bp_io_t adapters for FILE * --------------------------------------- */
 
@@ -470,22 +504,6 @@ static int amiga_encode_meta(unsigned char *buf, unsigned long prot,
  * Decode Amiga metadata from buf[0..len-1].
  * prot and comment (null-terminated, max 80 bytes) are filled in.
  */
-static int amiga_decode_meta(const unsigned char *buf, int len,
-                             unsigned long *prot, char *comment)
-{
-    int clen;
-    if (len < 5) return -1;
-    clen = (int)(unsigned char)buf[4];
-    if (clen > 79 || len != 5 + clen) return -1;
-    *prot  = (unsigned long)buf[0]
-           | ((unsigned long)buf[1] <<  8)
-           | ((unsigned long)buf[2] << 16)
-           | ((unsigned long)buf[3] << 24);
-    if (clen > 0) memcpy(comment, buf + 5, (size_t)clen);
-    comment[clen] = '\0';
-    return 0;
-}
-
 /*
  * Query protection bits and file comment for fs_path using AmigaDOS
  * Lock() + Examine().  The caller must report failure rather than archiving
@@ -600,44 +618,223 @@ static int add_meta_entry(bp_archive_t *ar, const char *arcname,
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 
-static int add_directory(bp_archive_t *ar, const char *dir_path,
-                         const char *arc_prefix)
+static int amiga_stat_same_file(const struct stat *a, const struct stat *b)
 {
-    DIR           *d;
-    struct dirent *ent;
-    int            rc;
-    char          *paths, *child_path, *child_arc;
+    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
+           a->st_ctime == b->st_ctime;
+}
 
-    paths = (char *)malloc(BP_MAX_PATH * 2U);
-    if (!paths) return BP_ERR_NOMEM;
-    child_path = paths;
-    child_arc = paths + BP_MAX_PATH;
-    d = opendir(dir_path);
-    if (d == NULL) {
-        fprintf(stderr, "boltpack: cannot open directory: %s\n", dir_path);
-        free(paths);
+static int amiga_stat_same_directory(const struct stat *a,
+                                     const struct stat *b)
+{
+    return S_ISDIR(a->st_mode) && S_ISDIR(b->st_mode) &&
+           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_mtime == b->st_mtime && a->st_ctime == b->st_ctime;
+}
+
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_OPEN
+static void amiga_test_pause_after_source_open(void)
+{
+    FILE *fp = fopen("DH0:SOURCE-OPENED.TXT", "wb");
+    if (fp == NULL) return;
+    (void)fputs("source opened\n", fp);
+    (void)fclose(fp);
+    for (;;) {
+        fp = fopen("DH0:CONTINUE.TXT", "rb");
+        if (fp != NULL) {
+            (void)fclose(fp);
+            break;
+        }
+        Delay(10);
+    }
+}
+#endif
+
+typedef struct amiga_add_dir_frame {
+    DIR *dir;
+    char *fs_path;
+    char *arc_prefix;
+    struct stat identity;
+    struct amiga_add_dir_frame *parent;
+} amiga_add_dir_frame_t;
+
+static int add_directory_record(bp_archive_t *ar, const char *path,
+                                const char *arcname, const struct stat *st,
+                                char *dir_arc_out)
+{
+    char *names, *dir_arc, *dir_arc_utf8;
+    bp_uint64 mtime;
+    bp_uint16 mtime_flags;
+    size_t arc_len = strlen(arcname);
+    int rc;
+
+    if (arc_len + 2 > BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    names = (char *)malloc(BP_MAX_PATH * 3U);
+    if (names == NULL) return BP_ERR_NOMEM;
+    dir_arc = names;
+    dir_arc_utf8 = names + BP_MAX_PATH;
+    if (!ends_with_slash(arcname)) sprintf(dir_arc, "%s/", arcname);
+    else strcpy(dir_arc, arcname);
+    if (g_verbosity == VERB_DEFAULT)
+        printf("   creating: %s\n", dir_arc);
+    if (bp_local_to_utf8(dir_arc, dir_arc_utf8, BP_MAX_PATH * 2U,
+                         AMIGA_CP) != 0) {
+        free(names);
+        return BP_ERR_INVALID_ARG;
+    }
+    mtime_flags = amiga_entry_mtime(st->st_mtime, &mtime);
+    if (mtime_flags == 0 && st->st_mtime != (time_t)0)
+        fprintf(stderr,
+                "boltpack: source timestamp is out of range; storing unknown: %s\n",
+                path);
+    rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                 BP_CREATOR_OS, NULL, bp_u64_from_u32(0),
+                                 mtime, mtime_flags);
+    if (rc == BP_OK) rc = add_meta_entry(ar, dir_arc_utf8, path);
+    if (rc == BP_OK) {
+        struct stat current;
+        if (lstat(path, &current) != 0 ||
+            !amiga_stat_same_directory(st, &current)) rc = BP_ERR_IO;
+    }
+    if (rc == BP_OK) strcpy(dir_arc_out, dir_arc);
+    free(names);
+    return rc;
+}
+
+static int add_directory(bp_archive_t *ar, const char *dir_path,
+                         const char *arc_prefix,
+                         const struct stat *expected_stat)
+{
+    amiga_add_dir_frame_t *top;
+    struct stat dir_stat;
+    int rc = BP_OK;
+
+    if (lstat(dir_path, &dir_stat) != 0 || S_ISLNK(dir_stat.st_mode) ||
+        !S_ISDIR(dir_stat.st_mode) ||
+        !amiga_stat_same_directory(expected_stat, &dir_stat)) return BP_ERR_IO;
+
+    top = (amiga_add_dir_frame_t *)calloc(1, sizeof(*top));
+    if (top == NULL) return BP_ERR_NOMEM;
+    top->fs_path = (char *)malloc(strlen(dir_path) + 1);
+    top->arc_prefix = (char *)malloc(strlen(arc_prefix) + 1);
+    if (top->fs_path == NULL || top->arc_prefix == NULL) {
+        free(top->fs_path); free(top->arc_prefix); free(top);
+        return BP_ERR_NOMEM;
+    }
+    strcpy(top->fs_path, dir_path);
+    strcpy(top->arc_prefix, arc_prefix);
+    top->identity = dir_stat;
+    top->dir = opendir(top->fs_path);
+    if (top->dir == NULL) {
+        fprintf(stderr, "boltpack: cannot open directory: %s\n", top->fs_path);
+        free(top->fs_path); free(top->arc_prefix); free(top);
         return BP_ERR_IO;
     }
-    for (;;) {
+
+    while (top != NULL && rc == BP_OK) {
+        struct dirent *ent;
+        struct stat current_dir;
+        char *child_path = NULL, *child_arc = NULL;
+        struct stat child_stat;
+
+        if (lstat(top->fs_path, &current_dir) != 0 ||
+            !amiga_stat_same_directory(&top->identity, &current_dir)) {
+            rc = BP_ERR_IO;
+            break;
+        }
+
         errno = 0;
-        ent = readdir(d);
+        ent = readdir(top->dir);
         if (ent == NULL) {
-            rc = errno ? BP_ERR_IO : BP_OK;
-            if (closedir(d) != 0) rc = BP_ERR_IO;
-            free(paths);
-            return rc;
+            int read_error = errno != 0;
+            amiga_add_dir_frame_t *done = top;
+            if (lstat(done->fs_path, &current_dir) != 0 ||
+                !amiga_stat_same_directory(&done->identity, &current_dir))
+                read_error = 1;
+            top = done->parent;
+            if (closedir(done->dir) != 0 || read_error) rc = BP_ERR_IO;
+            free(done->fs_path); free(done->arc_prefix); free(done);
+            continue;
         }
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        if (strlen(dir_path) + strlen(ent->d_name) + 2 > BP_MAX_PATH ||
-            strlen(arc_prefix) + strlen(ent->d_name) + 2 > BP_MAX_PATH) {
-            closedir(d); free(paths); return BP_ERR_NAME_TOO_LONG;
+        if (strlen(top->fs_path) + strlen(ent->d_name) + 2 > BP_MAX_PATH ||
+            strlen(top->arc_prefix) + strlen(ent->d_name) + 2 > BP_MAX_PATH) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            continue;
         }
-        path_join(child_path, BP_MAX_PATH, dir_path, ent->d_name);
-        path_join(child_arc, BP_MAX_PATH, arc_prefix, ent->d_name);
-        rc = add_path(ar, child_path, child_arc);
-        if (rc != BP_OK) { closedir(d); free(paths); return rc; }
+        child_path = (char *)malloc(BP_MAX_PATH);
+        child_arc = (char *)malloc(BP_MAX_PATH);
+        if (child_path == NULL || child_arc == NULL) {
+            free(child_path); free(child_arc);
+            rc = BP_ERR_NOMEM;
+            continue;
+        }
+        path_join(child_path, BP_MAX_PATH, top->fs_path, ent->d_name);
+        path_join(child_arc, BP_MAX_PATH, top->arc_prefix, ent->d_name);
+        if (lstat(child_path, &child_stat) != 0 || S_ISLNK(child_stat.st_mode)) {
+            fprintf(stderr, "boltpack: cannot archive source or symbolic link: %s\n",
+                    child_path);
+            rc = BP_ERR_IO;
+        } else if (S_ISDIR(child_stat.st_mode)) {
+            char *dir_arc = (char *)malloc(BP_MAX_PATH);
+            char *nested_path = NULL, *nested_arc = NULL;
+            DIR *nested_dir = NULL;
+            amiga_add_dir_frame_t *frame = NULL;
+            if (dir_arc == NULL) rc = BP_ERR_NOMEM;
+            else rc = add_directory_record(ar, child_path, child_arc,
+                                            &child_stat, dir_arc);
+            if (rc == BP_OK) {
+                nested_path = child_path;
+                nested_arc = dir_arc;
+                nested_dir = opendir(nested_path);
+                if (nested_dir == NULL) {
+                    fprintf(stderr, "boltpack: cannot open directory: %s\n",
+                            nested_path);
+                    rc = BP_ERR_IO;
+                } else {
+                    struct stat opened_dir;
+                    if (lstat(nested_path, &opened_dir) != 0 ||
+                        !amiga_stat_same_directory(&child_stat, &opened_dir)) {
+                        (void)closedir(nested_dir);
+                        nested_dir = NULL;
+                        rc = BP_ERR_IO;
+                    }
+                }
+            }
+            if (rc == BP_OK) {
+                frame = (amiga_add_dir_frame_t *)calloc(1, sizeof(*frame));
+                if (frame == NULL) rc = BP_ERR_NOMEM;
+            }
+            if (rc == BP_OK) {
+                frame->dir = nested_dir;
+                frame->fs_path = nested_path;
+                frame->arc_prefix = nested_arc;
+                frame->identity = child_stat;
+                frame->parent = top;
+                top = frame;
+                child_path = NULL;
+                dir_arc = NULL;
+            } else if (nested_dir != NULL) {
+                closedir(nested_dir);
+            }
+            free(dir_arc);
+        } else {
+            rc = add_path(ar, child_path, child_arc);
+        }
+        free(child_path);
+        free(child_arc);
     }
+
+    while (top != NULL) {
+        amiga_add_dir_frame_t *parent = top->parent;
+        if (closedir(top->dir) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        free(top->fs_path); free(top->arc_prefix); free(top);
+        top = parent;
+    }
+    return rc;
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
@@ -651,45 +848,19 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     }
 
     if (S_ISDIR(st.st_mode)) {
-        char *names, *dir_arc, *dir_arc_utf8;
-        bp_uint64 mtime;
-        bp_uint16 mtime_flags;
-
+        char *dir_arc;
         if (strlen(arcname) + 2 > BP_MAX_PATH) return BP_ERR_NAME_TOO_LONG;
-        names = (char *)malloc(BP_MAX_PATH * 3U);
-        if (!names) return BP_ERR_NOMEM;
-        dir_arc = names;
-        dir_arc_utf8 = names + BP_MAX_PATH;
-        if (!ends_with_slash(arcname))
-            sprintf(dir_arc, "%s/", arcname);
-        else
-            strcpy(dir_arc, arcname);
-
-        if (g_verbosity == VERB_DEFAULT)
-            printf("   creating: %s\n", dir_arc);
-
-        if (bp_local_to_utf8(dir_arc, dir_arc_utf8, BP_MAX_PATH * 2U,
-                             AMIGA_CP) != 0) { free(names); return BP_ERR_INVALID_ARG; }
-
-        mtime_flags = amiga_entry_mtime(st.st_mtime, &mtime);
-        if (mtime_flags == 0 && st.st_mtime != (time_t)0)
-            fprintf(stderr,
-                    "boltpack: source timestamp is out of range; storing unknown: %s\n",
-                    path);
-        rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
-                                     BP_CREATOR_OS, NULL, bp_u64_from_u32(0),
-                                     mtime, mtime_flags);
-        if (rc != BP_OK) { free(names); return rc; }
-
-        /* Preserve directory protection bits */
-        rc = add_meta_entry(ar, dir_arc_utf8, path);
-        if (rc == BP_OK) rc = add_directory(ar, path, dir_arc);
-        free(names);
+        dir_arc = (char *)malloc(BP_MAX_PATH);
+        if (dir_arc == NULL) return BP_ERR_NOMEM;
+        rc = add_directory_record(ar, path, arcname, &st, dir_arc);
+                if (rc == BP_OK) rc = add_directory(ar, path, dir_arc, &st);
+        free(dir_arc);
         return rc;
 
     } else if (S_ISREG(st.st_mode)) {
         FILE      *fp;
         bp_io_t    fio;
+        struct stat opened_st, final_st, path_st;
         bp_uint64  file_size;
         bp_uint64  mtime;
         bp_uint16  mtime_flags;
@@ -705,6 +876,16 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             free(arcname_utf8);
             return BP_ERR_IO;
         }
+        if (fstat(fileno(fp), &opened_st) != 0 ||
+            !amiga_stat_same_file(&st, &opened_st)) {
+            (void)fclose(fp);
+            free(arcname_utf8);
+            fprintf(stderr, "boltpack: source changed while opening: %s\n", path);
+            return BP_ERR_IO;
+        }
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_OPEN
+        amiga_test_pause_after_source_open();
+#endif
         bp_io_from_file(&fio, fp);
 
         if (g_verbosity == VERB_DEFAULT) {
@@ -727,6 +908,12 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_CREATOR_OS, &fio, file_size,
                                      mtime, mtime_flags);
+        if (rc == BP_OK &&
+            (fstat(fileno(fp), &final_st) != 0 ||
+             !amiga_stat_same_file(&opened_st, &final_st) ||
+             lstat(path, &path_st) != 0 ||
+             !amiga_stat_same_file(&opened_st, &path_st)))
+            rc = BP_ERR_IO;
         if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         if (rc != BP_OK) { free(arcname_utf8); return rc; }
 
@@ -747,6 +934,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         /* Preserve file protection bits and comment */
         rc = add_meta_entry(ar, arcname_utf8, path);
+        if (rc == BP_OK &&
+            (lstat(path, &path_st) != 0 ||
+             !amiga_stat_same_file(&opened_st, &path_st)))
+            rc = BP_ERR_IO;
         free(arcname_utf8);
         return rc;
     }
@@ -830,6 +1021,7 @@ typedef struct {
     char       target[BP_MAX_PATH];
     char       temporary[BP_MAX_PATH];
     int        target_existed;
+    int        recovery_hint;
     struct stat target_snapshot;
 } amiga_staged_output_t;
 
@@ -891,17 +1083,20 @@ typedef struct {
     unsigned int count;
     unsigned long key_bytes;
     const char *error_reason;
+    char local_scratch[BP_MAX_PATH];
+    char path_scratch[BP_MAX_PATH];
+    char folded_scratch[BP_MAX_PATH];
 } amiga_name_index_t;
 
 static int amiga_index_path(amiga_name_index_t *index, const char *exact,
                             int is_directory, int explicit_entry)
 {
-    char folded[BP_MAX_PATH];
+    char *folded = index->folded_scratch;
     size_t len = strlen(exact);
     unsigned long needed = ((unsigned long)len + 1UL) * 2UL;
     unsigned int i;
     char *key;
-    if (len == 0 || len >= sizeof(folded)) return 1;
+    if (len == 0 || len >= BP_MAX_PATH) return 1;
     memcpy(folded, exact, len + 1);
     amiga_fold_name(folded);
     for (i = 0; i < index->count; i++) {
@@ -936,17 +1131,17 @@ static int amiga_index_path(amiga_name_index_t *index, const char *exact,
 static int amiga_preflight_name(const bp_entry_t *entry, void *user_data)
 {
     amiga_name_index_t *index = (amiga_name_index_t *)user_data;
-    char local_name[BP_MAX_PATH];
-    char full_path[BP_MAX_PATH];
+    char *local_name = index->local_scratch;
+    char *full_path = index->path_scratch;
     size_t len, pos;
     int is_directory;
 
     if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR &&
         entry->entry_type != BP_TYPE_SYMLINK) return 0;
     if (!bp_name_is_safe(entry->name) ||
-        bp_utf8_to_local(entry->name, local_name, sizeof(local_name), AMIGA_CP) != 0 ||
+        bp_utf8_to_local(entry->name, local_name, BP_MAX_PATH, AMIGA_CP) != 0 ||
         !amiga_local_name_safe(local_name) ||
-        amiga_path_from_name(index->out_dir, local_name, full_path, sizeof(full_path)) != 0) {
+        amiga_path_from_name(index->out_dir, local_name, full_path, BP_MAX_PATH) != 0) {
         index->error_reason = "unsafe or unrepresentable Amiga destination name";
         return 1;
     }
@@ -1052,12 +1247,37 @@ static int amiga_make_sibling_template(const char *path, const char *leaf,
     return 0;
 }
 
-static int amiga_stat_same_file(const struct stat *a, const struct stat *b)
+static int amiga_make_archive_sibling_template(const char *path,
+                                               const char *prefix,
+                                               char *out, size_t out_size)
 {
-    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
-           a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
-           a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
-           a->st_ctime == b->st_ctime;
+    const char *slash = strrchr(path, '/');
+    const char *colon = strrchr(path, ':');
+    const char *base;
+    size_t parent = 0, prefix_len, hint_len = 0, i;
+    if (colon != NULL && (slash == NULL || colon > slash))
+        parent = (size_t)(colon - path) + 1U;
+    else if (slash != NULL)
+        parent = (size_t)(slash - path) + 1U;
+    base = path + parent;
+    prefix_len = strlen(prefix);
+    if (parent + prefix_len + 6U + 1U > out_size) return -1;
+    if (parent != 0) memcpy(out, path, parent);
+    memcpy(out + parent, prefix, prefix_len);
+    for (i = 0; base[i] != '\0' && hint_len < 32U; i++) {
+        unsigned char ch = (unsigned char)base[i];
+        if (ch >= 'a' && ch <= 'z') ch = (unsigned char)(ch - 'a' + 'A');
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+            out[parent + prefix_len + hint_len++] = (char)ch;
+    }
+    if (hint_len == 0) {
+        memcpy(out + parent + prefix_len, "ARCHIVE", 7);
+        hint_len = 7;
+    }
+    if (parent + prefix_len + hint_len + 6U + 1U > out_size) return -1;
+    memset(out + parent + prefix_len + hint_len, 'X', 6U);
+    out[parent + prefix_len + hint_len + 6U] = '\0';
+    return 0;
 }
 
 static int amiga_stat_same_moved_file(const struct stat *a, const struct stat *b)
@@ -1106,6 +1326,7 @@ static int amiga_commit_staged(amiga_staged_output_t *stage, int force)
     char backup[BP_MAX_PATH];
     int backup_fd;
     int has_backup = 0;
+    int publish_ok;
 
     if (lstat(stage->target, &current) == 0) {
         if (!stage->target_existed ||
@@ -1117,10 +1338,28 @@ static int amiga_commit_staged(amiga_staged_output_t *stage, int force)
 
     if (stage->target_existed) {
         if (!force) return BP_ERR_PARTIAL;
-        if (amiga_make_sibling_template(stage->target, "BRXXXXXX",
-                                        backup, sizeof(backup)) != 0)
-            return BP_ERR_NAME_TOO_LONG;
-        backup_fd = mkstemp(backup);
+        if (stage->recovery_hint) {
+            const char *slash = strrchr(stage->temporary, '/');
+            const char *colon = strrchr(stage->temporary, ':');
+            const char *leaf;
+            size_t leaf_offset;
+            if (colon != NULL && (slash == NULL || colon > slash))
+                slash = colon;
+            leaf_offset = slash != NULL
+                ? (size_t)(slash - stage->temporary + 1) : 0U;
+            leaf = stage->temporary + leaf_offset;
+            if (strncmp(leaf, "BP", 2) != 0 ||
+                strlen(stage->temporary) >= sizeof(backup))
+                return BP_ERR_IO;
+            strcpy(backup, stage->temporary);
+            backup[leaf_offset + 1U] = 'R';
+            backup_fd = open(backup, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        } else {
+            if (amiga_make_sibling_template(stage->target, "BRXXXXXX",
+                                            backup, sizeof(backup)) != 0)
+                return BP_ERR_NAME_TOO_LONG;
+            backup_fd = mkstemp(backup);
+        }
         if (backup_fd < 0) return BP_ERR_IO;
         if (close(backup_fd) != 0 || unlink(backup) != 0) {
             (void)unlink(backup);
@@ -1138,7 +1377,42 @@ static int amiga_commit_staged(amiga_staged_output_t *stage, int force)
         }
     }
 
-    if (!Rename((STRPTR)stage->temporary, (STRPTR)stage->target)) {
+#ifdef BP_TEST_PAUSE_AFTER_BACKUP
+    if (has_backup) {
+#ifdef BP_TEST_PAUSE_MARKER
+        FILE *marker = fopen("DH0:RECOVERY-WINDOW.TXT", "wb");
+        if (marker != NULL) {
+            (void)fputs("original moved to recovery name\n", marker);
+            (void)fclose(marker);
+        }
+        /* Use a host-visible release file instead of a timer: FS-UAE warp mode
+           can advance guest delays much faster than wall-clock time. */
+        for (;;) {
+            FILE *release = fopen("DH0:CONTINUE.TXT", "rb");
+            if (release != NULL) {
+                (void)fclose(release);
+                break;
+            }
+            Delay(50);
+        }
+#else
+        Delay(250);
+#endif
+    }
+#endif
+
+#ifdef BP_TEST_FAIL_PUBLISH
+    if (has_backup && g_test_fail_publish) {
+        g_test_fail_publish = 0;
+        publish_ok = 0;
+    } else {
+        publish_ok = Rename((STRPTR)stage->temporary,
+                            (STRPTR)stage->target) != 0;
+    }
+#else
+    publish_ok = Rename((STRPTR)stage->temporary, (STRPTR)stage->target) != 0;
+#endif
+    if (!publish_ok) {
         if (has_backup && !Rename((STRPTR)backup, (STRPTR)stage->target))
             fprintf(stderr,
                     "boltpack: original file remains at recovery path: %s\n",
@@ -1177,8 +1451,9 @@ static int amiga_archive_stage_open(amiga_archive_stage_t *archive,
             (archive->protection & (FIBF_WRITE | FIBF_DELETE)) != 0)
             return BP_ERR_IO;
     } else if (errno != ENOENT || !allow_missing) return BP_ERR_IO;
-    if (amiga_make_sibling_template(target, "BPXXXXXX", stage->temporary,
-                                    sizeof(stage->temporary)) != 0)
+    stage->recovery_hint = 1;
+    if (amiga_make_archive_sibling_template(target, "BP", stage->temporary,
+                                            sizeof(stage->temporary)) != 0)
         return BP_ERR_NAME_TOO_LONG;
     stage->fd = mkstemp(stage->temporary);
     if (stage->fd < 0) { stage->temporary[0] = '\0'; return BP_ERR_IO; }
@@ -1236,6 +1511,8 @@ struct extract_ctx {
     amiga_dir_restore_t *directories;
     unsigned int directory_count;
     unsigned long directory_path_bytes;
+    char *path_scratch;
+    char *name_scratch;
 };
 
 static amiga_dir_restore_t *amiga_queue_directory(extract_ctx_t *ctx,
@@ -1311,8 +1588,8 @@ static void amiga_finalize_directories(extract_ctx_t *ctx)
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
-    char            path[BP_MAX_PATH];
-    char            local_name[BP_MAX_PATH];
+    char           *path = ctx->path_scratch;
+    char           *local_name = ctx->name_scratch;
     meta_extract_t *mex;
     amiga_staged_output_t *stage;
     amiga_dir_restore_t *directory;
@@ -1337,7 +1614,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     }
 
     /* Convert UTF-8 archive name to local codepage for filesystem access */
-    if (bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+    if (bp_utf8_to_local(entry->name, local_name, BP_MAX_PATH,
                          AMIGA_CP) != 0) {
         fprintf(stderr, "boltpack: filename is not representable on Amiga: %s\n",
                 entry->name);
@@ -1350,7 +1627,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->partial = 1;
         return NULL;
     }
-    if (amiga_path_from_name(ctx->out_dir, local_name, path, sizeof(path)) != 0) {
+    if (amiga_path_from_name(ctx->out_dir, local_name, path, BP_MAX_PATH) != 0) {
         fprintf(stderr, "boltpack: destination path is too long: %s\n", entry->name);
         ctx->partial = 1;
         return NULL;
@@ -1544,8 +1821,8 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         char comment[80];
         int rc = BP_OK;
         if (status == BP_OK) {
-            if (amiga_decode_meta(mex->wctx.buf, (int)mex->wctx.len,
-                                  &prot, comment) != 0) {
+            if (bp_amiga_meta_decode(mex->wctx.buf, (size_t)mex->wctx.len,
+                                     &prot, comment) != 0) {
                 free(mex);
                 return BP_ERR_CORRUPT;
             }
@@ -1560,12 +1837,12 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                     strcpy(ctx->subject_directory->comment, comment);
                 }
             } else {
-                char path[BP_MAX_PATH];
-                char local_name[BP_MAX_PATH];
-                if (bp_utf8_to_local(entry->name, local_name,
-                                     sizeof(local_name), AMIGA_CP) != 0 ||
+                char *path = ctx->path_scratch;
+                char *local_name = ctx->name_scratch;
+                if (bp_utf8_to_local(entry->name, local_name, BP_MAX_PATH,
+                                     AMIGA_CP) != 0 ||
                     amiga_path_from_name(ctx->out_dir, local_name,
-                                         path, sizeof(path)) != 0 ||
+                                         path, BP_MAX_PATH) != 0 ||
                     amiga_apply_meta(path, prot, comment) != 0) {
                     fprintf(stderr, "boltpack: cannot restore Amiga metadata: %s\n",
                             entry->name);
@@ -1671,6 +1948,8 @@ static void usage(void)
         "  x   Extract archive\n"
         "  l   List archive contents\n"
         "  t   Test archive integrity\n"
+        "  r   Recover an interrupted archive replacement\n"
+        "      Usage: boltpack r archive.blt [backup-name]\n"
         "  i   Show archive information\n"
         "  d   Delete files from archive\n",
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
@@ -1922,6 +2201,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     ctx.out_dir = out_dir;
     ctx.force   = force;
     ctx.dry_run = dry_run;
+    ctx.path_scratch = (char *)malloc(BP_MAX_PATH);
+    ctx.name_scratch = (char *)malloc(BP_MAX_PATH);
+    if (ctx.path_scratch == NULL || ctx.name_scratch == NULL) {
+        free(ctx.path_scratch);
+        free(ctx.name_scratch);
+        fprintf(stderr, "boltpack: not enough memory for extraction paths\n");
+        fclose(fp);
+        return 1;
+    }
 
     start = clock();
     rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done,
@@ -1929,6 +2217,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
                                    &ctx);
     amiga_finalize_directories(&ctx);
     if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    free(ctx.path_scratch);
+    free(ctx.name_scratch);
 
     if (ctx.invalid_entry && (rc == BP_OK || rc == BP_ERR_PARTIAL))
         rc = BP_ERR_CORRUPT;
@@ -1996,6 +2286,147 @@ static int cmd_test(const char *archive_name)
         printf("\n");
     }
     return ctx.fail_count > 0 ? 1 : 0;
+}
+
+static int amiga_ascii_n_case_equal(const char *a, const char *b, size_t count)
+{
+    unsigned char ca, cb;
+    while (count-- != 0) {
+        ca = (unsigned char)*a++;
+        cb = (unsigned char)*b++;
+        if (ca >= 'a' && ca <= 'z') ca = (unsigned char)(ca - 'a' + 'A');
+        if (cb >= 'a' && cb <= 'z') cb = (unsigned char)(cb - 'a' + 'A');
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+static int amiga_ascii_case_equal(const char *a, const char *b)
+{
+    size_t a_len = strlen(a), b_len = strlen(b);
+    return a_len == b_len && amiga_ascii_n_case_equal(a, b, a_len);
+}
+
+static int cmd_recover(const char *archive_name, const char *requested_backup)
+{
+    char pattern[BP_MAX_PATH];
+    char parent[BP_MAX_PATH];
+    char backup[BP_MAX_PATH];
+    char stage[BP_MAX_PATH];
+    const char *slash, *colon, *entry_prefix;
+    size_t parent_len, pattern_len, prefix_len;
+    DIR *dir;
+    struct dirent *ent;
+    struct stat st;
+    int matches = 0;
+
+    if (lstat(archive_name, &st) == 0) {
+        fprintf(stderr, "boltpack: recovery refused; target already exists: %s\n",
+                archive_name);
+        return 1;
+    }
+    if (errno != ENOENT) {
+        fprintf(stderr, "boltpack: cannot inspect recovery target: %s\n",
+                archive_name);
+        return 1;
+    }
+    if (amiga_make_archive_sibling_template(archive_name, "BR", pattern,
+                                            sizeof(pattern)) != 0)
+        return 1;
+    pattern_len = strlen(pattern);
+    if (pattern_len < 6U) return 1;
+    slash = strrchr(pattern, '/');
+    colon = strrchr(pattern, ':');
+    if (colon != NULL && (slash == NULL || colon > slash))
+        parent_len = (size_t)(colon - pattern) + 1U;
+    else if (slash != NULL)
+        parent_len = (size_t)(slash - pattern) + 1U;
+    else
+        parent_len = 0;
+    if (parent_len == 0) {
+        strcpy(parent, ".");
+    } else {
+        if (parent_len >= sizeof(parent)) return 1;
+        memcpy(parent, pattern, parent_len);
+        parent[parent_len] = '\0';
+    }
+    entry_prefix = pattern + parent_len;
+    prefix_len = strlen(entry_prefix) - 6U;
+    if (requested_backup != NULL &&
+        (strchr(requested_backup, '/') != NULL ||
+         strchr(requested_backup, ':') != NULL ||
+         strlen(requested_backup) != prefix_len + 6U ||
+         !amiga_ascii_n_case_equal(requested_backup, entry_prefix, prefix_len))) {
+        fprintf(stderr, "boltpack: backup name does not match archive recovery hint: %s\n",
+                requested_backup);
+        return 1;
+    }
+    dir = opendir(parent);
+    if (dir == NULL) {
+        fprintf(stderr, "boltpack: cannot scan recovery directory: %s\n", parent);
+        return 1;
+    }
+    while ((ent = readdir(dir)) != NULL) {
+        size_t name_len = strlen(ent->d_name);
+        if (requested_backup != NULL &&
+            !amiga_ascii_case_equal(ent->d_name, requested_backup))
+            continue;
+        if (name_len != prefix_len + 6U ||
+            strncmp(ent->d_name, entry_prefix, prefix_len) != 0)
+            continue;
+        if (parent_len + name_len + 1U > sizeof(backup)) continue;
+        if (parent_len != 0) memcpy(backup, pattern, parent_len);
+        memcpy(backup + parent_len, ent->d_name, name_len + 1U);
+        if (lstat(backup, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        matches++;
+    }
+    if (closedir(dir) != 0) {
+        fprintf(stderr, "boltpack: cannot finish scanning recovery directory: %s\n",
+                parent);
+        return 1;
+    }
+    if (matches != 1) {
+        fprintf(stderr, matches == 0
+                    ? "boltpack: no matching archive recovery backup for %s\n"
+                    : "boltpack: multiple recovery backups match %s; inspect them manually\n",
+                requested_backup != NULL ? requested_backup : archive_name);
+        return 1;
+    }
+
+    strcpy(stage, backup);
+    slash = strrchr(stage, '/');
+    colon = strrchr(stage, ':');
+    if (colon != NULL && (slash == NULL || colon > slash)) slash = colon;
+    parent_len = slash != NULL ? (size_t)(slash - stage + 1U) : 0U;
+    if (strncmp(stage + parent_len, "BR", 2) != 0) return 1;
+    stage[parent_len + 1U] = 'P';
+    if (lstat(stage, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "boltpack: matching replacement stage is missing: %s\n",
+                stage);
+        return 1;
+    }
+    if (cmd_test(backup) != 0) {
+        fprintf(stderr, "boltpack: recovery backup failed integrity check: %s\n",
+                backup);
+        return 1;
+    }
+    if (cmd_test(stage) != 0) {
+        fprintf(stderr, "boltpack: replacement stage failed integrity check: %s\n",
+                stage);
+        return 1;
+    }
+    if (lstat(archive_name, &st) == 0 || errno != ENOENT) {
+        fprintf(stderr, "boltpack: recovery target changed during verification: %s\n",
+                archive_name);
+        return 1;
+    }
+    if (!Rename((STRPTR)backup, (STRPTR)archive_name)) {
+        fprintf(stderr, "boltpack: cannot restore recovery backup: %s\n", backup);
+        return 1;
+    }
+    printf("Original archive restored to %s; verified replacement remains at %s\n",
+           archive_name, stage);
+    return 0;
 }
 
 /* ---- info -------------------------------------------------------------- */
@@ -2313,6 +2744,13 @@ int main(int argc, char **argv)
     int        codec_given = 0;
     int        i;
 
+#if defined(__GNUC__) && defined(__libnix__)
+    if (amiga_expand_stack() != 0) {
+        fprintf(stderr, "boltpack: cannot register Amiga stack cleanup\n");
+        return 1;
+    }
+#endif
+
     if (argc < 3) { usage(); return 1; }
 
     if (strlen(argv[1]) != 1) {
@@ -2357,6 +2795,10 @@ int main(int argc, char **argv)
             force = 1; i++;
         } else if (strcmp(argv[i], "-n") == 0) {
             dry_run = 1; i++;
+#ifdef BP_TEST_FAIL_PUBLISH
+        } else if (strcmp(argv[i], "--test-fail-publish") == 0) {
+            g_test_fail_publish = 1; i++;
+#endif
         } else {
             fprintf(stderr, "boltpack: unknown option: %s\n", argv[i]);
             usage(); return 1;
@@ -2396,6 +2838,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "boltpack: test requires archive name\n"); return 1;
         }
         return cmd_test(argv[i]);
+    case 'r':
+        if (i >= argc) {
+            fprintf(stderr, "boltpack: recover requires archive name\n"); return 1;
+        }
+        if (argc - i > 2) {
+            fprintf(stderr, "boltpack: recover accepts archive name and optional backup name\n");
+            return 1;
+        }
+        return cmd_recover(argv[i], argc - i == 2 ? argv[i + 1] : NULL);
     case 'i':
         if (i >= argc) {
             fprintf(stderr, "boltpack: info requires archive name\n"); return 1;

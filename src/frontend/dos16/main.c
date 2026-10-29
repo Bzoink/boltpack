@@ -22,17 +22,75 @@
  */
 
 #include "../../core/mini/archiver.h"
+#include "../../core/mini/stack_probe.h"
 #include "../mini_shared/mini_common.h"
 #include "../mini_shared/dos_time.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef BP_TEST_STACK_HIGHWATER
+#include <malloc.h>
+#include <dos.h>
+#include <i86.h>
+static unsigned int bp_test_stack_low = 65535U;
+static const char *bp_test_stack_low_file;
+static unsigned int bp_test_stack_low_line;
+static unsigned long bp_test_dos_block_low = 0xffffffffUL;
+
+static unsigned int bp_test_largest_dos_block_paras(void)
+{
+    union REGS inregs;
+    union REGS outregs;
+
+    /* DOS returns its largest free block in BX when this request is too big. */
+    memset(&inregs, 0, sizeof(inregs));
+    inregs.x.ax = 0x4800U;
+    inregs.x.bx = 0xffffU;
+    intdos(&inregs, &outregs);
+    if ((outregs.x.cflag & 1U) == 0 || outregs.x.ax != 8U)
+        return 0;
+    return outregs.x.bx;
+}
+
+void bp_test_stack_probe(const char *source_file, unsigned int source_line)
+{
+    unsigned int available = stackavail();
+    unsigned int block_paras = bp_test_largest_dos_block_paras();
+    unsigned long block_bytes = (unsigned long)block_paras * 16UL;
+    if (available < bp_test_stack_low) {
+        bp_test_stack_low = available;
+        bp_test_stack_low_file = source_file;
+        bp_test_stack_low_line = source_line;
+    }
+    if (block_paras != 0 && block_bytes < bp_test_dos_block_low)
+        bp_test_dos_block_low = block_bytes;
+}
+
+static void bp_test_stack_report(void)
+{
+    printf("BP_STACK_LOW_WATER=%u FILE=%s LINE=%u\n", bp_test_stack_low,
+           bp_test_stack_low_file, bp_test_stack_low_line);
+    if (bp_test_dos_block_low != 0xffffffffUL)
+        printf("BP_DOS_LARGEST_BLOCK_LOW_BYTES=%lu\n", bp_test_dos_block_low);
+    else
+        printf("BP_DOS_LARGEST_BLOCK_LOW_BYTES=unknown\n");
+}
+#endif
+#include <errno.h>
 
 #ifndef __WATCOMC__
-#include <stdio.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <utime.h>
+#endif
+#ifdef BP_TEST_ALLOC_CLI
+#include <stdio.h>
+void bp_test_alloc_fail_size_after(size_t size, long matching_allocations);
+long bp_test_alloc_live_count(void);
+static int g_test_alloc_enabled;
+static long g_test_alloc_index;
+static int g_test_last_error;
 #endif
 
 #ifdef __WATCOMC__
@@ -496,6 +554,7 @@ static int add_one_file(bp_mini_archive_t *ar, const char *arc_name,
     long tz_offset;
     bp_uint16 time_flags;
     int rc;
+    BP_STACK_PROBE();
 
     fd = open(fs_path, O_RDONLY | O_BINARY);
     if (fd < 0) {
@@ -582,6 +641,7 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
     unsigned attr;
     long offset;
     int rc;
+    BP_STACK_PROBE();
     z.lo = 0; z.hi = 0; mtime = z;
     if (bp_dos_timezone(&offset) == 0 &&
         _dos_findfirst(fs_path, _A_NORMAL | _A_RDONLY | _A_HIDDEN | _A_SYSTEM | _A_SUBDIR, &found) == 0 &&
@@ -611,13 +671,19 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
                     const char *fs_path, bp_uint8 platform)
 {
     struct find_t ff;
+    bp_mini_path_buffers_t path_buffers;
     char *pattern;
     char *child_fs;
     char *child_arc;
     unsigned int ret;
+    unsigned int pattern_capacity;
+    unsigned int child_fs_capacity;
+    unsigned int child_arc_capacity;
     unsigned attr;
     int rc;
     int plen;
+    int alen;
+    BP_STACK_PROBE();
 
     rc      = BP_OK;
     if (_dos_getfileattr(fs_path, &attr) != 0) return BP_ERR_IO;
@@ -627,22 +693,38 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
         if (rc != BP_OK) return rc;
     }
 
-    pattern   = (char *)malloc(BP_MAX_PATH);
-    child_fs  = (char *)malloc(BP_MAX_PATH);
-    child_arc = (char *)malloc(BP_MAX_PATH);
-    if (!pattern || !child_fs || !child_arc) {
-        free(pattern); free(child_fs); free(child_arc);
-        return BP_ERR_IO;
+    plen = (int)strlen(fs_path);
+    alen = (int)strlen(arc_prefix);
+    pattern_capacity = (unsigned int)plen + 5U;
+    child_fs_capacity = (unsigned int)plen + 1U +
+                        (unsigned int)sizeof(ff.name);
+    child_arc_capacity = (unsigned int)alen + (alen != 0 ? 1U : 0U) +
+                         (unsigned int)sizeof(ff.name);
+    if (pattern_capacity > BP_MAX_PATH || child_fs_capacity > BP_MAX_PATH ||
+        child_arc_capacity > BP_MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+#ifdef BP_TEST_ALLOC_CLI
+    if (g_test_alloc_enabled) {
+        if (g_test_alloc_index == 0)
+            bp_test_alloc_fail_size_after(pattern_capacity, 0);
+        else if (g_test_alloc_index == 1)
+            bp_test_alloc_fail_size_after(child_fs_capacity, 0);
+        else if (g_test_alloc_index == 2)
+            bp_test_alloc_fail_size_after(child_arc_capacity,
+                child_arc_capacity == child_fs_capacity ? 1 : 0);
     }
+#endif
+    rc = bp_mini_path_buffers_alloc_sized(&path_buffers, pattern_capacity,
+                                          child_fs_capacity,
+                                          child_arc_capacity);
+    if (rc != BP_OK) return rc;
+    pattern = path_buffers.pattern;
+    child_fs = path_buffers.child_fs;
+    child_arc = path_buffers.child_arc;
 
     /* Build search pattern: fs_path\*.* */
-    plen = (int)strlen(fs_path);
-    if (plen + 5 < BP_MAX_PATH) {
-        memcpy(pattern, fs_path, (size_t)plen);
-        memcpy(pattern + plen, "\\*.*", 5);
-    } else {
-        pattern[0] = '\0';
-    }
+    memcpy(pattern, fs_path, (size_t)plen);
+    memcpy(pattern + plen, "\\*.*", 5);
 
     ret = _dos_findfirst(pattern, _A_NORMAL | _A_RDONLY | _A_HIDDEN |
                                   _A_SYSTEM | _A_SUBDIR, &ff);
@@ -657,12 +739,13 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
             continue;
         }
 
-        join_sep(child_fs, BP_MAX_PATH, fs_path, '\\', ff.name);
+        join_sep(child_fs, (int)child_fs_capacity, fs_path, '\\', ff.name);
 
         nn = (int)strlen(ff.name);
         if (arc_prefix[0]) {
-            join_sep(child_arc, BP_MAX_PATH, arc_prefix, '/', ff.name);
-        } else if (nn < BP_MAX_PATH) {
+            join_sep(child_arc, (int)child_arc_capacity,
+                     arc_prefix, '/', ff.name);
+        } else if ((unsigned int)(nn + 1) <= child_arc_capacity) {
             memcpy(child_arc, ff.name, (size_t)(nn + 1));
         } else {
             child_arc[0] = '\0';
@@ -678,10 +761,104 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     } while (_dos_findnext(&ff) == 0);
 
 done:
-    free(pattern); free(child_fs); free(child_arc);
+    bp_mini_path_buffers_free(&path_buffers);
     return rc;
 }
 
+#endif /* __WATCOMC__ */
+
+#ifdef __WATCOMC__
+static unsigned int g_archive_stage_id = 1U;
+
+static int dos16_sibling_name(const char *target, char *out, size_t out_size,
+                              const char *prefix, const char *extension,
+                              unsigned int id)
+{
+    const char *slash = strrchr(target, '/');
+    const char *bslash = strrchr(target, '\\');
+    size_t parent_length, prefix_length, extension_length, i;
+    unsigned int value = id % 10000U;
+    if (bslash != NULL && (slash == NULL || bslash > slash)) slash = bslash;
+    parent_length = slash != NULL ? (size_t)(slash - target + 1) : 0;
+    prefix_length = strlen(prefix);
+    extension_length = strlen(extension);
+    if (parent_length + prefix_length + 4U + extension_length + 1U > out_size)
+        return -1;
+    if (parent_length != 0) memcpy(out, target, parent_length);
+    memcpy(out + parent_length, prefix, prefix_length);
+    for (i = 0; i < 4; i++) {
+        out[parent_length + prefix_length + 3U - i] =
+            (char)('0' + value % 10U);
+        value /= 10U;
+    }
+    memcpy(out + parent_length + prefix_length + 4U, extension,
+           extension_length + 1U);
+    return 0;
+}
+
+static int dos16_open_archive_stage(const char *target, char *stage,
+                                    size_t stage_size)
+{
+    unsigned int tries;
+    for (tries = 0; tries < 10000U; tries++) {
+        int fd;
+        unsigned int id = g_archive_stage_id++ % 10000U;
+        if (dos16_sibling_name(target, stage, stage_size, "BPK", ".TMP",
+                               id) != 0) return -1;
+        fd = open(stage, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0);
+        if (fd >= 0) return fd;
+        if (errno != EEXIST) return -1;
+    }
+    return -1;
+}
+
+static int dos16_next_backup_name(const char *target, char *backup,
+                                  size_t backup_size)
+{
+    unsigned int tries;
+    for (tries = 0; tries < 10000U; tries++) {
+        unsigned int id = g_archive_stage_id++ % 10000U;
+        if (dos16_sibling_name(target, backup, backup_size, "BK", ".BAK",
+                               id) != 0) return -1;
+        if (access(backup, 0) != 0 && errno == ENOENT) return 0;
+    }
+    return -1;
+}
+
+static int dos16_publish_archive(const char *target, const char *stage,
+                                 int original_exists,
+                                 unsigned int original_attributes)
+{
+    char backup[BP_MAX_PATH];
+    if (original_exists) {
+        if (dos16_next_backup_name(target, backup, sizeof(backup)) != 0 ||
+            rename(target, backup) != 0) return BP_ERR_IO;
+        if (rename(stage, target) != 0) {
+            if (rename(backup, target) != 0) {
+                bp_wstr(2, PROG_NAME ": original archive remains at recovery path: ");
+                bp_wstr(2, backup); write(2, "\n", 1);
+            }
+            return BP_ERR_IO;
+        }
+        original_attributes &= (_A_HIDDEN | _A_SYSTEM | _A_ARCH);
+        if (_dos_setfileattr(target, original_attributes) != 0) {
+            bp_wstr(2, PROG_NAME ": cannot preserve archive attributes: ");
+            bp_wstr(2, target); write(2, "\n", 1);
+            if (remove(target) != 0 || rename(backup, target) != 0) {
+                bp_wstr(2, PROG_NAME ": previous archive remains at recovery path: ");
+                bp_wstr(2, backup); write(2, "\n", 1);
+            }
+            return BP_ERR_PARTIAL;
+        }
+        if (remove(backup) != 0) {
+            bp_wstr(2, PROG_NAME ": previous archive remains at recovery path: ");
+            bp_wstr(2, backup); write(2, "\n", 1);
+            return BP_ERR_PARTIAL;
+        }
+        return BP_OK;
+    }
+    return rename(stage, target) == 0 ? BP_OK : BP_ERR_IO;
+}
 #endif /* __WATCOMC__ */
 
 static int cmd_create(const char *arc_path, int argc, char **argv,
@@ -689,6 +866,10 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 {
 #ifdef __WATCOMC__
     int fd;
+    int original_exists = 0;
+    unsigned int original_attributes = 0;
+    unsigned int target_attributes;
+    char stage_path[BP_MAX_PATH];
 #else
     FILE *fp;
 #endif
@@ -696,11 +877,27 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
     bp_mini_archive_t ar;
     int rc;
     int i;
+    BP_STACK_PROBE();
 
 #ifdef __WATCOMC__
-    fd = open(arc_path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0);
+    if (access(arc_path, 0) == 0) {
+        if (_dos_getfileattr(arc_path, &target_attributes) != 0 ||
+            (target_attributes & (_A_SUBDIR | _A_RDONLY)) != 0) {
+            bp_wstr(2, PROG_NAME ": cannot safely replace archive ");
+            bp_wstr(2, arc_path); write(2, "\n", 1);
+            return 1;
+        }
+        original_exists = 1;
+        original_attributes = target_attributes &
+                             (_A_HIDDEN | _A_SYSTEM | _A_ARCH);
+    } else if (errno != ENOENT) {
+        bp_wstr(2, PROG_NAME ": cannot inspect archive ");
+        bp_wstr(2, arc_path); write(2, "\n", 1);
+        return 1;
+    }
+    fd = dos16_open_archive_stage(arc_path, stage_path, sizeof(stage_path));
     if (fd < 0) {
-        bp_wstr(2, PROG_NAME ": cannot create ");
+        bp_wstr(2, PROG_NAME ": cannot create staged archive beside ");
         bp_wstr(2, arc_path); write(2, "\n", 1);
         return 1;
     }
@@ -720,6 +917,7 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         bp_wstr(2, PROG_NAME ": compress init failed: ");
         bp_wstr(2, bp_mini_strerror(rc)); write(2, "\n", 1);
         close(fd);
+        remove(stage_path);
 #else
         fprintf(stderr, PROG_NAME ": compress init failed: %s\n",
                 bp_mini_strerror(rc));
@@ -734,6 +932,7 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         bp_wstr(2, PROG_NAME ": create failed: ");
         bp_wstr(2, bp_mini_strerror(rc)); write(2, "\n", 1);
         close(fd);
+        remove(stage_path);
 #else
         fprintf(stderr, PROG_NAME ": create failed: %s\n",
                 bp_mini_strerror(rc));
@@ -762,6 +961,9 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         rc = BP_ERR_IO;
 #endif
         if (rc != BP_OK) {
+#ifdef BP_TEST_STACK_HIGHWATER
+            printf("BP_TEST_ADD_ERROR=%d\n", rc);
+#endif
 #ifdef __WATCOMC__
             bp_wstr(2, PROG_NAME ": error adding "); bp_wstr(2, argv[i]);
             write(2, ": ", 2);
@@ -789,7 +991,11 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 
     bp_mini_archive_close(&ar);
 #ifdef __WATCOMC__
-    close(fd);
+    if (close(fd) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = dos16_publish_archive(arc_path, stage_path, original_exists,
+                                   original_attributes);
+    if (rc != BP_OK) remove(stage_path);
 #else
     fclose(fp);
 #endif
@@ -808,6 +1014,9 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
                ar.entries_written == 1 ? "y" : "ies");
 #endif
     }
+#ifdef BP_TEST_ALLOC_CLI
+    g_test_last_error = rc;
+#endif
 #ifdef __WATCOMC__
     return (rc == BP_OK && !g_time_partial) ? 0 : 1;
 #else
@@ -915,6 +1124,7 @@ static int cmd_extract(const char *arc_path, const char *dest)
     bp_mini_projected_index_t name_index;
     bp_mini_projected_preflight_t preflight;
     int rc;
+    BP_STACK_PROBE();
 
 #ifdef __WATCOMC__
     fd = open(arc_path, O_RDONLY | O_BINARY);
@@ -1071,6 +1281,7 @@ static int cmd_test(const char *arc_path)
 #endif
     bp_io_t arc_io;
     int rc;
+    BP_STACK_PROBE();
 
 #ifdef __WATCOMC__
     fd = open(arc_path, O_RDONLY | O_BINARY);
@@ -1290,6 +1501,20 @@ int main(int argc, char **argv)
     bp_uint32 block_size = BP_BLOCK_32K;
     bp_uint8  method     = BP_METHOD_BOLTLITE;
 
+#ifdef BP_TEST_ALLOC_CLI
+    if (argc >= 4 && strcmp(argv[1], "--fail-path-buffer") == 0) {
+        g_test_alloc_index = atol(argv[2]);
+        g_test_alloc_enabled = 1;
+        argv += 2;
+        argc -= 2;
+    }
+#endif
+
+#ifdef BP_TEST_STACK_HIGHWATER
+    BP_STACK_PROBE();
+    atexit(bp_test_stack_report);
+#endif
+
     if (argc < 3) {
         usage();
         return 1;
@@ -1326,8 +1551,24 @@ int main(int argc, char **argv)
 
     switch (cmd) {
     case 'c':
-        return cmd_create(arc_path, argc - files_start, argv + files_start,
-                          block_size, method);
+    {
+        int result = cmd_create(arc_path, argc - files_start, argv + files_start,
+                                block_size, method);
+#ifdef BP_TEST_ALLOC_CLI
+        if (g_test_alloc_enabled) {
+            char marker_name[16];
+            FILE *marker;
+            sprintf(marker_name, "AF%ld.TXT", g_test_alloc_index);
+            marker = fopen(marker_name, "w");
+            if (marker != NULL) {
+                fprintf(marker, "result=%d error=%d live=%ld\n", result,
+                        g_test_last_error, bp_test_alloc_live_count());
+                fclose(marker);
+            }
+        }
+#endif
+        return result;
+    }
     case 'x': {
         const char *dest = (files_start < argc) ? argv[files_start] : NULL;
         return cmd_extract(arc_path, dest);

@@ -7,6 +7,7 @@ replace a build or runtime test with DJGPP/DOS.
 import argparse
 import os
 from pathlib import Path
+import struct
 import subprocess
 import tempfile
 
@@ -107,6 +108,25 @@ def run(command, cwd, **kwargs):
     return subprocess.run(command, cwd=cwd, capture_output=True, **kwargs)
 
 
+def primary_mtimes(path):
+    archive = path.read_bytes()
+    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
+    record = table_offset + 16
+    entries = {}
+    for _ in range(count):
+        name_length = struct.unpack_from("<H", archive, record)[0]
+        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
+        fields = record + 2 + name_length
+        entry_type = archive[fields + 16]
+        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
+        flags = struct.unpack_from("<H", archive, fields + 41)[0]
+        if entry_type in (0, 3, 4):
+            entries[name] = (mtime, flags)
+        record = fields + 43
+    return entries
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--boltpack", required=True, type=Path)
@@ -119,6 +139,18 @@ def main():
         source = root / "source"
         (source / "src").mkdir(parents=True)
         (source / "src" / "file.txt").write_bytes(b"verified DOS frontend output\n")
+        pre_epoch = source / "pre-epoch.txt"
+        pre_epoch.write_bytes(b"DOS host pre-epoch timestamp regression\n")
+        os.utime(pre_epoch, (-1, -1))
+        result = run([str(boltpack), "c", "pre-epoch.blt", pre_epoch.name],
+                     source)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        archive_times = primary_mtimes(source / "pre-epoch.blt")
+        mtime, flags = archive_times[pre_epoch.name]
+        assert mtime == 0 and not (flags & 0x4000), \
+            "DOS frontend marked a pre-epoch source time as valid"
+        assert run([str(boltpack), "t", "pre-epoch.blt"], source).returncode == 0
+
         readonly_source = source / "src" / "readonly.txt"
         readonly_source.write_bytes(b"read-only portable FAT flag\n")
         readonly_source.chmod(0o444)

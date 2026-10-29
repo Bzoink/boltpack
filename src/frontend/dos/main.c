@@ -482,6 +482,18 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
     return BP_OK;
 }
 
+static bp_uint16 dos_archive_mtime(time_t value, bp_uint64 *mtime)
+{
+    bp_off_t seconds;
+
+    *mtime = bp_u64_from_u32(0);
+    seconds = (bp_off_t)value;
+    if (seconds < 0 || (time_t)seconds != value)
+        return 0;
+    *mtime = bp_off_to_u64(seconds);
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 {
     struct stat st;
@@ -495,6 +507,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     if (S_ISDIR(st.st_mode)) {
         char dir_arc[BP_MAX_PATH];
         char dir_arc_utf8[BP_MAX_PATH * 2];
+        bp_uint64 mtime;
+        bp_uint16 mtime_flags;
 
         /* ensure arc name ends with '/' */
         if (!ends_with_sep(arcname)) {
@@ -511,8 +525,10 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8),
                              DOS_CODEPAGE) != 0) return BP_ERR_INVALID_ARG;
 
-        rc = bp_archive_add_entry(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_DOS,
-                                  NULL, bp_u64_from_u32(0), bp_u64_from_u32((bp_uint32)st.st_mtime));
+        mtime_flags = dos_archive_mtime(st.st_mtime, &mtime);
+        rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR, BP_OS_DOS,
+                                     NULL, bp_u64_from_u32(0), mtime,
+                                     mtime_flags);
         if (rc != BP_OK) return rc;
 
 #ifdef BP_DOS_FAT_ATTRIBUTES
@@ -526,6 +542,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         FILE *fp;
         bp_io_t fio;
         bp_uint64 file_size = bp_u64_from_ulong((unsigned long)st.st_size);
+        bp_uint64 mtime;
+        bp_uint16 mtime_flags;
         char arcname_utf8[BP_MAX_PATH * 2];
 
         fp = fopen(path, "rb");
@@ -547,8 +565,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             return BP_ERR_INVALID_ARG;
         }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_DOS,
-                                  &fio, file_size, bp_u64_from_u32((bp_uint32)st.st_mtime));
+        mtime_flags = dos_archive_mtime(st.st_mtime, &mtime);
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_DOS,
+                                     &fio, file_size, mtime, mtime_flags);
         fclose(fp);
 
         if (rc != BP_OK) return rc;
@@ -1184,9 +1203,22 @@ static int dos_archive_stat(const char *path, int *exists,
 static int dos_archive_same_stat(const struct stat *a, const struct stat *b)
 {
     return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
-           a->st_mode == b->st_mode && a->st_nlink == b->st_nlink &&
+           S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_nlink == b->st_nlink &&
            a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
            a->st_ctime == b->st_ctime;
+}
+
+/* FAT implementations may assign a new inode number when rename moves a
+   directory entry. Verify the archived object fields after the recovery rename
+   without treating that path-derived inode as a content identity. */
+static int dos_archive_same_renamed_stat(const struct stat *a,
+                                         const struct stat *b)
+{
+    return a->st_dev == b->st_dev &&
+           S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_nlink == b->st_nlink && a->st_size == b->st_size &&
+           a->st_mtime == b->st_mtime && a->st_ctime == b->st_ctime;
 }
 
 static int dos_archive_capture_attributes(const char *path, int exists,
@@ -1259,7 +1291,7 @@ static int dos_archive_publish(const char *target, const char *stage,
         rename(target, backup) != 0)
         return BP_ERR_IO;
     if (lstat(backup, &backup_stat) != 0 ||
-        !dos_archive_same_stat(&backup_stat, expected_stat)) {
+        !dos_archive_same_renamed_stat(&backup_stat, expected_stat)) {
         if (rename(backup, target) != 0)
             fprintf(stderr,
                     "boltpack: original archive remains at recovery path: %s\n",
@@ -1442,7 +1474,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         rc = parse_rc;
         subject_match = ctx->subject_ok && ctx->subject_name != NULL &&
                         strcmp(entry->name, ctx->subject_name) == 0 &&
-                        parsed.subject_type == ctx->subject_type;
+                        bp_metadata_matches_subject(&parsed, ctx->subject_type);
         if (!subject_match) rc = BP_ERR_PARTIAL;
         if (subject_match && parsed.has_fat && !ctx->dry_run) {
             if (ctx->subject_type == BP_TYPE_DIR) {

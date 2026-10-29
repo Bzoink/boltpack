@@ -11,6 +11,55 @@
 #define BP_ATARI_PATH_BUCKETS 64U
 #define BP_ATARI_GEMDOS_PATH_MAX 125U
 
+static int bp_atari_selector_dir(const char *pattern, size_t pattern_capacity,
+                                 char *dir, size_t capacity)
+{
+    size_t length, directory_length, i;
+    size_t separator = (size_t)-1;
+    if (pattern == NULL || dir == NULL || pattern_capacity == 0 || capacity == 0)
+        return BP_ERR_INVALID_ARG;
+    for (length = 0; length < pattern_capacity && pattern[length] != '\0'; length++)
+        ;
+    if (length == pattern_capacity)
+        return BP_ERR_OVERFLOW;
+    for (i = 0; i < length; i++)
+        if (pattern[i] == '\\' || pattern[i] == '/') separator = i;
+    directory_length = separator != (size_t)-1 ? separator : length;
+    if (directory_length > BP_ATARI_GEMDOS_PATH_MAX ||
+        directory_length >= capacity)
+        return BP_ERR_OVERFLOW;
+    memcpy(dir, pattern, directory_length);
+    dir[directory_length] = '\0';
+    return BP_OK;
+}
+
+static int bp_atari_selector_join(const char *pattern,
+                                  size_t pattern_capacity,
+                                  const char *filename, char *path,
+                                  size_t capacity)
+{
+    char dir[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    size_t dir_length, name_length, separator_length;
+    int rc;
+    if (filename == NULL || path == NULL || capacity == 0)
+        return BP_ERR_INVALID_ARG;
+    rc = bp_atari_selector_dir(pattern, pattern_capacity, dir, sizeof(dir));
+    if (rc != BP_OK) return rc;
+    dir_length = strlen(dir);
+    name_length = strlen(filename);
+    separator_length = dir_length != 0 && dir[dir_length - 1] != '\\' &&
+                       dir[dir_length - 1] != '/' ? 1U : 0U;
+    if (dir_length + separator_length + name_length >
+            BP_ATARI_GEMDOS_PATH_MAX ||
+        dir_length + separator_length + name_length >= capacity)
+        return BP_ERR_OVERFLOW;
+    memcpy(path, dir, dir_length);
+    if (separator_length != 0) path[dir_length++] = '\\';
+    memcpy(path + dir_length, filename, name_length);
+    path[dir_length + name_length] = '\0';
+    return BP_OK;
+}
+
 typedef struct bp_atari_name_node_s {
     struct bp_atari_name_node_s *next;
     char *key;
