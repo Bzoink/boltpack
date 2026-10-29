@@ -33,8 +33,10 @@ make
 | ---------------------- | ------------------------------------------------------ |
 | `BUILD.md`             | Native build procedures and platform-specific caveats  |
 | `mini.md`              | 16-bit mini variant architecture and capability limits |
+| [16-bit-resource-accounting.md](16-bit-resource-accounting.md) | Watcom map sizes, 16-bit heap limits, and measured resource bounds |
 | [archive-format-plan.md](archive-format-plan.md) | Format 6 work plan and remaining interoperability tasks |
 | [interoperability-completion-plan.md](interoperability-completion-plan.md) | Ordered completion backlog, target environments, and exit criteria |
+| [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) | Phase 0–3 and basic Profile 1 acceptance mapped to every frontend/build |
 | [emulator-setup.md](emulator-setup.md) | Verified local Atari and Amiga emulator startup settings |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |

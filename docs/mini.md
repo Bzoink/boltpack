@@ -469,14 +469,18 @@ allocations must coexist:
 
 | Buffer                          | Size   |
 | ------------------------------- | ------ |
-| BoltLite work buffer (lazy, create) | ~18 KB |
-| Input block buffer              | 32 KB  |
-| Output block buffer             | ~37 KB |
-| **Create peak**                 | ~87 KB |
+| BoltLite work buffer (lazy, create) | 18,432 bytes |
+| Input block buffer              | 32,768 bytes |
+| Output block buffer              | 36,880 bytes |
+| **Codec buffers during create**  | **88,080 bytes** |
 
-Extraction is lighter: the BoltLite work buffer is never allocated, leaving one
-~34 KB compressed-input buffer plus one 32 KB output buffer (allocated once
-per run and reused across entries) — a peak of about 66 KB.
+Extraction is lighter: the BoltLite work buffer is never allocated, leaving a
+34,883-byte compressed-input buffer and a 32,768-byte output buffer (allocated
+once per run and reused across entries), for 67,651 requested bytes. These
+figures cover codec buffers only; archive tables, names, path indexes, queue
+nodes, CRT state, and allocator overhead are additional. See the measured
+cross-target data and current limits in
+[16-bit resource accounting](16-bit-resource-accounting.md).
 
 This exceeds the 64 KB near-data segment of the small model (`-ms`). Compact
 model places all data in a far heap and resolves this. Under Watcom compact

@@ -1,6 +1,6 @@
 # Archive Format Interoperability Plan
 
-**Reviewed:** 2026-10-27
+**Reviewed:** 2026-10-29
 
 **Status:** implementation in progress; the core and specification use format 6.  
 **Basis:** [archive format audit](archive-format-audit.md).
@@ -72,10 +72,19 @@ Linux mini reader under QEMU.
 `make CC=gcc dos-djgpp` now detects the installed DJGPP compiler and cross-builds
 the full DOS CLI. Its headers hide POSIX/DOS declarations under
 `__STRICT_ANSI__`; the target keeps ANSI language mode and undefines that
-header gate. The installed DOSBox lacks a DPMI host, so the DJGPP executable
-stops before `main` with a missing-DPMI error. The separate DOS16/DOSBox
-transfer fixture passes but does not qualify DJGPP filesystem APIs or FAT
-attribute behavior.
+header gate. DOSBox-X can run the DJGPP binary with `CWSDPMI.EXE` from
+DJGPP's `csdpmi` package. `make CC=gcc
+CWSDPMI=/path/to/CWSDPMI.EXE dos-djgpp-dosboxx-fat12-test` now verifies full-DOS
+create/append/delete/test/extract on FAT12, DOS extraction of a Linux-created
+archive, and Linux verification/extraction of the edited DOS archive with
+byte-identical payloads. HIDDEN, SYSTEM, and ARCHIVE flags survive the edit
+sequence. DOSBox-X FAT12 reports different mode bits for
+`lstat` and `fstat`, and assigns a new inode after rename; the DOS identity
+check now compares stable file type and object fields without requiring the
+path-derived inode to survive the recovery rename. The separate DOS16/DOSBox
+transfer fixture provides complementary CP437 and FAT timestamp coverage;
+native DOS crash recovery and all target filesystem behavior remain
+unqualified.
 The full DOS CLI's path-based publication has no protection against a
 concurrent parent-directory change. Its preflight queries DJGPP's LFN support
 for the destination volume and requires a conservative 8.3 profile when LFN is
@@ -92,8 +101,18 @@ manual](https://www.bitsavers.org/pdf/atari/ST/Atari_ST_GEM_Programming_1986/GEM
 The `atari-path-test` C89 host fixture covers 8.3 projection, invalid names,
 the 125-byte path boundary, case-folded aliases, and both collision-index
 bounds; it does not replace Atari runtime testing.
-The Windows CLI has cross-build evidence but still needs Windows
-runtime tests. The full Atari CLI now writes native and portable FAT metadata,
+The Windows CLI has Win32/Win64 cross-build and Win64 Wine runtime evidence;
+native Windows runtime qualification remains open. Its source enumerator
+captures each file and directory's volume/file identity, size and timestamps;
+serial and parallel packing reject in-place source writes and queued path
+replacements. Directory walking verifies parent identity before and after
+enumeration and uses captured portable attributes. Wine fixtures refuse
+same-size file and parent-directory replacements without publishing an
+archive, and recheck file snapshots and directory identities before
+finalization. Transient swap-and-restore races, source reparse-point behavior,
+and native Windows behavior remain unqualified.
+
+The full Atari CLI now writes native and portable FAT metadata,
 defers directory time and attribute restoration, and stages extracted files
 before checksum-verified commit. It checks existing directory components for symlinks
 and uses no-replace GEMDOS renames; forced replacement keeps a recovery copy
@@ -123,14 +142,14 @@ Its bounded queue holds 256 directories and 32 KiB of paths. Extraction first
 checks projected names against the destination code page and filesystem; FAT
 targets require 8.3 components, while other OS/2 filesystems use OS/2 case
 mapping to reject collisions. Regular files are written to exclusive sibling
-temporary files. After checksum verification OS/2 reserves the final filename
-with exclusive-create and copies the verified stage; forced replacement keeps
-a recovery copy and rolls it back if publication fails. OS/2 timestamps use
+temporary files. After checksum verification OS/2 publishes the closed stage
+with same-directory `DosMove`; forced replacement keeps the old target in a
+recovery copy and rolls it back if publication fails. OS/2 timestamps use
 the fixed `BP_TZ_OFFSET` setting. The 32-bit Watcom compiler compiled the OS/2
 frontend and core and linked an LX executable with `make os2-watcom`, but no
-OS/2 runtime is available here. A process interruption during the final copy
-can leave a partial destination. OS/2 pathname operations still cannot prevent
-a concurrent parent substitution. HPFS `.TYPE` extended attributes are not
+OS/2 runtime is available here. Rename no-overwrite and recovery behavior still
+need target qualification. OS/2 pathname operations still cannot prevent a
+concurrent parent substitution. HPFS `.TYPE` extended attributes are not
 transferred. No Atari or OS/2 runtime round trip has been run.
 OS/2 create and delete now write to exclusive sibling staging files and publish
 only after successful archive finalization, flush, and close. Replacing an
@@ -288,13 +307,15 @@ unrepresentable names, resource forks, foreign metadata, and POSIX modes are
 reported or refused. Its Compression menu includes Interchange Profile 1,
 which selects BoltLite with 16 KiB blocks and enforces mini-reader limits.
 Both GUI and CLI pass Atari cross-builds with warnings
-treated as errors. Hatari now starts with TOS 1.62, but no Atari archive
-runtime round trip has yet been recorded for the GUI; the full CLI has passed
-Linux/Atari byte round trips and archive edits on both Hatari's host-directory
-backend and a FAT12 floppy guest filesystem; normal control-console quit/eject
-saves the image, which the test verifies after shutdown. Atari native attribute
-and timestamp restoration remain unqualified. The GUI's pathname checks retain a
-concurrent parent-substitution race.
+treated as errors. Hatari/TOS 1.62 now verifies production GUI archive opening,
+META/RSRC-filtered listing, and extraction to the host-directory drive with
+byte-identical output. A temporary Create-default harness produced a v6 archive
+that Linux validates and extracts byte-identically; the shipped GUI Create
+button remains unqualified. The full CLI has passed Linux/Atari byte round trips
+and archive edits on both Hatari's host-directory backend and a FAT12 floppy
+guest filesystem; normal control-console quit/eject saves the image, which the
+test verifies after shutdown. Native GUI FAT metadata remains unqualified, and
+the GUI's pathname checks retain a concurrent parent-substitution race.
 
 The portable metadata envelope and FAT validity/value masks are specified and
 both cores validate its bounded payload during extraction and testing. They
@@ -329,9 +350,12 @@ conditional hard-link/reparse-point refusal fixtures, but has not run here.
 The OS/2 CLI now copies the original archive to a unique sibling stage and
 appends there; handled failures leave the original untouched. Publication uses
 a recovery rename, so interruption between the backup and publish renames can
-leave the original at its recovery name. The Watcom cross-build passes, but
-runtime and interruption tests remain unavailable. Atari append also uses a
-sibling stage.
+leave the original at its recovery name. Verified extraction stages now publish
+with same-directory `DosMove` after checksum verification, avoiding a final
+copy into the visible target; forced replacement keeps the prior target in a
+recovery backup until that move succeeds. The Watcom cross-build passes, but
+OS/2 runtime, no-overwrite, and interruption behavior remain unqualified. Atari
+append also uses a sibling stage.
 Total Commander WCX append copies the original to an exclusive sibling stage,
 finalizes the updated archive there, and atomically replaces the original only
 after successful close. WCX deletion also writes an exclusive sibling stage
@@ -411,8 +435,10 @@ Evidence in the current implementation:
   records currently omit flags.
 - [Mini writer and reader](../src/core/mini/archiver.c): the writer API has no
   flags argument; `mini_read_inline_meta` does not return flags to extraction.
-- [Codepage API](../src/core/bp_codepage.h): unrepresentable characters may be
-  replaced with `_` while returning success; full Shift-JIS mapping is absent.
+- [Codepage API](../src/core/bp_codepage.h): strict errors distinguish invalid
+  and unrepresentable input. Standard JIS X 0208 Shift-JIS mappings are
+  generated by `scripts/generate_sjis_table.py`; CP932 vendor extensions remain
+  explicitly unrepresentable.
 - [Win16 frontend](../src/frontend/win16/main.c) uses `_dos_findfirst`;
   [OS/2-16 frontend](../src/frontend/os2_16/main.c) also uses DOS-style scanning.
 - [Mini limits](../src/core/bp_types.h): 32 KiB blocks and 65,535 physical
@@ -492,11 +518,14 @@ Replace the overloaded NULL result with an explicit extraction contract:
 | Open/write/close/CRC failure or cancellation | Return failure, clean up resources, and do not run successful metadata restoration |
 
 Specify stream ownership and exactly-once cleanup separately from completion.
-Completion receives a verified outcome and may return a restore error. Apply
-this contract to the mini core too: its current checksum-mismatch path prints
-a warning but can finish with `BP_OK`. Skipped or unverified entries must not
-be counted as successfully restored. Preserve any existing destination file
-when a new extraction fails; stage output where the target supports it.
+Completion receives a verified outcome and may return a restore error. The mini
+status-aware extraction API passes checksum and I/O failures to cleanup and
+returns the failure. A completion result of `BP_ERR_PARTIAL` records metadata
+loss while keeping a checksum-verified subject eligible for its supplementary
+portable metadata; a different completion error aborts before that metadata is
+delivered. Skipped or unverified entries must not be counted as successfully
+restored. Preserve any existing destination file when a new extraction fails;
+stage output where the target supports it.
 
 Directory finalization runs deepest first after child creation. Use a bounded
 queue or a second archive/table pass on constrained targets; do not retain an
@@ -519,15 +548,17 @@ for table and inline names. Validate destination paths again after conversion
 or mapping; a lexically safe archive name alone does not prevent writing
 through an existing filesystem symlink or reparse point outside the root.
 
-The conversion API now distinguishes unrepresentable characters, invalid
-input, and insufficient space. Shift-JIS double-byte characters outside the
-implemented half-width range return an explicit unsupported result. DOS,
+The conversion API distinguishes unrepresentable characters, invalid input,
+and insufficient space. Shift-JIS now covers ASCII, half-width kana, and
+standard JIS X 0208 double-byte mappings in both directions; undefined pairs
+and CP932 vendor extensions are explicitly rejected. DOS,
 Atari, Amiga, and OS/2 archive creation refuses names that cannot be converted;
 legacy extraction callbacks refuse unrepresentable names rather than passing
 UTF-8 bytes into a local filesystem API. Atari extraction uses a strict base
 GEMDOS 8.3 ASCII projection and tracks case-folded paths before writing; its
-collision index is bounded at 1,024 entries and 32 KiB of keys. Windows CLI conversion uses strict ACP
-conversion and tracks projected paths during extraction. It refuses
+collision index is bounded at 1,024 entries and 32 KiB of keys. The Windows
+CLI keeps paths in UTF-8 internally and uses strict UTF-16 Win32/CRT APIs. It
+tracks projected paths during extraction and refuses
 case-insensitive collisions, reserved device names, invalid path characters,
 and trailing dots or spaces, even when `--force` is set. Remaining encoding
 work includes broader target tests, Unicode normalization and non-Windows
@@ -545,7 +576,9 @@ Select the source codepage from the actual filename API and active environment.
 DOS-style Win16/OS2-16 paths require the appropriate OEM/local codepage, not an
 assumed CP1252. Provide an explicit override and documented build default when
 detection is unavailable. On Windows NT targets, use Unicode filesystem APIs
-for names beyond the active ANSI codepage; legacy targets declare their limits.
+for names beyond the active ANSI codepage. The native Win32 GUI targets the
+Windows NT family and uses Unicode APIs; Windows 9x is unsupported. Other
+legacy targets declare their limits.
 
 Compile only needed conversion tables into mini builds and measure binary,
 heap, and stack costs on 16-bit builds. A single-byte codepage may expand to
@@ -588,16 +621,17 @@ portable FAT flags for files and directories, using `GetFileAttributesA` and
 The full Atari and OS/2 CLIs capture native attributes and the portable FAT envelope,
 then restores directory times and flags after child extraction. It stages file
 output using same-directory temporary files and verifies checksums before
-publishing. Atari uses GEMDOS renames; OS/2 reserves the destination with
-exclusive-create and copies the verified stage, preserving the old file under
-a recovery name during forced replacement. OS/2 FAT targets require 8.3 names
-and all OS/2 targets preflight case-mapped collisions. The final copy can leave
-a partial file if the process stops mid-copy, and path APIs leave a race with
-concurrent parent substitution. Watcom cross-compilation and linking of the
+publishing. Atari uses GEMDOS renames; OS/2 publishes the verified stage with
+`DosMove`, preserving the old file under a recovery name during forced
+replacement. OS/2 FAT targets require 8.3 names and all OS/2 targets preflight
+case-mapped collisions. Rename recovery and path-based parent-substitution
+behavior remain unqualified. Watcom cross-compilation and linking of the
 OS/2 executable succeeds, but neither the Atari nor OS/2 adapter has target
 runtime evidence yet. Win16, DOS, and Atari mini frontends use their target
-APIs. The native Win32 GUI now uses strict ACP-to-UTF-8 conversion for source
-names and UTF-8-to-ACP projection for extraction, refuses reserved or
+APIs. The native Win32 GUI keeps paths as UTF-8 internally and uses UTF-16
+Win32 and CRT APIs on Windows NT for source enumeration, archive I/O, dialogs,
+drag/drop, listing, extraction, and metadata. Windows 9x is unsupported because
+the executable imports Unicode APIs directly. It refuses reserved or
 colliding Windows names, checks archive-controlled directory components for
 reparse points, stages regular files until checksums pass, restores
 representable times and portable FAT attributes, and defers directory
@@ -610,17 +644,18 @@ POSIX modes, symlinks, and resource forks as partial. Its path-based checks
 have a race with concurrent parent substitution, and preflight does not detect
 Unicode normalization collisions or source-tree changes during creation. It
 has cross-build evidence but no Windows runtime qualification. The Windows
-FLTK GUI now uses strict UTF-8-to-ACP name and destination-root projection
-(and opens the chooser-selected archive path through UTF-16), Windows component
-checks, case-insensitive projected-path preflight, reparse-point checks for the
-chosen root and traversed directories, and sibling staging committed only after
+FLTK GUI now keeps paths in UTF-8 internally and routes filesystem operations,
+archive chooser paths, temporary paths, and drag/drop paths through UTF-16
+Win32/CRT APIs. It uses Windows component checks, case-insensitive
+projected-path preflight, reparse-point checks for the chosen root and traversed
+directories, and sibling staging committed only after
 the core reports a verified checksum and successful close. It restores
 representable file and deferred directory times plus portable FAT flags, and
 reports modes, links, resource forks, unsupported metadata, and lossy restores
 as partial. Its collision preflight is bounded at 65,535 selected primary
 entries and 65,535 projected path nodes; exceeding either bound refuses before
-output changes. Win32 and Win64 cross-builds pass; Windows runtime tests,
-parent-swap race coverage, and names outside the active ACP remain unqualified.
+output changes. Win32 and Win64 cross-builds pass; Windows runtime tests and
+parent-swap race coverage remain open.
 The .NET GUI now uses strict UTF-8 archive-name decoding and Unicode file APIs,
 collision and reserved-name preflight, path-based reparse checks, exclusive
 sibling staging with checksum-verified publication, portable FAT and valid
@@ -635,8 +670,13 @@ file opening, exclusive temporary creation, and checked close. Win32 and Win64
 DLL cross-builds pass, but this environment has no .NET compiler or Windows
 runtime; the managed project is not yet compile- or runtime-qualified.
 Path-based reparse checks retain a concurrent parent-substitution race. The
-Total Commander WCX now rejects invalid, reserved, unrepresentable, and colliding
-Windows paths before listing, with a 65,535-primary-entry bound. It verifies
+The Total Commander WCX plugin exports both the legacy ANSI API and Unicode
+`W` entry points. `OpenArchiveW`, `ReadHeaderExW`, `ProcessFileW`, `PackFilesW`,
+`DeleteFilesW`, and wide progress/volume callbacks carry paths as UTF-16; the
+plugin converts these to its internal UTF-8 representation and calls wide
+filesystem APIs. ANSI entry points require strict ACP round trips and refuse
+unrepresentable paths. Both paths reject invalid, reserved, and colliding
+Windows names before listing, with a 65,535-primary-entry bound. It verifies
 archive data for the WCX test operation, stages selected regular files beside
 their destinations, and publishes only after checksum verification and close.
 WCX append and deletion now stage a complete replacement archive beside the
@@ -645,12 +685,13 @@ It captures and restores portable FAT flags, restores representable file times,
 and defers directory times and flags until `CloseArchive`. Unrepresentable
 source times are encoded as unknown and cause a WCX error after the archive is
 finalized. Symlinks, resource forks, POSIX
-modes, unsupported metadata, and lossy restores return a WCX creation error
-(the WCX API has no partial-preservation result). Win32 and Win64 cross-builds
-pass; plugin-host runtime tests and concurrent parent-swap coverage remain
-unavailable. The path-based component checks still have a race with concurrent
-parent substitution. The legacy WCX `ReadHeader` API refuses entries larger
-than `INT_MAX`; `ReadHeaderEx` carries 64-bit sizes.
+modes, unsupported metadata, and lossy restores return the WCX `E_NOT_SUPPORTED`
+result (the API has no partial-preservation result). Win32 and Win64 cross-builds
+pass and both DLL export tables contain the Unicode entry points. Plugin-
+host runtime tests and concurrent parent-swap coverage remain unavailable. The
+path-based component checks still have a race with concurrent parent
+substitution. The legacy WCX `ReadHeader` API refuses entries larger than
+`INT_MAX`; both `ReadHeaderEx` and `ReadHeaderExW` carry 64-bit sizes.
 
 The Amiga-family CLI stages regular files beside their destinations and
 publishes only after checksum verification and successful close. Forced
@@ -767,9 +808,11 @@ has no managed build or Windows runtime qualification; the Cocoa GUI has no
 macOS target build or runtime qualification. Haiku's target cross-build and
 runtime qualification remain outstanding. The Retro68 Classic Mac 68k GUI
 source now offers Interchange Profile 1 and its checked-in core copies match
-the shared format-6 core. `make CC=gcc macos9-68k` now builds the application
-data and merged resource-fork artifacts; the target adds the installed Boost
-library directory to the Retro68 tool environment. Mac OS 9 runtime
+the shared format-6 core; `make macos9-core-sync-test` enforces the copied-file
+and shared-core inventories. `make CC=gcc macos9-68k` builds from `src/core`,
+and `make CC=gcc macos9-68k-kit` builds from the copied source kit; both produce
+the application and merged resource-fork artifacts. The Retro68 smoke link uses
+a temporary output so the linker can create its companion debug file. Mac OS 9 runtime
 qualification remains outstanding.
 The PowerPC Mac
 OS 9 GUI source now offers a create-time choice for the profile; its legacy

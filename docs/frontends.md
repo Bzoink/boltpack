@@ -66,8 +66,8 @@ src/frontend/
     gui_common/         Shared GUI constants and help text
         help_text.h     App name, version, copyright, help text
     linux_gui/main.cpp  Linux GUI (FLTK 1.3, C++)
-    win_gui_fltk/main.cpp Windows GUI (FLTK 1.4, C++)
-    win_gui/            Windows 95+ GUI (Win32 API, C89)
+    win_gui_fltk/main.cpp Windows NT GUI (FLTK 1.4, C++; UTF-16 filesystem APIs)
+    win_gui/            Windows NT GUI (Win32 API, C89; Unicode filesystem paths)
         main.c          Main window, menus, ListView, drag-and-drop
         resource.h      Resource identifiers
         resource.rc     Menus, dialogs, accelerators, version info
@@ -244,8 +244,24 @@ BoltLite with 16 KiB blocks by default, or Stored with `-0`, and enforces the
 mini-compatible entry-count, per-entry, block, and serialized archive limits.
 Explicit codec, block-size, or level settings that conflict with the profile
 are refused. Appending also checks that the existing archive already conforms.
-The option has Win32 and Win64 cross-build coverage; Windows runtime behavior
-and profile archive round trips still need target testing.
+The Win64 CLI creates a Profile 1 archive under Wine that is byte-checked as
+BoltLite/16 KiB and accepted by both Linux full and mini readers. Native Windows
+profile/runtime behavior remains unqualified. Append and delete refuse read-only, multiply linked, and reparse-point archive
+targets before editing. The Win64 CLI also passes a Wine runtime fixture for supplementary-Unicode paths, corrupt-output
+preservation, portable file/directory FAT flags and timestamps, append, and
+delete. Extraction preflights the full archive name table before creating the
+output root; Linux-created fixtures confirm reserved Windows names,
+trailing dots/spaces, case-insensitive aliases, and file/directory-prefix
+conflicts in either archive order are refused without output changes. A Linux
+CLI and Win64 Wine also
+transfer v6 archives both ways, with bytes verified and
+unsupported foreign metadata reported as partial. Append/delete now reapply the
+archive's supported native file-attribute bits after `ReplaceFile` and roll back
+if attribute restoration fails. Wine confirms read-only archive edits preserve
+bytes and READONLY/HIDDEN/SYSTEM flags with no stage left behind, and confirms
+HIDDEN/SYSTEM survive successful append and delete. Wine does not expose host POSIX symlinks as Win32 reparse points, and it
+does not qualify native ACL/stream merging or recovery behavior; those still
+require native Windows testing.
 
 On OpenMP-enabled Windows CLI builds, BoltLZ, Fluff, and zstd use multiple
 workers automatically for sufficiently large workloads. Use
@@ -260,6 +276,16 @@ these controls when OpenMP support is absent.
 **File:** `src/frontend/win_wcx/boltpack_wcx.c`  
 **Compiler:** MinGW cross-compiler (i686 and x86_64)  
 **Interface:** Total Commander WCX packer plugin API (DLL)
+
+The plugin exports both the legacy ANSI entry points and the Unicode `W`
+entry points supported since Total Commander 7.5 (packer interface 2.20; see
+the [WCX Unicode support guide](https://ghisler.github.io/WCX-SDK/unicode_support.htm)).
+The Unicode path covers opening and listing archives, extraction, packing,
+deletion, and progress/volume callbacks. Paths enter as UTF-16, are represented
+internally as UTF-8, and use wide Windows filesystem calls. The ANSI path is
+retained for older hosts and rejects paths that do not round-trip through the
+active ANSI codepage. Win32 and Win64 builds pass; runtime behavior in Total
+Commander has not yet been qualified.
 
 ### Compression Method Selection
 
@@ -380,9 +406,18 @@ python3 test/check_dos_profile.py --boltpack build/dos-host-test/boltpack \
   --mini-boltpack build/linux32mini/bpmini
 ```
 
-It runs the mini reader through `qemu-i386`. `make dos-djgpp` builds the DOS executable when the
-`i586-pc-msdosdjgpp-gcc` toolchain is available; this environment does not
-have that compiler. A DOS runtime test remains a separate check.
+It runs the mini reader through `qemu-i386`. `make dos-djgpp` builds the DOS
+executable when the `i586-pc-msdosdjgpp-gcc` toolchain is available. To run
+the full frontend on DOSBox-X FAT12, provide `CWSDPMI.EXE` from DJGPP's
+`csdpmi` package:
+
+```sh
+make CC=gcc CWSDPMI=/path/to/CWSDPMI.EXE dos-djgpp-dosboxx-fat12-test
+```
+
+This exercises full-DOS create, append, delete, test, and extract paths in both
+directions with Linux and checks HIDDEN/SYSTEM/ARCHIVE preservation across
+edits. Native DOS and other DOS filesystems remain separate runtime targets.
 
 Cross-compile from Linux:
 
@@ -534,17 +569,44 @@ Wraps standard C `<stdio.h>` functions (provided by libnix):
 | `seek`   | `fseek(fp, offset, origin)` |
 | `tell`   | `ftell(fp)`                 |
 
-### AmigaOS: Directory Recursion
+### AmigaOS: Directory Traversal and Safe Extraction
 
-Uses POSIX `opendir()` / `readdir()` with `stat()` for file type and size. Both are supplied by libnix and map to AmigaDOS `Lock()`/`ExNext()` internally. Depth-first walk: directory entry before its contents.
+Uses POSIX `opendir()` / `readdir()` and `lstat()` for file type and size.
+libnix maps these calls to AmigaDOS `Lock()`/`ExNext()`. Source walking is
+depth-first with an explicit heap-backed directory stack, so C stack use does
+not grow with source nesting. The CLI carries an 8 KiB AmigaDOS `$STACK` cookie
+and explicitly expands the stack at startup through libnix, then restores it
+on exit. Without the startup expansion, a shallow host-directory create
+stalled with the 4 KiB Workbench default. FS-UAE host-directory testing passes
+64-level create/extract with `--stack 0`; its repeated one-character directory
+names stay inside the legacy path limit. This is emulator evidence for the
+tested Workbench 2.04 setup, not a universal limit for every Amiga
+configuration. The cookie is documented by the [AmigaOS stack-control
+guide](https://wiki.amigaos.net/wiki/Controlling_Application_Stack).
 
-Symlinks (AmigaOS soft links via `MakeLink`) are not extracted; the command reports a partial result. Before extraction, the CLI checks projected path collisions using case folding and rejects AmigaDOS `:` volume/device syntax. The bounded preflight index accepts up to 1,024 primary entries and 32 KiB of projected path keys; exceeding either limit refuses extraction before creating output. Existing parent components are checked with `lstat` and symlink components are refused. These pathname checks cannot prevent a concurrent parent rename.
+Before extraction, the CLI checks projected path collisions using case folding
+and rejects AmigaDOS `:` volume/device syntax. The bounded preflight index
+accepts up to 1,024 primary entries and 32 KiB of projected path keys; exceeding
+either limit refuses extraction before creating output. Existing parent
+components are checked with `lstat` and symlink components are refused.
+Extraction path scratch buffers are allocated outside callback stack frames.
+These pathname checks cannot prevent a concurrent parent rename. Symlink
+entries are not extracted and produce a partial result. Source soft-link
+behavior is not qualified because the FS-UAE host-directory mount reports a
+host symlink as a regular file; native soft-link handling also remains open.
+For regular-file creation, the opened handle is checked against the initial
+`lstat`, and handle/path identity plus size and timestamps are rechecked after
+packing and native metadata capture. Directory identity and timestamps are
+checked while the explicit traversal stack is active. The FS-UAE
+`fsuae-source-race-test` replaces a source pathname after open and verifies the
+staged archive is rejected without changing an existing archive. Path-based
+directory walking can still miss a transient swap-and-restore race.
 
 Regular files are written to an exclusive sibling staging file. The destination is published only after the core verifies the entry checksum and the staging descriptor closes successfully. Forced replacement moves the old regular file to a unique recovery name before publishing and restores it if publication fails. A process interruption between those renames can leave the original at the recovery path. Unsupported entry kinds and failed metadata restores produce a partial result.
 
 ### AmigaOS: Platform Metadata
 
-The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_CREATOR_OS` is written immediately following it, carrying the subject's protection bits and comment. The same shared CLI source is used by AmigaOS 4.x, MorphOS, and AROS wrappers, so each records its own platform identifier. The GadTools GUI captures protection bits and comments for files, but its archive creation currently emits file entries only and does not capture directory metadata.
+The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mechanism worthwhile. After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_CREATOR_OS` is written immediately following it, carrying the subject's protection bits and comment. The same shared CLI source is used by AmigaOS 4.x, MorphOS, and AROS wrappers, so each records its own platform identifier. The GadTools GUI also captures native protection and comments for files and directories, including empty directories, and writes the matching metadata entries. GUI runtime behavior remains unqualified.
 
 **Metadata payload layout:**
 
@@ -552,7 +614,7 @@ The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mec
 | ------ | ---- | ------------- | -------------------------------------------- |
 | 0      | 4    | `protection`  | Raw `fib_Protection` value (little-endian)   |
 | 4      | 1    | `comment_len` | Length of comment (0–79)                     |
-| 5      | N    | `comment`     | File comment text (ISO-8859-1, no null term) |
+| 5      | N    | `comment`     | File comment bytes (ISO-8859-1; embedded NUL is invalid) |
 
 **Protection bits (AmigaOS HSPARWED format):**
 
@@ -569,7 +631,7 @@ The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mec
 
 Lower four bits (RWED) are inverted: a clear bit grants the permission. Upper four bits (HSPA) are direct flags: a set bit means the flag is active.
 
-`amiga_get_meta()` uses `Lock()` + `Examine()` to read `fib_Protection` and `fib_Comment`. `amiga_apply_meta()` checks both `SetProtection()` and `SetComment()` results. Native metadata is applied only when its exact subject was successfully extracted; directory metadata and timestamps are deferred until all entries have been processed, so protection bits do not block child extraction. Malformed Amiga payloads fail as corrupt metadata.
+`amiga_get_meta()` uses `Lock()` + `Examine()` to read `fib_Protection` and `fib_Comment`. `amiga_apply_meta()` checks both `SetProtection()` and `SetComment()` results. Native metadata is applied only when its exact subject was successfully extracted; directory metadata and timestamps are deferred until all entries have been processed, so protection bits do not block child extraction. Malformed Amiga payloads fail as corrupt metadata. The CLI and GadTools GUI share a decoder that rejects embedded NUL bytes within the declared comment length instead of silently truncating the native comment.
 
 Foreign native metadata, portable FAT envelopes, resource forks, and symlink entries are skipped and make the extraction result partial. Malformed payloads for this Amiga-family metadata type are rejected as corrupt, including when the subject was skipped. Amiga protection bits are not mapped from POSIX or FAT fields because their meanings differ. Extracted files without native Amiga metadata receive the filesystem's default permissions.
 
@@ -1425,7 +1487,9 @@ POSIX `opendir()` / `readdir()` / `stat()` — identical to the Linux frontend. 
 
 ### Haiku: Platform Metadata
 
-After every `BP_TYPE_DATA` entry, a `BP_TYPE_META` entry with `platform = BP_OS_BEOS` is written, carrying both the Unix mode and the BeOS MIME type:
+After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry
+with `platform = BP_OS_BEOS` is written, carrying both the Unix mode and the
+BeOS MIME type when present:
 
 | Offset | Size | Field       | Description                                    |
 | ------ | ---- | ----------- | ---------------------------------------------- |
@@ -1433,9 +1497,33 @@ After every `BP_TYPE_DATA` entry, a `BP_TYPE_META` entry with `platform = BP_OS_
 | 2      | 1    | `mime_len`  | Length of MIME type string (0–255)             |
 | 3      | N    | `mime_type` | MIME type bytes from BFS `BEOS:TYPE` attribute |
 
-Maximum payload: 259 bytes (`HAIKU_META_MAX`).
+Maximum serialized payload: 258 bytes (3-byte header plus the 255-byte
+maximum representable MIME length). The frontend uses a 259-byte buffer for
+the header plus a 256-byte temporary MIME string including its terminator.
 
 MIME type is read via `fs_read_attr(fd, "BEOS:TYPE", ...)` on pack and written back via `fs_write_attr(...)` on extraction. If no `BEOS:TYPE` attribute exists, `mime_len` is 0 and no MIME type bytes follow.
+
+Regular-file extraction writes to an exclusive sibling stage. The stage is
+published only after the payload checksum and output close succeed; a forced
+replacement uses `rename`, while extraction without `-f` uses an atomic
+no-clobber link. File timestamps are applied to the stage before publication.
+Haiku mode and MIME restoration happens after the verified data file is
+published, and failures report partial. Symlink payloads are staged too and
+their targets are checked before link publication. Existing symlink components
+in the destination path are refused during directory creation; concurrent
+parent changes can still race these pathname checks. Archive create, append,
+and delete also use same-directory sibling stages. Append copies the original
+archive before editing; publication checks that the original target identity
+has not changed. Failed archive edits leave the original bytes intact. The CLI
+preflights the complete archive with the bounded POSIX path checker and refuses
+duplicate paths and file/directory prefix conflicts before creating the output
+root. The host-shim `make haiku-host-stage-test` covers these failure paths,
+verifies a path-conflict refusal, injects a failed append publication, checks
+archive mode preservation across edits, and reads successful append/delete
+archives with the Linux reader. Its `fs_attr` shim maps attributes to host
+extended attributes and verifies file and directory MIME round trips, including
+the 255-byte serialized limit. This does not qualify BFS attribute semantics,
+case mapping, timestamp resolution, or native path races.
 
 ### Haiku: Text Encoding
 
@@ -1461,6 +1549,7 @@ Haiku uses UTF-8 natively. No filename conversion is required.
 | `-b SIZE`  | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `-0`       | Store only (no compression)                   |
 | `-F`       | Use Fluff compression                         |
+| `--interchange-profile-1` | Create or append a broadly portable archive |
 | `-o PATH`  | Extract to directory                          |
 | `-f`       | Force overwrite                               |
 | `-n`       | Dry run                                       |
@@ -1515,6 +1604,7 @@ Or directly:
 
 ```sh
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+    -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32 \
     -I src/core  \
     src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/fluff.c src/core/bp_codepage.c \
@@ -1581,10 +1671,37 @@ After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with 
 | 5   | `PA_Write`  | Public write                 |
 
 On extraction from a non-RISC OS archive, `BP_TYPE_META` entries with a different `platform` are silently skipped; extracted files receive default attributes (owner read/write).
+The status-aware completion callback applies RISC OS metadata only after its
+payload checksum succeeds. Malformed native payloads and `OS_File` restoration
+failures return a partial result instead of being reported as successful.
+Regular data outputs are written to a generated sibling stage. Resource-fork
+entries are refused before output creation because no collision-safe RISC OS
+sidecar convention is defined.
+The stage is published only after checksum verification and a successful close.
+Forced replacement renames the previous file to a recovery name first and
+attempts to restore it if publishing the new file fails. These SWI rename and
+recovery paths still require RISC OS runtime testing. The
+`make riscos-stage-host-test` target exercises checksum and close failures, successful
+publication, no-force refusal, replacement rollback, and refusal to apply
+corrupt native metadata through a 32-bit host SWI shim. Output-root and
+directory-creation SWI failures now stop or mark extraction partial; host-shim
+coverage checks the file-blocks-directory case.
 
 ### RISC OS: Path Handling
 
-RISC OS uses `.` as the directory separator. The frontend maps `.` → `/` when building archive entry names and maps `/` → `.` when creating files on extraction.
+RISC OS uses `.` as the directory separator. The frontend converts native
+Latin-1 path bytes to UTF-8 and maps `.` → `/` when building archive entry
+names; extraction converts UTF-8 back to Latin-1 and maps `/` → `.`. Since a
+literal dot in an archive component aliases a RISC OS directory boundary, such
+components are refused. The checked converters reject reserved RISC OS path
+syntax and components over 10 bytes, and path joins refuse truncation. Before
+creating the output root, extraction checks the whole archive against bounded
+case-fold collision and file/directory-prefix rules. Resource-fork entries
+are refused before writes because no collision-safe sidecar convention is
+defined. Filing-system-specific collision behavior and extraction still need
+target-runtime qualification; directories are created as streaming proceeds.
+For normal extraction, all payload checksums are tested before output-root
+creation, then checked again while each file is written to its stage.
 
 ```text
 HostFS:$.Work.myproj   →   Work/myproj
@@ -1740,13 +1857,23 @@ trip has been performed.
 Plan 9 uses a native build system; cross-compilation from Linux is not supported via the Makefile. Build on a Plan 9 or 9front system:
 
 ```text
-8c -FTVw -I /sys/include -I src/core  \
-    src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
-    src/frontend/plan9/main.c src/core/boltlz.c
-8l -o /386/boltpack *.8
+6c -pFVw -D__PLAN9__ -DPLAN9_CPU_X86_64 \
+    -I /amd64/include -I /sys/include -I src/core \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+    src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c \
+    src/frontend/plan9/main.c
+6l -o boltpack *.6
 ```
 
-Use `6c` / `6l` for AMD64, `5c` / `5l` for ARM. The installed binary conventionally goes in `/$cputype/boltpack`.
+The `-p` flag enables the full preprocessor, which this source needs for
+conditional compilation. `-D__PLAN9__` selects the native Plan 9 libc path;
+the native architecture include directory must precede the APE include path.
+Use `8c` / `8l` with `-DPLAN9_CPU_X86 -I /386/include` for i386, or `5c` / `5l`
+with `-DPLAN9_CPU_ARM32` and the matching ARM include directory. Plan 9's native
+compiler accepts bare `-DNAME` defines rather than `-DNAME=value`; `archiver.c`
+detects Plan 9 through `__PLAN9__` and uses the architecture marker to record
+the CPU identity. The installed binary conventionally goes in
+`/$cputype/boltpack`.
 
 ### Plan 9 C Dialect
 
@@ -1777,7 +1904,12 @@ Uses `dirread(fd)` to obtain a `Dir *` array for a directory opened with `open(p
 
 After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_OS_PLAN9` is written. The payload is 2 bytes: the lower 16 bits of `Dir.mode`.
 
-The low 9 bits of `Dir.mode` are the familiar owner/group/others rwx bits. Permissions are restored via `dirwstat()` on extraction.
+The low 9 bits of `Dir.mode` are the familiar owner/group/others rwx bits.
+Extraction defers directory metadata until children are written, restores
+representable 32-bit timestamps, and preserves the target's `DMDIR` type bit
+when calling `dirwstat()` to restore permissions. The native mode/time path was
+exercised on 9front amd64 under QEMU TCG; other Plan 9 CPUs and filesystem
+variants remain unqualified.
 
 ### Plan 9: Text Encoding
 
@@ -1835,6 +1967,7 @@ qcc -O \
   -I../../core  \
   ../../core/archiver.c \
   ../../core/compress.c \
+  ../../core/boltlite.c \
   ../../core/fluff.c \
   ../../core/bp_codepage.c \
   main.c \
@@ -1870,7 +2003,18 @@ QDOS does not provide a POSIX `opendir()`. Directories are traversed by opening 
 
 No byte-swapping is needed when compiled with `m68k-qdos-gcc` because M68k is big-endian and matches QL hardware.
 
-**QDOS timestamp epoch:** 1961-01-01 00:00:00 UTC. Subtract 283,996,800 seconds to convert to Unix time.
+**QDOS timestamp epoch:** seconds since 1961-01-01. QDOS stores local wall
+time and has no timezone field. Supply `--tz-offset MINUTES` on the BoltPack
+command line when creating or extracting (for example, `60` for UTC+1 or
+`-300` for UTC-5). The offset has no daylight-saving rules; update it when
+the machine's effective offset changes. If omitted, zero is used to preserve
+the previous UTC-clock assumption. Values outside `-1439..1439` or malformed
+values are rejected: creation stores the source time as unknown, and
+extraction reports partial for timestamps that cannot be restored. QDOS
+dates outside its signed 32-bit range are also unknown/partial. `BP_TZ_OFFSET`
+is accepted as a fallback on runtimes that provide C environment variables;
+the QL command-line option works without that runtime support and takes
+precedence.
 
 **QDOS path conventions:**
 
@@ -1883,11 +2027,40 @@ Device prefix is stripped; directories identified by paths ending with `_`.
 
 ### QL: Platform Metadata
 
-The QL has only a simple 3-bit protection field (`d_access` bits 0–2), which is too limited to be meaningful cross-platform. BoltPack omits metadata — no `BP_TYPE_META` entries are written. `BP_TYPE_META` entries from other platforms are silently skipped on extraction.
+The QL has only a simple 3-bit protection field (`d_access` bits 0–2), which is too limited to be meaningful cross-platform. BoltPack omits that protection metadata — no `BP_TYPE_META` entries are written. Unsupported metadata entries from other platforms are skipped and make extraction report partial.
 
 ### QL: Text Encoding
 
 Sinclair QL uses ISO-8859-1 (Latin-1) for filenames. File names are converted to UTF-8 on archive and back on extraction via `bp_local_to_utf8()` / `bp_utf8_to_local()` with `BP_CP_8859_1`.
+
+### QL: Safe Extraction
+
+Before creating the output root, extraction scans the full archive table. It
+refuses DATA/DIR names that cannot be represented in Latin-1, exceed QDOS's
+36-byte complete relative pathname limit, alias under ASCII or Latin-1
+case-folding, or conflict as a file and descendant path. This follows the
+documented QDOS case-insensitive naming and path-length behavior described in
+[Directories](https://sinclairql.net/djw/docs/articles/Directories.pdf).
+Regular file bytes are written to a same-directory stage created with
+`O_CREAT|O_EXCL`, then published only after checksum verification and a
+successful close. The stage and backup names shrink to fit the remaining bytes
+in the 36-byte relative-path allowance. `-f` keeps a sibling backup until
+publication succeeds. Host fixtures cover the path-width calculation,
+stage-name collision preservation, preflight, checksum preservation, and
+rollback recovery. Verified file timestamps are restored through QDOS
+[`FS.DATE`](https://dilwyn.qlforum.co.uk/docs/ebooks/C68%20Documentation%20-%20Dave%20Walker.pdf);
+directory dates are applied deepest-first after child extraction. Recursive
+source enumeration carries file dates from qdirect records; a direct file
+argument has no parent record and is stored with unknown time.
+Unsupported filing-system date calls or timestamps beyond QDOS's signed range
+report partial. The sQLux hostFS fixture verifies QDOS device-prefix
+inheritance, underscore path projection, stage-collision handling, `-o`, nested
+directories, byte-identical Linux-to-QL extraction, file and directory mtime
+round trips with a UTC emulator clock, and successful forced replacement.
+Native rollback, crash durability, offset behavior on physical QL clocks,
+QDOS protection flags, and physical QL filing systems remain unqualified. The
+UTC default and offset arithmetic are covered by the host time-conversion
+fixture; sQLux continues to cover zero-offset file and directory timestamps.
 
 ### QL: Commands and Options
 
@@ -1949,7 +2122,7 @@ Standard ANSI C `<stdio.h>` wrappers (`fopen`, `fread`, `fwrite`, `fseek`, `ftel
 
 ### X68000: Directory Recursion
 
-Uses Human68k `_dos_files()` / `_dos_nfiles()` from `<sys/dos.h>`, analogous to MS-DOS `findfirst`/`findnext`. The find structure provides filename, attribute byte, and a packed DOS date/time word.
+Uses Human68k `_dos_files()` / `_dos_nfiles()` from `<sys/dos.h>`, analogous to MS-DOS `findfirst`/`findnext`. The find structure provides filename, attribute byte, and a packed DOS date/time word. Recursive path joins are checked against the frontend's 256-byte path limit. `create` and `add` walk the selected source trees before opening or editing the archive and refuse unsupported names or overlong descendants before modification.
 
 **DOS packed date/time format** (same as MS-DOS, Win16, and OS/2):
 
@@ -1969,7 +2142,7 @@ Uses Human68k `_dos_files()` / `_dos_nfiles()` from `<sys/dos.h>`, analogous to 
 
 ### X68000: Path Handling
 
-Human68k uses `\` as the path separator. The frontend strips drive prefixes and maps `\` → `/` for archive entry names. On extraction, `/` is mapped back to `\`.
+Human68k uses `\` as the path separator. The frontend strips drive prefixes and maps `\` → `/` for archive entry names. On extraction, `/` is mapped back to `\`. Before it creates the output root, extraction converts and indexes the complete primary-entry table, folds ASCII case, and refuses duplicate paths, file/directory prefix conflicts, and joined paths that exceed the 256-byte target buffer. The bounded index fails closed if it reaches its node, key-byte, or allocation limit. This host-shim check does not qualify non-ASCII Human68k collation or concurrent path changes.
 
 ```text
 A:\WORK\MYFILE.TXT   →   WORK/MYFILE.TXT
@@ -1978,11 +2151,34 @@ MYFILE.TXT           →   MYFILE.TXT
 
 ### X68000: Platform Metadata
 
-Human68k uses DOS-style attributes similar to Win16 and OS/2. BoltPack deliberately omits `BP_TYPE_META` on creation — the attribute information is reconstructable and of limited cross-platform value. `BP_TYPE_META` entries from other platforms are silently skipped on extraction.
+Human68k uses DOS-style attributes similar to Win16 and OS/2. BoltPack stores
+the portable FAT attribute envelope for files and directories. File attributes
+are applied after payload verification; directory attributes are deferred
+until children are written. Foreign native metadata records are skipped and
+reported as partial.
+
+Human68k's packed file dates are local wall time, while format 6 stores UTC.
+Set `BP_TZ_OFFSET` to the source/destination offset in minutes east of UTC
+(for example, `60` for UTC+1) when creating or extracting. Without a valid
+offset, creation records the time as unknown and extraction of a known time
+reports partial. Regular-file date restoration uses `_dos_filedate` after
+payload verification and before publication. DOS/FAT dates have two-second
+resolution; odd-second timestamps round down and report partial. Directory
+dates are not restored yet. These behaviors have host-stub coverage but still
+need qualification on Human68k itself.
+
+Create, append, and delete build a unique sibling archive stage. Append first
+copies the original archive to that stage; all three operations publish only
+after successful archive finalization and close. Replacements preserve the
+target's portable FAT attributes and use a sibling backup so a failed stage
+rename can restore the prior archive. Host-shim failure injection verifies
+that failed create/add/delete edits preserve archive bytes, failed publication
+rolls back, and temporary files are cleaned. The target's rename and exclusive
+create semantics still need native qualification.
 
 ### X68000: Text Encoding
 
-Human68k uses Shift-JIS for filenames. File names are converted to UTF-8 on archive and back on extraction via `bp_local_to_utf8()` / `bp_utf8_to_local()` with `BP_CP_SJIS`.
+Human68k uses Shift-JIS for filenames. ASCII, half-width kana, and standard JIS X 0208 double-byte characters are converted to UTF-8 on archive and back on extraction via `bp_local_to_utf8()` / `bp_utf8_to_local()` with `BP_CP_SJIS`. Undefined pairs and CP932 vendor extensions are refused. Path scans skip valid Shift-JIS pairs, including trail byte `0x5c`, when locating separators. Unit tests round-trip all 6,879 mapped JIS X 0208 pairs; the X68000 host DOS-call shim also checks Linux extraction and malformed/unmapped names. The table is reproducible with `scripts/generate_sjis_table.py`. Native Human68k path and encoding behavior still needs target qualification.
 
 ### X68000: Commands and Options
 
@@ -2149,8 +2345,8 @@ make win32-fltk-gui   # Windows FLTK GUI only (32-bit)
 make win64-fltk-gui   # Windows FLTK GUI only (64-bit)
 make win32-fltk-installer  # Windows FLTK GUI installer + TC plugin ZIP (32-bit)
 make win64-fltk-installer  # Windows FLTK GUI installer + TC plugin ZIP (64-bit)
-make win32-gui        # Windows 95+ Win32 GUI (32-bit)
-make win64-gui        # Windows 95+ Win32 GUI (64-bit)
+make win32-gui        # Windows NT Win32 GUI (32-bit)
+make win64-gui        # Windows NT Win32 GUI (64-bit)
 make win32-gui-dll    # boltpack_core.dll for C# (32-bit)
 make win64-gui-dll    # boltpack_core.dll for C# (64-bit)
 make macosx-gui       # macOS Cocoa GUI (ARM64)
@@ -2214,6 +2410,21 @@ while creation runs. Replacement retains its owner, group, and permission bits;
 ACLs and extended attributes are not copied to the staged file.
 
 Build dependencies: `libfltk-dev`, `libm`.
+
+`make CC=gcc linux-gui-interoperability-test` runs Xvfb interaction checks
+through the production create, open, and extract dialogs. The CLI verifies and
+extracts the GUI-created archive; the runner also extracts a nested file and
+selects two entries with the same leaf name for flattened extraction. Each
+restored payload is compared with the pinned size and SHA-256 values, and the
+nested file's and directory's modes and timestamps are checked against the
+manifest, including deferred directory metadata restoration. The test
+also selects duplicate leaf names while a destination file of the same name
+already exists and verifies that the old file survives while new outputs get
+distinct names. It also cancels extraction of a large stored entry over an
+existing file and verifies the old bytes survive with no leftover staging
+files. A checksum-corrupted stored entry is also extracted over an existing
+file; the test verifies the original survives and the stage is removed. The
+test requires `xvfb-run` and `xdotool`.
 
 ---
 
@@ -2619,7 +2830,25 @@ the profile.
 
 The build target uses the `x86_64-unknown-haiku-gcc/g++` toolchain. It is not
 installed in this environment, so the current source changes have no Haiku
-cross-build or runtime evidence.
+cross-build or runtime evidence. Extraction now validates the complete
+primary-name table before writing, including ASCII case-folded duplicates and
+file/directory prefix conflicts. It opens the selected destination as a root
+directory descriptor, refuses symlinked archive-controlled parent components,
+and writes each regular file to a same-directory stage before publishing after
+checksum verification and successful close. File and deferred directory modes
+and times are restored after extraction; unsupported entries and failed
+metadata restoration report partial. `make CC=gcc haiku-gui-extract-host-test`
+checks collision refusal, symlink-parent refusal, a core-driven valid extraction
+and checksum-failure preservation, successful replacement, and stage cleanup
+through the shared POSIX helpers.
+Haiku BFS Unicode case mapping, native metadata, and target API/runtime behavior
+still need qualification. The GUI now writes the same `BP_OS_BEOS` metadata
+payload as the CLI (Unix mode plus optional `BEOS:TYPE`) after each regular
+file and directory. On extraction it restores file metadata after checksum
+verification and defers directory mode/MIME restoration until descendants are
+created. Failed or corrupt metadata restoration is reported as partial. The
+host helper test does not emulate BFS attributes, so native attribute
+round-trips still need a Haiku filesystem/runtime check.
 
 ---
 
@@ -2690,8 +2919,10 @@ The core API is pure C89 and compiles on any platform with a C89 compiler. No po
 | NeXTSTEP       | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
 | z/OS (USS)     | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | Unqualified; filename bytes pass through without conversion | Unix permissions |
 | Linux FLTK     | GUI (FLTK)        | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| Win32 GUI      | GUI (Win32)       | `<stdio.h>` (Win32)    | `FindFirstFile`         | ANSI CP ↔ UTF-8    | —                                            |
+| Win32 GUI      | GUI (Win32)       | UTF-16 Win32/CRT APIs  | `FindFirstFileW`        | UTF-8 ↔ UTF-16     | —                                            |
+| Windows FLTK   | GUI (FLTK)        | UTF-16 Win32/CRT APIs  | FLTK chooser / wide APIs | UTF-8 ↔ UTF-16   | —                                            |
 | WinForms .NET  | GUI (WinForms)    | DLL via P/Invoke       | `Directory.GetFiles`    | UTF-16 native      | —                                            |
+| Total Commander| WCX plugin        | WCX host API           | Host supplies paths     | UTF-16 ↔ UTF-8 (`W` API); strict ACP legacy API | —                         |
 | macOS Cocoa    | GUI (Cocoa)       | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
 | Atari GEM      | GUI (GEM/VDI)     | `<stdio.h>` (mintlib)  | `opendir` / `readdir`   | Atari ST ↔ UTF-8   | TOS attribute byte                           |
 | Amiga GadTools | GUI (GadTools)    | `<stdio.h>` (libnix)   | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
