@@ -28,6 +28,7 @@
 
 #include "../../core/mini/archiver.h"
 #include "../../core/mini/compress.h"
+#include <stddef.h>
 #include <stdio.h>
 
 /* Fill a bp_io_t from a stdio FILE*.
@@ -39,9 +40,24 @@ void bp_io_from_file(bp_io_t *io, FILE *fp);
 int bp_mini_name_is_safe(const char *name);
 
 /* Mini filename conversion uses the configured native codepage. Conversion
- * fails rather than silently substituting an unrepresentable character. */
+ * fails rather than silently substituting an unrepresentable character;
+ * UTF-8-to-local conversion may return BP_ERR_NOMEM for verification storage. */
 int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size);
 int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size);
+
+/* Scratch buffers shared by the 16-bit DOS, Windows and OS/2 directory
+ * walkers. Partial allocation is released and reported as BP_ERR_NOMEM. */
+typedef struct {
+    char *pattern;
+    char *child_fs;
+    char *child_arc;
+} bp_mini_path_buffers_t;
+int bp_mini_path_buffers_alloc(bp_mini_path_buffers_t *buffers, size_t size);
+int bp_mini_path_buffers_alloc_sized(bp_mini_path_buffers_t *buffers,
+                                     unsigned int pattern_size,
+                                     unsigned int child_fs_size,
+                                     unsigned int child_arc_size);
+void bp_mini_path_buffers_free(bp_mini_path_buffers_t *buffers);
 
 /* Bounded projected-name preflight for case-insensitive mini filesystems.
  * Stores exact and folded component prefixes, so case aliases and

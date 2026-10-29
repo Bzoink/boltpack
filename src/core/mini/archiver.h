@@ -96,7 +96,8 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
  * Add one file or directory entry.
  *   Returns BP_ERR_UNSUPPORTED_METHOD if method > BP_METHOD_BOLTLZ.
  *   Returns BP_ERR_OVERFLOW if file_size.hi != 0 (> 4 GB).
- *   Returns BP_ERR_OVERFLOW if entry count would exceed BP_MINI_MAX_ENTRIES.
+ *   Returns BP_ERR_OVERFLOW if the format entry limit or target allocation
+ *   size_t bound would be exceeded.
  *   file_io may be NULL for directory entries.
  */
 int bp_mini_archive_add_entry(bp_mini_archive_t *ar, const char *name,
@@ -169,7 +170,9 @@ int bp_mini_archive_extract_all(bp_io_t *io,
                                 void *user_data);
 
 /* A completion callback may return BP_ERR_PARTIAL to report metadata loss;
- * extraction continues and the overall result is BP_ERR_PARTIAL. */
+ * the checksum-verified subject remains eligible for supplementary portable
+ * metadata, extraction continues, and the overall result is BP_ERR_PARTIAL.
+ * Return another error to abort and suppress subsequent subject metadata. */
 int bp_mini_archive_extract_all_ex(bp_io_t *io, bp_mini_extract_fn open_fn,
                                    bp_mini_extract_done_status_fn done_fn,
                                    void *user_data);

@@ -9,13 +9,57 @@
 
 #include "mini_common.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/mini/stack_probe.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
+int bp_mini_path_buffers_alloc(bp_mini_path_buffers_t *buffers, size_t size)
+{
+    if (size == 0 || size > 32767U) return BP_ERR_INVALID_ARG;
+    return bp_mini_path_buffers_alloc_sized(buffers, (unsigned int)size,
+                                            (unsigned int)size,
+                                            (unsigned int)size);
+}
+
+int bp_mini_path_buffers_alloc_sized(bp_mini_path_buffers_t *buffers,
+                                     unsigned int pattern_size,
+                                     unsigned int child_fs_size,
+                                     unsigned int child_arc_size)
+{
+    if (buffers == NULL || pattern_size == 0 || child_fs_size == 0 ||
+        child_arc_size == 0 || pattern_size > 32767U ||
+        child_fs_size > 32767U || child_arc_size > 32767U)
+        return BP_ERR_INVALID_ARG;
+    buffers->pattern = NULL;
+    buffers->child_fs = NULL;
+    buffers->child_arc = NULL;
+    buffers->pattern = (char *)malloc((size_t)pattern_size);
+    buffers->child_fs = (char *)malloc((size_t)child_fs_size);
+    buffers->child_arc = (char *)malloc((size_t)child_arc_size);
+    if (buffers->pattern == NULL || buffers->child_fs == NULL ||
+        buffers->child_arc == NULL) {
+        bp_mini_path_buffers_free(buffers);
+        return BP_ERR_NOMEM;
+    }
+    return BP_OK;
+}
+
+void bp_mini_path_buffers_free(bp_mini_path_buffers_t *buffers)
+{
+    if (buffers == NULL) return;
+    free(buffers->pattern);
+    free(buffers->child_fs);
+    free(buffers->child_arc);
+    buffers->pattern = NULL;
+    buffers->child_fs = NULL;
+    buffers->child_arc = NULL;
+}
+
 int bp_mini_local_to_utf8(const char *src, char *dst, unsigned int dst_size)
 {
     size_t i, n;
+    BP_STACK_PROBE();
     if (src == NULL || dst == NULL || dst_size == 0 || dst_size > 32767U)
         return -1;
     if (BP_MINI_CODEPAGE != -1)
@@ -32,6 +76,7 @@ int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size)
     size_t n;
     char *roundtrip;
     int rc;
+    BP_STACK_PROBE();
     if (src == NULL || dst == NULL || dst_size == 0 || dst_size > 32767U)
         return -1;
     if (BP_MINI_CODEPAGE == -1)
@@ -41,7 +86,7 @@ int bp_mini_utf8_to_local(const char *src, char *dst, unsigned int dst_size)
     if (bp_utf8_to_local(src, dst, (int)dst_size, BP_MINI_CODEPAGE) != 0)
         return -1;
     roundtrip = (char *)malloc(n + 1);
-    if (roundtrip == NULL) return -1;
+    if (roundtrip == NULL) return BP_ERR_NOMEM;
     rc = bp_local_to_utf8(dst, roundtrip, (int)n + 1, BP_MINI_CODEPAGE);
     if (rc == 0 && strcmp(src, roundtrip) != 0) rc = -1;
     free(roundtrip);
@@ -115,19 +160,28 @@ static int mini_projected_index_add_key(bp_mini_projected_index_t *index,
 int bp_mini_projected_index_add(bp_mini_projected_index_t *index,
                                 const char *local_path, int is_directory)
 {
-    char exact[260];
-    char folded[260];
+    char *scratch;
+    char *exact;
+    char *folded;
     size_t length, i;
     unsigned saved_count, saved_used;
     int rc = BP_OK;
+    BP_STACK_PROBE();
     if (index == NULL || index->storage == NULL || local_path == NULL)
         return BP_ERR_INVALID_ARG;
     length = strlen(local_path);
-    if (length == 0 || length >= sizeof(exact)) return BP_ERR_NAME_TOO_LONG;
+    if (length == 0 || length >= 260U) return BP_ERR_NAME_TOO_LONG;
+    scratch = (char *)malloc(520U);
+    if (scratch == NULL) return BP_ERR_NOMEM;
+    exact = scratch;
+    folded = scratch + 260U;
     memcpy(exact, local_path, length + 1U);
     for (i = 0; i < length; i++) if (exact[i] == '/') exact[i] = '\\';
     while (length != 0 && exact[length - 1U] == '\\') length--;
-    if (length == 0) return BP_ERR_INVALID_ARG;
+    if (length == 0) {
+        free(scratch);
+        return BP_ERR_INVALID_ARG;
+    }
     exact[length] = '\0';
     saved_count = index->count;
     saved_used = index->used;
@@ -142,7 +196,7 @@ int bp_mini_projected_index_add(bp_mini_projected_index_t *index,
         {
             char saved = exact[i];
             exact[i] = '\0';
-            rc = bp_local_casefold(exact, folded, (int)sizeof(folded),
+            rc = bp_local_casefold(exact, folded, 260,
                                    BP_MINI_CODEPAGE);
             if (rc == 0)
                 rc = mini_projected_index_add_key(index, exact, folded,
@@ -154,9 +208,10 @@ int bp_mini_projected_index_add(bp_mini_projected_index_t *index,
     if (rc != BP_OK) {
         index->count = saved_count;
         index->used = saved_used;
-        return rc == BP_CP_UNREPRESENTABLE ? BP_ERR_PARTIAL : rc;
+        rc = rc == BP_CP_UNREPRESENTABLE ? BP_ERR_PARTIAL : rc;
     }
-    return BP_OK;
+    free(scratch);
+    return rc;
 }
 
 int bp_mini_projected_name_preflight(const bp_mini_entry_t *entry,
@@ -166,17 +221,31 @@ int bp_mini_projected_name_preflight(const bp_mini_entry_t *entry,
         (bp_mini_projected_preflight_t *)user_data;
     char local_name[260];
     int rc;
+    BP_STACK_PROBE();
     if (entry == NULL || preflight == NULL || preflight->index == NULL) {
         if (preflight != NULL) preflight->result = BP_ERR_INVALID_ARG;
         return 1;
     }
     if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
         return 0;
-    if (!bp_mini_name_is_safe(entry->name) ||
-        bp_mini_utf8_to_local(entry->name, local_name, sizeof(local_name)) != 0) {
+    if (!bp_mini_name_is_safe(entry->name)) {
         fprintf(stderr, "bpmini: destination cannot represent archive name: %s\n",
                 entry->name);
         preflight->result = BP_ERR_PARTIAL;
+        return 1;
+    }
+    rc = bp_mini_utf8_to_local(entry->name, local_name, sizeof(local_name));
+    if (rc != 0) {
+        if (rc == BP_ERR_NOMEM) {
+            fprintf(stderr, "bpmini: out of memory checking archive name: %s\n",
+                    entry->name);
+            preflight->result = rc;
+        } else {
+            fprintf(stderr,
+                    "bpmini: destination cannot represent archive name: %s\n",
+                    entry->name);
+            preflight->result = BP_ERR_PARTIAL;
+        }
         return 1;
     }
     rc = bp_mini_projected_index_add(preflight->index, local_name,
@@ -200,6 +269,7 @@ int bp_mini_add_local_entry(bp_mini_archive_t *ar, const char *name,
     unsigned int utf8_capacity;
     char *utf8;
     int rc;
+    BP_STACK_PROBE();
     if (name == NULL) return BP_ERR_INVALID_ARG;
     n = (unsigned long)strlen(name);
     if (n > (entry_type == BP_TYPE_DIR ? 10921UL : 10922UL))
@@ -324,6 +394,7 @@ int bp_mini_directory_finish(bp_mini_directory_queue_t *queue, int apply,
                              bp_mini_directory_apply_fn apply_fn, void *user_data)
 {
     int result = BP_OK;
+    BP_STACK_PROBE();
     if (queue == NULL || (apply && apply_fn == NULL)) return BP_ERR_INVALID_ARG;
     while (queue->head != NULL) {
         bp_mini_directory_t *node = queue->head;

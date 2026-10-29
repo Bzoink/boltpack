@@ -7,8 +7,56 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "bp_codepage.h"
+#if !defined(__PLAN9__)
 #include <string.h>
+#endif
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
+#include "bp_sjis_table.h"
+
+static int bp_sjis_lead_index(unsigned char lead)
+{
+    if (lead >= 0x81 && lead <= 0x9F) return (int)(lead - 0x81);
+    if (lead >= 0xE0 && lead <= 0xEF) return 31 + (int)(lead - 0xE0);
+    return -1;
+}
+
+static int bp_sjis_trail_index(unsigned char trail)
+{
+    if (trail >= 0x40 && trail <= 0x7E) return (int)(trail - 0x40);
+    if (trail >= 0x80 && trail <= 0xFC) return 63 + (int)(trail - 0x80);
+    return -1;
+}
+
+static unsigned short bp_sjis_decode_pair(unsigned char lead,
+                                           unsigned char trail)
+{
+    int li = bp_sjis_lead_index(lead);
+    int ti = bp_sjis_trail_index(trail);
+    if (li < 0 || ti < 0) return 0;
+    return bp_sjis_to_unicode[li * 188 + ti];
+}
+
+static unsigned short bp_sjis_encode_codepoint(unsigned short unicode)
+{
+    unsigned int low = 0, high = BP_SJIS_REVERSE_COUNT;
+    while (low < high) {
+        unsigned int mid = low + (high - low) / 2U;
+        if (bp_unicode_to_sjis[mid].unicode < unicode) low = mid + 1U;
+        else high = mid;
+    }
+    if (low < BP_SJIS_REVERSE_COUNT &&
+        bp_unicode_to_sjis[low].unicode == unicode)
+        return bp_unicode_to_sjis[low].sjis;
+    return 0;
+}
+#endif
 
 /* ======================================================================
  * Codepage tables -- each maps bytes 0x80-0xFF to Unicode codepoints.
@@ -313,9 +361,27 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage)
                 dst[di2++] = (char)(0x80 | ((u2 >> 6) & 0x3F));
                 dst[di2++] = (char)(0x80 | (u2 & 0x3F));
                 si2++;
+            } else if (bp_sjis_lead_index(c2) >= 0) {
+                unsigned char trail;
+                unsigned short u2;
+                if (src[si2 + 1] == '\0') return BP_CP_INVALID;
+                trail = (unsigned char)src[si2 + 1];
+                if (bp_sjis_trail_index(trail) < 0) return BP_CP_INVALID;
+                u2 = bp_sjis_decode_pair(c2, trail);
+                if (u2 == 0) return BP_CP_INVALID;
+                if (u2 < 0x0800) {
+                    if (di2 + 2 >= dst_size) return BP_CP_NO_SPACE;
+                    dst[di2++] = (char)(0xC0 | (u2 >> 6));
+                    dst[di2++] = (char)(0x80 | (u2 & 0x3F));
+                } else {
+                    if (di2 + 3 >= dst_size) return BP_CP_NO_SPACE;
+                    dst[di2++] = (char)(0xE0 | (u2 >> 12));
+                    dst[di2++] = (char)(0x80 | ((u2 >> 6) & 0x3F));
+                    dst[di2++] = (char)(0x80 | (u2 & 0x3F));
+                }
+                si2 += 2;
             } else {
-                /* Double-byte Shift-JIS is not supported by this table. */
-                return BP_CP_UNREPRESENTABLE;
+                return BP_CP_INVALID;
             }
         }
         dst[di2] = '\0';
@@ -412,9 +478,8 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                 if (u2 < 0x800 || (u2 >= 0xD800 && u2 <= 0xDFFF))
                     return BP_CP_INVALID;
                 si2 += 3;
-            } else if ((c2 >= 0x81 && c2 <= 0x9F) ||
-                       (c2 >= 0xE0 && c2 <= 0xEF)) {
-                return BP_CP_UNREPRESENTABLE;
+            } else if (c2 >= 0xF0 && c2 <= 0xF4) {
+                return bp_cp_four_byte(src + si2);
             } else {
                 return BP_CP_INVALID;
             }
@@ -422,7 +487,11 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
             if (u2 >= 0xFF61 && u2 <= 0xFF9F) {
                 dst[di2++] = (char)(0xA1 + (u2 - 0xFF61));
             } else {
-                return BP_CP_UNREPRESENTABLE;
+                unsigned short sjis = bp_sjis_encode_codepoint(u2);
+                if (sjis == 0) return BP_CP_UNREPRESENTABLE;
+                if (di2 + 2 >= dst_size) return BP_CP_NO_SPACE;
+                dst[di2++] = (char)(sjis >> 8);
+                dst[di2++] = (char)(sjis & 0xFF);
             }
         }
         dst[di2] = '\0';

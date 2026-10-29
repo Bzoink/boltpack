@@ -2,8 +2,10 @@
 #ifndef BP_METADATA_H
 #define BP_METADATA_H
 #include "bp_types.h"
+#if !defined(__PLAN9__)
 #include <stdlib.h>
 #include <string.h>
+#endif
 
 #define BP_META_MAX_SIZE 256U
 #define BP_META_FAT_MASK 0x27U
@@ -18,6 +20,13 @@ typedef struct {
     int has_unknown;
     int supported_version;
 } bp_portable_metadata_t;
+
+static int bp_metadata_matches_subject(const bp_portable_metadata_t *metadata,
+                                       bp_uint8 subject_type)
+{
+    return metadata != NULL && metadata->supported_version &&
+           metadata->subject_type == subject_type;
+}
 
 typedef struct bp_metadata_seen_s {
     struct bp_metadata_seen_s *next;

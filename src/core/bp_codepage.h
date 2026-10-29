@@ -1,9 +1,10 @@
 /*
  * bp_codepage.h -- codepage <-> UTF-8 conversion for BoltPack
  *
- * Provides portable conversion between legacy single-byte codepages
- * and UTF-8.  Each codepage is a 128-entry table mapping bytes 0x80-0xFF
- * to Unicode codepoints; ASCII (0x00-0x7F) is identity-mapped.
+ * Provides portable conversion between legacy codepages and UTF-8. The
+ * single-byte codepages use a 128-entry table for bytes 0x80-0xFF; Shift-JIS
+ * has a separate half-width and JIS X 0208 double-byte mapping. ASCII
+ * (0x00-0x7F) is identity-mapped.
  *
  * ANSI C (C89/C90) only.
  *
@@ -39,10 +40,9 @@
 # endif
 #endif
 
-/* NOTE: BP_CP_SJIS supports ASCII and half-width katakana (U+FF61-U+FF9F).
- * Full JIS X 0208 double-byte (kanji/hiragana/katakana) mapping is not yet
- * implemented; double-byte sequences return BP_CP_UNREPRESENTABLE.
- * TODO: extend with complete JIS X 0208 table for full kanji support. */
+/* BP_CP_SJIS supports ASCII, half-width katakana, and standard Shift-JIS
+ * double-byte mappings for JIS X 0208. CP932 vendor extensions are not part
+ * of this codepage and are rejected. */
 
 /* Nonzero results remain compatible with existing callers. */
 #define BP_CP_INVALID         (-1)

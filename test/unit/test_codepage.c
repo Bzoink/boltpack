@@ -235,7 +235,7 @@ static void test_cp1252(void)
                          BP_CP_1252, euro_local, 1, euro_utf8);
 }
 
-/* --- Shift-JIS: ASCII and half-width katakana --------------------------- */
+/* --- Shift-JIS: standard double-byte and half-width mappings ------------ */
 
 static void test_sjis(void)
 {
@@ -253,12 +253,82 @@ static void test_sjis(void)
      */
     const char kata_a_local[2] = { (char)0xB1, '\0' };
     const char kata_a_utf8[4]  = { (char)0xEF, (char)0xBD, (char)0xB1, '\0' };
+    const char japanese_local[7] = {
+        (char)0x93, (char)0xFA, (char)0x96, (char)0x7B,
+        (char)0x8C, (char)0xEA, '\0'
+    };
+    const char japanese_utf8[] = {
+        (char)0xE6, (char)0x97, (char)0xA5,
+        (char)0xE6, (char)0x9C, (char)0xAC,
+        (char)0xE8, (char)0xAA, (char)0x9E, '\0'
+    };
+    const char hiragana_local[] = { (char)0x82, (char)0xB1,
+                                    (char)0x82, (char)0xF1, '\0' };
+    const char hiragana_utf8[] = { (char)0xE3, (char)0x81, (char)0x93,
+                                   (char)0xE3, (char)0x82, (char)0x93, '\0' };
+    const char slash_trail_local[] = { (char)0x81, (char)0x5C, '\0' };
+    const char slash_trail_utf8[] = { (char)0xE2, (char)0x80, (char)0x95, '\0' };
+    char out[OUT_SIZE];
+    int rc;
+    unsigned int lead, trail, mapped;
+    int mapping_failures;
+    char pair[3], decoded[8], encoded[8];
 
-    UNIT_SECTION("Codepage: Shift-JIS half-width katakana");
+    UNIT_SECTION("Codepage: Shift-JIS JIS X 0208 and half-width katakana");
     check_local_to_utf8("SJIS 0xA1 (hw full-stop) -> UTF-8",
                          BP_CP_SJIS, hw_period_local, 1, hw_period_utf8);
     check_local_to_utf8("SJIS 0xB1 (hw katakana A) -> UTF-8",
                          BP_CP_SJIS, kata_a_local, 1, kata_a_utf8);
+    check_local_to_utf8("SJIS Japanese kanji -> UTF-8",
+                         BP_CP_SJIS, japanese_local, 6, japanese_utf8);
+    check_utf8_to_local("UTF-8 Japanese kanji -> SJIS",
+                         BP_CP_SJIS, japanese_utf8, japanese_local, 6);
+    check_local_to_utf8("SJIS hiragana -> UTF-8",
+                         BP_CP_SJIS, hiragana_local, 4, hiragana_utf8);
+    check_utf8_to_local("UTF-8 hiragana -> SJIS",
+                         BP_CP_SJIS, hiragana_utf8, hiragana_local, 4);
+    check_local_to_utf8("SJIS trail 0x5c is character data",
+                         BP_CP_SJIS, slash_trail_local, 2, slash_trail_utf8);
+    rc = bp_local_to_utf8("\x81", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_INVALID, "truncated Shift-JIS lead is rejected");
+    rc = bp_local_to_utf8("\x81\x7f", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_INVALID, "invalid Shift-JIS trail is rejected");
+    rc = bp_utf8_to_local("\x80", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_INVALID,
+               "stray UTF-8 continuation byte is invalid for Shift-JIS");
+    rc = bp_utf8_to_local("\xF0\x9F\x98\x80", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_UNREPRESENTABLE,
+               "valid supplementary UTF-8 scalar is unmappable to Shift-JIS");
+    rc = bp_utf8_to_local("\xE2\x85\xB0", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_UNREPRESENTABLE,
+               "CP932 vendor extension is not silently mapped to Shift-JIS");
+    rc = bp_local_to_utf8("\xFA\x40", out, sizeof(out), BP_CP_SJIS);
+    UNIT_CHECK(rc == BP_CP_INVALID,
+               "CP932 extension byte pair is rejected by strict Shift-JIS");
+
+    mapped = 0;
+    mapping_failures = 0;
+    for (lead = 0x81; lead <= 0xEF; lead++) {
+        if (lead > 0x9F && lead < 0xE0) continue;
+        for (trail = 0x40; trail <= 0xFC; trail++) {
+            if (trail == 0x7F) continue;
+            pair[0] = (char)lead;
+            pair[1] = (char)trail;
+            pair[2] = '\0';
+            rc = bp_local_to_utf8(pair, decoded, sizeof(decoded), BP_CP_SJIS);
+            if (rc == BP_CP_INVALID) continue;
+            if (rc != 0 || bp_utf8_to_local(decoded, encoded, sizeof(encoded),
+                                              BP_CP_SJIS) != 0 ||
+                encoded[0] != pair[0] || encoded[1] != pair[1] ||
+                encoded[2] != '\0') {
+                mapping_failures++;
+                continue;
+            }
+            mapped++;
+        }
+    }
+    UNIT_CHECK(mapping_failures == 0 && mapped == 6879,
+               "all 6,879 standard JIS X 0208 pairs round-trip exactly");
 }
 
 /* --- UTF-8 outside target codepage ------------------------------------- */

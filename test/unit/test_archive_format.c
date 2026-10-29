@@ -1176,6 +1176,7 @@ typedef struct {
     int done_status;
     int done_count;
     int report_partial;
+    int done_result;
     int skip_data;
     int dry_run;
     int metadata_count;
@@ -1206,6 +1207,7 @@ static int mini_interop_done(const bp_mini_entry_t *entry, bp_io_t *out,
     (void)entry;
     (void)out;
     s->done_status = status;
+    if (s->done_result != BP_OK) return s->done_result;
     return s->report_partial ? BP_ERR_PARTIAL : BP_OK;
 }
 
@@ -1821,6 +1823,9 @@ static void test_portable_metadata(void)
     UNIT_CHECK(rc == BP_OK && m.supported_version && m.has_fat &&
                m.fat_valid == 0x27 && m.fat_value == 0x21,
                "decoder preserves FAT validity and value masks");
+    UNIT_CHECK(bp_metadata_matches_subject(&m, BP_TYPE_DATA) &&
+               !bp_metadata_matches_subject(&m, BP_TYPE_DIR),
+               "portable metadata is applied only to its declared subject type");
     memcpy(bytes, golden, sizeof(golden)); bytes[13] = 0x08;
     UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_CORRUPT,
                "FAT value outside validity mask rejected");
@@ -1836,7 +1841,9 @@ static void test_portable_metadata(void)
                m.has_unknown, "unknown well-framed TLV reports partial");
     memcpy(bytes, golden, sizeof(golden)); bytes[4] = 2;
     UNIT_CHECK(bp_metadata_parse(bytes, sizeof(golden), &m) == BP_ERR_PARTIAL &&
-               !m.supported_version, "unknown schema version is not interpreted");
+               !m.supported_version &&
+               !bp_metadata_matches_subject(&m, BP_TYPE_DATA),
+               "unknown schema version is not interpreted or applied");
     memcpy(bytes, golden, sizeof(golden)); bytes[14] = 0;
     UNIT_CHECK(bp_metadata_parse(bytes, 15, &m) == BP_ERR_CORRUPT,
                "trailing envelope bytes rejected");
@@ -1990,6 +1997,8 @@ static void test_portable_metadata_archive(void)
             bp_uint32 deleted_count = 0;
             const char *delete_names[1];
             ListState listed;
+            long payload_pos;
+            int payload_found = 0;
             memset(&state, 0, sizeof(state));
             state.output.buf = output; state.output.cap = sizeof(output);
             state.io = make_mem_io(&state.output);
@@ -1997,6 +2006,43 @@ static void test_portable_metadata_archive(void)
                                     mini_interop_done, mini_metadata_test, &state);
             UNIT_CHECK(rc == BP_OK && state.metadata_count == 1,
                        "mini delivers validated FAT metadata after successful file extraction");
+            for (payload_pos = 0;
+                 payload_pos + (long)FILE1_LEN <= mem.size;
+                 payload_pos++) {
+                if (memcmp(mem.buf + payload_pos, FILE1_DATA, FILE1_LEN) == 0) {
+                    payload_found = 1;
+                    break;
+                }
+            }
+            UNIT_CHECK(payload_found, "locate stored subject bytes for mini CRC fixture");
+            if (payload_found) {
+                mem.buf[payload_pos] ^= 0x20;
+                memset(&state, 0, sizeof(state));
+                state.output.buf = output; state.output.cap = sizeof(output);
+                state.io = make_mem_io(&state.output);
+                rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
+                                        mini_interop_done, mini_metadata_test, &state);
+                UNIT_CHECK(rc == BP_ERR_CHECKSUM && state.done_status == BP_ERR_CHECKSUM &&
+                           state.metadata_count == 0,
+                           "mini checksum failure suppresses supplementary metadata");
+                mem.buf[payload_pos] ^= 0x20;
+            }
+            memset(&state, 0, sizeof(state));
+            state.output.buf = output; state.output.cap = sizeof(output);
+            state.io = make_mem_io(&state.output);
+            state.report_partial = 1;
+            rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
+                                    mini_interop_done, mini_metadata_test, &state);
+            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 1,
+                       "mini applies portable metadata after verified subject with partial native restore");
+            memset(&state, 0, sizeof(state));
+            state.output.buf = output; state.output.cap = sizeof(output);
+            state.io = make_mem_io(&state.output);
+            state.done_result = BP_ERR_IO;
+            rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
+                                    mini_interop_done, mini_metadata_test, &state);
+            UNIT_CHECK(rc == BP_ERR_IO && state.metadata_count == 0,
+                       "mini aborts before supplementary metadata on hard completion error");
             memset(&state, 0, sizeof(state));
             rc = bp_mini_archive_extract_all_with_metadata(&io, mini_skip_test,
                                     mini_interop_done, mini_metadata_test, &state);

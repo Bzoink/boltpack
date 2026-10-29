@@ -7,8 +7,56 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "bp_codepage.h"
+#if !defined(__PLAN9__)
 #include <string.h>
+#endif
+
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_SJIS
+#include "bp_sjis_table.h"
+
+static int bp_sjis_lead_index(unsigned char lead)
+{
+    if (lead >= 0x81 && lead <= 0x9F) return (int)(lead - 0x81);
+    if (lead >= 0xE0 && lead <= 0xEF) return 31 + (int)(lead - 0xE0);
+    return -1;
+}
+
+static int bp_sjis_trail_index(unsigned char trail)
+{
+    if (trail >= 0x40 && trail <= 0x7E) return (int)(trail - 0x40);
+    if (trail >= 0x80 && trail <= 0xFC) return 63 + (int)(trail - 0x80);
+    return -1;
+}
+
+static unsigned short bp_sjis_decode_pair(unsigned char lead,
+                                           unsigned char trail)
+{
+    int li = bp_sjis_lead_index(lead);
+    int ti = bp_sjis_trail_index(trail);
+    if (li < 0 || ti < 0) return 0;
+    return bp_sjis_to_unicode[li * 188 + ti];
+}
+
+static unsigned short bp_sjis_encode_codepoint(unsigned short unicode)
+{
+    unsigned int low = 0, high = BP_SJIS_REVERSE_COUNT;
+    while (low < high) {
+        unsigned int mid = low + (high - low) / 2U;
+        if (bp_unicode_to_sjis[mid].unicode < unicode) low = mid + 1U;
+        else high = mid;
+    }
+    if (low < BP_SJIS_REVERSE_COUNT &&
+        bp_unicode_to_sjis[low].unicode == unicode)
+        return bp_unicode_to_sjis[low].sjis;
+    return 0;
+}
+#endif
 
 /* ======================================================================
  * Codepage tables -- each maps bytes 0x80-0xFF to Unicode codepoints.
@@ -56,6 +104,50 @@ static const unsigned short cp850_to_unicode[128] = {
     0x00DE, 0x00DA, 0x00DB, 0x00D9, 0x00FD, 0x00DD, 0x00AF, 0x00B4, /* E8 */
     0x00AD, 0x00B1, 0x2017, 0x00BE, 0x00B6, 0x00A7, 0x00F7, 0x00B8, /* F0 */
     0x00B0, 0x00A8, 0x00B7, 0x00B9, 0x00B3, 0x00B2, 0x25A0, 0x00A0  /* F8 */
+};
+#endif
+
+/* Byte-level simple uppercase maps for case-insensitive DOS-derived paths.
+ * Generated from each codepage's Unicode mapping; multi-character uppercase
+ * expansions remain unchanged. Only the configured mini table is linked. */
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_437
+static const unsigned char cp437_casefold[128] = {
+    0x80, 0x9A, 0x90, 0x83, 0x8E, 0x85, 0x8F, 0x80,
+    0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F,
+    0x90, 0x92, 0x92, 0x93, 0x99, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F,
+    0xA0, 0xA1, 0xA2, 0xA3, 0xA5, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+    0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+    0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE4, 0xE6, 0xE7,
+    0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xE8, 0xEE, 0xEF,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+    0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF
+};
+#endif
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_850
+static const unsigned char cp850_casefold[128] = {
+    0x80, 0x9A, 0x90, 0xB6, 0x8E, 0xB7, 0x8F, 0x80,
+    0xD2, 0xD3, 0xD4, 0xD8, 0xD7, 0xDE, 0x8E, 0x8F,
+    0x90, 0x92, 0x92, 0xE2, 0x99, 0xE3, 0xEA, 0xEB,
+    0x98, 0x99, 0x9A, 0x9D, 0x9C, 0x9D, 0x9E, 0x9F,
+    0xB5, 0xD6, 0xE0, 0xE9, 0xA5, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC7, 0xC7,
+    0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+    0xD1, 0xD1, 0xD2, 0xD3, 0xD4, 0x49, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+    0xE0, 0xE1, 0xE2, 0xE3, 0xE5, 0xE5, 0xE6, 0xE8,
+    0xE8, 0xE9, 0xEA, 0xEB, 0xED, 0xED, 0xEE, 0xEF,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+    0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF
 };
 #endif
 
@@ -269,9 +361,27 @@ int bp_local_to_utf8(const char *src, char *dst, int dst_size, int codepage)
                 dst[di2++] = (char)(0x80 | ((u2 >> 6) & 0x3F));
                 dst[di2++] = (char)(0x80 | (u2 & 0x3F));
                 si2++;
+            } else if (bp_sjis_lead_index(c2) >= 0) {
+                unsigned char trail;
+                unsigned short u2;
+                if (src[si2 + 1] == '\0') return BP_CP_INVALID;
+                trail = (unsigned char)src[si2 + 1];
+                if (bp_sjis_trail_index(trail) < 0) return BP_CP_INVALID;
+                u2 = bp_sjis_decode_pair(c2, trail);
+                if (u2 == 0) return BP_CP_INVALID;
+                if (u2 < 0x0800) {
+                    if (di2 + 2 >= dst_size) return BP_CP_NO_SPACE;
+                    dst[di2++] = (char)(0xC0 | (u2 >> 6));
+                    dst[di2++] = (char)(0x80 | (u2 & 0x3F));
+                } else {
+                    if (di2 + 3 >= dst_size) return BP_CP_NO_SPACE;
+                    dst[di2++] = (char)(0xE0 | (u2 >> 12));
+                    dst[di2++] = (char)(0x80 | ((u2 >> 6) & 0x3F));
+                    dst[di2++] = (char)(0x80 | (u2 & 0x3F));
+                }
+                si2 += 2;
             } else {
-                /* Double-byte Shift-JIS is not supported by this table. */
-                return BP_CP_UNREPRESENTABLE;
+                return BP_CP_INVALID;
             }
         }
         dst[di2] = '\0';
@@ -368,9 +478,8 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
                 if (u2 < 0x800 || (u2 >= 0xD800 && u2 <= 0xDFFF))
                     return BP_CP_INVALID;
                 si2 += 3;
-            } else if ((c2 >= 0x81 && c2 <= 0x9F) ||
-                       (c2 >= 0xE0 && c2 <= 0xEF)) {
-                return BP_CP_UNREPRESENTABLE;
+            } else if (c2 >= 0xF0 && c2 <= 0xF4) {
+                return bp_cp_four_byte(src + si2);
             } else {
                 return BP_CP_INVALID;
             }
@@ -378,7 +487,11 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
             if (u2 >= 0xFF61 && u2 <= 0xFF9F) {
                 dst[di2++] = (char)(0xA1 + (u2 - 0xFF61));
             } else {
-                return BP_CP_UNREPRESENTABLE;
+                unsigned short sjis = bp_sjis_encode_codepoint(u2);
+                if (sjis == 0) return BP_CP_UNREPRESENTABLE;
+                if (di2 + 2 >= dst_size) return BP_CP_NO_SPACE;
+                dst[di2++] = (char)(sjis >> 8);
+                dst[di2++] = (char)(sjis & 0xFF);
             }
         }
         dst[di2] = '\0';
@@ -446,5 +559,37 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage)
     }
 
     dst[di] = '\0';
+    return 0;
+}
+
+int bp_local_casefold(const char *src, char *dst, int dst_size, int codepage)
+{
+    size_t i, length;
+    if (src == NULL || dst == NULL || dst_size <= 0) return BP_CP_INVALID;
+    length = strlen(src);
+    if (length >= (size_t)dst_size) return BP_CP_NO_SPACE;
+    for (i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)src[i];
+        if (ch >= 'a' && ch <= 'z') {
+            dst[i] = (char)(ch - 'a' + 'A');
+        } else if (ch < 0x80) {
+            dst[i] = (char)ch;
+        } else if (codepage == BP_CP_437) {
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_437
+            dst[i] = (char)cp437_casefold[ch - 0x80];
+#else
+            return BP_CP_UNREPRESENTABLE;
+#endif
+        } else if (codepage == BP_CP_850) {
+#if !defined(BP_MINI) || BP_MINI_CODEPAGE == BP_CP_850
+            dst[i] = (char)cp850_casefold[ch - 0x80];
+#else
+            return BP_CP_UNREPRESENTABLE;
+#endif
+        } else {
+            return BP_CP_UNREPRESENTABLE;
+        }
+    }
+    dst[length] = '\0';
     return 0;
 }

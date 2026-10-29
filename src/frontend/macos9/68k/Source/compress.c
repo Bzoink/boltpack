@@ -7,10 +7,17 @@
  * Licensed under the BSD 2-Clause License
  */
 
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "compress.h"
 
+#if !defined(__PLAN9__)
 #include <stdlib.h>
 #include <string.h>
+#endif
 
 int bp_compress_init(void)
 {

@@ -9,9 +9,16 @@
  * LZ4/Snappy literal and match tags, S2/MinLZ repeated distances.
  * No implementation code is copied from those projects.
  */
+#ifdef __PLAN9__
+#include <u.h>
+#include <libc.h>
+#endif
+
 #include "boltlz.h"
 #include "boltlz_config.h"
+#if !defined(__PLAN9__)
 #include <string.h>
+#endif
 
 #define BL_HASH_BITS BOLTLZ_HASH_BITS
 #define BL_HASH_SIZE (1UL << BL_HASH_BITS)
@@ -762,7 +769,8 @@ BL_FORCE_INLINE void bl_copy_match(bp_uint8 *dst, bp_uint32 length,
         while (length >= 12) {
             memcpy(dst, pattern, 12); dst += 12; length -= 12;
         }
-        bl_copy_short(dst, pattern, length);
+        /* The residual is below 12; copy exactly those available bytes. */
+        if (length != 0) memcpy(dst, pattern, (size_t)length);
         return;
     }
     if (distance == 2 || distance == 4) {
@@ -774,7 +782,8 @@ BL_FORCE_INLINE void bl_copy_match(bp_uint8 *dst, bp_uint32 length,
         while (length >= 8) {
             memcpy(dst, pattern, 8); dst += 8; length -= 8;
         }
-        bl_copy_short(dst, pattern, length);
+        /* The residual is below 8; copy exactly those available bytes. */
+        if (length != 0) memcpy(dst, pattern, (size_t)length);
         return;
     }
 #endif

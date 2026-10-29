@@ -10,7 +10,22 @@
 #ifndef BP_TYPES_H
 #define BP_TYPES_H
 
+#if defined(__PLAN9__)
+/* Native Plan 9 headers are included before BoltPack headers.  Plan 9 does
+ * not ship the hosted C <stddef.h>; its machine word is the native size type. */
+typedef ulong size_t;
+#ifndef NULL
+#define NULL nil
+#endif
+static void *bp_plan9_calloc(size_t count, size_t size)
+{
+    if (size != 0 && count > (size_t)~0UL / size) return NULL;
+    return mallocz(count * size, 1);
+}
+#define calloc(n, s) bp_plan9_calloc((n), (s))
+#else
 #include <stddef.h>
+#endif
 
 /*
  * Plan 9 compatibility: Plan 9 doesn't provide <limits.h>.
@@ -25,7 +40,11 @@
    * ULONG_MAX is used to detect LP64 (64-bit long) vs 32-bit systems.
    */
   #ifndef ULONG_MAX
-    #define ULONG_MAX  0xFFFFFFFFUL  /* 32-bit default for vintage systems */
+    # if defined(__amd64__) || defined(__aarch64__)
+      #define ULONG_MAX 0xFFFFFFFFFFFFFFFFUL
+    # else
+      #define ULONG_MAX  0xFFFFFFFFUL  /* 32-bit default for vintage systems */
+    # endif
   #endif
 #endif
 

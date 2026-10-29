@@ -19,6 +19,7 @@
 #include "../archive_name.h"
 #include "../bp_metadata.h"
 #include "compress.h"
+#include "stack_probe.h"
 #include <stdlib.h>
 #include <string.h>
 #ifndef BP_MINI_QUIET
@@ -137,18 +138,30 @@ void bp_mini_u64_print(bp_uint64 v)
 
 /* ---- entry list growth ------------------------------------------------- */
 
+/* The table is grown with one realloc, whose size parameter is size_t.  On
+ * 16-bit compact-model builds size_t is 16 bits, so do not let the byte count
+ * wrap while retaining the format's wider 65,535-entry limit. */
+static bp_uint32 mini_entry_list_max_capacity(void)
+{
+    size_t size_cap = (size_t)-1 / sizeof(bp_mini_entry_t);
+    if (size_cap > (size_t)BP_MINI_MAX_ENTRIES)
+        return BP_MINI_MAX_ENTRIES;
+    return (bp_uint32)size_cap;
+}
+
 static int mini_entry_list_grow(bp_mini_archive_t *ar)
 {
     bp_uint32 new_cap;
+    bp_uint32 max_cap;
     bp_mini_entry_t *new_list;
 
     if (ar->entries_written < ar->entry_list_cap) {
         return BP_OK;
     }
     new_cap = ar->entry_list_cap ? ar->entry_list_cap * 2 : 64;
-    if (new_cap > BP_MINI_MAX_ENTRIES) {
-        new_cap = BP_MINI_MAX_ENTRIES;
-    }
+    max_cap = mini_entry_list_max_capacity();
+    if (new_cap > max_cap) new_cap = max_cap;
+    if (new_cap <= ar->entry_list_cap) return BP_ERR_OVERFLOW;
     new_list = (bp_mini_entry_t *)realloc(ar->entry_list,
                                           (size_t)new_cap * sizeof(bp_mini_entry_t));
     if (new_list == NULL) {
@@ -165,6 +178,7 @@ int bp_mini_archive_create(bp_mini_archive_t *ar, bp_io_t *io,
                            bp_uint32 block_size, bp_uint8 method)
 {
     bp_uint8 hdr[BP_HEADER_SIZE];
+    BP_STACK_PROBE();
 
     if (ar == NULL || io == NULL) {
         return BP_ERR_INVALID_ARG;
@@ -259,6 +273,7 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
     bp_uint8 *out_buf;
     bp_uint32 out_buf_size;
     int rc;
+    BP_STACK_PROBE();
 
     if (ar == NULL || name == NULL) {
         return BP_ERR_INVALID_ARG;
@@ -509,6 +524,7 @@ int bp_mini_archive_finalize(bp_mini_archive_t *ar)
     bp_uint32 table_crc;
     bp_uint8  buf[32];
     int rc;
+    BP_STACK_PROBE();
 
     if (ar == NULL) return BP_ERR_INVALID_ARG;
 
@@ -654,6 +670,7 @@ static int mini_read_footer(bp_io_t *io,
 {
     bp_uint8 buf[BP_FOOTER_SIZE];
     int rc;
+    BP_STACK_PROBE();
 
     rc = mini_io_seek(io, -(bp_off_t)BP_FOOTER_SIZE, 2); /* SEEK_END */
     if (rc != 0) return BP_ERR_IO;
@@ -690,6 +707,7 @@ static int mini_read_archive_header(bp_io_t *io, bp_uint32 *file_count,
 {
     bp_uint8 hdr[BP_HEADER_SIZE];
     int rc;
+    BP_STACK_PROBE();
 
     rc = mini_io_seek(io, 0, 0); /* SEEK_SET */
     if (rc != 0) return BP_ERR_IO;
@@ -785,6 +803,7 @@ static int mini_read_table_record(bp_io_t *io, bp_mini_entry_t *entry,
     bp_uint16 name_len;
     char *name;
     int rc;
+    BP_STACK_PROBE();
 
     tail = (version >= BP_FORMAT_VERSION) ? BP_TABLE_REC_TAIL_V6
                                           : BP_TABLE_REC_TAIL_V2;
@@ -850,6 +869,7 @@ static int mini_read_inline_meta(bp_io_t *io, bp_uint64 entry_offset,
     bp_uint16 name_len;
     bp_uint32 pos;
     int rc;
+    BP_STACK_PROBE();
 
     rc = mini_io_seek(io, bp_u64_to_off(entry_offset), 0); /* SEEK_SET */
     if (rc != 0) return BP_ERR_IO;
@@ -911,6 +931,7 @@ static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
     bp_uint64 next = bp_u64_from_u32(BP_HEADER_SIZE);
     bp_off_t table_start = mini_io_tell(io);
     bp_metadata_group_t group = { NULL, 0, 0, NULL, 0 };
+    BP_STACK_PROBE();
     for (i = 0; i < count; i++) {
         bp_mini_entry_t entry;
         bp_off_t resume;
@@ -1023,6 +1044,7 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
                              ? BP_BLOCK_HDR_V3 : BP_BLOCK_HDR_V2;
     bp_uint8   blk_hdr[BP_BLOCK_HDR_V3];
     int        rc;
+    BP_STACK_PROBE();
 
     if (bp_u64_is_zero(original_size)) {
         return (expected_checksum == bp_mini_checksum_seed(ck_type))
@@ -1161,6 +1183,7 @@ int bp_mini_archive_list(bp_io_t *io, bp_mini_list_fn fn, void *user_data)
     bp_uint16  dummy_version;
     bp_uint32  hdr_sz;
     int        rc;
+    BP_STACK_PROBE();
 
     rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
@@ -1306,6 +1329,7 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
     int        partial = 0;
     bp_uint8   subject_type = 0xFF;
     int        subject_ready = 0;
+    BP_STACK_PROBE();
 
     rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
@@ -1502,6 +1526,9 @@ static int mini_extract_all_impl(bp_io_t *io, bp_mini_extract_fn open_fn,
             } else if (rc != BP_OK) {
                 free(entry.name); mini_bufs_free(&bufs); return rc;
             }
+            /* BP_ERR_PARTIAL reports loss while keeping the verified subject
+             * available for supplementary metadata. Other callback errors
+             * abort extraction above and never reach this point. */
             if (entry.entry_type == BP_TYPE_DATA) subject_ready = 1;
         } else if (out && done_fn) {
             done_fn(&entry, out, user_data);
@@ -1569,6 +1596,7 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data)
     int        rc;
     int        overall = BP_OK;
     bp_uint8   subject_type = 0xFF;
+    BP_STACK_PROBE();
 
     rc = mini_read_archive_header(io, &header_count, NULL, NULL, NULL, NULL,
                                   &dummy_version, NULL);
