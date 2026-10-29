@@ -31,11 +31,22 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/bp_metadata.h"
+#include "../mini_shared/dos_time.h"
+#include "x68k_path_index.h"
 
 /* Human68k system call interface */
 #include <x68k/dos.h>
 
 #include <stdio.h>
+#ifdef X68K_HOST_TEST
+extern FILE *x68k_host_fopen(const char *path, const char *mode);
+extern int x68k_host_remove(const char *path);
+extern int x68k_host_rename(const char *old_path, const char *new_path);
+#define fopen x68k_host_fopen
+#define remove x68k_host_remove
+#define rename x68k_host_rename
+#endif
 
 /* snprintf is C99 but available in elf2x68k libc; provide prototype for -ansi */
 #if defined(__STDC__) && !defined(__cplusplus)
@@ -118,6 +129,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "aborted";
     case BP_ERR_NOT_FOUND:         return "not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_PARTIAL:            return "partial success";
     default:                       return "unknown error";
     }
 }
@@ -140,29 +152,106 @@ static void format_size64(bp_uint64 b, char *buf, size_t sz)
     (void)sz;
 }
 
-/* ---- DOS-packed timestamp to Unix seconds ----------------------------- */
-
-static bp_uint32 dos_to_unix_time(unsigned short dos_time, unsigned short dos_date)
+/* DOS-packed dates are local wall time. Store them only when the caller has
+   supplied the fixed offset required to map that wall time to format-6 UTC. */
+static bp_uint16 x68k_archive_mtime(unsigned short dos_time,
+                                   unsigned short dos_date,
+                                   bp_uint64 *mtime)
 {
-    unsigned yr  = ((unsigned)dos_date >> 9) + 1980;
-    unsigned mon = ((unsigned)dos_date >> 5) & 0x0F;
-    unsigned day = (unsigned)dos_date & 0x1F;
-    unsigned hr  = (unsigned)dos_time >> 11;
-    unsigned min = ((unsigned)dos_time >> 5) & 0x3F;
-    unsigned sec = ((unsigned)dos_time & 0x1F) * 2u;
-    unsigned long days = (yr - 1970UL) * 365UL + (yr - 1969UL) / 4UL
-                       + (mon > 1 ? (mon - 1) * 30UL : 0UL) + day;
-    return (bp_uint32)(days * 86400UL + hr * 3600UL + min * 60UL + sec);
+    long offset;
+    mtime->lo = 0;
+    mtime->hi = 0;
+    if (bp_dos_timezone(&offset) != 0 ||
+        bp_dos_local_to_utc((unsigned)dos_date, (unsigned)dos_time,
+                            offset, mtime) != 0) return 0;
+    return BP_ENTRY_FLAG_MTIME_VALID;
+}
+
+static int x68k_restore_mtime(int fd, bp_uint64 mtime)
+{
+    long offset;
+    unsigned date, time_value;
+    int converted;
+    unsigned long packed;
+    if (bp_dos_timezone(&offset) != 0) return BP_ERR_PARTIAL;
+    converted = bp_dos_utc_to_local(mtime, offset, &date, &time_value);
+    if (converted < 0) return BP_ERR_OVERFLOW;
+    packed = ((unsigned long)date << 16) | (unsigned long)time_value;
+    if (_dos_filedate(fd, (int)packed) != 0) return BP_ERR_IO;
+    return converted > 0 ? BP_ERR_PARTIAL : BP_OK;
+}
+
+typedef struct {
+    bp_uint8 data[BP_META_FAT_SIZE];
+    unsigned pos;
+} x68k_meta_reader_t;
+
+static long x68k_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    x68k_meta_reader_t *reader = (x68k_meta_reader_t *)handle;
+    unsigned available = BP_META_FAT_SIZE - reader->pos;
+    unsigned amount = count < available ? (unsigned)count : available;
+    if (amount == 0) return 0;
+    memcpy(buffer, reader->data + reader->pos, amount);
+    reader->pos += amount;
+    return (long)amount;
+}
+
+static int x68k_add_fat_metadata(bp_archive_t *ar, const char *name,
+                                 bp_uint8 subject_type, bp_uint8 attributes)
+{
+    x68k_meta_reader_t reader;
+    bp_io_t io;
+    int rc = bp_metadata_fat_encode(reader.data, sizeof(reader.data),
+                                    subject_type, BP_META_FAT_MASK,
+                                    (bp_uint8)(attributes & BP_META_FAT_MASK));
+    if (rc != BP_OK) return rc;
+    reader.pos = 0;
+    io.read = x68k_meta_read; io.write = NULL; io.seek = NULL; io.tell = NULL;
+    io.handle = &reader;
+    return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_META_PORTABLE,
+                                   &io, bp_u64_from_u32(BP_META_FAT_SIZE),
+                                   bp_u64_from_u32(0), 0);
 }
 
 /* ---- path utilities --------------------------------------------------- */
+
+static int x68k_sjis_lead(unsigned char c)
+{
+    return (c >= 0x81 && c <= 0x9F) || (c >= 0xE0 && c <= 0xEF);
+}
+
+static int x68k_sjis_pair_at(const char *p)
+{
+    unsigned char trail;
+    if (!x68k_sjis_lead((unsigned char)p[0]) || p[1] == '\0') return 0;
+    trail = (unsigned char)p[1];
+    return (trail >= 0x40 && trail <= 0x7E) ||
+           (trail >= 0x80 && trail <= 0xFC);
+}
+
+static const char *x68k_last_separator(const char *path)
+{
+    const char *last = NULL;
+    const char *p = path;
+    while (*p) {
+        if (x68k_sjis_pair_at(p)) { p += 2; continue; }
+        if (*p == '/' || *p == '\\') last = p;
+        p++;
+    }
+    return last;
+}
 
 /*
  * Convert backslashes to forward slashes (archive format uses '/').
  */
 static void normalise_seps(char *p)
 {
-    for (; *p; p++) if (*p == '\\') *p = '/';
+    while (*p) {
+        if (x68k_sjis_pair_at(p)) { p += 2; continue; }
+        if (*p == '\\') *p = '/';
+        p++;
+    }
 }
 
 /*
@@ -179,14 +268,16 @@ static const char *clean_path(const char *p)
 
 static int ends_with_sep(const char *s)
 {
-    size_t n = strlen(s);
-    return n > 0 && (s[n-1] == '/' || s[n-1] == '\\');
+    const char *last = x68k_last_separator(s);
+    return last != NULL && last[1] == '\0';
 }
 
-static void path_join(char *buf, size_t sz, const char *dir, const char *name)
+static int path_join(char *buf, size_t sz, const char *dir, const char *name)
 {
-    if (ends_with_sep(dir)) snprintf(buf, sz, "%s%s", dir, name);
-    else                    snprintf(buf, sz, "%s\\%s", dir, name);
+    int n;
+    if (ends_with_sep(dir)) n = snprintf(buf, sz, "%s%s", dir, name);
+    else                    n = snprintf(buf, sz, "%s\\%s", dir, name);
+    return n < 0 || (size_t)n >= sz ? -1 : 0;
 }
 
 /* ---- mkdir -p ---------------------------------------------------------- */
@@ -203,6 +294,7 @@ static int mkdirs(const char *path)
     if (strlen(path) >= sizeof(tmp)) return -1;
     strcpy(tmp, path);
     for (p = tmp + 1; *p; p++) {
+        if (x68k_sjis_pair_at(p)) { p++; continue; }
         if (*p == '/' || *p == '\\') {
             char sv = *p; *p = '\0';
             if (x68k_mkdir(tmp) != 0) {
@@ -222,13 +314,19 @@ static int mkdirs(const char *path)
 
 static int mkdirs_for_file(const char *path)
 {
-    char  tmp[BP_MAX_PATH]; char *sl, *bsl;
+    char  tmp[BP_MAX_PATH]; const char *sl;
     if (strlen(path) >= sizeof(tmp)) return -1;
     strcpy(tmp, path);
-    sl  = strrchr(tmp, '/');
-    bsl = strrchr(tmp, '\\');
-    if (bsl && (!sl || bsl > sl)) sl = bsl;
-    if (sl && sl != tmp) { char *x; *sl = '\0'; for (x = tmp; *x; x++) if (*x=='/') *x='\\'; return mkdirs(tmp); }
+    sl = x68k_last_separator(tmp);
+    if (sl && sl != tmp) {
+        char *x;
+        tmp[sl - tmp] = '\0';
+        for (x = tmp; *x; x++) {
+            if (x68k_sjis_pair_at(x)) { x++; continue; }
+            if (*x == '/') *x = '\\';
+        }
+        return mkdirs(tmp);
+    }
     return 0;
 }
 
@@ -258,14 +356,20 @@ static int add_directory_contents(bp_archive_t *ar, const char *dir_path,
     int    rc = BP_OK;
     long   r;
 
-    snprintf(pattern, sizeof(pattern), "%s\\*.*", dir_path);
+    if (snprintf(pattern, sizeof(pattern), "%s\\*.*", dir_path) < 0 ||
+        strlen(dir_path) + 4 >= sizeof(pattern))
+        return BP_ERR_NAME_TOO_LONG;
     r = _dos_files(&fb, pattern, FA_ANY);
-    while (r == 0 && rc == BP_OK) {
-        if (strcmp(fb.name, ".") != 0 && strcmp(fb.name, "..") != 0) {
-            path_join(child_path, sizeof(child_path), dir_path, fb.name);
-            path_join(child_arc,  sizeof(child_arc),  arc_prefix, fb.name);
-            normalise_seps(child_arc);
-            rc = add_path(ar, child_path, child_arc);
+    while (r == 0) {
+        if (rc == BP_OK && strcmp(fb.name, ".") != 0 &&
+            strcmp(fb.name, "..") != 0) {
+            if (path_join(child_path, sizeof(child_path), dir_path, fb.name) != 0 ||
+                path_join(child_arc, sizeof(child_arc), arc_prefix, fb.name) != 0) {
+                rc = BP_ERR_NAME_TOO_LONG;
+            } else {
+                normalise_seps(child_arc);
+                rc = add_path(ar, child_path, child_arc);
+            }
         }
         r = _dos_nfiles(&fb);
     }
@@ -285,16 +389,35 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     if (fb.atr & FA_SUBDIR) {
         /* Directory */
         char dir_arc[BP_MAX_PATH];
+        char dir_arc_utf8[BP_MAX_PATH * 3];
         int  al; int rc;
-        snprintf(dir_arc, sizeof(dir_arc), "%s", arcname);
+        if (strlen(arcname) >= sizeof(dir_arc)) return BP_ERR_NAME_TOO_LONG;
+        strcpy(dir_arc, arcname);
         al = (int)strlen(dir_arc);
         if (al > 0 && dir_arc[al - 1] != '/')
-            { dir_arc[al] = '/'; dir_arc[al+1] = '\0'; }
+            {
+                if ((size_t)al + 1 >= sizeof(dir_arc))
+                    return BP_ERR_NAME_TOO_LONG;
+                dir_arc[al] = '/'; dir_arc[al+1] = '\0';
+            }
+
+        /* Directory names use the same strict Shift-JIS conversion as file
+           names; storing the local bytes directly would create invalid UTF-8. */
+        if (bp_local_to_utf8(dir_arc, dir_arc_utf8, sizeof(dir_arc_utf8),
+                             X68K_CP) != 0)
+            return BP_ERR_INVALID_ARG;
 
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", dir_arc);
-        rc = bp_archive_add_entry(ar, dir_arc, BP_TYPE_DIR, BP_OS_X68K,
-                                  NULL, bp_u64_from_u32(0),
-                                  bp_u64_from_u32(dos_to_unix_time(fb.time, fb.date)));
+        {
+            bp_uint64 mtime;
+            bp_uint16 flags = x68k_archive_mtime(fb.time, fb.date, &mtime);
+            rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                         BP_OS_X68K, NULL,
+                                         bp_u64_from_u32(0), mtime, flags);
+        }
+        if (rc == BP_OK)
+            rc = x68k_add_fat_metadata(ar, dir_arc_utf8, BP_TYPE_DIR,
+                                       (bp_uint8)fb.atr);
         if (rc != BP_OK) return rc;
         return add_directory_contents(ar, path, dir_arc);
     }
@@ -304,28 +427,31 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         FILE     *fp;
         bp_io_t   fio;
         bp_uint64 fsize = bp_u64_from_ulong((unsigned long)fb.filelen);
-        bp_uint32 mtime = dos_to_unix_time(fb.time, fb.date);
+        bp_uint64 mtime;
+        bp_uint16 mtime_flags = x68k_archive_mtime(fb.time, fb.date, &mtime);
         char      arcname_sjis[BP_MAX_PATH];
         char      arcname_utf8[BP_MAX_PATH * 3];
         int       rc;
-
-        fp = fopen(path, "rb");
-        if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", path); return BP_ERR_IO; }
-        bp_io_from_file(&fio, fp);
 
         /* Convert Shift-JIS archive name to UTF-8 for storage */
         strncpy(arcname_sjis, arcname, sizeof(arcname_sjis) - 1);
         arcname_sjis[sizeof(arcname_sjis) - 1] = '\0';
         if (bp_local_to_utf8(arcname_sjis, arcname_utf8, sizeof(arcname_utf8), X68K_CP) != 0) {
-            fclose(fp);
             return BP_ERR_INVALID_ARG;
         }
 
+        fp = fopen(path, "rb");
+        if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", path); return BP_ERR_IO; }
+        bp_io_from_file(&fio, fp);
+
         if (g_verbosity == VERB_DEFAULT) { printf("compressing: %s", arcname_sjis); fflush(stdout); }
 
-        rc = bp_archive_add_entry(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_X68K,
-                                  &fio, fsize, bp_u64_from_u32(mtime));
+        rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_X68K,
+                                     &fio, fsize, mtime, mtime_flags);
         fclose(fp);
+        if (rc == BP_OK)
+            rc = x68k_add_fat_metadata(ar, arcname_utf8, BP_TYPE_DATA,
+                                       (bp_uint8)fb.atr);
 
         if (rc == BP_OK && g_verbosity == VERB_DEFAULT) {
             bp_entry_t *e = &ar->entry_list[ar->entries_written - 1];
@@ -386,9 +512,276 @@ typedef struct {
     const char *out_dir;
     int         force;
     int         dry_run;
+    int         partial;
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    char        subject_name[BP_MAX_PATH * 3];
+    char        subject_path[BP_MAX_PATH];
+    bp_uint8     subject_type;
+    int          subject_ok;
+    bp_metadata_sink_t meta_sink;
+    struct x68k_dir_attr_s *dir_attrs;
+    unsigned int dir_attr_count;
+    unsigned long dir_attr_bytes;
+    char        current_target[BP_MAX_PATH];
+    char        current_stage[BP_MAX_PATH];
 } extract_ctx_t;
+
+typedef struct x68k_dir_attr_s {
+    struct x68k_dir_attr_s *next;
+    char *path;
+    bp_uint8 valid;
+    bp_uint8 value;
+} x68k_dir_attr_t;
+
+static unsigned long g_extract_stage_counter;
+
+static int x68k_path_exists(const char *path, struct dos_filbuf *found)
+{
+    struct dos_filbuf local;
+    return _dos_files(found ? found : &local, path, FA_ANY) == 0;
+}
+
+static int x68k_apply_attributes(const char *path, bp_uint8 valid,
+                                 bp_uint8 value)
+{
+    struct dos_filbuf current;
+    bp_uint8 desired;
+    if (_dos_files(&current, path, FA_ANY) != 0) return BP_ERR_PARTIAL;
+    valid = (bp_uint8)(valid & BP_META_FAT_MASK);
+    desired = (bp_uint8)((current.atr & (bp_uint8)(BP_META_FAT_MASK & ~valid)) |
+                         (value & valid) |
+                         (current.atr & (bp_uint8)~BP_META_FAT_MASK));
+    if (_dos_chmod(path, (int)desired) < 0) return BP_ERR_PARTIAL;
+    if (_dos_files(&current, path, FA_ANY) != 0 ||
+        (current.atr & valid) != (value & valid)) return BP_ERR_PARTIAL;
+    return BP_OK;
+}
+
+static int x68k_queue_dir_attributes(extract_ctx_t *ctx, const char *path,
+                                     bp_uint8 valid, bp_uint8 value)
+{
+    x68k_dir_attr_t *node;
+    size_t length = strlen(path) + 1U;
+    if (ctx->dir_attr_count >= 256U ||
+        length > 32768UL - ctx->dir_attr_bytes) return BP_ERR_PARTIAL;
+    node = (x68k_dir_attr_t *)calloc(1, sizeof(*node));
+    if (!node) return BP_ERR_PARTIAL;
+    node->path = (char *)malloc(length);
+    if (!node->path) { free(node); return BP_ERR_PARTIAL; }
+    memcpy(node->path, path, length);
+    node->valid = valid; node->value = value;
+    node->next = ctx->dir_attrs; ctx->dir_attrs = node;
+    ctx->dir_attr_count++;
+    ctx->dir_attr_bytes += (unsigned long)length;
+    return BP_OK;
+}
+
+static void x68k_finish_dir_attributes(extract_ctx_t *ctx, int restore)
+{
+    while (ctx->dir_attrs) {
+        x68k_dir_attr_t **best_link = &ctx->dir_attrs;
+        x68k_dir_attr_t **link;
+        x68k_dir_attr_t *node;
+        unsigned best_depth = 0;
+        for (link = &ctx->dir_attrs; *link; link = &(*link)->next) {
+            const char *p;
+            unsigned depth = 0;
+            for (p = (*link)->path; *p; p++) {
+                if (x68k_sjis_pair_at(p)) { p++; continue; }
+                if (*p == '/' || *p == '\\') depth++;
+            }
+            if (depth >= best_depth) { best_depth = depth; best_link = link; }
+        }
+        node = *best_link; *best_link = node->next;
+        if (restore &&
+            x68k_apply_attributes(node->path, node->valid, node->value) != BP_OK) {
+            fprintf(stderr, "boltpack: cannot restore directory attributes: %s\n",
+                    node->path);
+            ctx->partial = 1;
+        }
+        ctx->dir_attr_count--;
+        ctx->dir_attr_bytes -= (unsigned long)strlen(node->path) + 1UL;
+        free(node->path); free(node);
+    }
+}
+
+static int x68k_sibling_name(const char *target, const char *suffix,
+                             char *out, size_t capacity,
+                             unsigned long sequence)
+{
+    const char *slash = x68k_last_separator(target);
+    size_t parent_len;
+    int n;
+    parent_len = slash ? (size_t)(slash - target + 1) : 0;
+    n = snprintf(out, capacity, "%.*sBP%04lX.%s", (int)parent_len,
+                 target, sequence & 0xFFFFUL, suffix);
+    return n < 0 || (size_t)n >= capacity ? -1 : 0;
+}
+
+static int x68k_create_archive_stage(const char *target, char *stage,
+                                     size_t capacity)
+{
+    unsigned long attempt;
+    for (attempt = 0; attempt < 65536UL; attempt++) {
+        unsigned long sequence = g_extract_stage_counter++ & 0xFFFFUL;
+        FILE *fp;
+        if (x68k_sibling_name(target, "TMP", stage, capacity, sequence) != 0)
+            return BP_ERR_NAME_TOO_LONG;
+        fp = fopen(stage, "wbx");
+        if (fp != NULL) {
+            if (fclose(fp) != 0) { remove(stage); return BP_ERR_IO; }
+            return BP_OK;
+        }
+        if (errno != EEXIST) return BP_ERR_IO;
+    }
+    return BP_ERR_PARTIAL;
+}
+
+static int x68k_copy_file(const char *source, const char *destination)
+{
+    FILE *in = fopen(source, "rb");
+    FILE *out;
+    unsigned char buffer[8192];
+    int rc = BP_OK;
+    if (in == NULL) return BP_ERR_IO;
+    out = fopen(destination, "wb");
+    if (out == NULL) { fclose(in); return BP_ERR_IO; }
+    for (;;) {
+        size_t count = fread(buffer, 1, sizeof(buffer), in);
+        if (count != 0 && fwrite(buffer, 1, count, out) != count) {
+            rc = BP_ERR_IO;
+            break;
+        }
+        if (count < sizeof(buffer)) {
+            if (ferror(in)) rc = BP_ERR_IO;
+            break;
+        }
+    }
+    if (fclose(in) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (fclose(out) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    return rc;
+}
+
+static int x68k_archive_target(const char *path, int *exists,
+                               bp_uint8 *attributes)
+{
+    struct dos_filbuf found;
+    *exists = x68k_path_exists(path, &found);
+    *attributes = 0;
+    if (!*exists) return BP_OK;
+    if (found.atr & FA_SUBDIR) return BP_ERR_IO;
+    if (found.atr & FA_RDONLY) return BP_ERR_IO;
+    *attributes = (bp_uint8)(found.atr & BP_META_FAT_MASK);
+    return BP_OK;
+}
+
+static int x68k_publish_archive(const char *target, char *stage,
+                                int expected_exists, bp_uint8 attributes)
+{
+    struct dos_filbuf current;
+    int exists = x68k_path_exists(target, &current);
+    char backup[BP_MAX_PATH];
+    unsigned long attempt;
+
+    if (exists != expected_exists || (exists && (current.atr & FA_RDONLY)))
+        return BP_ERR_IO;
+    if (exists && _dos_chmod(stage, (int)attributes) < 0)
+        return BP_ERR_PARTIAL;
+    if (!exists) {
+        if (rename(stage, target) != 0) return BP_ERR_IO;
+        stage[0] = '\0';
+        return BP_OK;
+    }
+
+    for (attempt = 0; attempt < 65536UL; attempt++) {
+        unsigned long sequence = g_extract_stage_counter++ & 0xFFFFUL;
+        if (x68k_sibling_name(target, "BAK", backup, sizeof(backup),
+                              sequence) != 0) return BP_ERR_NAME_TOO_LONG;
+        if (!x68k_path_exists(backup, NULL)) break;
+    }
+    if (attempt == 65536UL || rename(target, backup) != 0) return BP_ERR_IO;
+    if (rename(stage, target) != 0) {
+        if (rename(backup, target) != 0) {
+            fprintf(stderr, "boltpack: original archive is preserved as %s\n",
+                    backup);
+            return BP_ERR_PARTIAL;
+        }
+        return BP_ERR_IO;
+    }
+    stage[0] = '\0';
+    if (remove(backup) != 0) {
+        fprintf(stderr, "boltpack: previous archive remains as %s\n", backup);
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static FILE *x68k_create_output_stage(extract_ctx_t *ctx,
+                                      const char *target)
+{
+    unsigned long attempt;
+
+    for (attempt = 0; attempt < 65536UL; attempt++) {
+        unsigned long sequence = g_extract_stage_counter++ & 0xFFFFUL;
+        FILE *fp;
+        if (x68k_sibling_name(target, "TMP", ctx->current_stage,
+                              sizeof(ctx->current_stage), sequence) != 0)
+            return NULL;
+        fp = fopen(ctx->current_stage, "wbx");
+        if (fp != NULL) {
+            strcpy(ctx->current_target, target);
+            return fp;
+        }
+        if (errno != EEXIST) return NULL;
+    }
+    return NULL;
+}
+
+static int x68k_publish_output(extract_ctx_t *ctx)
+{
+    struct dos_filbuf target_info;
+    int target_exists = x68k_path_exists(ctx->current_target, &target_info);
+
+    if (target_exists) {
+        char backup[BP_MAX_PATH];
+        unsigned long attempt;
+
+        if (target_info.atr & FA_SUBDIR) return -1;
+        if (!ctx->force) return -1;
+        for (attempt = 0; attempt < 65536UL; attempt++) {
+            unsigned long sequence = g_extract_stage_counter++ & 0xFFFFUL;
+            if (x68k_sibling_name(ctx->current_target, "BAK", backup,
+                                  sizeof(backup), sequence) != 0)
+                return -1;
+            if (!x68k_path_exists(backup, NULL)) break;
+        }
+        if (attempt == 65536UL || rename(ctx->current_target, backup) != 0)
+            return -1;
+        if (rename(ctx->current_stage, ctx->current_target) != 0) {
+            if (rename(backup, ctx->current_target) != 0) {
+                fprintf(stderr,
+                        "boltpack: original destination is preserved as %s\n",
+                        backup);
+                return BP_ERR_PARTIAL;
+            }
+            return -1;
+        }
+        ctx->current_stage[0] = '\0';
+        if (remove(backup) != 0) {
+            fprintf(stderr,
+                    "boltpack: previous destination remains as %s\n",
+                    backup);
+            return BP_ERR_PARTIAL;
+        }
+        return BP_OK;
+    }
+
+    if (rename(ctx->current_stage, ctx->current_target) != 0)
+        return -1;
+    ctx->current_stage[0] = '\0';
+    return BP_OK;
+}
 
 static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
@@ -398,6 +791,15 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     char  qdos_path[BP_MAX_PATH];  /* with backslashes */
     FILE *fp; bp_io_t *io;
 
+    if (entry->entry_type == BP_TYPE_META) {
+        if (entry->platform != BP_META_PORTABLE) return NULL;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        if (!ctx->subject_ok || strcmp(entry->name, ctx->subject_name) != 0)
+            return NULL;
+        bp_metadata_sink_init(&ctx->meta_sink);
+        return &ctx->meta_sink.io;
+    }
+
     if (!bp_name_is_safe(entry->name)) return NULL;
 
     /* Convert UTF-8 archive name to SJIS */
@@ -406,8 +808,11 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     /* Build output path with backslashes */
     if (ctx->out_dir) {
-        snprintf(path, sizeof(path), "%s\\%s", ctx->out_dir, local_name);
-        path[sizeof(path) - 1] = '\0';
+        if (path_join(path, sizeof(path), ctx->out_dir, local_name) != 0) {
+            fprintf(stderr, "boltpack: output path too long: %s\n",
+                    entry->name);
+            return NULL;
+        }
     } else {
         strncpy(path, local_name, sizeof(path) - 1);
         path[sizeof(path) - 1] = '\0';
@@ -420,9 +825,22 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", local_name);
-        if (!ctx->dry_run) { char dmk[BP_MAX_PATH]; strcpy(dmk, qdos_path);
+        if (!ctx->dry_run) {
+          char dmk[BP_MAX_PATH];
+          strcpy(dmk, qdos_path);
           { int dn = (int)strlen(dmk); if (dn > 0 && dmk[dn-1]=='\\') dmk[dn-1]='\0'; }
-          mkdirs(dmk); }
+          if (mkdirs(dmk) != 0) ctx->partial = 1;
+          if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) ctx->partial = 1;
+          strncpy(ctx->subject_name, entry->name,
+                  sizeof(ctx->subject_name) - 1);
+          ctx->subject_name[sizeof(ctx->subject_name) - 1] = '\0';
+          strncpy(ctx->subject_path, dmk, sizeof(ctx->subject_path) - 1);
+          ctx->subject_path[sizeof(ctx->subject_path) - 1] = '\0';
+          ctx->subject_type = BP_TYPE_DIR;
+          ctx->subject_ok = strlen(entry->name) < sizeof(ctx->subject_name) &&
+                            strlen(dmk) < sizeof(ctx->subject_path) &&
+                            x68k_path_exists(dmk, NULL);
+        } else ctx->subject_ok = 0;
         return NULL;
     }
 
@@ -437,28 +855,103 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     if (g_verbosity == VERB_DEFAULT) printf(" extracting: %s\n", local_name);
     if (ctx->dry_run) return bp_archive_dry_run_stream();
 
-    if (!ctx->force) {
-        FILE *chk = fopen(qdos_path, "rb");
-        if (chk) { fclose(chk); fprintf(stderr, "boltpack: exists (use -f): %s\n", local_name); return NULL; }
+    {
+        struct dos_filbuf target_info;
+        if (x68k_path_exists(qdos_path, &target_info)) {
+            if ((target_info.atr & FA_SUBDIR) || !ctx->force) {
+                fprintf(stderr, "boltpack: exists (use -f): %s\n", local_name);
+                return NULL;
+            }
+        }
     }
 
     /* Create parent directories */
-    { char tmp2[BP_MAX_PATH]; char *sl; strcpy(tmp2, qdos_path);
-      sl = strrchr(tmp2, '\\');
-      if (sl && sl != tmp2) { *sl = '\0'; mkdirs(tmp2); } }
+    { char tmp2[BP_MAX_PATH]; const char *sl; strcpy(tmp2, qdos_path);
+      sl = x68k_last_separator(tmp2);
+      if (sl && sl != tmp2) { tmp2[sl - tmp2] = '\0'; if (mkdirs(tmp2) != 0) return NULL; } }
 
-    fp = fopen(qdos_path, "wb");
+    fp = x68k_create_output_stage(ctx, qdos_path);
     if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", local_name); return NULL; }
     io = (bp_io_t *)malloc(sizeof(bp_io_t));
-    if (!io) { fclose(fp); return NULL; }
+    if (!io) {
+        fclose(fp);
+        remove(ctx->current_stage);
+        ctx->current_stage[0] = '\0';
+        return NULL;
+    }
     bp_io_from_file(io, fp);
     return io;
 }
 
-static void extract_done(const bp_entry_t *entry, bp_io_t *out, void *user_data)
+static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
+                        void *user_data)
 {
-    (void)user_data; (void)entry;
-    if (out) { fclose((FILE *)out->handle); free(out); }
+    extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    int rc = status;
+    if (entry->entry_type == BP_TYPE_META) {
+        bp_portable_metadata_t parsed;
+        if (status != BP_OK) return BP_OK;
+        rc = bp_metadata_parse(ctx->meta_sink.data, ctx->meta_sink.length,
+                               &parsed);
+        if (rc == BP_ERR_CORRUPT) return rc;
+        if (!ctx->subject_ok || strcmp(entry->name, ctx->subject_name) != 0 ||
+            !bp_metadata_matches_subject(&parsed, ctx->subject_type)) {
+            ctx->partial = 1;
+            return BP_ERR_PARTIAL;
+        }
+        if (parsed.has_fat && !ctx->dry_run) {
+            if (ctx->subject_type == BP_TYPE_DIR)
+                rc = x68k_queue_dir_attributes(ctx, ctx->subject_path,
+                                               parsed.fat_valid,
+                                               parsed.fat_value);
+            else
+                rc = x68k_apply_attributes(ctx->subject_path,
+                                           parsed.fat_valid,
+                                           parsed.fat_value);
+            if (rc != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore attributes: %s\n",
+                        ctx->subject_path);
+                ctx->partial = 1;
+                return BP_ERR_PARTIAL;
+            }
+        }
+        if (rc == BP_ERR_PARTIAL || parsed.has_unknown) ctx->partial = 1;
+        return (rc == BP_OK || rc == BP_ERR_PARTIAL) ? rc : BP_ERR_PARTIAL;
+    }
+    if (!out) return BP_OK;
+    if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
+        if (fflush((FILE *)out->handle) != 0 ||
+            x68k_restore_mtime(fileno((FILE *)out->handle), entry->mtime) != BP_OK) {
+            fprintf(stderr, "boltpack: could not fully restore timestamp: %s\n",
+                    ctx->current_target);
+            ctx->partial = 1;
+        }
+    }
+    if (fclose((FILE *)out->handle) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    free(out);
+    if (rc == BP_OK) {
+        rc = x68k_publish_output(ctx);
+        if (rc != BP_OK)
+            fprintf(stderr, "boltpack: cannot publish extracted file: %s\n",
+                    ctx->current_target);
+        else {
+            strncpy(ctx->subject_name, entry->name,
+                    sizeof(ctx->subject_name) - 1);
+            ctx->subject_name[sizeof(ctx->subject_name) - 1] = '\0';
+            strncpy(ctx->subject_path, ctx->current_target,
+                    sizeof(ctx->subject_path) - 1);
+            ctx->subject_path[sizeof(ctx->subject_path) - 1] = '\0';
+            ctx->subject_type = BP_TYPE_DATA;
+            ctx->subject_ok = strlen(entry->name) < sizeof(ctx->subject_name) &&
+                              strlen(ctx->current_target) < sizeof(ctx->subject_path);
+        }
+    }
+    if (rc != BP_OK && ctx->current_stage[0] != '\0') {
+        if (remove(ctx->current_stage) != 0) rc = BP_ERR_PARTIAL;
+        ctx->current_stage[0] = '\0';
+    }
+    ctx->current_target[0] = '\0';
+    return rc;
 }
 
 /* ---- test callback ---------------------------------------------------- */
@@ -613,22 +1106,118 @@ static int cmd_list(const char *archive_name)
     return 0;
 }
 
+static int x68k_preflight_path(const char *path, const char *arcname)
+{
+    struct dos_filbuf source;
+    if (_dos_files(&source, path, FA_ANY) != 0)
+        return BP_ERR_IO;
+
+    if (source.atr & FA_SUBDIR) {
+        struct dos_filbuf child;
+        char dir_arc[BP_MAX_PATH];
+        char utf8_name[BP_MAX_PATH * 3];
+        char pattern[BP_MAX_PATH];
+        size_t name_len = strlen(arcname);
+        long r;
+        int rc = BP_OK;
+
+        if (name_len >= sizeof(dir_arc)) return BP_ERR_NAME_TOO_LONG;
+        strcpy(dir_arc, arcname);
+        if (name_len > 0 && dir_arc[name_len - 1] != '/') {
+            if (name_len + 1 >= sizeof(dir_arc)) return BP_ERR_NAME_TOO_LONG;
+            dir_arc[name_len++] = '/';
+            dir_arc[name_len] = '\0';
+        }
+        if (bp_local_to_utf8(dir_arc, utf8_name, sizeof(utf8_name), X68K_CP) != 0 ||
+            !bp_name_is_safe(utf8_name))
+            return BP_ERR_INVALID_ARG;
+
+        if (snprintf(pattern, sizeof(pattern), "%s\\*.*", path) < 0 ||
+            strlen(path) + 4 >= sizeof(pattern))
+            return BP_ERR_NAME_TOO_LONG;
+        r = _dos_files(&child, pattern, FA_ANY);
+        while (r == 0) {
+            if (rc == BP_OK && strcmp(child.name, ".") != 0 &&
+                strcmp(child.name, "..") != 0) {
+                char child_path[BP_MAX_PATH];
+                char child_arc[BP_MAX_PATH];
+                if (path_join(child_path, sizeof(child_path), path, child.name) != 0 ||
+                    path_join(child_arc, sizeof(child_arc), dir_arc, child.name) != 0) {
+                    rc = BP_ERR_NAME_TOO_LONG;
+                } else {
+                    normalise_seps(child_arc);
+                    rc = x68k_preflight_path(child_path, child_arc);
+                }
+            }
+            r = _dos_nfiles(&child);
+        }
+        return rc;
+    }
+
+    {
+        char utf8_name[BP_MAX_PATH * 3];
+        if (bp_local_to_utf8(arcname, utf8_name, sizeof(utf8_name), X68K_CP) != 0 ||
+            !bp_name_is_safe(utf8_name))
+            return BP_ERR_INVALID_ARG;
+    }
+    return BP_OK;
+}
+
+static int x68k_preflight_source_names(int argc, char **argv)
+{
+    int i;
+    for (i = 0; i < argc; i++) {
+        char local_name[BP_MAX_PATH];
+        const char *source_name = clean_path(argv[i]);
+        int rc;
+        if (strlen(source_name) >= sizeof(local_name))
+            return BP_ERR_NAME_TOO_LONG;
+        strcpy(local_name, source_name);
+        normalise_seps(local_name);
+        rc = x68k_preflight_path(argv[i], local_name);
+        if (rc != BP_OK) return rc;
+    }
+    return BP_OK;
+}
+
 /* ---- cmd_create ------------------------------------------------------- */
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
                       bp_uint8 method, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
+    char stage[BP_MAX_PATH];
+    int target_exists;
+    bp_uint8 target_attributes;
+    stage[0] = '\0';
     if (argc < 2) { fprintf(stderr, "boltpack: create needs archive + files\n"); return 1; }
+    rc = x68k_preflight_source_names(argc - 1, argv + 1);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: source name cannot be represented safely\n");
+        return 1;
+    }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
-    fp = fopen(argv[0], "w+b");
-    if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
+    rc = x68k_archive_target(argv[0], &target_exists, &target_attributes);
+    if (rc == BP_OK) rc = x68k_create_archive_stage(argv[0], stage, sizeof(stage));
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", argv[0]);
+        return 1;
+    }
+    fp = fopen(stage, "w+b");
+    if (!fp) {
+        fprintf(stderr, "boltpack: cannot write archive stage: %s\n", stage);
+        remove(stage);
+        return 1;
+    }
     bp_io_from_file(&aio, fp);
     rc = interchange_profile
         ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
         : bp_archive_create(&ar, &aio, block_size, method);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        fclose(fp); remove(stage); return 1;
+    }
     if (interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
     for (i = 1; i < argc; i++) {
@@ -638,11 +1227,20 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         rc = add_path(&ar, argv[i], buf);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: error adding: %s\n", argv[i]);
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); fclose(fp); remove(stage); return 1;
         }
     }
-    rc = bp_archive_finalize(&ar); bp_archive_close(&ar); fclose(fp);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
+    rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = x68k_publish_archive(argv[0], stage, target_exists,
+                                  target_attributes);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        if (stage[0] != '\0') remove(stage);
+        return 1;
+    }
     if (g_verbosity < VERB_SILENT) printf("%d item%s archived\n", argc-1, argc-1==1?"":"s");
     return 0;
 }
@@ -653,20 +1251,45 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
                    bp_uint8 method, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
+    char stage[BP_MAX_PATH];
+    int target_exists;
+    bp_uint8 target_attributes;
+    stage[0] = '\0';
     if (argc < 2) { fprintf(stderr, "boltpack: add needs archive + files\n"); return 1; }
+    rc = x68k_preflight_source_names(argc - 1, argv + 1);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: source name cannot be represented safely\n");
+        return 1;
+    }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
-    fp = fopen(argv[0], "r+b");
-    if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
+    rc = x68k_archive_target(argv[0], &target_exists, &target_attributes);
+    if (rc == BP_OK && !target_exists) rc = BP_ERR_IO;
+    if (rc == BP_OK) rc = x68k_create_archive_stage(argv[0], stage, sizeof(stage));
+    if (rc == BP_OK) rc = x68k_copy_file(argv[0], stage);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", argv[0]);
+        if (stage[0] != '\0') remove(stage);
+        return 1;
+    }
+    fp = fopen(stage, "r+b");
+    if (!fp) {
+        fprintf(stderr, "boltpack: cannot edit archive stage: %s\n", stage);
+        remove(stage);
+        return 1;
+    }
     bp_io_from_file(&aio, fp);
     rc = bp_archive_open_append(&ar, &aio, block_size, method);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        fclose(fp); remove(stage); return 1;
+    }
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: archive does not meet Interchange Profile 1 limits: %s\n",
                     bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); return 1;
+            bp_archive_close(&ar); fclose(fp); remove(stage); return 1;
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
@@ -674,32 +1297,113 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         char buf[BP_MAX_PATH]; strcpy(buf, clean_path(argv[i])); normalise_seps(buf);
         rc = add_path(&ar, argv[i], buf);
         if (rc != BP_OK) { fprintf(stderr, "boltpack: error adding: %s\n", argv[i]);
-                           bp_archive_close(&ar); fclose(fp); return 1; }
+                           bp_archive_close(&ar); fclose(fp); remove(stage); return 1; }
     }
-    rc = bp_archive_finalize(&ar); bp_archive_close(&ar); fclose(fp);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
+    rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc == BP_OK)
+        rc = x68k_publish_archive(argv[0], stage, target_exists,
+                                  target_attributes);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        if (stage[0] != '\0') remove(stage);
+        return 1;
+    }
     if (g_verbosity < VERB_SILENT) printf("%d item%s added\n", argc-1, argc-1==1?"":"s");
     return 0;
 }
 
 /* ---- cmd_extract ------------------------------------------------------ */
 
+typedef struct {
+    x68k_path_index_t index;
+    const char *out_dir;
+    int error;
+} x68k_extract_preflight_t;
+
+static int x68k_extract_preflight_entry(const bp_entry_t *entry,
+                                        void *user_data)
+{
+    x68k_extract_preflight_t *check =
+        (x68k_extract_preflight_t *)user_data;
+    char local_name[BP_MAX_PATH];
+    char output_path[BP_MAX_PATH];
+    int is_directory, rc;
+
+    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC ||
+        entry->entry_type == BP_TYPE_SYMLINK) return 0;
+    if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR)
+        return 0;
+    if (!bp_name_is_safe(entry->name) ||
+        bp_utf8_to_local(entry->name, local_name, sizeof(local_name),
+                         X68K_CP) != 0) {
+        check->error = BP_ERR_INVALID_ARG;
+        return 1;
+    }
+    is_directory = entry->entry_type == BP_TYPE_DIR;
+    if (check->out_dir) {
+        if (path_join(output_path, sizeof(output_path), check->out_dir,
+                      local_name) != 0) {
+            fprintf(stderr, "boltpack: output path too long: %s\n",
+                    entry->name);
+            check->error = BP_ERR_NAME_TOO_LONG;
+            return 1;
+        }
+    } else if (strlen(local_name) >= sizeof(output_path)) {
+        check->error = BP_ERR_NAME_TOO_LONG;
+        return 1;
+    } else strcpy(output_path, local_name);
+    rc = x68k_path_index_add(&check->index, local_name, is_directory);
+    if (rc != BP_OK) {
+        check->error = rc;
+        return 1;
+    }
+    return 0;
+}
+
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
     FILE *fp; bp_io_t aio; extract_ctx_t ctx; int rc;
+    x68k_extract_preflight_t preflight;
     fp = fopen(archive_name, "rb");
     if (!fp) { fprintf(stderr, "boltpack: cannot open: %s\n", archive_name); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
-    if (out_dir && !dry_run) {
-        char od[BP_MAX_PATH]; strncpy(od, out_dir, sizeof(od)-1); mkdirs(od);
-    }
     bp_io_from_file(&aio, fp);
+    memset(&preflight, 0, sizeof(preflight));
+    preflight.out_dir = out_dir;
+    rc = x68k_path_index_init(&preflight.index);
+    if (rc == BP_OK)
+        rc = bp_archive_list(&aio, x68k_extract_preflight_entry, &preflight);
+    if (preflight.error != 0) rc = preflight.error;
+    x68k_path_index_free(&preflight.index);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: extraction preflight: %s\n", bp_strerror(rc));
+        fclose(fp);
+        return 1;
+    }
+    if (out_dir && !dry_run) {
+        char od[BP_MAX_PATH];
+        if (strlen(out_dir) >= sizeof(od)) {
+            fprintf(stderr, "boltpack: output path too long\n");
+            fclose(fp);
+            return 1;
+        }
+        strcpy(od, out_dir);
+        if (mkdirs(od) != 0) {
+            fprintf(stderr, "boltpack: cannot create output path: %s\n", out_dir);
+            fclose(fp);
+            return 1;
+        }
+    }
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
-    rc = bp_archive_extract_all(&aio, extract_open, extract_done, NULL, &ctx);
+    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done, NULL, &ctx);
+    x68k_finish_dir_attributes(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
     fclose(fp);
+    if (ctx.partial && rc == BP_OK) rc = BP_ERR_PARTIAL;
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     if (g_verbosity < VERB_SILENT)
         printf("%lu file%s, %lu dir%s\n",
@@ -737,21 +1441,37 @@ static int cmd_delete(int argc, char **argv)
 {
     const char **del; int del_count;
     FILE *sf, *df; bp_io_t sio, dio;
-    char tmp[BP_MAX_PATH]; bp_uint32 deleted = 0; int rc;
+    char stage[BP_MAX_PATH]; bp_uint32 deleted = 0; int rc;
+    int target_exists;
+    bp_uint8 target_attributes;
     if (argc < 2) { fprintf(stderr, "boltpack: delete needs archive + names\n"); return 1; }
+    stage[0] = '\0';
     del = (const char **)&argv[1]; del_count = argc - 1;
+    rc = x68k_archive_target(argv[0], &target_exists, &target_attributes);
+    if (rc != BP_OK || !target_exists) {
+        fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1;
+    }
+    rc = x68k_create_archive_stage(argv[0], stage, sizeof(stage));
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: cannot stage archive: %s\n", argv[0]); return 1;
+    }
     sf = fopen(argv[0], "rb");
-    if (!sf) { fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
-    snprintf(tmp, sizeof(tmp), "%s.tmp", argv[0]);
-    df = fopen(tmp, "w+b");
-    if (!df) { fclose(sf); fprintf(stderr, "boltpack: cannot create temp\n"); return 1; }
+    if (!sf) { remove(stage); fprintf(stderr, "boltpack: cannot open: %s\n", argv[0]); return 1; }
+    df = fopen(stage, "w+b");
+    if (!df) { fclose(sf); remove(stage); fprintf(stderr, "boltpack: cannot create archive stage\n"); return 1; }
     bp_io_from_file(&sio, sf); bp_io_from_file(&dio, df);
     rc = bp_archive_delete(&sio, &dio, del, (bp_uint32)del_count, &deleted);
-    fclose(sf); fclose(df);
-    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); remove(tmp); return 1; }
-    if (!deleted) { fprintf(stderr, "boltpack: no matching entries\n"); remove(tmp); return 1; }
-    if (remove(argv[0]) != 0 || rename(tmp, argv[0]) != 0)
-        { fprintf(stderr, "boltpack: replace failed\n"); return 1; }
+    if (fclose(sf) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (fclose(df) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); remove(stage); return 1; }
+    if (!deleted) { fprintf(stderr, "boltpack: no matching entries\n"); remove(stage); return 1; }
+    rc = x68k_publish_archive(argv[0], stage, target_exists,
+                              target_attributes);
+    if (rc != BP_OK) {
+        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        if (stage[0] != '\0') remove(stage);
+        return 1;
+    }
     if (g_verbosity < VERB_SILENT)
         printf("%lu entr%s deleted\n", (unsigned long)deleted, deleted==1?"y":"ies");
     return 0;

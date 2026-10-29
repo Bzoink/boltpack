@@ -59,7 +59,14 @@ void nulldir(Dir *dir)
 int dirwstat(const char *path, const Dir *dir)
 {
     int rc = 0;
-    if (dir->mode != 0) rc = chmod(path, dir->mode & 0777);
+    if (dir->mode != 0) {
+        struct stat st;
+        if (stat(path, &st) != 0) return -1;
+        /* Match Plan 9's requirement that a mode update retain the object's
+         * directory type bit. */
+        if (!!(dir->mode & DMDIR) != !!S_ISDIR(st.st_mode)) return -1;
+        rc = chmod(path, dir->mode & 0777);
+    }
     if (dir->mtime != 0) {
         struct utimbuf times;
         times.actime = 0;

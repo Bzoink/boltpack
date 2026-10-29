@@ -591,12 +591,18 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
                     const char *fs_path, bp_uint8 platform)
 {
     struct find_t ff;
+    bp_mini_path_buffers_t path_buffers;
     char *pattern;
     char *child_fs;
     char *child_arc;
     unsigned int ret;
+    unsigned int pattern_capacity;
+    unsigned int child_fs_capacity;
+    unsigned int child_arc_capacity;
     unsigned attr;
     int rc = BP_OK;
+    int fs_length;
+    int arc_length;
 
     if (_dos_getfileattr(fs_path, &attr) != 0) return BP_ERR_IO;
     if (!(attr & _A_SUBDIR)) return add_one_file(ar, arc_prefix, fs_path, platform);
@@ -605,15 +611,26 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
         if (rc != BP_OK) return rc;
     }
 
-    pattern   = (char *)malloc(BP_MAX_PATH);
-    child_fs  = (char *)malloc(BP_MAX_PATH);
-    child_arc = (char *)malloc(BP_MAX_PATH);
-    if (!pattern || !child_fs || !child_arc) {
-        free(pattern); free(child_fs); free(child_arc);
-        return BP_ERR_IO;
-    }
-
-    snprintf(pattern, BP_MAX_PATH, "%s\\*.*", fs_path);
+    fs_length = (int)strlen(fs_path);
+    arc_length = (int)strlen(arc_prefix);
+    pattern_capacity = (unsigned int)fs_length + 5U;
+    child_fs_capacity = (unsigned int)fs_length + 1U +
+                        (unsigned int)sizeof(ff.name);
+    child_arc_capacity = (unsigned int)arc_length +
+                         (arc_length != 0 ? 1U : 0U) +
+                         (unsigned int)sizeof(ff.name);
+    if (pattern_capacity > BP_MAX_PATH || child_fs_capacity > BP_MAX_PATH ||
+        child_arc_capacity > BP_MAX_PATH)
+        return BP_ERR_NAME_TOO_LONG;
+    rc = bp_mini_path_buffers_alloc_sized(&path_buffers, pattern_capacity,
+                                          child_fs_capacity,
+                                          child_arc_capacity);
+    if (rc != BP_OK) return rc;
+    pattern = path_buffers.pattern;
+    child_fs = path_buffers.child_fs;
+    child_arc = path_buffers.child_arc;
+    memcpy(pattern, fs_path, (size_t)fs_length);
+    memcpy(pattern + fs_length, "\\*.*", 5);
     ret = _dos_findfirst(pattern, _A_NORMAL | _A_RDONLY | _A_HIDDEN |
                                   _A_SYSTEM | _A_SUBDIR, &ff);
     if (ret != 0) {
@@ -622,12 +639,23 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     }
 
     do {
+        int written;
         if (strcmp(ff.name, ".") == 0 || strcmp(ff.name, "..") == 0) continue;
-        snprintf(child_fs, BP_MAX_PATH, "%s\\%s", fs_path, ff.name);
+        written = snprintf(child_fs, child_fs_capacity, "%s\\%s",
+                           fs_path, ff.name);
+        if (written < 0 || (unsigned int)written >= child_fs_capacity) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
         if (arc_prefix[0]) {
-            snprintf(child_arc, BP_MAX_PATH, "%s/%s", arc_prefix, ff.name);
+            written = snprintf(child_arc, child_arc_capacity, "%s/%s",
+                               arc_prefix, ff.name);
         } else {
-            snprintf(child_arc, BP_MAX_PATH, "%s", ff.name);
+            written = snprintf(child_arc, child_arc_capacity, "%s", ff.name);
+        }
+        if (written < 0 || (unsigned int)written >= child_arc_capacity) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
         }
         if (ff.attrib & _A_SUBDIR) {
             rc = add_path(ar, child_arc, child_fs, platform);
@@ -638,7 +666,7 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     } while (_dos_findnext(&ff) == 0);
 
 done:
-    free(pattern); free(child_fs); free(child_arc);
+    bp_mini_path_buffers_free(&path_buffers);
     return rc;
 }
 #endif /* __WATCOMC__ */

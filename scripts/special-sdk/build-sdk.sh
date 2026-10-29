@@ -118,7 +118,7 @@ build_riscos() {
         echo "No compiler found for RISC OS (tried arm-unknown-riscos-gcc, arm-unknown-riscos-cc)." >&2
         return 1
     }
-    cflags="${CFLAGS:--ansi -pedantic -Wall -Wextra -Wno-unused-function -O2}"
+    cflags="${CFLAGS:--ansi -pedantic -Wall -Wextra -Wno-unused-function -O2} -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32"
 
     build_with_sources "$compiler" "$cflags" "${RISCOS_OUTDIR:-build/riscos}" \
         "boltpack,ff8" "RISC OS CLI" \
@@ -132,7 +132,7 @@ build_ql() {
         echo "No compiler found for Sinclair QL (tried qcc, m68k-qdos-gcc)." >&2
         return 1
     }
-    cflags="${CFLAGS:--O}"
+    cflags="${CFLAGS:--O} -DBP_CREATOR_OS=BP_OS_QL -DBP_CREATOR_CPU=BP_CPU_M68K"
     outdir="${QL_OUTDIR:-build/ql}"
 
     mkdir -p "$outdir"
@@ -163,7 +163,7 @@ build_x68k() {
         echo "No compiler found for Sharp X68000 (tried m68k-x680x-human-gcc)." >&2
         return 1
     }
-    cflags="${CFLAGS:--ansi -pedantic -Wall -Wextra -Wno-unused-function -O2}"
+    cflags="${CFLAGS:--ansi -pedantic -Wall -Wextra -Wno-unused-function -O2} -DBP_CREATOR_OS=BP_OS_X68K -DBP_CREATOR_CPU=BP_CPU_M68K"
 
     build_with_sources "$compiler" "$cflags" "${X68K_OUTDIR:-build/x68k}" \
         "boltpack.x" "Sharp X68000 CLI" \
