@@ -1,0 +1,18 @@
+{
+  "case": "Amiga OFS/FFS interruption after archive backup publication",
+  "original": {
+    "size": 131072,
+    "generator": "byte[i] = (29*i + floor(i/11)) mod 256",
+    "sha256": "318eec615920df0188c6625afa0f4d83d3b512bf4c418fc48e23918501a9c09a"
+  },
+  "replacement": {
+    "content": "replacement archive payload\n",
+    "repetitions": 1800,
+    "size": 50400,
+    "sha256": "8e54d5950bf3e6a8a200f20beded4ade4f2dea12373fdf01bab03b2c9e7b3bb1"
+  },
+  "expected": {
+    "after_interruption": ["original archive absent", "one BR backup", "one BP stage"],
+    "after_recovery": ["original archive restored byte-for-byte", "backup consumed", "replacement stage retained and integrity-tested"]
+  }
+}

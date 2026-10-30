@@ -1641,15 +1641,20 @@ fsuae-publish-interruption-test: modern amiga68k-publish-pause-test amiga68k
 	    --amiga-cli "$(AMIGA_PUBLISH_PAUSE_TEST_BIN)" \
 	    --recovery-cli "build/amiga/boltpack" --operation publish-interrupt
 
+AMIGA_NATIVE_RECOVERY_TAG ?= $(shell date +%Y%m%d-%H%M%S)
+AMIGA_NATIVE_RECOVERY_OFS_OUTPUT ?= build/amiga-native-recovery-ofs-$(AMIGA_NATIVE_RECOVERY_TAG)
+AMIGA_NATIVE_RECOVERY_FFS_OUTPUT ?= build/amiga-native-recovery-ffs-$(AMIGA_NATIVE_RECOVERY_TAG)
 fsuae-native-publish-recovery-test: modern amiga68k-native-publish-pause-test amiga68k
 	python3 test/check_fsuae_native_recovery.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --xdftool "$(XDFTOOL)" --pause-cli "$(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)" \
-	    --recovery-cli "build/amiga/boltpack" --filesystem ofs
+	    --recovery-cli "build/amiga/boltpack" --filesystem ofs \
+	    --output "$(AMIGA_NATIVE_RECOVERY_OFS_OUTPUT)"
 	python3 test/check_fsuae_native_recovery.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --xdftool "$(XDFTOOL)" --pause-cli "$(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)" \
-	    --recovery-cli "build/amiga/boltpack" --filesystem ffs
+	    --recovery-cli "build/amiga/boltpack" --filesystem ffs \
+	    --output "$(AMIGA_NATIVE_RECOVERY_FFS_OUTPUT)"
 
 AMIGA_NATIVE_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
 AMIGA_NATIVE_OFS_OUTPUT ?= build/amiga-native-ofs-$(AMIGA_NATIVE_RUN_TAG)
