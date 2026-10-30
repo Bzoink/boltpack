@@ -344,6 +344,14 @@ title is the application name and aligns with its pull-down; see the
 (§6.26 and §11.15); the same reference documents the `evnt_multi` keyboard
 outputs (§6.71).
 
+The thirteen-action production menu-pointer corpus also passes on Hatari 2.5.0
+with the bundled EmuTOS 1.4 ROM at `build/freemint-probe/etos1024k.img`. Run it
+with `make CC=gcc HATARI_TOS=build/freemint-probe/etos1024k.img
+atari-gui-menu-pointer-test`. The runner waits for the initial screen and
+checks that each menu visibly opened before selecting its item; per-action
+records and hash verification are listed under R06 in the
+[remaining interoperability steps](interoperability-remaining-steps.md).
+
 On 2026-10-29, additional `xdotool` probes under `xvfb-run` moved the Hatari
 pointer onto the `SOURCE.TXT` row, selector OK button, and Create button, but
 the selector did not advance and no archive was produced. Repeating with a
