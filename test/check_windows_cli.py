@@ -16,10 +16,12 @@ clean Windows build environment without pytest or pywin32.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -67,6 +69,18 @@ def wine_path(path: str | Path) -> str:
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+@contextmanager
+def temporary_directory_cleanup_on_success(prefix: str):
+    """Keep failed fixtures for diagnosis; remove the tree after a pass."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield path
+    except BaseException:
+        raise
+    else:
+        shutil.rmtree(path)
 
 
 def run(binary: Path, cwd: Path, *args: str, success: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -227,8 +241,8 @@ def main() -> int:
     if not binary.is_file():
         fail(f"BoltPack Windows CLI does not exist: {binary}")
 
-    with tempfile.TemporaryDirectory(prefix="boltpack-win-edit-") as temp:
-        root = Path(temp)
+    with temporary_directory_cleanup_on_success(
+            prefix="boltpack-win-edit-") as root:
         unicode_dir = root / "資料-🧪"
         unicode_dir.mkdir()
         unicode_member = unicode_dir / "résumé-🧪.txt"
@@ -510,7 +524,13 @@ def main() -> int:
             if directory_race_proc.returncode == 0:
                 fail("Windows accepted a parent-directory replacement during "
                      "enumeration")
-            if b"source directory changed during enumeration" not in directory_race_stderr:
+            # Depending on where enumeration resumes after the swap, the
+            # frontend can detect the changed directory identity directly or
+            # fail while inspecting the next child under the replacement path.
+            refusal_markers = (b"source directory changed during enumeration",
+                               b"cannot inspect source file:", b"cannot stat:")
+            if not any(marker in directory_race_stderr
+                       for marker in refusal_markers):
                 fail("parent-directory race was not reported as an enumeration "
                      f"change: {directory_race_stdout!r} "
                      f"{directory_race_stderr!r}")
