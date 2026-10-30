@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
 """Check Sinclair QL CLI Interchange Profile 1 output on a host build."""
+import hashlib
+import json
 import pathlib
 import os
 import struct
 import subprocess
 import sys
 import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+EXPECTED = json.loads((ROOT / "test/reference/interoperability/ql-profile-host.json")
+                      .read_text(encoding="utf-8"))
+
+
+def manifest_payload(key):
+    record = EXPECTED["profile"]["files"][key]
+    data = record["pattern_utf8"].encode("utf-8") * record["repetitions"]
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise AssertionError("QL independent profile manifest is inconsistent: " + key)
+    return data
+
+
+def check_manifest_file(path, key):
+    record = EXPECTED["profile"]["files"][key]
+    data = pathlib.Path(path).read_bytes()
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise AssertionError("QL profile payload differs from independent manifest: " + key)
 
 
 def run(binary, *args, cwd, env=None):
@@ -91,8 +112,8 @@ def main():
     )
     with tempfile.TemporaryDirectory(prefix="bp_ql_profile_") as temp:
         root = pathlib.Path(temp)
-        (root / "first.bin").write_bytes(b"profile transfer\n" * 4096)
-        (root / "second.bin").write_bytes(b"append transfer\n" * 1024)
+        (root / "first.bin").write_bytes(manifest_payload("first.bin"))
+        (root / "second.bin").write_bytes(manifest_payload("second.bin"))
 
         result = run(ql, "c", "--interchange-profile-1", "profile.blt",
                      "first.bin", cwd=root)
@@ -101,9 +122,12 @@ def main():
         require_ok(info, "QL profile identity inspection")
         assert b"Creator OS:     Sinclair QL" in info.stdout
         assert b"Creator CPU:    Motorola 68k" in info.stdout
-        assert entry_properties(root / "profile.blt")["first.bin"] == (1, 16384)
+        profile = EXPECTED["profile"]
+        assert entry_properties(root / "profile.blt")["first.bin"] == \
+            (1, profile["block_bytes"])
         mtime, flags = entry_times(root / "profile.blt")["first.bin"]
-        assert mtime == 0 and not (flags & 0x4000), \
+        unknown = profile["unknown_mtime"]
+        assert mtime == unknown["mtime"] and bool(flags & 0x4000) == unknown["valid"], \
             "QL file with unavailable mtime was marked as timestamped"
         check_dry_run(ql, "profile.blt", root)
         for reader in (ql, full, mini):
@@ -114,20 +138,32 @@ def main():
                      "second.bin", cwd=root)
         require_ok(result, "QL profile append")
         props = entry_properties(root / "profile.blt")
-        assert props["first.bin"] == (1, 16384)
-        assert props["second.bin"] == (1, 16384)
+        assert props["first.bin"] == (1, profile["block_bytes"])
+        assert props["second.bin"] == (1, profile["block_bytes"])
         for name, (mtime, flags) in entry_times(root / "profile.blt").items():
             if name.endswith(("first.bin", "second.bin")):
-                assert mtime == 0 and not (flags & 0x4000), \
+                assert mtime == unknown["mtime"] and \
+                    bool(flags & 0x4000) == unknown["valid"], \
                     "QL append marked unavailable file time as valid"
-        for reader in (ql, full, mini):
+        for reader_label, reader in (("ql", ql), ("linux", full), ("mini", mini)):
             require_ok(run(reader, "t", "profile.blt", cwd=root),
                        f"profile append integrity with {reader.name}")
+            extracted = root / ("extract-" + reader_label)
+            extracted.mkdir()
+            if pathlib.Path(reader).name == "bpmini":
+                extract_args = ("x", "profile.blt", extracted.name)
+            else:
+                extract_args = ("x", "-o", extracted.name, "profile.blt")
+            require_ok(run(reader, *extract_args, cwd=root),
+                       f"profile extraction with {pathlib.Path(reader).name}")
+            check_manifest_file(extracted / "first.bin", "first.bin")
+            check_manifest_file(extracted / "second.bin", "second.bin")
 
         result = run(ql, "c", "--interchange-profile-1", "-0",
                      "stored.blt", "first.bin", cwd=root)
         require_ok(result, "QL Stored profile create")
-        assert entry_properties(root / "stored.blt")["first.bin"] == (0, 16384)
+        assert entry_properties(root / "stored.blt")["first.bin"] == \
+            (profile["stored_codec_id"], profile["block_bytes"])
         for reader in (ql, full, mini):
             require_ok(run(reader, "t", "stored.blt", cwd=root),
                        f"Stored profile integrity with {reader.name}")
@@ -135,8 +171,14 @@ def main():
         # QL extraction restores representable file dates.
         timed_tree = root / "TIMED" / "SUB"
         timed_tree.mkdir(parents=True)
-        (timed_tree / "LEAF").write_bytes(b"timed directory transfer\n")
-        os.utime(timed_tree / "LEAF", (1600000003, 1600000003))
+        time_payload = EXPECTED["timestamps"]["timed_file_payload"]
+        timed_data = time_payload["text"].encode("utf-8")
+        if len(timed_data) != time_payload["bytes"] or \
+                hashlib.sha256(timed_data).hexdigest() != time_payload["sha256"]:
+            raise AssertionError("QL timestamp fixture manifest is inconsistent")
+        (timed_tree / "LEAF").write_bytes(timed_data)
+        timed_epoch = EXPECTED["timestamps"]["timed_file_epoch_seconds"]
+        os.utime(timed_tree / "LEAF", (timed_epoch, timed_epoch))
         require_ok(run(full, "c", "-0", str(root / "timed-file.blt"),
                        "LEAF", cwd=timed_tree), "QL timestamp fixture create")
         timed_output = root / "ql-timed-output"
@@ -145,9 +187,10 @@ def main():
                      cwd=root)
         require_ok(result, "QL timestamp extraction")
         actual = int((timed_output / "LEAF").stat().st_mtime)
-        assert actual == 1600000003, \
+        assert actual == timed_epoch, \
             "QL extraction did not restore file mtime: %d" % actual
-        os.utime(timed_tree / "LEAF", (2100000000, 2100000000))
+        future_epoch = EXPECTED["timestamps"]["unsupported_future_epoch_seconds"]
+        os.utime(timed_tree / "LEAF", (future_epoch, future_epoch))
         require_ok(run(full, "c", "-0", str(root / "future-time.blt"),
                        "LEAF", cwd=timed_tree), "QL out-of-range time fixture")
         future_output = root / "ql-future-output"
@@ -156,7 +199,7 @@ def main():
                      cwd=root)
         assert result.returncode != 0 and b"cannot restore QDOS file date" in result.stderr, \
             "QL did not report its unsupported timestamp range"
-        assert (future_output / "LEAF").read_bytes() == b"timed directory transfer\n", \
+        assert (future_output / "LEAF").read_bytes() == timed_data, \
             "QL did not preserve verified bytes when the mtime was out of range"
 
         result = run(ql, "c", "--interchange-profile-1", "-F",
@@ -256,12 +299,8 @@ def main():
         # native 36-byte bound before creating either the output root or the
         # QDOS directory marker used by the host build.
         expected_refusals = {
-            "case": b"destination name collision",
-            "latin1-case": b"destination name collision",
-            "prefix": b"file/directory name conflict",
-            "dir-alias": b"destination name collision",
-            "unmappable": b"name is not representable on QL",
-            "overlong": b"output path is too long for QL",
+            key: value.encode("utf-8")
+            for key, value in EXPECTED["expected_refusals"].items()
         }
         for scenario, diagnostic in expected_refusals.items():
             archive = root / ("ql-" + scenario + ".blt")
@@ -281,7 +320,7 @@ def main():
                    "QL exact 36-byte name fixture")
         require_ok(run(ql, "x", str(exact36), cwd=root),
                    "QL exact 36-byte native path extraction")
-        assert (root / "123456789012345678901234567890123456").is_file(), \
+        assert (root / EXPECTED["names"]["exact_native_component"]).is_file(), \
             "QL rejected an exact 36-byte destination name"
 
     print("QL profile, staged extraction and destination preflight checks passed")

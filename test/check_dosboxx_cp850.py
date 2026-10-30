@@ -2,6 +2,7 @@
 """Verify DOS16 CP850 filename transfer on a DOSBox-X FAT12 floppy."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,8 +10,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-PAYLOAD = b"CP850 filename on FAT12\n"
-NAME = "\u00d8.TXT"
+EXPECTED = json.loads((ROOT / "test/reference/interoperability/dos-cp850-fat12.json")
+                      .read_text(encoding="utf-8"))
+CASE = EXPECTED["dosboxx_uppercase"]
+PAYLOAD = CASE["payload"]["text"].encode("utf-8")
+NAME = CASE["name_unicode"]
 
 
 def run(command, **kwargs):
@@ -20,8 +24,9 @@ def run(command, **kwargs):
 
 def check_payload(path):
     data = path.read_bytes()
-    if data != PAYLOAD or hashlib.sha256(data).hexdigest() != \
-            "45805b1de39b3b51875eefb87b6518424963391b129af64e17fb183fea6b3e56":
+    expected = CASE["payload"]
+    if len(data) != expected["bytes"] or \
+            hashlib.sha256(data).hexdigest() != expected["sha256"]:
         raise RuntimeError("CP850 round-trip payload mismatch: " + str(path))
 
 
@@ -39,6 +44,7 @@ def main():
     source = out / "source"
     source.mkdir()
     (source / NAME).write_bytes(PAYLOAD)
+    check_payload(source / NAME)
     linux = ROOT / "build/linux/boltpack"
     run([str(linux), "c", "--store", "OEM.BLT", NAME], cwd=source)
 
@@ -91,7 +97,7 @@ def main():
     fat_bytes = image.read_bytes()
     # DOS canonicalizes argv through the CP850 uppercase table before opening
     # or creating the FAT 8.3 entry: Ø is byte 0x9D.
-    short_name = b"\x9d       TXT"
+    short_name = bytes.fromhex(CASE["fat_short_name_hex"])
     if short_name not in fat_bytes:
         raise RuntimeError("FAT12 did not store CP850 Ø as byte 0x9D; evidence: " + str(out))
     (out / "result.txt").write_text(

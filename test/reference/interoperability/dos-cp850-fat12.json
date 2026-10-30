@@ -1,0 +1,36 @@
+{
+  "case": "DOS16 CP850 filenames on FAT12",
+  "filesystem": {
+    "type": "FAT12",
+    "dosboxx_image_kib": 720,
+    "freedos_image_kib": 1440
+  },
+  "dosboxx_uppercase": {
+    "name_unicode": "\u00d8.TXT",
+    "name_cp850_byte_hex": "9d",
+    "fat_short_name_hex": "9d20202020202020545854",
+    "codepage": 850,
+    "payload": {
+      "text": "CP850 filename on FAT12\n",
+      "bytes": 24,
+      "sha256": "45805b1de39b3b51875eefb87b6518424963391b129af64e17fb183fea6b3e56"
+    },
+    "expected_archive_name": "\u00d8.TXT"
+  },
+  "freedos_lowercase": {
+    "name_unicode": "\u00f8.TXT",
+    "name_cp850_byte_hex": "9b",
+    "fat_short_name_hex": "9d20202020202020545854",
+    "codepage": 850,
+    "payload": {
+      "text": "FreeDOS CP850 lowercase filename\n",
+      "bytes": 33,
+      "sha256": "d4966271c485065cb77871ca0944f5899b5913ba2cb05d1ae1dd89dedb8af9fa"
+    },
+    "expected_archive_name": "\u00f8.TXT"
+  },
+  "expected_outcomes": {
+    "dosboxx_uppercase_transfer": "exact bytes and UTF-8 archive name; FAT short name starts with CP850 0x9D",
+    "freedos_lowercase_transfer": "exact bytes and UTF-8 archive name after loading/selecting CP850; FAT short name uppercases to 0x9D"
+  }
+}

@@ -204,7 +204,9 @@ through `FS.DATE`; sQLux hostFS verifies exact nested timestamp restoration
 with a UTC emulator clock. The QDOS frontend accepts a fixed
 `--tz-offset MINUTES` in minutes east of UTC, defaulting to zero and without
 daylight-saving logic. The +60 minute setting is now verified in sQLux; other
-offsets and physical filing systems remain unqualified.
+offsets of -300 and +330 minutes now also pass under sQLux, with pinned output
+times in `test/reference/interoperability/ql-sqlux.json`. Physical filing
+systems remain unqualified.
 
 QL extraction now writes each regular file to a short same-directory staging
 name created with `O_CREAT|O_EXCL`; the leaf shrinks to fit the remaining
@@ -646,10 +648,14 @@ replace-and-restore fixture is rejected through the changed link metadata.
 Non-Linux fallbacks use no-follow stat checks around `readlinkat`. Source
 snapshots now include file size and mode as well as identity and timestamps. A
 deterministic fixture coarsens all reported mtime/ctime values to one-second
-precision, then grows or chmods a source after enumeration; serial and parallel
-append refuse both changes without modifying the existing archive. Same-size
-content mutations that fall within coarse timestamp resolution, and changes
-occurring after the final snapshot check, remain open.
+precision, then grows, chmods, or changes same-size content during the source
+read; serial and parallel append refuse these changes without modifying the
+existing archive. The writer now computes CRC32 over the bytes consumed for an
+entry and compares it with a second read of the source before accepting the
+archive for finalization. This catches a stable in-place content change even
+when the filesystem reports coarse timestamps, including a change immediately
+after the source stream closes. The extra read has an I/O cost; CRC collisions
+and changes after the final snapshot check remain outside this check.
 
 The X68000 Shift-JIS conversion and path-scanning portion is now covered at
 unit and host-shim level. `scripts/generate_sjis_table.py` produces the strict
@@ -763,8 +769,8 @@ Commander host and native Windows behavior remain open.
    file/child conflicts, unmappable names, the exact 36-byte boundary, and
    refusal before output creation. The case and length rules follow the QDOS
    directory behavior described in [Directories](https://sinclairql.net/djw/docs/articles/Directories.pdf).
-   QDOS root-path parsing, custom device recognition, and native filesystem
-   behavior remain unqualified without a QL runtime. RISC OS converts native Latin-1 names to/from UTF-8 and refuses lossy
+   QDOS root-path parsing, custom device recognition, and physical filesystem
+   behavior remain unqualified. RISC OS converts native Latin-1 names to/from UTF-8 and refuses lossy
    dot-separator aliases, reserved path syntax, and components over 10 bytes.
    Before creating the output root, a bounded whole-archive preflight checks
    projected names, case-fold collisions, and file/directory prefix conflicts.
@@ -969,6 +975,8 @@ expected-result manifests now cover these runs:
 - Linux FLTK GUI under Xvfb: [`linux-fltk-gui.json`](../test/reference/interoperability/linux-fltk-gui.json)
 - Plan 9 host-shim profile, collision, and metadata cases: [`plan9-host.json`](../test/reference/interoperability/plan9-host.json)
 - X68000 host-shim profile, timezone, and portable FAT attribute cases: [`x68k-host-shim.json`](../test/reference/interoperability/x68k-host-shim.json)
+- DOSBox-X CP850 uppercase and FreeDOS CP850 lowercase cases: [`dos-cp850-fat12.json`](../test/reference/interoperability/dos-cp850-fat12.json)
+- QDOS host Profile 1 and native sQLux transfers: [`ql-profile-host.json`](../test/reference/interoperability/ql-profile-host.json) and [`ql-sqlux.json`](../test/reference/interoperability/ql-sqlux.json)
 
 Their runners check fixture inputs and restored payloads against pinned sizes
 and SHA-256 values independently of the archive writer. They also record the
@@ -983,6 +991,20 @@ stuck processes fail with a diagnostic rather than hanging indefinitely. Other
 destinations still need manifests. Each manifest must specify file bytes, local
 filename bytes or Unicode spelling, timestamps at target resolution, applicable
 attributes, and expected refusal/partial status.
+
+The DOS CP850 host runners and QL host runner now compare generated and restored
+payloads to the independent manifests; the DOSBox-X runner also checks the
+CP850 FAT short-name bytes. `make CC=gcc dosboxx-fat12-cp850-interoperability-test`
+passes on this machine. `make CC=gcc ql-host-test` passes across the QL host,
+Linux full, and Linux mini readers. The native sQLux transfer also passes with
+the installed Minerva ROM, including QDOS timestamp offsets of -300, +60, and
++330 minutes; retained evidence is at
+`build/i02-i03-sqlux-final-evidence-20261029/manifest.json`. Pass `--output DIR` to
+`test/check_sqlux_interop.py` to retain archives and a `manifest.json`
+containing environment and artifact hashes. FreeDOS CP850 was adapted to its independent manifest but still needs
+the FreeDOS 1.4 boot image and CP850 mode files before its target run can be
+repeated here. Haiku, Amiga native OFS/FFS, and several other target runs also
+need independent manifests or retained per-run environment evidence.
 
 | Corpus area | Required cases |
 | --- | --- |

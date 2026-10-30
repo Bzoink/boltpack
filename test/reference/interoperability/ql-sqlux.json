@@ -1,0 +1,55 @@
+{
+  "case": "Sinclair QL transfer through sQLux and a QDOS-like host filesystem",
+  "environment": {
+    "rom": "Minerva",
+    "host_timezone": "UTC"
+  },
+  "payload": {
+    "pattern": "bytes_0_to_255_repeated_3_times_then_suffix",
+    "suffix_utf8": "QDOS interoperability\n",
+    "bytes": 790,
+    "sha256": "88bc17bd4afd4905b0c68ac31b59cc0a95afa445c7443a5faa748043cdd2deb9"
+  },
+  "names": {
+    "ql_input": "INPUT",
+    "ql_created_archive": "from_ql",
+    "linux_created_archive": "to_ql",
+    "linux_flat_archive": "to_ql_out",
+    "nested_archive": "nested",
+    "offset_archive": "offset_archive",
+    "flat_output": "OUTDATA",
+    "flat_output_directory": "OUTDIR_",
+    "flat_output_file": "OUTDIR_OUTDATA",
+    "nested_qdos_root": "TREE_",
+    "nested_qdos_subdirectory": "TREE_SUB_",
+    "nested_qdos_file": "TREE_SUB_LEAF",
+    "offset_minus5_archive": "offset_minus5",
+    "offset_plus5_30_archive": "offset_plus5_30"
+  },
+  "timestamps": {
+    "source_epoch_seconds": 1600000000,
+    "nested_directories_epoch_seconds": [1600000001, 1600000002],
+    "nested_file_epoch_seconds": 1600000003,
+    "explicit_offset_minutes": 60,
+    "expected_offset_file_epoch_seconds": 1600003600,
+    "additional_offset_cases": [
+      {
+        "archive": "offset_minus5",
+        "minutes": -300,
+        "expected_epoch_seconds": 1599982000
+      },
+      {
+        "archive": "offset_plus5_30",
+        "minutes": 330,
+        "expected_epoch_seconds": 1600019800
+      }
+    ]
+  },
+  "expected_outcomes": {
+    "ql_linux_mini_transfer": "exact payload bytes in both directions",
+    "forced_replacement": "verified bytes replace prior contents with no backup left",
+    "occupied_stage_name": "preserved; extractor chooses another exclusive stage",
+    "directory_timestamps": "restored to pinned whole-second QDOS values",
+    "timezone_offset": "UTC archive time is converted to QDOS local wall time"
+  }
+}
