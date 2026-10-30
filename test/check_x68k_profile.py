@@ -1,22 +1,233 @@
 #!/usr/bin/env python3
 """Check X68000 CLI Interchange Profile 1 output with host DOS stubs."""
+import argparse
+import atexit
+import contextlib
+import datetime
 import pathlib
 import os
 import hashlib
 import json
+import platform
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 
 from check_ql_profile import (check_dry_run, entry_properties, entry_times,
-                              require_ok, run)
+                              require_ok)
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+RUN_DIR = None
+RUN_STATE = "FAIL: runner exited before all checks completed"
+RUN_ERROR = None
+COMMANDS = []
+
+
+def _path_text(path):
+    return os.fsdecode(os.fspath(path))
+
+
+def recorded_run(command, **kwargs):
+    check = kwargs.pop("check", False)
+    result = None
+    try:
+        result = subprocess.run(command, check=False, **kwargs)
+        return result
+    finally:
+        entry = {
+            "command": [_path_text(part) for part in command],
+            "cwd": _path_text(kwargs["cwd"]) if kwargs.get("cwd") else None,
+        }
+        env = kwargs.get("env")
+        if env is not None:
+            entry["environment"] = {
+                key: env.get(key, "<unset>")
+                for key in ("BP_TZ_OFFSET", "BP_X68K_FAIL_STAGE_EDIT",
+                            "BP_X68K_FAIL_STAGE_PUBLISH", "TZ", "LANG",
+                            "LC_ALL")
+            }
+        if result is not None:
+            entry.update({
+                "exit_code": result.returncode,
+                "stdout": result.stdout.decode("utf-8", "replace")
+                if isinstance(result.stdout, bytes) else result.stdout,
+                "stderr": result.stderr.decode("utf-8", "replace")
+                if isinstance(result.stderr, bytes) else result.stderr,
+            })
+        COMMANDS.append(entry)
+        if check and result is not None and result.returncode:
+            raise subprocess.CalledProcessError(
+                result.returncode, command, output=result.stdout,
+                stderr=result.stderr)
+
+
+def run(binary, *args, cwd, env=None):
+    command = [str(binary), *args]
+    if pathlib.Path(binary).name == "bpmini":
+        command.insert(0, "qemu-i386")
+    return recorded_run(command, cwd=cwd, capture_output=True, env=env)
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with pathlib.Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_run_record():
+    if RUN_DIR is None:
+        return
+    command_log = RUN_DIR / "command-log.jsonl"
+    command_log.write_text(
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in COMMANDS),
+        encoding="utf-8")
+    status = subprocess.check_output(["git", "status", "--short"], cwd=ROOT,
+                                     text=True).splitlines()
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"],
+                                   cwd=ROOT)
+    (RUN_DIR / "tracked-diff.patch").write_bytes(diff)
+    source_paths = [
+        ROOT / "Makefile",
+        ROOT / "test/check_x68k_profile.py",
+        ROOT / "test/reference/interoperability/x68k-host-shim.json",
+        ROOT / "src/frontend/x68k/main.c",
+        ROOT / "test/x68k_host/dos_stub.c",
+        ROOT / "test/x68k_host/create_collision_archive.c",
+        ROOT / "src/core/archiver.c",
+        ROOT / "src/core/compress.c",
+        ROOT / "src/core/boltlite.c",
+        ROOT / "src/core/boltlz.c",
+        ROOT / "src/core/fluff.c",
+        ROOT / "src/core/bp_codepage.c",
+    ]
+    artifacts = {}
+    for path in sorted(RUN_DIR.rglob("*")):
+        if path.is_file() and path.name != "run.json":
+            relative = path.relative_to(RUN_DIR).as_posix()
+            artifacts[relative] = {
+                "size": path.stat().st_size,
+                "sha256": sha256(path),
+            }
+    compiler = getattr(write_run_record, "compiler", "cc")
+    compiler_command = shlex.split(compiler)
+    compiler_version = subprocess.run(compiler_command + ["--version"],
+                                      capture_output=True, text=True,
+                                      check=False)
+    qemu_version = subprocess.run(["qemu-i386", "--version"],
+                                  capture_output=True, text=True,
+                                  check=False)
+    filesystem = subprocess.run(["stat", "-f", "--format=%T", str(RUN_DIR)],
+                                capture_output=True, text=True, check=False)
+    executable_paths = {
+        "x68000_host_shim": write_run_record.x68k,
+        "linux_full": write_run_record.full,
+        "linux_mini": write_run_record.mini,
+        "collision_fixture": write_run_record.collision_fixture,
+    }
+    record = {
+        "purpose": "X68000 host-shim Interchange Profile 1 interoperability",
+        "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "result": RUN_STATE,
+        "error": RUN_ERROR,
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "compiler": compiler,
+            "compiler_version": compiler_version.stdout.splitlines()[0]
+            if compiler_version.stdout else "unknown",
+            "runtime_scope": "Host filesystem with Human68k DOS-call stubs; not native X68000 runtime evidence",
+            "filesystem": filesystem.stdout.strip() or "unknown",
+            "mini_reader_runner": "qemu-i386",
+            "mini_reader_runner_version": qemu_version.stdout.splitlines()[0]
+            if qemu_version.stdout else "unknown",
+            "timezone": os.environ.get("TZ", "<unset>"),
+            "locale": {
+                key: os.environ.get(key, "<unset>")
+                for key in ("LANG", "LC_ALL", "LC_CTYPE")
+            },
+        },
+        "compiler_flags": [
+            "-D_DEFAULT_SOURCE", "-ansi", "-pedantic", "-Wall", "-Wextra",
+            "-Wno-unused-function", "-O2", "-DX68K_HOST_TEST",
+            "-DBP_CREATOR_OS=BP_OS_X68K", "-DBP_CREATOR_CPU=BP_CPU_M68K",
+            "-DBP_VERSION_MAJOR=" + str(write_run_record.version_major),
+            "-DBP_VERSION_MINOR=" + str(write_run_record.version_minor),
+        ],
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                              cwd=ROOT, text=True).strip(),
+        "worktree_status": status,
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "independent_manifest": {
+            "path": "test/reference/interoperability/x68k-host-shim.json",
+            "sha256": sha256(ROOT / "test/reference/interoperability/x68k-host-shim.json"),
+        },
+        "sources": {path.relative_to(ROOT).as_posix(): sha256(path)
+                    for path in source_paths},
+        "executables": {
+            name: {"path": str(path), "size": path.stat().st_size,
+                   "sha256": sha256(path)}
+            for name, path in executable_paths.items()
+        },
+        "cases": [
+            "Profile 1 create, append, delete, Stored output, and full/mini/X68000 integrity readers",
+            "known, unknown, and missing timezone behavior; partial extraction preserves verified bytes",
+            "portable FAT attributes for files/directories and archive attributes across edits",
+            "case/prefix/path-length/unrepresentable-name refusal before output or archive mutation",
+            "injected edit and publication failures preserve old archive/destination and clean stages",
+            "checksum failure, no-force refusal, and forced staged replacement",
+            "nested and empty directories; standard Shift-JIS including trail byte 0x5c",
+        ],
+        "command_log": "command-log.jsonl",
+        "commands": len(COMMANDS),
+        "artifacts": artifacts,
+    }
+    (RUN_DIR / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                       encoding="utf-8")
+
+
+def record_unhandled_exception(exc_type, exc, traceback):
+    global RUN_ERROR
+    RUN_ERROR = "%s: %s" % (exc_type.__name__, exc)
+    sys.__excepthook__(exc_type, exc, traceback)
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("x68k", type=pathlib.Path)
+    parser.add_argument("full", type=pathlib.Path)
+    parser.add_argument("mini", type=pathlib.Path)
+    parser.add_argument("manifest", type=pathlib.Path)
+    parser.add_argument("collision_fixture", type=pathlib.Path)
+    parser.add_argument("--output-root", type=pathlib.Path,
+                        default=ROOT / "build/x68k-host/runs")
+    parser.add_argument("--compiler", default="cc")
+    parser.add_argument("--version-major", type=int, default=1)
+    parser.add_argument("--version-minor", type=int, default=9)
+    args = parser.parse_args()
     x68k, full, mini, manifest_path, collision_fixture = (
-        pathlib.Path(arg).resolve() for arg in sys.argv[1:6]
-    )
+        path.resolve() for path in
+        (args.x68k, args.full, args.mini, args.manifest,
+         args.collision_fixture))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    output_root = args.output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    global RUN_DIR
+    RUN_DIR = pathlib.Path(tempfile.mkdtemp(prefix="x68k-profile-",
+                                            dir=output_root))
+    write_run_record.compiler = args.compiler
+    write_run_record.version_major = args.version_major
+    write_run_record.version_minor = args.version_minor
+    write_run_record.x68k = x68k
+    write_run_record.full = full
+    write_run_record.mini = mini
+    write_run_record.collision_fixture = collision_fixture
+    shutil.copyfile(manifest_path, RUN_DIR / "x68k-host-shim.json")
+    atexit.register(write_run_record)
+    sys.excepthook = record_unhandled_exception
 
     def pinned_bytes(record):
         data = record["content"].encode("utf-8") * record.get("repetitions", 1)
@@ -25,7 +236,7 @@ def main():
         return data
 
     profile_files = manifest["profile"]["files"]
-    with tempfile.TemporaryDirectory(prefix="bp_x68k_profile_") as temp:
+    with contextlib.nullcontext(str(RUN_DIR)) as temp:
         root = pathlib.Path(temp)
         first_bytes = pinned_bytes(profile_files["first.bin"])
         second_bytes = pinned_bytes(profile_files["second.bin"])
@@ -43,14 +254,14 @@ def main():
         tz_env = os.environ.copy()
         tz_env["BP_TZ_OFFSET"] = str(
             timestamp_fixture["offset_minutes_east_of_utc"])
-        timed_create = subprocess.run(
+        timed_create = recorded_run(
             [str(x68k), "c", "--interchange-profile-1", "timed.blt", "timed.bin"],
             cwd=root, env=tz_env, capture_output=True)
         require_ok(timed_create, "X68000 timestamped profile create")
         assert entry_times(root / "timed.blt")["timed.bin"] == (
             expected_time, 0x4000)
         timed_output = root / "timed-output"
-        timed_extract = subprocess.run(
+        timed_extract = recorded_run(
             [str(x68k), "x", "-o", str(timed_output), "timed.blt"],
             cwd=root, env=tz_env, capture_output=True)
         require_ok(timed_extract, "X68000 timestamped extraction")
@@ -58,7 +269,7 @@ def main():
 
         unknown_env = os.environ.copy()
         unknown_env.pop("BP_TZ_OFFSET", None)
-        unknown_create = subprocess.run(
+        unknown_create = recorded_run(
             [str(x68k), "c", "--interchange-profile-1", "unknown-time.blt",
              "timed.bin"], cwd=root, env=unknown_env, capture_output=True)
         require_ok(unknown_create, "X68000 unknown-time profile create")
@@ -68,7 +279,7 @@ def main():
             "X68000 local timestamp without timezone was falsely marked valid"
 
         partial_output = root / "partial-time-output"
-        partial_extract = subprocess.run(
+        partial_extract = recorded_run(
             [str(x68k), "x", "-o", str(partial_output), "timed.blt"],
             cwd=root, env=unknown_env, capture_output=True)
         assert partial_extract.returncode != 0 and \
@@ -79,8 +290,8 @@ def main():
         for collision_case in manifest["collision_refusals"]:
             case = collision_case["case"]
             archive = root / f"collision-{case}.blt"
-            subprocess.run([str(collision_fixture), str(archive), case],
-                           check=True, cwd=root)
+            recorded_run([str(collision_fixture), str(archive), case],
+                         check=True, cwd=root, capture_output=True)
             output = root / f"collision-output-{case}"
             collision = run(x68k, "x", "-o", str(output), str(archive),
                             cwd=root)
@@ -172,7 +383,7 @@ def main():
                 ("a", ("profile.blt", "first.bin")),
                 ("d", ("profile.blt", "first.bin"))):
             before = (root / "profile.blt").read_bytes()
-            failed_edit = subprocess.run(
+            failed_edit = recorded_run(
                 [str(x68k), command, *arguments], cwd=root, env=edit_env,
                 capture_output=True)
             assert failed_edit.returncode != 0, \
@@ -202,7 +413,7 @@ def main():
         before_publish = (root / "profile.blt").read_bytes()
         publish_env = os.environ.copy()
         publish_env["BP_X68K_FAIL_STAGE_PUBLISH"] = "1"
-        failed_archive_publish = subprocess.run(
+        failed_archive_publish = recorded_run(
             [str(x68k), "a", "--interchange-profile-1", "profile.blt",
              "first.bin"], cwd=root, env=publish_env, capture_output=True)
         assert failed_archive_publish.returncode != 0
@@ -252,7 +463,7 @@ def main():
         replacement_before = preserved.read_bytes()
         publish_env = os.environ.copy()
         publish_env["BP_X68K_FAIL_STAGE_PUBLISH"] = "1"
-        failed_publish = subprocess.run(
+        failed_publish = recorded_run(
             [str(x68k), "x", "-f", "-o", str(corrupt_output), "stored.blt"],
             cwd=root, env=publish_env, capture_output=True)
         assert failed_publish.returncode != 0
@@ -323,7 +534,7 @@ def main():
         with open(os.fsencode(root) + b"/" + sjis_directory + b"/payload.bin", "wb") as out:
             out.write(payload)
         japanese_archive = root / "japanese.blt"
-        created = subprocess.run(
+        created = recorded_run(
             [os.fsencode(x68k), b"c", b"japanese.blt", sjis_directory],
             cwd=os.fsencode(root), capture_output=True)
         require_ok(created, "X68000 standard Shift-JIS directory create")
@@ -346,7 +557,7 @@ def main():
         protected_archive = root / "protected.blt"
         protected_bytes = (root / "tree.blt").read_bytes()
         protected_archive.write_bytes(protected_bytes)
-        rejected = subprocess.run(
+        rejected = recorded_run(
             [os.fsencode(x68k), b"c", b"protected.blt", sjis_directory],
             cwd=os.fsencode(root), capture_output=True)
         assert rejected.returncode != 0
@@ -356,7 +567,7 @@ def main():
         descendant_root = os.fsencode(root / "descendant-tree")
         os.mkdir(descendant_root)
         os.mkdir(descendant_root + b"/" + sjis_directory)
-        rejected = subprocess.run(
+        rejected = recorded_run(
             [os.fsencode(x68k), b"c", b"protected.blt", b"descendant-tree"],
             cwd=os.fsencode(root), capture_output=True)
         assert rejected.returncode != 0, \
@@ -364,7 +575,7 @@ def main():
         assert protected_archive.read_bytes() == protected_bytes, \
             "nested unrepresentable name changed the existing archive"
 
-        rejected = subprocess.run(
+        rejected = recorded_run(
             [os.fsencode(x68k), b"a", b"protected.blt", b"descendant-tree"],
             cwd=os.fsencode(root), capture_output=True)
         assert rejected.returncode != 0, \
@@ -372,7 +583,10 @@ def main():
         assert protected_archive.read_bytes() == protected_bytes, \
             "failed add changed the existing archive"
 
+    global RUN_STATE
+    RUN_STATE = "PASS: all X68000 host-shim interoperability checks passed"
     print("X68000 Interchange Profile 1 host interoperability checks passed")
+    print("Evidence: " + str(RUN_DIR / "run.json"))
 
 
 if __name__ == "__main__":
