@@ -684,6 +684,8 @@ atari-hatari-fat-test: all atari-cli
 	    --hconsole "$(HCONSOLE)" --tos "$(HATARI_TOS)" \
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET)
 
+ATARI_AMIGA_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
+ATARI_AMIGA_OUTPUT ?= build/atari-amiga-interoperability-$(ATARI_AMIGA_RUN_TAG)
 atari-amiga-interoperability-test: modern atari-cli amiga68k
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
 	python3 test/check_atari_amiga.py --hatari "$(HATARI)" \
@@ -691,7 +693,8 @@ atari-amiga-interoperability-test: modern atari-cli amiga68k
 	    --rom "$(AMIGA_ROM)" --workbench "$(AMIGA_WORKBENCH)" \
 	    --fs-uae "$(FSUAE_BIN)" --xdftool "$(XDFTOOL)" \
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos \
-	    --amiga-cli build/amiga/boltpack --linux-cli $(TARGET)
+	    --amiga-cli build/amiga/boltpack --linux-cli $(TARGET) \
+	    --output "$(ATARI_AMIGA_OUTPUT)"
 
 # Classic Mac OS 68k -- cross-compile from Linux using Retro68 (GCC 12).
 # Install: https://github.com/autc04/Retro68
