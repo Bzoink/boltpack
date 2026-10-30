@@ -144,9 +144,15 @@ void bp_mini_u64_print(bp_uint64 v)
 static bp_uint32 mini_entry_list_max_capacity(void)
 {
     size_t size_cap = (size_t)-1 / sizeof(bp_mini_entry_t);
+#if defined(SIZEOF_INT) && (SIZEOF_INT < 4)
+    /* In the 16-bit Watcom/Aztec builds size_t cannot exceed the archive's
+     * 65,535-entry format limit, so comparing the values is redundant. */
+    return (bp_uint32)size_cap;
+#else
     if (size_cap > (size_t)BP_MINI_MAX_ENTRIES)
         return BP_MINI_MAX_ENTRIES;
     return (bp_uint32)size_cap;
+#endif
 }
 
 static int mini_entry_list_grow(bp_mini_archive_t *ar)
@@ -956,6 +962,10 @@ static int mini_preflight_extract(bp_io_t *io, bp_uint32 count,
         if (rc == BP_OK && entry.entry_type == BP_TYPE_DIR &&
             (!bp_u64_is_zero(entry.original_size) || !bp_u64_is_zero(entry.compressed_size)))
             rc = BP_ERR_CORRUPT;
+        if (rc == BP_OK && bp_u64_is_zero(entry.original_size) &&
+            !bp_u64_is_zero(entry.compressed_size)) rc = BP_ERR_CORRUPT;
+        if (rc == BP_OK && !bp_u64_is_zero(entry.original_size) &&
+            bp_u64_is_zero(entry.compressed_size)) rc = BP_ERR_CORRUPT;
         if (rc == BP_OK && bp_u64_is_zero(entry.original_size) && checksum != 0)
             rc = BP_ERR_CHECKSUM;
         if (rc == BP_OK && check_capabilities && entry.entry_type == BP_TYPE_SYMLINK) rc = BP_ERR_PARTIAL;
@@ -1038,6 +1048,7 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
     bp_uint8  *out_buf;
     bp_uint32  in_buf_size;
     bp_uint64  remaining;
+    bp_uint64  packed_remaining = compressed_size;
     bp_uint8   ck_type     = BP_CKSUM_CRC32;
     bp_uint32  adler       = bp_mini_checksum_seed(ck_type);
     bp_uint32  blk_hdr_sz  = (version >= BP_FORMAT_VERSION)
@@ -1047,6 +1058,7 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
     BP_STACK_PROBE();
 
     if (bp_u64_is_zero(original_size)) {
+        if (!bp_u64_is_zero(compressed_size)) return BP_ERR_CORRUPT;
         return (expected_checksum == bp_mini_checksum_seed(ck_type))
                ? BP_OK : BP_ERR_CHECKSUM;
     }
@@ -1110,11 +1122,17 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
         bp_uint32 out_len;
         long n;
 
+        if (bp_u64_cmp(packed_remaining, bp_u64_from_u32(blk_hdr_sz)) < 0)
+            return BP_ERR_CORRUPT;
+        packed_remaining = bp_u64_sub(packed_remaining, bp_u64_from_u32(blk_hdr_sz));
         rc = mini_io_read(arc_io, blk_hdr, blk_hdr_sz);
         if (rc != BP_OK) { return rc; }
 
         comp_size = bp_read_le32(blk_hdr);
         orig_size = bp_read_le32(blk_hdr + 4);
+        if (bp_u64_cmp(packed_remaining, bp_u64_from_u32(comp_size)) < 0)
+            return BP_ERR_CORRUPT;
+        packed_remaining = bp_u64_sub(packed_remaining, bp_u64_from_u32(comp_size));
 
         /* Compare against this entry's limit, not the cached capacity,
          * so validation strictness is unchanged. */
@@ -1166,6 +1184,7 @@ static int mini_extract_data(bp_io_t *arc_io, bp_io_t *out_io,
         remaining = bp_u64_sub(remaining, bp_u64_from_u32(orig_size));
     }
 
+    if (!bp_u64_is_zero(packed_remaining)) return BP_ERR_CORRUPT;
     if (adler != expected_checksum) return BP_ERR_CHECKSUM;
     return BP_OK;
 }

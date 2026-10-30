@@ -1,8 +1,12 @@
 # Interoperability completion plan
 
-**Updated:** 2026-10-29
+**Updated:** 2026-10-30
 
 **State:** execution plan; the tracked implementation goal is active.
+
+**Next actions:** use the [remaining steps checklist](interoperability-remaining-steps.md)
+for ordered, bounded tasks, dependencies, and completion criteria. The sections
+below retain the detailed findings and supporting history.
 
 **Current requested focus:** close the remaining interoperability gaps that can
 be developed and verified on this machine, including available emulator checks.
@@ -20,6 +24,21 @@ refuse unsafe mappings, and report incomplete transfers accurately. Earlier
 archive versions remain unsupported. Rich ACL translation, hard-link identity,
 device nodes, and sparse-layout preservation remain outside the original basic
 profile; Phase 4 richer metadata remains optional.
+
+On 2026-10-30, a checksum-correct blocked archive with an extra byte inside the
+declared compressed region was found to pass both full and mini archive tests.
+Both readers now enforce the format's exact compressed-size boundary, including
+block headers, and reject nonempty payloads for empty subjects. The unit fixture
+checks surplus and missing bytes, full-reader preflight, and mini extraction cleanup.
+The same malformed archive previously passed Linux append and produced an
+archive that failed its own integrity test. Full-core preflight now validates
+block framing before extraction, append, copy, and delete without requiring the
+codec; the fixture checks refusal before output or source modification. This
+structural check does not replace payload checksum verification by archive test.
+Full and mini preflight also reject a nonempty subject declaring zero compressed
+bytes, including the unframed case; Linux append previously accepted that malformed
+archive. Regression checks cover full/mini test and extraction plus full-core
+append, copy and delete. The preflight does not decode unframed payloads.
 
 ## Starting point
 
@@ -41,6 +60,14 @@ checks, source/extraction race and failure fixtures, and the existing DOS,
 QL, X68000, Plan 9, RISC OS, OS/2 publication, Haiku, and macOS host-shim suites.
 Available FS-UAE OFS/FFS, Amiga 68k CLI/GUI cross-builds, and Linux mini QEMU
 checks were run as separate focused targets.
+
+The aggregate `TMPDIR="$PWD/build/tmp-test" make CC=gcc test` gate passed again
+on 2026-10-30 against the current worktree. It included the 160-case Linux CLI
+suite, codec and format units, source/extraction race and failure suites, POSIX
+dirfd wrapper host builds, fail-closed legacy wrapper checks, QL/X68000/Plan 9
+host profiles, RISC OS/Amiga/Haiku/macOS host shims, DOS profile checks, and the
+32-bit Linux mini build. This does not add native Plan 9 qualification; that
+rerun remains excluded by the user's environment decision.
 
 After the Plan 9 extraction fix, the aggregate `make CC=gcc test` passed again.
 Its host-shim fixture rejects both file/child conflict orders before output
@@ -73,8 +100,10 @@ The subsequent Linux mini audit found that its deferred-directory metadata
 queue stopped at 1,024 entries even though whole-archive preflight allows
 65,535 names. The queue now uses the same entry bound as preflight, appends
 nodes in constant time, and sorts them in place by path depth before applying
-metadata. The QEMU-i386 interoperability runner extracts 4,097 child
-directories and checks all names plus pinned parent/child mtimes. `make CC=gcc
+metadata. The Linux-mini interoperability runner extracts 4,097 child directories and
+checks all names plus pinned parent/child mtimes. It runs directly as a native
+32-bit process on the current host; `LINUXMINI_RUNNER=qemu-i386` remains an
+explicit override on systems where direct execution is unavailable. `make CC=gcc
 linuxmini-interoperability-test` passes, including the full/mini extraction
 race fixtures.
 
@@ -196,10 +225,16 @@ The QL CLI no longer labels direct file arguments as Unix epoch zero when no
 parent qdirect timestamp is available. Recursive source traversal carries
 regular-file and directory dates from qdirect records; pre-epoch or missing
 dates are unknown, while QDOS's exact Unix epoch remains valid zero. The
-sQLux hostFS directory probe returned an empty-name qdirect record, so
-recursive source enumeration is not target-qualified here. `make CC=gcc
-ql-host-test` checks unknown direct-file times and Linux full/mini archive
-verification. Extraction now restores representable file and directory dates
+expanded QDOS ABI probe establishes that direct nested-file access succeeds on
+sQLux hostFS while stdio returns a 64-byte all-zero qdirect record and the raw
+`io_fstrg` call returns 65535 on its first read. A production QDOS create then terminates but produces
+only a directory entry, dropping the populated host directory's files. The QL
+frontend now stops at the zero-length qdirect name instead of looping and
+rejects malformed name lengths. This fixes the hang; recursive hostFS source
+transfer remains unqualified because the backend supplies no records. The
+reproducer and run artifacts are retained in
+`build/r07-ql-qdirect-20261030-final2`. `make CC=gcc ql-host-test` checks
+unknown direct-file times and Linux full/mini archive verification. Extraction now restores representable file and directory dates
 through `FS.DATE`; sQLux hostFS verifies exact nested timestamp restoration
 with a UTC emulator clock. The QDOS frontend accepts a fixed
 `--tz-offset MINUTES` in minutes east of UTC, defaulting to zero and without
@@ -244,7 +279,9 @@ archive timestamp without checking representability. Both Win32/Win64 native
 GUI builds and both FLTK GUI builds pass after archive creation was changed to
 mark negative or unrepresentable times unknown. The Cocoa and Haiku BeAPI GUI
 create paths received the same source fix, but their SDK/toolchain is
-unavailable here, so neither path is build-qualified. No GUI runtime currently
+unavailable here, so neither path is build-qualified. Cocoa extraction now
+refuses before output on macOS 10.9, where descriptor-relative traversal is not
+available; 10.10 and later use the anchored path. No GUI runtime currently
 qualifies these frontend changes.
 
 On 2026-10-29, `make CC=gcc amiga68k` passed after Amiga CLI source identity
@@ -254,6 +291,19 @@ XDFTOOL=build/venv-amiga-tools/bin/xdftool fsuae-source-race-test` replaced a
 regular source pathname after open. The CLI rejected the change, retained the
 existing archive byte-for-byte, and removed its stage. This does not close
 path-based transient swap-and-restore races or the host-mount symlink behavior.
+
+The CLI extraction path now snapshots the output root, the staged file's parent,
+and the temporary file inode. Publication, cleanup, timestamp restoration, and
+deferred Amiga metadata application check those identities; committed regular
+files and queued directories also retain identity snapshots for later metadata
+entries. `fsuae-parent-substitution-test` replaced `OUT` while a staged file was
+open. FS-UAE confirmed the replacement sentinel remained unchanged, extraction
+did not publish into the replacement, and the stage stayed in the renamed
+original directory (`build/r05-amiga-parent-substitution-postfix-20261030`). This is a
+tested fail-closed case, not a complete race closure: the CLI still uses
+pathname-based checks and cannot eliminate a concurrent swap-and-restore
+between check and operation. A stage stranded by parent replacement is a
+recoverable cleanup limitation.
 
 DOS16 CP437 and CP850 conversion fixtures run as Watcom-built DOS programs in
 DOSBox. DOSBox 0.74-3 still fails the accented-name host-mount and direct-create
@@ -295,7 +345,10 @@ HIDDEN, SYSTEM, and ARCHIVE flags are set on the archive; Linux verifies the
 edited archive and exact payload afterward, and mtools confirms the flags
 survive. The runner retains a machine-readable manifest with revision/worktree
 state, compiler and emulator versions, image and binary hashes, FAT12 geometry,
-and independent input hashes. It exposed two
+and independent input hashes. The full gate passed again on 2026-10-30; its
+manifest and artifacts were copied from `/tmp` to
+[`build/r10-djgpp-dosboxx-fat12-20261030`](../build/r10-djgpp-dosboxx-fat12-20261030/manifest.json).
+It exposed two
 DOSBox-X FAT identity differences: `lstat` and `fstat` report different mode
 bits for one file, and rename changes its inode number. The DOS frontend now
 compares file type and stable object fields for the opened target and verifies
@@ -309,15 +362,32 @@ the projected-index scratch buffer. Three additional DOS16 CLI-level failures
 cover the shared DOS16/Win16/OS2-16 directory-walker buffer helper. They report
 `BP_ERR_NOMEM`, leave no tracked leaks, and preserve the destination. The DOS16 writer now sizes each recursive source-walker path buffer to its current
 path and the DOS `find_t.name` capacity, and reserves an 8 KiB stack. The DOSBox
-fixture creates a 33-level directory tree; Linux lists and extracts the archive,
-then the runner verifies the exact leaf bytes. The instrumented run observes
-3,770 bytes of stack remaining and a 361,184-byte low-water largest block from
-the DOS memory manager. Earlier 2 KiB-stack measurements were 172 bytes before,
-and 627 bytes after, moving projected-name scratch to the heap. These are
-workload observations, not worst-case bounds; the DOS block is not a guaranteed
-Watcom C-heap capacity. The heap allocation has an injected failure regression.
-Allocator overhead, worst-case stack use, and Win16/OS2-16 runtime behavior
-remain open.
+fixture accepts 34 directory frames (root plus 33 nested directories); Linux
+lists and extracts the archive, then the runner verifies the exact leaf bytes.
+The instrumented run observes
+3,706 bytes of stack remaining at the deepest accepted path and a 360,144-byte
+low-water largest block from the DOS memory manager on the latest 2026-10-30
+depth-bound run. The test-only Watcom `_msize()` wrapper observes a largest
+36,880-byte request backed by a 36,884-byte usable block, with up to 5 bytes of
+per-block rounding. A new `WRITMAX.BLT` workload holds the 65,502-byte maximum
+writer table and retained names while compressing a 32 KiB file with BoltLite's
+36,880-byte output buffer and 18,432-byte cached workspace. It records a
+163,286-byte tracked live-usable peak; the archive has 1,213 entries and Linux
+integrity-tests it. The previous 35-frame rejected-tree run measured
+103,166 bytes. These exclude allocator headers and runtime allocations.
+Cumulative byte totals are allocation-call activity, not concurrent usage.
+DOS16 now caps source
+directory recursion at 34 frames: that boundary succeeds, while a 35-frame
+tree is refused before the next recursive call, with its stage removed and no
+archive published. The refused input sampled 3,700 bytes remaining. Earlier
+2 KiB-stack measurements were 172 bytes before, and 627 bytes after, moving
+projected-name scratch to the heap. These are workload observations, not
+worst-case bounds; the DOS block is not a guaranteed Watcom C-heap capacity,
+and `_msize()` does not report allocator headers or peak live usage. The heap
+allocation has an injected failure regression. Allocator metadata, inter-probe
+worst-case stack use, and Win16/OS2-16 runtime behavior remain open. The
+maximum writer archive, run record with hashes/worktree status, and allocation
+report are retained under `build/dos16-stack/`.
 
 DOS16 archive creation now writes an exclusive sibling stage, finalizes and
 closes it before publication, and uses a backup rename when replacing an
@@ -371,8 +441,8 @@ On 2026-10-29, `test/check_hatari_interop.py` also passed with TOS 1.06 and
 TOS 2.05. These runs cover the same Linux/Atari Stored and BoltLite exchange,
 archive edits, failure preservation, checksum cleanup, nested/empty
 directories, and name-collision refusal as the TOS 1.62 run. Their evidence
-directories are `/tmp/boltpack-hatari-pp7plo0t` (1.06) and
-`/tmp/boltpack-hatari-he45l44l` (2.05).
+directories are `build/r02-retained-20261030/boltpack-hatari-pp7plo0t` (1.06) and
+`build/r02-retained-20261030/boltpack-hatari-he45l44l` (2.05).
 
 On 2026-10-28, `test/check_hatari_fat.py` also ran the full CLI against a
 disposable 720 KiB FAT12 floppy image under Hatari. Linux-created BoltLite
@@ -418,8 +488,8 @@ generic `/usr/bin/wine` wrapper had failed during temporary-directory cleanup;
 the documented `wine64` runner completed successfully.
 
 The saved-image FAT12 fixture also passed with TOS 1.06 and 2.05 on
-2026-10-29. Evidence is in `/tmp/boltpack-atari-fat-a066pl85` and
-`/tmp/boltpack-atari-fat-6bdokojg`, respectively. This adds Atari OS-version
+2026-10-29. Evidence is in `build/r02-retained-20261030/boltpack-atari-fat-a066pl85` and
+`build/r02-retained-20261030/boltpack-atari-fat-6bdokojg`, respectively. This adds Atari OS-version
 coverage while retaining the observed directory-metadata partial result.
 
 On 2026-10-29, the TOS 1.06, 1.62, and 2.05 FAT12 runners verified
@@ -428,9 +498,9 @@ in both archive record orders. In every case, native TOS HIDDEN won and
 portable ARCHIVE was not applied. The fixture is generated by
 `test/atari/conflicting_metadata_fixture.c`; Linux integrity checks and Hatari
 extraction checks pass. Evidence: TOS 1.06
-`/tmp/boltpack-atari-fat-0_ye2d3a`, TOS 1.62
-`/tmp/boltpack-atari-fat-8lbfpw9y`, and TOS 2.05
-`/tmp/boltpack-atari-fat-27zmstyp`. This closes the Atari CLI case for F3/I03
+`build/r02-retained-20261030/boltpack-atari-fat-0_ye2d3a`, TOS 1.62
+`build/r02-retained-20261030/boltpack-atari-fat-8lbfpw9y`, and TOS 2.05
+`build/r02-retained-20261030/boltpack-atari-fat-27zmstyp`. This closes the Atari CLI case for F3/I03
 precedence, while equivalent conflict-order checks for other frontends remain
 open.
 
@@ -445,11 +515,50 @@ cover aliases and file/directory prefix conflicts in both entry orders. Hatari
 also verifies CLI refusal of an implicit-parent case collision before output.
 The GEM GUI uses the same index for extraction and source-name checks, and
 its staged replacement check no longer relies on TOS's unstable synthesized
-inodes. Hatari now qualifies startup/menu rendering, selector opening, one-file
-source selection, v6 archive listing, and production GUI extraction on a
-host-directory drive. A temporary default-button build exercised create/save;
-production Create-button activation, native FAT metadata, cancellation, and
-replacement behavior remain open.
+inodes. Hatari now qualifies startup/menu rendering, selector opening, file and
+directory source selection, v6 archive listing, production GUI extraction, and the shipped
+create/save flow on TOS 1.62. The “More or Create” alert now defaults to Create,
+so Return completes source selection instead of opening another selector.
+`make CC=gcc HATARI_TOS=/home/tony/images/Atari/tos162se.img
+atari-gui-create-test` drives the production binary, checks an independent source
+manifest, records the Hatari screenshot and run hashes, and verifies the resulting
+Atari/68k v6 archive through Linux full and mini integrity/extraction. Both readers
+recover exact payload bytes and report partial for Atari metadata. Mouse activation
+of the alert button, cancellation, and replacement behavior remain open. The
+FAT12 GUI fixture now also archives and extracts nested and empty directories.
+Earlier TOS 1.62 runs observed directory timestamps remaining at the FAT default;
+the latest full rerun below restores them at FAT12 resolution. Directory
+Hidden/System flags remain unsupported and the GUI reports partial for those flags.
+
+On 2026-10-30, `make CC=gcc HATARI_TOS=/home/tony/images/Atari/tos162se.img
+atari-gui-create-fat12-test` passed with Hatari 2.5.0/TOS 1.62 on a disposable
+720 KiB FAT12 floppy. The runner selects `TREE`, containing two files, a nested
+directory, and an empty directory, then drives production create/save and Ctrl+E
+extraction. The pinned `TREE/src.txt` carries Archive, Read-only, Hidden, and
+System FAT flags, all of which survive GUI create/extract. The tree and all
+payloads survive extraction, including the empty directory. The latest run
+records matching source and extracted FAT12 timestamps for all three directories
+(`2026-10-30 18:47`, at FAT two-second resolution). TOS still does not restore
+Hidden/System on directories, so the GUI reports partial for that unsupported
+metadata. Earlier runs observed timestamp loss; this run supersedes them for
+TOS 1.62 FAT12. The runner then reads `ARCHIVE.BLT` back from the image and validates it
+with Linux full and mini readers, which recover the pinned bytes and report
+partial for Atari metadata. It also opens a Linux-created archive containing
+`Alpha.txt` and `alpha.TXT`; earlier evidence captured the GUI's case-collision
+refusal and empty output. A later Escape probe showed that the selector remained
+open, invalidating the cancellation assertion and subsequent collision flow in
+that runner revision. The runner no longer claims cancellation. A separate
+prefix-conflict fixture (`node` and `node/child`) passes Linux archive
+integrity. The corrected runner opens it in a separate Hatari boot; both host-
+directory and FAT12 screenshots show the production archive-name collision
+alert, and both precreated `PREFIX` directories remain empty. Evidence is under
+`build/atari-gui-create-0k0bifb_/prefix-run` and
+`build/atari-gui-create-qmi4zzf8/prefix-run`. The shared Atari name tree also
+rejects file/child conflicts in both orders in `make unit-test`. File attributes,
+case-fold collision refusal, and file/directory-prefix refusal are qualified on
+TOS 1.62. Directory timestamp loss is an explicit partial result; directory
+attribute restoration, other TOS versions, selector/active-extraction
+cancellation, replacement, and failure recovery remain open.
 
 The Amiga GadTools GUI now includes directories, including empty directories,
 and captures native protection and comments for files and directories. It
@@ -472,11 +581,12 @@ partial preservation when the old archive's native metadata cannot be retained.
 An FS-UAE launch probe against the available Kickstart 2.04 and Workbench 2.04
 images did not reach the GUI: Workbench reports “Local libraries failed to
 load,” and the command exits with status 20. The supplied Workbench disks do
-not contain `gadtools.library`, which the GUI opens at version 37. I also
-checked the local Workbench 2.04 Extras ADF and Workbench 3.1 Workbench and
-Extras ADFs; none contains that library. This environment therefore provides
-cross-build evidence only; GUI startup and interaction remain unqualified until
-a compatible GadTools runtime is supplied.
+not contain `gadtools.library`, which the GUI opens at version 37. I checked the supplied Workbench 2.04 disks and all 221 ADF images inside
+`/home/tony/images/workbench.zip`; none contains that library. The installed
+NDK has only headers and FD/SFD linker descriptors. The input archive hash, scan
+count, and result are retained in `build/amiga-gadtools-probe/run.json`. This
+environment therefore provides cross-build evidence only; GUI startup and
+interaction remain unqualified until a compatible GadTools runtime is supplied.
 
 FS-UAE with Workbench 2.04 and Kickstart 2.04 has run the Amiga CLI on a
 disposable host-directory drive: `test/check_fsuae_interop.py` checks Stored
@@ -500,7 +610,7 @@ stack through libnix on startup, then restores it at exit. Without the libnix
 initializer, default-stack runs stalled inconsistently; explicit 8 KiB and
 larger shell stacks passed. Evidence for the default-stack 64-level create,
 extract, full profile/edit, and four-codec corpus is
-`/tmp/boltpack-fsuae-_0zil2jv`. The same runner also creates Stored, BoltLite, BoltLZ, and
+`build/r02-retained-20261030/boltpack-fsuae-_0zil2jv`. The same runner also creates Stored, BoltLite, BoltLZ, and
 Fluff archives from a 512 KiB fixture using 256 KiB blocks; the Amiga guest
 tests and extracts each archive, and Linux independently tests and extracts
 the Amiga-created archives with byte-identical results. All four pass with the
@@ -510,10 +620,10 @@ fast RAM, the default shell stack, and 16 KiB blocks passes profile transfer
 and edit checks plus Stored, BoltLite, and BoltLZ round trips in both guest
 and Linux. Fluff creation returns nonzero without publishing an archive or
 leaving a stage under that memory configuration; extraction is not attempted.
-The original run is retained at `/tmp/boltpack-fsuae-h_m6dzqc`; after adding
+The original run is retained at `build/r02-retained-20261030/boltpack-fsuae-h_m6dzqc`; after adding
 the 8 KiB libnix stack expansion, the same workload also passes at `--stack 0`
-in `/tmp/boltpack-fsuae-ag4i8b4j`. An explicit 16 KiB shell-stack comparison
-passes in `/tmp/boltpack-fsuae-rqay1fec`. These qualify constrained workloads,
+in `build/r02-retained-20261030/boltpack-fsuae-ag4i8b4j`. An explicit 16 KiB shell-stack comparison
+passes in `build/r02-retained-20261030/boltpack-fsuae-rqay1fec`. These qualify constrained workloads,
 not general heap-exhaustion behavior. The CLI exposes
 Interchange Profile 1 for create and add. Creation, append, and delete now write
 to sibling stages; FS-UAE tests
@@ -551,7 +661,7 @@ default-stack behavior directly. Evidence for the earlier runs is recorded in
 `emulator-setup.md`.
 On 2026-10-29, both filesystems also passed 64 levels with `--stack 0` at those
 memory settings, using a 300-second timeout; evidence is in
-`/tmp/boltpack-amiga-ofs-2997misu` and `/tmp/boltpack-amiga-ffs-97_b_6rq`.
+`build/r02-amiga-depth-ofs-20261030` and `build/r02-amiga-depth-ffs-20261030`.
 The guest probe records the process stack and CLI minimum: 3,200 bytes and
 1,024 longwords (4,096 bytes), respectively. `--stack 4096` reports the same
 values, so it does not establish a larger stack than the Workbench default.
@@ -566,13 +676,13 @@ copied to a stage. On the host-directory backend, the pre-existing destination
 and archive remain unchanged; an incomplete stage remains for manual cleanup.
 `make CC=gcc XDFTOOL=build/venv-amiga-tools/bin/xdftool fsuae-interruption-test`
 now reproduces both 64 MiB cases. The 2026-10-29 run
-passed with evidence in `/tmp/boltpack-amiga-interrupt-1_so52kc` (extract) and
-`/tmp/boltpack-amiga-interrupt-h11wz8jn` (append).
+passed with evidence in `build/r02-retained-20261030/boltpack-amiga-interrupt-1_so52kc` (extract) and
+`build/r02-retained-20261030/boltpack-amiga-interrupt-h11wz8jn` (append).
 `make CC=gcc XDFTOOL=build/venv-amiga-tools/bin/xdftool fsuae-publish-rollback-test`
 also passes: a test-only build injects failure at
 stage publication after the original moves to its recovery name. FS-UAE
 verifies the original archive hash, Linux integrity check, and stage/backup
-cleanup. Evidence is in `/tmp/boltpack-amiga-interrupt-ethaf3ml`. This covers
+cleanup. Evidence is in `build/r02-retained-20261030/boltpack-amiga-interrupt-ethaf3ml`. This covers
 handled publication failure; hardware power-loss behavior remains open.
 `fsuae-publish-interruption-test` kills the test-only CLI after the original
 reaches its recovery name and before stage publication. It confirms the target
@@ -580,10 +690,10 @@ is absent, verifies the original backup and staged replacement with Linux,
 then boots again and exercises the production `r` command. Recovery verifies
 both archives, restores the original target and leaves the replacement stage
 intact. The 2026-10-29 run passed with evidence in
-`/tmp/boltpack-amiga-interrupt-jy3ea2br`. The regular
+`build/r02-retained-20261030/boltpack-amiga-interrupt-jy3ea2br`. The regular
 `test/check_fsuae_interop.py` corpus passed after the transaction-name change,
 including staged edit behavior and all four codecs at 256 KiB blocks; evidence
-is in `/tmp/boltpack-fsuae-oo0d3xik`.
+is in `build/r02-retained-20261030/boltpack-fsuae-oo0d3xik`.
 Archive transaction paths share a six-character suffix and carry the first 32
 ASCII alphanumerics of the target basename. The `r` command refuses an existing
 target, requires a matching regular-file backup and paired regular stage, and
@@ -615,7 +725,7 @@ is not yet qualified.
 
 ## Ordered work packages
 
-All packages below are open. A package closes only with the stated evidence.
+I01 is recorded complete; I02–I07 remain open. A package closes only with the stated evidence.
 Environment acquisition can proceed alongside the code work, but unavailable
 targets must stay visibly blocked in the backlog.
 
@@ -624,8 +734,8 @@ targets must stay visibly blocked in the backlog.
 | I01 | Complete: requirement ledger recorded | [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) maps Phases 0–3 and basic Phase 5 to every matrix frontend/build, including the Classic Mac copied-source kit and Windows DLL consumer. It links acceptance fixtures, environments, results and remaining gaps. Reconcile it again at I07 after subsequent fixes and test runs. |
 | I02 | First: finish filename and destination handling | Audit then fix the gaps listed below. Produce exact byte/name results for representable inputs and pre-output refusal for collisions or unmappable names. Include archive path, selected destination root, and source enumeration APIs. |
 | I03 | First: finish extraction, metadata, and archive edits | Audit then fix each adapter against the lifecycle and metadata contract below. Verify successful restoration, accurate partial/error results, original-file preservation, and recovery behavior. |
-| I04 | In progress: make cross-system qualification reproducible | Extend existing fixtures into a shared corpus with independent expected results and target runners. The Atari FAT12 ↔ Amiga FS-UAE transfer now uses `test/reference/interoperability/atari-amiga-fsuae.json` and the repeatable `atari-amiga-interoperability-test` target; both directions and the combined three-guest workflow have passed again on 2026-10-29 after rebuilding both guest binaries (evidence: `/tmp/boltpack-atari-amiga-twyz0hzg`). This machine requires the documented `XDFTOOL=build/venv-amiga-tools/bin/xdftool` override. Record real execution separately from builds and host shims; skipped checks stay open. |
-| I05 | In progress: 16-bit resource accounting | [16-bit resource accounting](16-bit-resource-accounting.md) records fresh Watcom binary/map measurements, codec-buffer requests, the DOS16 16-bit `size_t` entry-table fix, DOSBox entry-table/index/queue boundary regressions, 26 core/shared-mini allocation failures including the projected-index scratch block, and three injected DOS16 CLI-level directory-buffer failures with `BP_ERR_NOMEM` and zero tracked leaks. DOS16 now reserves an 8 KiB stack and sizes recursive path buffers to their required lengths. The DOSBox fixture verifies a 33-level DOS16-to-Linux tree transfer; the instrumented run observes 3,770 bytes at its lowest stack probe and a 361,184-byte low-water largest DOS-manager block. These are workload measurements, not worst-case bounds or guaranteed C-heap capacity. Allocator overhead, worst-case stack use, and Win16/OS2-16 runtime qualification remain open. |
+| I04 | In progress: make cross-system qualification reproducible | Extend existing fixtures into a shared corpus with independent expected results and target runners. The Atari FAT12 ↔ Amiga FS-UAE transfer now uses `test/reference/interoperability/atari-amiga-fsuae.json` and the repeatable `atari-amiga-interoperability-test` target; both directions and the combined three-guest workflow have passed again on 2026-10-29 after rebuilding both guest binaries (evidence: `build/r02-retained-20261030/boltpack-atari-amiga-twyz0hzg`). This machine requires the documented `XDFTOOL=build/venv-amiga-tools/bin/xdftool` override. Record real execution separately from builds and host shims; skipped checks stay open. |
+| I05 | In progress: 16-bit resource accounting | [16-bit resource accounting](16-bit-resource-accounting.md) records fresh Watcom binary/map measurements, codec-buffer requests, the DOS16 16-bit `size_t` entry-table fix, DOSBox entry-table/index/queue boundary regressions, 26 core/shared-mini allocation failures including the projected-index scratch block, and three injected DOS16 CLI-level directory-buffer failures with `BP_ERR_NOMEM` and zero tracked leaks. DOS16 reserves an 8 KiB stack, sizes recursive path buffers to their required lengths, and now caps source traversal at 34 directory frames. DOSBox verifies the 34-frame boundary succeeds and the 35-frame input is refused without publishing an archive or retaining a stage. The latest run observes 3,706 bytes available at the deepest accepted compression probe, 3,700 bytes for the refused input, and a 360,144-byte low-water largest DOS-manager block. A DOSBox `WRITMAX.BLT` workload now holds the maximum 65,502-byte writer table and retained names while compressing a 32 KiB BoltLite payload with its 36,880-byte output buffer and 18,432-byte cached workspace. The test-only Watcom `_msize()` wrapper records a 163,286-byte tracked live-usable high-water; Linux integrity-tests the 1,213-entry archive. The archive, allocation report, and run record with hashes/worktree status are retained under `build/dos16-stack/`. The previous largest single request is 65,502 bytes with 5 bytes maximum block rounding. These are workload measurements, not worst-case bounds or guaranteed C-heap capacity. Allocator headers, runtime allocations, inter-probe stack use, and Win16/OS2-16 runtime qualification remain open. |
 | I06 | In parallel with I02–I05: develop and run emulator/target fixtures | Use the installed emulators as described below, fix failures, and retain results tied to the tested commit and filesystem. A missing compiler, SDK, OS image, ROM, or runtime remains an explicit dependency. |
 | I07 | Last: run the completion audit and release gate | Reconcile the ledger, target results, matrix, specification, bindings, copied sources, build instructions, and release notes. Every required row must have sufficient evidence; no completion claim while required behavior or target evidence remains open. |
 
@@ -735,7 +845,7 @@ timestamp after `CloseArchive`. That case exposed narrow CRT directory-time
 calls; directory timestamps now use a UTF-16 path and Win32 directory handle.
 The fixture passed again on 2026-10-29; retained inputs and outputs are in
 `/home/tony/.wine/dosdevices/c:/boltpack-wcx-wine-u50d4hk_`, and its transcript
-is `/tmp/boltpack-wcx-wine-20261029.log`. The runner deletes its temporary
+is `build/r02-retained-20261030/boltpack-wcx-wine-20261029.log`. The runner deletes its temporary
 directory by default; pass `--keep` when retaining evidence. The Total
 Commander host and native Windows behavior remain open.
 
@@ -751,8 +861,10 @@ Commander host and native Windows behavior remain open.
 2. Qualify CP437/CP850 names through actual DOS, Win16, and OS/2 filename APIs.
    DOS16 CP437 passes on DOSBox-X FAT12; CP850 uppercase passes on DOSBox-X,
    and lowercase passes on FreeDOS 1.4 FAT12 after loading its codepage tables.
-   Remaining work is Win16/OS/2-16 runtime qualification and explicit refusal
-   checks for unmappable text on those targets. DOSBox 0.74-3 host-mount failure
+   Win16 and OS/2-16 now cross-build with Open Watcom; the binary hashes and run
+   conditions are retained at `build/r10-win16-os2-20261030/run.json`. Remaining
+   work is runtime qualification and explicit refusal checks for unmappable text
+   on those targets. DOSBox 0.74-3 host-mount failure
    remains specific to that emulator path.
 3. QDOS archive projection now strips the trailing underscore type marker from
    directory `qdirect` names, preserves embedded underscores in names, strips
@@ -799,22 +911,18 @@ attributes are restored after checksum verification, and directory attributes
 are deferred until children finish. Corrupt or failed native restoration marks
 the result partial. Host helpers do not emulate BFS attributes, and no Haiku
 cross-compiler/runtime is installed, so native attribute behavior, Unicode
-case mapping, and GUI runtime remain unqualified. Plan 9 extraction
-   now preflights safe names, duplicate paths, file/directory prefix conflicts,
-   and joined-path length before creating the output root. `make
-   plan9-host-test` checks the bounded path index, profile interoperability,
-   refusal of both file/child collision orders before output-root creation,
-   and nested file/directory mode and timestamp restoration. Directory
-   metadata is deferred until children are written; unrepresentable or failed
-   restoration reports partial. A native amd64 build and CLI run now pass in
-   9front 12111 under QEMU TCG. A Linux-to-Plan 9-to-Linux Stored archive
-   transfer passes the full and mini readers with exact payload verification;
-   Linux correctly reports the Plan 9 permission metadata as unsupported.
-   The native guest now also round-trips a Plan 9 archive with a 0550 directory
-   and 0640 file: extraction restored both modes and the directory timestamp. A
-   directory mode update must preserve Plan 9’s `DMDIR` bit; the frontend and
-   host shim now enforce this. Other Plan 9 CPUs and filesystem edge cases still
-   need target qualification.
+case mapping, and GUI runtime remain unqualified. Earlier Plan 9 host-shim work
+covered safe-name, duplicate-path, file/directory-prefix, and joined-path
+preflight, profile interoperability, and native-mode payload decoding. It also
+preserved Plan 9's `DMDIR` bit when restoring directory modes. Historical 9front
+12111 QEMU results include Linux-to-Plan 9-to-Linux Stored transfer and native
+directory/file mode and timestamp restoration. A later R05 audit found that
+real extraction still writes directly to pathname destinations without held
+parents or staged publication, so the Plan 9 command now refuses real extraction
+after preflight and before creating output; host tests check refusal,
+existing-target preservation, and dry-run. The host shim does not establish a
+safe native extraction implementation. The historical QEMU results cannot be
+rerun here because no usable Plan 9 emulator is available.
    Standard JIS X 0208 Shift-JIS double-byte mappings are now implemented in
    both conversion directions; CP932 vendor extensions and undefined byte
    pairs remain rejected. X68000 path scans skip valid lead/trail pairs, so a
@@ -968,12 +1076,13 @@ expected-result manifests now cover these runs:
 - Atari GEMDOS host directory: [`atari-host-directory.json`](../test/reference/interoperability/atari-host-directory.json)
 - Linux mini under QEMU-i386: [`linux-mini-qemu.json`](../test/reference/interoperability/linux-mini-qemu.json)
 - Amiga FS-UAE host directory: [`amiga-host-directory.json`](../test/reference/interoperability/amiga-host-directory.json)
+- Amiga FS-UAE native OFS/FFS: [`amiga-native.json`](../test/reference/interoperability/amiga-native.json)
 - DOS16 on FAT12: [`dos16-fat12.json`](../test/reference/interoperability/dos16-fat12.json)
 - Full DJGPP DOS on DOSBox-X FAT12: per-run `manifest.json` from
   `test/check_djgpp_dosboxx.py`
 - Windows CLI under Wine/native Windows: [`windows-cli.json`](../test/reference/interoperability/windows-cli.json)
 - Linux FLTK GUI under Xvfb: [`linux-fltk-gui.json`](../test/reference/interoperability/linux-fltk-gui.json)
-- Plan 9 host-shim profile, collision, and metadata cases: [`plan9-host.json`](../test/reference/interoperability/plan9-host.json)
+- Plan 9 host-shim profile, collision, and fail-closed extraction cases: [`plan9-host.json`](../test/reference/interoperability/plan9-host.json)
 - X68000 host-shim profile, timezone, and portable FAT attribute cases: [`x68k-host-shim.json`](../test/reference/interoperability/x68k-host-shim.json)
 - DOSBox-X CP850 uppercase and FreeDOS CP850 lowercase cases: [`dos-cp850-fat12.json`](../test/reference/interoperability/dos-cp850-fat12.json)
 - QDOS host Profile 1 and native sQLux transfers: [`ql-profile-host.json`](../test/reference/interoperability/ql-profile-host.json) and [`ql-sqlux.json`](../test/reference/interoperability/ql-sqlux.json)
@@ -1001,10 +1110,12 @@ the installed Minerva ROM, including QDOS timestamp offsets of -300, +60, and
 +330 minutes; retained evidence is at
 `build/i02-i03-sqlux-final-evidence-20261029/manifest.json`. Pass `--output DIR` to
 `test/check_sqlux_interop.py` to retain archives and a `manifest.json`
-containing environment and artifact hashes. FreeDOS CP850 was adapted to its independent manifest but still needs
-the FreeDOS 1.4 boot image and CP850 mode files before its target run can be
-repeated here. Haiku, Amiga native OFS/FFS, and several other target runs also
-need independent manifests or retained per-run environment evidence.
+containing environment and artifact hashes. FreeDOS CP850 now passes under FreeDOS 1.4/QEMU 10.0.13 with the independent manifest; its boot image, guest logs, disposable FAT12 disk, source snapshot, and tool/asset hashes are retained at `build/r10-freedos-cp850-20261030-make/run.json`. Haiku and several other target runs still need independent manifests or complete per-run environment evidence.
+
+On 2026-10-30, the sQLux runner passed again with guest and host command logs,
+runner/expected-manifest snapshots, worktree status and tracked diff retained in
+`build/r02-ql-sqlux-20261030`. Its artifact and log hashes were verified. This
+is QDOS-like hostFS evidence, not physical filing-system qualification.
 
 | Corpus area | Required cases |
 | --- | --- |
@@ -1050,45 +1161,112 @@ by that runner.
    keyboard-injection run verified Ctrl+N reaches the create handler and opens
    the input file selector. A fresh-build hconsole replay later failed to
    reproduce Ctrl+N with lowercase or uppercase key input, so treat the earlier
-   success as non-reproducible with the current headless input setup. A mouse
-   press/drag selected Archive → Open and opened the archive selector in the
-   rebuilt application. This found a legacy
+   success as non-reproducible with the current headless input setup. An older
+   mouse capture showed Archive → Open opening the selector, but replaying its
+   documented clicks failed against both the current and captured older binary;
+   pointer activation remained unqualified until the repeatable replay recorded
+   below. This investigation found a legacy
    `evnt_multi()` binding mismatch that shifted keyboard outputs; the event loop
-   now uses `evnt_multi_fast()`. Startup, menu rendering, and these two
-   selector-opening paths are qualified. Selectors now default to the current
+   now uses `evnt_multi_fast()`. Startup and menu rendering are qualified.
+   Selector flows are exercised by the separate production create/extract
+   runners. Selectors now default to the current
    GEMDOS drive root; Hatari confirmed `C:\\*.*` and one selected source file
-   returns to the create flow. A temporary test build changed only the alert's
-   default button to Create, allowing keyboard injection to exercise create and
-   save; it produced an Atari-origin v6 archive. Linux `test` passed and
-   extraction reproduced the source bytes exactly, while reporting Atari
-   metadata as unsupported on Linux. Reopening that archive in the normal GUI
+   returns to the create flow. The shipped alert now defaults to Create, and
+   `make CC=gcc HATARI_TOS=/home/tony/images/Atari/tos162se.img
+   atari-gui-create-test` drives the production create/save flow without a
+   harness override. It records source revision, dirty state, Hatari/TOS image
+   hashes, commands, screenshot, and archive/payload hashes under
+   `build/atari-gui-create-*`. The independent manifest pins the payload; Linux
+   full and mini readers validate and extract the Atari/68k v6 archive with exact
+   bytes, reporting expected partial status for unsupported Atari metadata. Reopening that archive in the normal GUI
    shows only its data entry after the list callback filters META/RSRC records.
    The normal GUI extracted that archive to an empty directory with exact file
    bytes and restored the timestamp to whole-second precision on Hatari's
    host-directory drive. That drive changed POSIX mode 0664 to 0644, so this
-   does not qualify native FAT metadata. Mouse activation of Create in the
-   shipped dialog, cancellation, and GUI metadata restoration on native FAT
-   remain unqualified.
+   does not qualify native FAT metadata. The 2026-10-30 repeatable GUI FAT12
+   runner now confirms Archive, Read-only, Hidden, and System flags survive
+   production create and extraction; nested and empty directories are retained.
+   The latest TOS 1.62 FAT12 run restores directory timestamps at FAT
+   resolution; directory Hidden/System flags remain unsupported and the GUI
+   reports partial for those flags. Escape does not cancel
+   the GEM file selector. A repeatable Xvfb/xdotool diagnostic now clicks the
+   selector's Abort button and verifies it returns to the archive window with
+   the existing destination empty on TOS 1.06, 1.62, and 2.05. Records and
+   before/after screenshots are under `build/atari-gui-cancel-nt0i02xe`,
+   `build/atari-gui-cancel-4fh3gd05`, and `build/atari-gui-cancel-2fbw7t_i`.
+   Selector cancellation by the visible button is qualified; keyboard Escape
+   remains ineffective. The Create pointer capture is retained. The repeatable
+   `atari-gui-menu-pointer-test` now passes on Hatari 2.5.0/TOS 1.62: a 1.5-second
+   pause between the Archive-title and Open-row clicks makes the production
+   selector appear, verified from the saved screenshot. Its command, ROM/build
+   hashes, and output are recorded in `build/atari-menu-pointer-g0lz579b`.
+   The same runner also passes on Hatari 2.5.0/EmuTOS 1.4, with the color
+   palette handled by the dialog-region screenshot check; its run record is
+   `build/atari-menu-pointer-5jo8tryc/run.json`. The same target opens Help →
+   About on TOS 1.62 and verifies the modal dialog (`build/atari-menu-pointer-xdptlsms/run.json`).
+   Earlier fast-click replays failed against both current and old binaries.
+   A same-size/same-mtime 1 MiB stage substitution is refused on
+   Hatari/TOS 1.62; the old destination survives and the substituted stage is
+   retained (`build/atari-gui-cancel-xo5h9aof`). CRC collisions and changes after
+   final validation remain possible. Other pointer menu actions, real device failure after backup, and safe cleanup of incomplete pre-publication stages remain unqualified. The recovery journal is now written before regular-file stage streaming. Automatic target recovery after interruption during pre-publication staging and after moving the old target is qualified on Hatari/TOS 1.62: host-drive retry preserves the unverified partial stage and restores exact archive bytes (`build/atari-gui-cancel-ywuowb13/run.json`); FAT12 seeded-state recovery does the same (`build/atari-stage-recovery-g3763geu/run.json`); and post-backup recovery restores the original, removes the full verified stage, and retries successfully (`build/atari-gui-interrupt-backup-6q_jm0mo/run.json`). Recovery journal paths reject traversal and root-prefix escapes; 31 host path tests and a production Hatari/TOS 1.62 run with a valid-CRC malicious journal preserve the outside target and backup (`build/atari-journal-path-d0cih7au/run.json`). Safe cleanup of incomplete stages remains open. Injected post-backup publication failure restores the target exactly and cleans up (`build/atari-gui-rollback-oat0i71h/run.json`); injected rollback failure retains the original and shows the recovery filename in the GUI alert (`build/atari-gui-recovery-s6dvbir7/run.json`). A forced
+   Hatari termination after 32 KiB of a 16 MiB stored extraction preserves the
+   existing destination. Retrying through the production GUI restores exact bytes
+   but leaves the original partial stage (`build/atari-gui-cancel-jh47lf8m`). TOS 1.62 FAT12 now verifies a read-only-target
+   publication failure preserves the existing sentinel and READONLY and removes
+   the stage (`build/atari-gui-create-msxh3kx1/failed-replacement`). Separate test builds inject stage-publication failure after moving/verifying the old target; successful rollback restores the original byte-for-byte and removes stage/backup (`build/atari-gui-rollback-oat0i71h/run.json`), while injected rollback failure retains the original at a recovery path and displays its filename in the GUI alert (`build/atari-gui-recovery-s6dvbir7/run.json`). Real device errors remain unqualified. Active extraction cancellation now passes on TOS 1.06, 1.62,
+   and 2.05; evidence is under `build/atari-gui-cancel-n5_73lb5`,
+   `build/atari-gui-cancel-l_60i0ez`, and
+   `build/atari-gui-cancel-dv4mcp6n`. The TOS 2.05 runner holds the mouse
+   button until Hatari exits because a transient click was missed before the
+   progress callback. The TOS 1.62 production GUI now replaces two pre-existing files with exact
+   archive bytes and removes stages on FAT12
+   (`build/atari-gui-create-lymdqxl8`) and GEMDOS host-directory
+   (`build/atari-gui-create-uukaajwm`) targets. A FAT12 fixture sets Hidden/System on an empty source
+   directory; the v6 archive contains native and portable metadata records, but
+   TOS 1.06, 1.62, and 2.05 leave both flags unset and report partial. Evidence
+   is at `build/atari-gui-create-5qmqfsxj`,
+   `build/atari-gui-create-m2sg92dk`, and `build/atari-gui-create-p8exo01f`. Active extraction cancellation is verified
+   on TOS 1.06, 1.62, and 2.05: the progress-panel button aborts a 64 MiB
+   extraction, preserves an existing file, and removes the stage; evidence is
+   retained at `build/atari-gui-cancel-n5_73lb5`,
+   `build/atari-gui-cancel-l_60i0ez`, and
+   `build/atari-gui-cancel-dv4mcp6n`. The FAT12 GUI
+   create/extract fixture also passes on
+   TOS 1.06 with exact file/dir data and file flags; the earlier run record is
+   `build/atari-gui-create-6nw6brzd/run.json`. Fresh full reruns on TOS 1.06,
+   1.62, and 2.05 restore all three directory timestamps at FAT12 resolution;
+   records are `build/atari-gui-create-kk7vsdmo/run.json`,
+   `build/atari-gui-create-7wyonunv/run.json`, and
+   `build/atari-gui-create-jz0atcvj/run.json`. Directory Hidden/System flags
+   remain unsupported and report partial. The first incomplete TOS 2.05 attempt
+   remains documented under `build/atari-gui-create-xbxkagkv` but was not
+   reproduced. The runner uses a longer extraction wait and Hatari timeout.
    A direct TOS 1.62 probe on the FAT12 guest disk returned GEMDOS `-33`
    (`EFILNF`) for `Fattrib` read/set on a directory and for `Fopen` on that
-   directory; this also prevents handle-based `Fdatime`. Directory FAT flags
-   and timestamps therefore remain unsupported by the tested GEMDOS calls and
-   correctly report partial. Do not infer that this OS-level limitation applies
-   to MiNT or later TOS implementations.
-   File FAT flags/timestamps round-trip on the tested TOS versions. TOS 1.62
-   directory times and nonzero flags correctly report partial because GEMDOS
-   rejects the directory API calls above. Keep host-directory and FAT-image
-   results distinct; interruption recovery still needs runtime validation.
+   directory; this also prevents handle-based `Fdatime`. This establishes that
+   these calls do not support directory attributes; it does not predict the
+   current GUI timestamp path. The latest end-to-end TOS 1.62 FAT12 run restores
+   all directory timestamps at FAT resolution. Directory Hidden/System flags
+   remain unsupported and correctly report partial. Do not infer that this
+   attribute limitation applies to MiNT or later TOS implementations.
+   File FAT flags/timestamps and directory timestamps round-trip on TOS 1.06,
+   1.62, and 2.05 at FAT12 resolution; directory Hidden/System remains partial. Keep host-directory and FAT-image
+   results distinct; pre-publication interruption and retry are qualified on
+   the GEMDOS host-directory backend. A test-only pause and Hatari kill after the
+   verified old-target backup rename records the crash state: the target name is
+   absent, exact original bytes remain in the `BR` backup, and verified replacement
+   bytes remain in the `BP` stage (`build/atari-gui-interrupt-backup-ywmyiegy/run.json`).
+   Automatic recovery after the pre-publication and post-backup interruption windows is now qualified by the production retry runs above. Safe cleanup of an incomplete/unverified stage remains open; the seeded FAT12 crash-state fixture intentionally retains it.
    On 2026-10-29, the FAT12 guest transfer/edit runner was repeated on TOS
    1.06, 1.62, and 2.05 and passed all three; retained evidence is in
-   `/tmp/boltpack-atari-fat-eduejk3t`, `/tmp/boltpack-atari-fat-m134gjg8`,
-   and `/tmp/boltpack-atari-fat-y_mzqmnc`. The host-directory interoperability
+   `build/r02-retained-20261030/boltpack-atari-fat-eduejk3t`, `build/r02-retained-20261030/boltpack-atari-fat-m134gjg8`,
+   and `build/r02-retained-20261030/boltpack-atari-fat-y_mzqmnc`. The host-directory interoperability
    runner also passed again on TOS 1.62 with evidence in
-   `/tmp/boltpack-hatari-qfqjcm8i`.
+   `build/r02-retained-20261030/boltpack-hatari-qfqjcm8i`.
    On 2026-10-29, the expanded FAT12 runner passed on TOS 1.06, 1.62, and
-   2.05; evidence is at `/tmp/boltpack-atari-fat-j2ximutg`,
-   `/tmp/boltpack-atari-fat-kxyhzdbi`, and
-   `/tmp/boltpack-atari-fat-qw1zzfp2`. Append/delete preserve archive HIDDEN
+   2.05; evidence is at `build/r02-retained-20261030/boltpack-atari-fat-j2ximutg`,
+   `build/r02-retained-20261030/boltpack-atari-fat-kxyhzdbi`, and
+   `build/r02-retained-20261030/boltpack-atari-fat-qw1zzfp2`. Append/delete preserve archive HIDDEN
    and SYSTEM flags; create-overwrite, append, and delete against a READONLY
    archive report that it is read-only, preserve its bytes and READONLY flag,
    and successful edited output passes Linux integrity and exact-payload
@@ -1101,19 +1279,19 @@ by that runner.
    refusal. The CLI's 8 KiB `$STACK` cookie plus libnix startup expansion let
    the host-directory runner pass 64-level create/extract at `--stack 0`, as
    well as the full profile, edit, and four-codec corpus; evidence is
-   `/tmp/boltpack-fsuae-_0zil2jv`. The deep fixture uses short repeated names
+   `build/r02-retained-20261030/boltpack-fsuae-_0zil2jv`. The deep fixture uses short repeated names
    to stay under the legacy AmigaDOS path limit. Native OFS and FFS runs also pass the transfer/edit/
    metadata/name-refusal corpus with 512 KiB chip RAM, no fast RAM, and the
    default shell stack; the native runner records these memory settings. Both
    native filesystems also pass guest create/test and Linux test/extract for
    Stored, BoltLite, BoltLZ, and Fluff with a 256 KiB fixture and 256 KiB blocks.
-   The retained OFS and FFS codec runs are `/tmp/boltpack-amiga-ofs-causbh48` and
-   `/tmp/boltpack-amiga-ffs-hu_1pcai`; 49-level default-stack runs are recorded separately
+   The retained OFS and FFS codec runs are `build/r02-retained-20261030/boltpack-amiga-ofs-causbh48` and
+   `build/r02-retained-20261030/boltpack-amiga-ffs-hu_1pcai`; 49-level default-stack runs are recorded separately
    in the emulator setup notes.
    On 2026-10-29, the default-memory native transfer/edit/metadata suite also
    passed with `--skip-codecs --depth 4 --stack 0`; retained OFS and FFS evidence
-   is `/tmp/boltpack-amiga-ofs-90l0l1jb` and
-   `/tmp/boltpack-amiga-ffs-2mp6wwkf`.
+   is `build/r02-retained-20261030/boltpack-amiga-ofs-90l0l1jb` and
+   `build/r02-retained-20261030/boltpack-amiga-ffs-2mp6wwkf`.
    The host-directory backup/publication rename window now has a tested
    recovery command on the host-directory, OFS, and FFS backends. Remaining
    Amiga runtime work is hardware power-loss durability,
@@ -1158,7 +1336,10 @@ by that runner.
    no longer import `libgomp-1.dll`. Run the fixture natively on Windows next;
    Wine does not qualify NTFS/FAT, native ACL/stream merging or recovery, reparse
    handling, GUI, .NET, or Total Commander behavior.
-5. **QEMU:** continue the existing QEMU-i386 Linux-mini checks. For full DOS,
+5. **Linux mini:** continue the native 32-bit Linux checks by default; use
+   `LINUXMINI_RUNNER=qemu-i386` only where direct execution is unavailable and
+   after validating directory enumeration. The current host's QEMU-i386 runner
+   returned no directory entries in a 32-bit `readdir` probe. For full DOS,
    Windows, OS/2, or other guests, use a suitable guest OS image and a prepared
    writable test disk only after confirming availability. Record guest and disk
    setup; an installed emulator alone is not a running target OS.
@@ -1178,18 +1359,18 @@ missing native environments in parallel.
 
 | Target group | Environment needed | Qualification work |
 | --- | --- | --- |
-| Linux CLI/mini/FLTK | Native Linux, QEMU-i386, usable GUI display | `make CC=gcc linux-gui-interoperability-test` sets Interchange Profile 1 in isolated GUI preferences, creates BoltLite/16 KiB output and verifies/extracts it with the full CLI and Linux mini under QEMU-i386 against pinned bytes, opens/extracts a nested format-6 fixture, verifies file and deferred directory mode and epoch-zero timestamps, rejects a valid file/child prefix-conflict archive without writing output, selects duplicate leaf names for flattened extraction while proving an existing destination survives, and checks cancellation, checksum-failure, and injected write, flush, close, and `futimens` restoration-failure preservation plus stage cleanup. A one-time delayed output write keeps the cancellation progress dialog observable on fast hosts. |
-| Windows CLI/native GUI/FLTK/.NET/WCX | Windows with NTFS and FAT-compatible test volume, .NET build tools, Total Commander plugin host | `test/check_windows_cli.py --wine /usr/lib/wine/wine64` passes Win64 Unicode paths, hard-link refusal, append, test, and delete under Wine 10.0. Native Windows must still run the fixture for reparse refusal, ACL/stream merge, and recovery behavior, then qualify the GUI, .NET, and plugin host. Cross-build both word sizes. |
+| Linux CLI/mini/FLTK | Native Linux 32-bit execution, usable GUI display | `make CC=gcc linux-gui-interoperability-test` sets Interchange Profile 1 in isolated GUI preferences, creates BoltLite/16 KiB output and verifies/extracts it with the full CLI and Linux mini against pinned bytes, opens/extracts a nested format-6 fixture, verifies file and deferred directory mode and epoch-zero timestamps, rejects a valid file/child prefix-conflict archive without writing output, selects duplicate leaf names for flattened extraction while proving an existing destination survives, and checks cancellation, checksum-failure, and injected write, flush, close, and `futimens` restoration-failure preservation plus stage cleanup. A one-time delayed output write keeps the cancellation progress dialog observable on fast hosts. |
+| Windows CLI/native GUI/FLTK/.NET/WCX | Windows with NTFS and FAT-compatible test volume, .NET build tools, Total Commander plugin host | The full Win64 CLI was rebuilt and `TMPDIR="$PWD/build/tmp-test" python3 test/check_windows_cli.py --wine /usr/lib/wine/wine64` passed on 2026-10-30 under Wine 10.0; binary and worktree hashes are retained in [`build/win64/cli-wine-20261030`](../build/win64/cli-wine-20261030/run.json): Unicode paths, serial/parallel source-write refusal, source and parent-directory substitution refusal, corrupt extraction preservation, timestamps and FAT attributes, Linux ↔ Windows archive transfer, Profile 1 acceptance by Linux full/mini readers, unsafe-name/collision preflight, hard-link refusal, read-only edit refusal, append, test, and delete. The separate WCX Wine consumer test also passed on 2026-10-30 with Unicode wide APIs, ANSI refusal for a non-ACP name, create/append/delete, Linux verification, and deferred directory-time restoration; hashes are retained in [`build/win64/wcx-wine-20261030`](../build/win64/wcx-wine-20261030/run.json). Wine does not qualify Windows reparse points, ACL/stream merging, native recovery, GUI/.NET, or Total Commander behavior. Run the corpus on native Windows, then qualify the other consumers and shipped word sizes. |
 | macOS CLI/Cocoa/legacy GUI | macOS SDK/runtime; case-sensitive and case-insensitive test volumes; supported legacy environment where shipped | Verify Unicode normalization, Apple xattrs/Finder info/resource forks, time/mode restoration, publication, and actual GUI flows. Host declaration stubs remain supporting evidence only. |
 | DOS16/full DOS/Win16/OS2-16/full OS2 | DOSBox-X FAT12 plus CWSDPMI for DJGPP, Windows 3.x, OS/2 with FAT and HPFS | DOS16 verifies CP437 extraction, CP850 uppercase creation/extraction on DOSBox-X, lowercase CP850 round trips on FreeDOS 1.4, DOS16 → Linux creation/replacement, and FAT flags. `dos-djgpp-dosboxx-fat12-test` verifies full-DOS create/append/delete/test/extract, Linux/DOS transfers, and HIDDEN/SYSTEM/ARCHIVE preservation across edits. Native DOS crash recovery, other filesystems, directory metadata, Win16, and OS/2 still need target-specific qualification. |
-| Atari CLI/GEM GUI | Hatari and TOS 1.62; disposable FAT12 media | `test/check_hatari_fat.py` verifies guest FAT12 transfers, archive edits, clean control-console shutdown/eject, persisted bytes after exit, and refusal to apply a directory-typed portable FAT envelope to a file. The expanded FAT12 fixtures on TOS 1.06, 1.62, and 2.05 verify append/delete preserve archive HIDDEN/SYSTEM flags, read-only create-overwrite/append/delete report the read-only cause and preserve bytes and READONLY, and Linux validates/extracts the edited archive. `atari-amiga-interoperability-test` transfers Profile 1 archives in both directions between Atari FAT12 and the Amiga guest; independent manifest payloads/names and the empty directory match, while foreign native metadata reports partial. GUI startup/menu rendering, Ctrl+N, mouse Archive → Open selector opening, and one create-source selection are qualified. A temporary default-button harness exercised create/save and Linux verified the resulting v6 archive; the shipped Create-button input, other menu actions, native GUI metadata, and interruption recovery remain unqualified. Additional Xvfb/xdotool clicks moved the pointer over source/OK/Create but did not advance the selector. A fresh hconsole key-injection probe selected `SRC.TXT` and reached the native More/Create alert, but did not make Create advance to the save dialog. Normal GUI extraction passes on the host-directory drive. Native FAT attribute/time qualification is partial. |
-| Amiga CLI/GadTools and OS4/MorphOS/AROS variants | FS-UAE and Kickstart/Workbench 2.04 are available for 68k, but the supplied Workbench disks lack the GUI's `gadtools.library` version 37; matching SDKs and runtimes are needed for other variants | CLI qualification is in the Amiga results above. The repeatable two-way corpus confirms Atari-created and Amiga-created archives validate and extract on the other guest with exact independent file/directory results; unsupported foreign metadata reports partial. Obtain a compatible 68k GadTools runtime before GUI startup/flow validation; build and qualify each OS4/MorphOS/AROS target with its own SDK and runtime. Shared source and an emulator do not qualify all variants. |
-| Classic Mac 68k/PPC | Mac OS 9 runtime; legacy PowerPC build environment | `make macos9-core-sync-test` checks all 17 copied 68k core files against `src/core`, including the exact file inventory. `make macos9-68k-kit` builds the application and resources using the copied source kit. Test MacRoman/HFS collisions, resource forks, Finder fields, directory dates, bounded preflight, partial failures, and profile transfer in target runtimes. PowerPC build and both target runtimes remain unqualified. |
-| Plan 9 amd64 | 9front 12111 QEMU TCG guest | Linux-to-Plan 9-to-Linux Stored transfer and native directory/file mode and timestamp restoration pass. A fresh guest-built v6 archive now reports Plan 9/x86-64 in both the guest and Linux readers. `make CC=gcc plan9-host-test` passes; remaining work is other CPUs and filesystem/API edge cases. |
+| Atari CLI/GEM GUI | Hatari with the supplied TOS ROM; disposable FAT12 media | `test/check_hatari_fat.py` verifies guest FAT12 transfers, archive edits, clean control-console shutdown/eject, persisted bytes after exit, and refusal to apply a directory-typed portable FAT envelope to a file. The expanded FAT12 fixtures on TOS 1.06, 1.62, and 2.05 verify append/delete preserve archive HIDDEN/SYSTEM flags, read-only create-overwrite/append/delete report the read-only cause and preserve bytes and READONLY, and Linux validates/extracts the edited archive. `atari-amiga-interoperability-test` transfers Profile 1 archives in both directions between Atari FAT12 and the Amiga guest; independent manifest payloads/names and the empty directory match, while foreign native metadata reports partial. The repeatable GEM GUI create/extract runners now select a directory tree with files, a nested directory, and an empty directory on GEMDOS host storage and FAT12; all payloads/directories survive. Fresh TOS 1.06, 1.62, and 2.05 FAT12 reruns passed the full production create/extract, four-file-attribute, directory-metadata, case/prefix-collision, read-only-replacement-preservation, and Linux full/mini cross-validation corpus on 2026-10-30 (`build/atari-gui-create-kk7vsdmo/run.json`, `build/atari-gui-create-7wyonunv/run.json`, and `build/atari-gui-create-jz0atcvj/run.json`). TOS 1.06, 1.62, and 2.05 reruns additionally verify creation over a pre-existing archive sentinel and no leftover archive stage/backup (`build/atari-gui-create-l3hf167t/run.json`, `build/atari-gui-create-38b7cdwb/run.json`, and `build/atari-gui-create-b67l6aw9/run.json`). FAT12 Archive/Read-only/Hidden/System file flags round-trip. Each latest run restores all three directory timestamps at FAT12 resolution; directory Hidden/System flags remain unsupported and are reported partial. Earlier TOS 1.06/2.05 timestamp-loss observations are superseded by these runs. Earlier Hatari runs show refusal of a Linux-created `Alpha.txt`/`alpha.TXT` archive before output. A later Escape probe left the destination selector open, invalidating the cancellation assertion and subsequent collision flow in those runs. The `node`/`node/child` archive passes Linux integrity; fresh production GUI runs show the prefix-collision alert and empty output on both host-directory and FAT12 drives. Case-fold and file/directory-prefix refusal are qualified; the selector Abort button is qualified on TOS 1.06, 1.62, and 2.05, while Escape remains ineffective. GUI startup/menu rendering, Ctrl+N, keyboard-driven selector flows, directory/file selection, create/save, extraction, list filtering, and the earlier case-collision refusal are qualified. Mouse activation of Create is qualified on TOS 1.62. Archive → Open is qualified on Hatari 2.5.0/TOS 1.62 and EmuTOS 1.4. `make atari-gui-menu-pointer-test` inserts a 1.5-second delay between title and menu-item clicks and verifies the production selector from the screenshot; evidence is retained in `build/atari-menu-pointer-g0lz579b` and `build/atari-menu-pointer-5jo8tryc`. The same target also verifies Help → About opens its production modal dialog on TOS 1.62 (`build/atari-menu-pointer-xdptlsms/run.json`). Earlier fast-click replays failed against both current and old binaries. The same target also opens Help → Documentation on TOS 1.62 (`build/atari-menu-pointer-ovmr2f0_/run.json`). Compression Stored, BoltLite, BoltLZ, Fluff, and Interchange Profile 1 selections are qualified on TOS 1.62, with selected-state checkmarks verified after reopening the menu (run records: `build/atari-menu-pointer-c7kia_a6/run.json`, `build/atari-menu-pointer-9z5hz6fq/run.json`, `build/atari-menu-pointer-8zge1kb0/run.json`, `build/atari-menu-pointer-ubm9y72c/run.json`, and `build/atari-menu-pointer-fdx63g99/run.json`). The expanded thirteen-action `atari-gui-menu-pointer-test` passed on TOS 1.62. For Archive Validate, Information, Close, Extract, and Quit, the runner creates and opens a Linux-generated archive, verifies that the Archive menu opened in an intermediate screenshot, then checks the visible result after selecting the item. The latest aggregate run records are `build/atari-menu-pointer-x97wtgkp/run.json` (Validate), `build/atari-menu-pointer-b9h7ggq_/run.json` (Information), `build/atari-menu-pointer-1em6lbzu/run.json` (Close), `build/atari-menu-pointer-cdha84fl/run.json` (Extract), and `build/atari-menu-pointer-jdy7mxak/run.json` (Quit). A deterministic Hatari/TOS 1.62 run also substitutes a different same-size/same-mtime file over the open 1 MiB stage; the GUI rejects it after content validation, preserves the existing target, and leaves the substituted file untouched (`build/atari-gui-cancel-xo5h9aof`). The first attempt is explicitly invalid because its source stream had not finished (`build/atari-gui-cancel-m7b5nnof/run.json`). CRC collisions, changes after final validation, parent substitution, other pointer menu actions, real device failure after backup, and safe cleanup of incomplete pre-publication stages remain open. Injected rollback and crash recovery after the backup rename pass; recovery journal traversal is rejected by path tests and a valid-CRC Hatari attack fixture (`build/atari-gui-interrupt-backup-g5qexzi_/run.json`, `build/atari-journal-path-d0cih7au/run.json`). A 2026-10-30 Hatari 2.5.0/TOS 1.62 probe redirected `OUT` to a different directory while a 1 MiB extraction stage was open. The staged-path check refuses publication and preserves both pre-existing targets. The full-size `BP` stage and checksummed `BPRECOVR.JRN` remain in the moved directory because pathname cleanup cannot reach them; the production GUI displays “Temp file may remain” with the stage basename (`build/atari-gui-cancel-45ugmhan/run.json`). A separate TOS probe found `lstat` follows the host symlink and `opendir()` returns `ENOSYS`; the parent-chain symlink check is therefore ineffective on Hatari host drives. Native TOS filesystems lack POSIX symlinks, and native MiNT behavior remains unqualified. Hatari process termination after 32 KiB of a 16 MiB stored extraction preserves the old target; a production GUI retry restores exact bytes but leaves the partial stage (`build/atari-gui-cancel-jh47lf8m`). TOS 1.62 FAT12 verifies that a read-only destination causes an incomplete-extraction alert while preserving its old bytes and READONLY and removing the stage (`build/atari-gui-create-msxh3kx1/failed-replacement`). A separate Hatari 2.5.0/TOS 1.62 test build injects a stage-publish failure after moving/verifying the old target; rollback restores the original byte-for-byte and cleans stage/backup (`build/atari-gui-rollback-oat0i71h/run.json`). This does not qualify a real device error or rollback failure. Active-extraction cancellation is qualified on TOS 1.06, 1.62, and 2.05 (`build/atari-gui-cancel-n5_73lb5`, `build/atari-gui-cancel-l_60i0ez`, and `build/atari-gui-cancel-dv4mcp6n`); the TOS 2.05 runner holds the mouse button until Hatari exits after a brief click was missed before the progress callback. Successful replacement of two existing files is qualified on TOS 1.62 (`build/atari-gui-create-lymdqxl8`). TOS 1.06/1.62/2.05 Hidden/System directory-attribute loss is qualified as partial (`build/atari-gui-create-5qmqfsxj`, `build/atari-gui-create-m2sg92dk`, `build/atari-gui-create-p8exo01f`). Active cancellation on TOS 1.06, 1.62, and 2.05 preserves the existing target and removes its stage (`build/atari-gui-cancel-n5_73lb5`, `build/atari-gui-cancel-l_60i0ez`, and `build/atari-gui-cancel-dv4mcp6n`). Fresh TOS 1.06, 1.62, and 2.05 GUI FAT12 runs pass with exact files/directories, file flags, and directory timestamps at FAT12 resolution; directory Hidden/System flags report partial on all three. TOS 2.05 had one incomplete first attempt, followed by successful full reruns; the first failure cause was not isolated. Earlier selector input issues were resolved by the default Create alert action and production keyboard flow. |
+| Amiga CLI/GadTools and OS4/MorphOS/AROS variants | FS-UAE and Kickstart/Workbench 2.04 are available for 68k, but the supplied Workbench disks lack the GUI's `gadtools.library` version 37; matching SDKs and runtimes are needed for other variants | The native OFS and FFS create/edit/metadata/name-refusal corpus passed again against the current shared core on 2026-10-30, retaining full run directories at `build/amiga-native-ofs-20261030` and `build/amiga-native-ffs-20261030`; both use `--skip-codecs`. The latest 2026-10-30 runs consume the independent names and expected refusal/partial outcomes, and fix nested stage verification for AmigaDOS `ETXTBSY` by comparing the pathname after close. Both production OFS and FFS runs passed with complete timestamped records at `build/amiga-native-ofs-20261030-224048/manifest.txt` and `build/amiga-native-ffs-20261030-224048/manifest.txt`. Separate full-codec reruns passed on OFS and FFS with a 600-second timeout, retained at `build/amiga-native-codecs-ofs-20261030-retry/manifest.txt` and `build/amiga-native-codecs-ffs-20261030/manifest.txt`; the test harness default timeout is now 600 seconds; a later invocation using the default timed out during final delete, so default-path completion remains unqualified for that run; the cause was not isolated. CLI qualification is in the Amiga results above. The repeatable two-way corpus confirms Atari-created and Amiga-created archives validate and extract on the other guest with exact independent file/directory results; unsupported foreign metadata reports partial. Obtain a compatible 68k GadTools runtime before GUI startup/flow validation; build and qualify each OS4/MorphOS/AROS target with its own SDK and runtime. Shared source and an emulator do not qualify all variants. |
+| Classic Mac 68k/PPC | Mac OS 9 runtime; legacy PowerPC build environment | `make macos9-core-sync-test` checks all 17 copied 68k core files against `src/core`, including the exact file inventory. `make macos9-68k-kit` builds the application and resources using the copied source kit. Test MacRoman/HFS collisions, resource forks, Finder fields, directory dates, bounded preflight, partial failures, and profile transfer in target runtimes. `make CC=gcc macosx-host-test` passed on 2026-10-30 for host POSIX lifecycle behavior and Apple-branch syntax stubs. The Retro68 PowerPC compiler and import libraries are available; `make macos9-ppc-xcoff` compiles and links the frontend to XCOFF. That is not a runnable Mac OS 9 application; conversion/resource packaging and both target runtimes remain unqualified. The compiler and artifact record is `build/macos9-ppc/run.json`. |
+| Plan 9 amd64 | No usable Plan 9 emulator/runtime is available on this machine | Per the user's clarification, the native rerun and other CPU targets are unavailable and excluded from the current completion gate. Previously recorded 9front 12111 QEMU TCG transfer, mode, and timestamp results are historical evidence only and cannot be claimed as freshly verified. `make CC=gcc plan9-host-test` passed on 2026-10-30, verifying create/add interoperability, cross-reader checks, path/collision preflight, and refusal before output creation because the current frontend lacks safe anchored staging/publication; its retained host-shim record is `build/r14-plan9-host-20261030/run.json`. Native filesystem/API edge cases remain unqualified until a usable environment and safe implementation are available. |
 | RISC OS CLI | GCCSDK cross compiler or native Norcroft system and a RISC OS runtime/filesystem | `make riscos-profile-host-test` now checks Profile 1 create/append through a host SWI shim and Linux full/mini readers. Still cross-build with GCCSDK and exercise native SWIs, metadata restoration, filing-system name rules, and the full transfer corpus on target. |
 | QL/X68000/CPM-86 | Matching compiler and native filesystem runtime/emulator for each | Replace syntax/host-shim-only evidence with target builds and the applicable corpus. Exercise native path mappings, limits, metadata, and refusal behavior. |
-| Haiku CLI/BeAPI GUI | Haiku compiler/runtime and BFS test volume | `make haiku-host-stage-test` checks staged CLI extraction and archive create/append/delete, including failure preservation, Linux cross-reading, and bounded name preflight with a host `fs_attr` shim. `make haiku-gui-extract-host-test` checks GUI path preflight, ASCII case collisions, symlink-parent refusal, core-reported checksum failure preserving an existing file, successful verified publication, and stage cleanup. CLI and GUI source both capture/restore the CLI-compatible mode and `BEOS:TYPE` metadata payload. The CLI host `fs_attr` shim now maps to Linux extended attributes and verifies file/directory MIME round trips plus the 255-byte payload boundary; this does not establish BFS semantics. Still qualify BFS Unicode case mapping, native MIME metadata, timestamps, and GUI runtime behavior on Haiku. |
-| Other POSIX wrappers | Native environments for BSDs, Hurd, Solaris/illumos, AIX, z/OS, QNX, and remaining shipped wrappers | Validate actual APIs and feature gates, filename encoding, modes/times, safe traversal, unsupported metadata reporting, and edits. Record OS/compiler versions, especially AIX and z/OS. |
+| Haiku CLI/BeAPI GUI | Haiku compiler/runtime and BFS test volume | `make CC=gcc haiku-host-stage-test` passed on 2026-10-30 for staged CLI extraction and archive create/append/delete, including failure preservation, Linux cross-reading, and bounded name preflight with a host `fs_attr` shim; the full host-shim output, source revision, dirty diff, and hashes are retained in `build/r12-haiku-host-shim-20261030/run.json`. `BP_TEST_HAIKU_PARENT_RACE=1 python3 test/check_haiku_host.py --cc gcc --linux-boltpack build/linux/boltpack --output build/haiku-parent-race-final` injects a parent swap after stage creation; descriptor-relative extraction rejects publication, preserves the outside sentinel, and removes the stage from the parked directory. `make haiku-gui-extract-host-test` checks GUI path preflight, ASCII case collisions, symlink-parent refusal, core-reported checksum failure preserving an existing file, successful verified publication, and stage cleanup. CLI and GUI source both capture/restore the CLI-compatible mode and `BEOS:TYPE` metadata payload. The CLI host `fs_attr` shim maps to Linux extended attributes and verifies file/directory MIME round trips plus the 255-byte payload boundary; this does not establish BFS semantics. Native Haiku/BeOS qualification is deferred by user decision (2026-10-30) because no verifiable toolchain/runtime is available, and is excluded from the current completion gate. Retain the host-shim evidence; reopen this target when a Haiku SDK/runtime and BFS test volume are available. Verify BeOS R5 compatibility only if that target is separately returned to scope. |
+| Other POSIX wrappers | Native environments for BSDs, Hurd, Solaris/illumos, AIX, z/OS, QNX, and remaining shipped wrappers | QNX, unidentified-AIX, HP-UX, IRIX, NeXTSTEP, SCO, and Tru64 wrappers refuse non-dry-run extraction before output creation because their configured pathname fallback cannot meet the parent-race contract; `make posix-path-extract-refusal-host-test` checks refusal and dry-run behavior. Validate actual APIs and feature gates, filename encoding, modes/times, safe traversal, unsupported metadata reporting, and edits on target. Record OS/compiler versions, especially AIX and z/OS. |
 
 Each run must record commit, frontend/build flags, compiler, OS/emulator version,
 filesystem, locale/codepage, timezone, commands, expected/observed result, and

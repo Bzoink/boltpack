@@ -4,8 +4,10 @@
  * Thin wrapper around linux/main.c. QNX Neutrino provides a full
  * POSIX.1-2001 environment; lstat, readlink, opendir/readdir, symlink,
  * and fseeko/ftello are all available unchanged.
- * Keep the path-based extraction fallback: QNX's filesystem resource-manager
- * model does not make multi-component openat traversal race-free.
+ * Refuse extraction: QNX's filesystem resource-manager model does not make
+ * multi-component openat traversal race-free, and path checks cannot close the
+ * concurrent parent-substitution window. Listing, testing, and dry-run remain
+ * available until a safe native traversal strategy is established.
  *
  * QNX Neutrino runs on x86, x86-64, ARM, and PPC. The default CPU is
  * x86; override with -DBP_CREATOR_CPU=BP_CPU_X86_64, BP_CPU_ARM32, or
@@ -19,5 +21,6 @@
  */
 
 #define BP_CREATOR_OS  BP_OS_QNX
+#define BP_REFUSE_PATH_RACE_EXTRACTION 1
 #define BP_CREATOR_CPU BP_CPU_X86
 #include "../linux/main.c"

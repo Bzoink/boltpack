@@ -38,7 +38,7 @@
  * Licensed under the BSD 2-Clause License
  */
 
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
 
 #define BP_CREATOR_OS  BP_OS_HAIKU
 #define BP_CREATOR_CPU BP_CPU_X86_64
@@ -49,6 +49,8 @@
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
 #include "../posix/archive_preflight.h"
+#include "../posix/restore_mode.h"
+#include "../posix/extract_paths.h"
 
 #ifdef BOLTPACK_NET
 #include "../common/bp_net_cli.h"
@@ -129,6 +131,19 @@ static void bp_io_from_file(bp_io_t *io, FILE *fp)
 }
 
 /* ---- read-only memory buffer I/O (for metadata payload) --------------- */
+
+typedef struct haiku_dir_restore {
+    struct haiku_dir_restore *next;
+    char *path;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    bp_uint16 native_mode;
+    int has_native;
+    int mime_len;
+    dev_t device;
+    ino_t inode;
+    char mime[HAIKU_MIME_MAX + 1];
+} haiku_dir_restore_t;
 
 typedef struct {
     const unsigned char *buf;
@@ -515,24 +530,40 @@ static int haiku_apply_meta(const char *path, bp_uint16 mode,
                             const char *mime, int mime_len)
 {
     int fd;
-
-    if (chmod(path, (mode_t)(mode & 0x1FF)) != 0) return BP_ERR_PARTIAL;
-
-    if (mime_len <= 0) return BP_OK;
-
-    /* Attribute writes apply to nodes, including directories; O_RDWR cannot
-     * open a directory on POSIX/Haiku. fs_write_attr operates on the node. */
-    fd = open(path, O_RDONLY);
-    if (fd < 0) return BP_ERR_PARTIAL;
-
-    /* Write with a null terminator (Haiku convention for MIME strings) */
-    if (fs_write_attr(fd, BEOS_TYPE_ATTR, B_MIME_STRING_TYPE,
-                      0, mime, (size_t)(mime_len + 1)) < 0) {
-        close(fd);
-        return BP_ERR_PARTIAL;
+    int result = BP_OK;
+    if (mime_len > 0) {
+        /* Open before applying a restrictive mode such as 0000. */
+        fd = open(path, O_RDONLY);
+        if (fd < 0) result = BP_ERR_PARTIAL;
+        else {
+            if (fs_write_attr(fd, BEOS_TYPE_ATTR, B_MIME_STRING_TYPE,
+                              0, mime, (size_t)(mime_len + 1)) < 0)
+                result = BP_ERR_PARTIAL;
+            if (close(fd) != 0) result = BP_ERR_PARTIAL;
+        }
     }
-    if (close(fd) != 0) return BP_ERR_PARTIAL;
-    return BP_OK;
+    if (chmod(path, (mode_t)(mode & 0x1FF)) != 0) result = BP_ERR_PARTIAL;
+    return result;
+}
+
+static int haiku_apply_meta_fd(int fd, bp_uint16 mode,
+                               const char *mime, int mime_len)
+{
+    int result = BP_OK;
+    if (mime_len > 0) {
+        struct stat st;
+        /* A preceding portable mode can be 0000. Temporarily ensure the
+         * owner can write the native attribute through this pinned handle. */
+        if (fstat(fd, &st) != 0) result = BP_ERR_PARTIAL;
+        else if ((st.st_mode & 0600) != 0600 &&
+                 fchmod(fd, (mode_t)((st.st_mode & 01777) | 0600)) != 0)
+            result = BP_ERR_PARTIAL;
+        if (fs_write_attr(fd, BEOS_TYPE_ATTR, B_MIME_STRING_TYPE, 0,
+                          mime, (size_t)(mime_len + 1)) < 0)
+            result = BP_ERR_PARTIAL;
+    }
+    if (fchmod(fd, (mode_t)(mode & 0x1FF)) != 0) result = BP_ERR_PARTIAL;
+    return result;
 }
 
 /* ---- add a meta entry after the data entry ----------------------------- */
@@ -776,29 +807,226 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 typedef struct {
     const char *out_dir;
+    int         root_fd;
     int         force;
     int         dry_run;
     bp_uint32   file_count;
     bp_uint32   dir_count;
     bp_uint32   partial_count;  /* skipped or partially restored entries */
     int         slash_warned;  /* printed the leading-'/' warning once */
+    int         subject_ok;   /* directory selected or stream published */
+    int         subject_fd;   /* pinned published regular file, or -1 */
+    int         subject_parent_fd;
+    char        subject_leaf[256];
+    char        subject_path[4096];
+    bp_uint8    subject_type;
+    haiku_dir_restore_t *directories;
+    haiku_dir_restore_t *directory_tail;
+    haiku_dir_restore_t *subject_directory;
 } extract_ctx_t;
+
+static int check_published_subject(extract_ctx_t *ctx)
+{
+    struct stat pinned, current;
+    if (ctx->subject_fd >= 0 && fstat(ctx->subject_fd, &pinned) == 0 &&
+        fstatat(ctx->subject_parent_fd, ctx->subject_leaf, &current,
+                AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(current.st_mode) &&
+        !S_ISLNK(current.st_mode) && pinned.st_dev == current.st_dev &&
+        pinned.st_ino == current.st_ino) return 1;
+    fprintf(stderr, "boltpack: published file changed: %s\n", ctx->subject_path);
+    ctx->partial_count++;
+    ctx->subject_ok = 0;
+    return 0;
+}
+
+static haiku_dir_restore_t *queue_directory(extract_ctx_t *ctx, const char *path,
+                                             const bp_entry_t *entry)
+{
+    haiku_dir_restore_t *node = (haiku_dir_restore_t *)calloc(1, sizeof(*node));
+    struct stat st;
+    int fd;
+    size_t length;
+    if (node == NULL) return NULL;
+    node->path = (char *)malloc(strlen(path) + 1);
+    if (node->path == NULL) { free(node); return NULL; }
+    strcpy(node->path, path);
+    length = strlen(node->path);
+    while (length > 1 && node->path[length - 1] == '/') node->path[--length] = '\0';
+    fd = extract_open_directory(ctx->root_fd, node->path, 0);
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        if (fd >= 0) close(fd);
+        free(node->path); free(node); return NULL;
+    }
+    if (close(fd) != 0) { free(node->path); free(node); return NULL; }
+    node->device = st.st_dev;
+    node->inode = st.st_ino;
+    node->mtime = entry->mtime;
+    node->flags = entry->flags;
+    if (ctx->directory_tail != NULL) ctx->directory_tail->next = node;
+    else ctx->directories = node;
+    ctx->directory_tail = node;
+    return node;
+}
+
+/* Longer canonical paths precede their parents. Merge sort keeps this bounded
+ * for archives containing many directories. */
+static haiku_dir_restore_t *sort_directories(haiku_dir_restore_t *head)
+{
+    haiku_dir_restore_t *slow, *fast, *right, *left, *result, **tail;
+    if (head == NULL || head->next == NULL) return head;
+    slow = head; fast = head->next;
+    while (fast != NULL && fast->next != NULL) {
+        slow = slow->next; fast = fast->next->next;
+    }
+    right = slow->next; slow->next = NULL;
+    left = sort_directories(head); right = sort_directories(right);
+    result = NULL; tail = &result;
+    while (left != NULL && right != NULL) {
+        if (strlen(left->path) >= strlen(right->path)) {
+            *tail = left; left = left->next;
+        } else { *tail = right; right = right->next; }
+        tail = &(*tail)->next;
+    }
+    *tail = left != NULL ? left : right;
+    return result;
+}
+
+static void finish_directories(extract_ctx_t *ctx, int apply)
+{
+    haiku_dir_restore_t *node = sort_directories(ctx->directories);
+    if (ctx->subject_fd >= 0) {
+        if (ctx->subject_ok) (void)check_published_subject(ctx);
+        if (close(ctx->subject_fd) != 0) ctx->partial_count++;
+        ctx->subject_fd = -1;
+    }
+    if (ctx->subject_parent_fd >= 0) {
+        if (close(ctx->subject_parent_fd) != 0) ctx->partial_count++;
+        ctx->subject_parent_fd = -1;
+    }
+    while (node != NULL) {
+        haiku_dir_restore_t *next = node->next;
+        struct stat st;
+        int failed = 0;
+        if (apply) {
+            int fd = extract_open_directory(ctx->root_fd, node->path, 0);
+            if (fd < 0 || fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode) ||
+                st.st_dev != node->device || st.st_ino != node->inode) failed = 1;
+            else {
+                if (node->has_native) {
+                    if (haiku_apply_meta_fd(fd, node->native_mode,
+                                            node->mime, node->mime_len) != BP_OK) failed = 1;
+                } else if (bp_posix_restore_mode_fd(fd, node->flags) != BP_OK)
+                    failed = 1;
+                if (node->flags & BP_ENTRY_FLAG_MTIME_VALID) {
+#ifdef UTIME_OMIT
+                    struct timespec times[2];
+                    time_t mtime;
+                    if (bp_mtime_to_time_t(node->mtime, &mtime) != BP_OK) failed = 1;
+                    else {
+                        times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
+                        times[1].tv_sec = mtime; times[1].tv_nsec = 0;
+                        if (futimens(fd, times) != 0) failed = 1;
+                    }
+#else
+                    /* Do not follow a mutable path when fd timestamps are unavailable. */
+                    failed = 1;
+#endif
+                }
+            }
+            if (fd >= 0 && close(fd) != 0) failed = 1;
+            if (failed) {
+                fprintf(stderr, "boltpack: cannot restore directory metadata: %s\n", node->path);
+                ctx->partial_count++;
+            }
+        }
+        free(node->path); free(node); node = next;
+    }
+    ctx->directories = ctx->directory_tail = ctx->subject_directory = NULL;
+}
 
 typedef struct {
     bp_io_t io;                 /* Must remain first for callback casts. */
     FILE *fp;
     int entry_type;
     char final_path[4096];
-    char stage_path[4096];
+    char leaf[256];
+    char stage_leaf[64];
+    char relative_path[4096];
+    int root_fd;
+    int parent_fd;
 } extract_output_t;
 
+static int create_extract_stage(int root_fd, const char *relative_path,
+                                extract_output_t *output, FILE **fp_out)
+{
+    static unsigned long sequence;
+    int parent_fd;
+    int fd;
+    parent_fd = extract_open_parent(root_fd, relative_path, output->leaf,
+                                    sizeof(output->leaf));
+    if (parent_fd < 0) return -1;
+    if (strlen(relative_path) >= sizeof(output->relative_path)) {
+        close(parent_fd); return -1;
+    }
+    strcpy(output->relative_path, relative_path);
+    output->root_fd = root_fd;
+    output->parent_fd = parent_fd;
+    do {
+        sequence++;
+        if (snprintf(output->stage_leaf, sizeof(output->stage_leaf),
+                     ".boltpack-%08lx-%08lx", (unsigned long)getpid(), sequence) >=
+            (int)sizeof(output->stage_leaf)) { close(parent_fd); output->parent_fd = -1; return -1; }
+        fd = openat(parent_fd, output->stage_leaf,
+                    O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+    } while (fd < 0 && errno == EEXIST);
+    if (fd < 0) { close(parent_fd); output->parent_fd = -1; return -1; }
+    *fp_out = fdopen(fd, "w+b");
+    if (*fp_out == NULL) {
+        close(fd);
+        unlinkat(parent_fd, output->stage_leaf, 0);
+        close(parent_fd);
+        output->parent_fd = -1;
+        return -1;
+    }
+    return 0;
+}
+
+static int extract_parent_still_selected(extract_output_t *output)
+{
+    char leaf[256];
+    struct stat held, current;
+    int current_fd = extract_open_parent(output->root_fd,
+                                          output->relative_path,
+                                          leaf, sizeof(leaf));
+    int ok = current_fd >= 0 && fstat(output->parent_fd, &held) == 0 &&
+             fstat(current_fd, &current) == 0 && held.st_dev == current.st_dev &&
+             held.st_ino == current.st_ino && strcmp(leaf, output->leaf) == 0;
+    if (current_fd >= 0) close(current_fd);
+    return ok;
+}
+
+static int publish_extract_stage(extract_output_t *output, int force)
+{
+    if (!extract_parent_still_selected(output)) { errno = ESTALE; return -1; }
+    if (force) {
+        if (renameat(output->parent_fd, output->stage_leaf,
+                     output->parent_fd, output->leaf) != 0) return -1;
+    } else {
+        /* link() is an atomic no-clobber publish on the same filesystem. */
+        if (linkat(output->parent_fd, output->stage_leaf,
+                   output->parent_fd, output->leaf, 0) != 0) return -1;
+        if (unlinkat(output->parent_fd, output->stage_leaf, 0) != 0) return -1;
+    }
+    output->stage_leaf[0] = '\0';
+    return extract_parent_still_selected(output) ? 0 : -1;
+}
+
+/* Path-based stages remain for replacing the archive being written. */
 static int create_sibling_stage(const char *final_path, char *stage_path,
                                 size_t stage_size, FILE **fp_out)
 {
-    char parent[4096];
-    char *slash;
+    char parent[4096], *slash;
     int fd;
-
     if (strlen(final_path) >= sizeof(parent)) return -1;
     strcpy(parent, final_path);
     slash = strrchr(parent, '/');
@@ -810,24 +1038,7 @@ static int create_sibling_stage(const char *final_path, char *stage_path,
     fd = mkstemp(stage_path);
     if (fd < 0) return -1;
     *fp_out = fdopen(fd, "w+b");
-    if (*fp_out == NULL) {
-        close(fd);
-        unlink(stage_path);
-        return -1;
-    }
-    return 0;
-}
-
-static int publish_sibling_stage(extract_output_t *output, int force)
-{
-    if (force) {
-        if (rename(output->stage_path, output->final_path) != 0) return -1;
-    } else {
-        /* link() is an atomic no-clobber publish on the same filesystem. */
-        if (link(output->stage_path, output->final_path) != 0) return -1;
-        if (unlink(output->stage_path) != 0) return -1;
-    }
-    output->stage_path[0] = '\0';
+    if (*fp_out == NULL) { close(fd); unlink(stage_path); return -1; }
     return 0;
 }
 
@@ -941,11 +1152,29 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 {
     extract_ctx_t  *ctx = (extract_ctx_t *)user_data;
     char            path[4096];
+    char            full_path[4096];
     FILE           *fp;
     extract_output_t *output;
     meta_extract_t *mex;
+    int             fd;
     bp_uint32       meta_sz;
     const char     *name;
+
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        if (ctx->subject_fd >= 0) {
+            if (ctx->subject_ok) (void)check_published_subject(ctx);
+            if (close(ctx->subject_fd) != 0) ctx->partial_count++;
+            ctx->subject_fd = -1;
+        }
+        ctx->subject_ok = 0;
+        ctx->subject_type = entry->entry_type;
+        ctx->subject_directory = NULL;
+        if (ctx->subject_parent_fd >= 0) {
+            if (close(ctx->subject_parent_fd) != 0) ctx->partial_count++;
+            ctx->subject_parent_fd = -1;
+        }
+    }
 
     /* A hostile archive must not choose where we write: refuse ".."
      * components, backslashes, and drive letters outright. */
@@ -957,29 +1186,37 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         return NULL;
     }
 
-    if (ctx->out_dir) {
-        if (path_join(path, sizeof(path), ctx->out_dir, name) != 0) {
-            ctx->partial_count++;
-            return NULL;
-        }
+    if (strlen(name) >= sizeof(path) ||
+        (ctx->out_dir && path_join(full_path, sizeof(full_path), ctx->out_dir, name) != 0)) {
+        ctx->partial_count++;
+        return NULL;
     }
-    else
-        snprintf(path, sizeof(path), "%s", name);
+    if (!ctx->out_dir) snprintf(full_path, sizeof(full_path), "%s", name);
+    strcpy(path, name);
 
     /* --- Directory ---------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("   creating: %s\n", entry->name);
-        if (!ctx->dry_run && mkdirs(path) != 0) {
+        if (!ctx->dry_run && (fd = extract_open_directory(ctx->root_fd, path, 1)) < 0) {
             fprintf(stderr, "boltpack: cannot create directory: %s\n", path);
             ctx->partial_count++;
+        } else if (ctx->dry_run) ctx->subject_ok = 1;
+        else {
+            close(fd);
+            ctx->subject_directory = queue_directory(ctx, path, entry);
+            if (ctx->subject_directory == NULL) ctx->partial_count++;
+            else ctx->subject_ok = 1;
         }
         return NULL;
     }
 
     /* --- Haiku/BeOS metadata ------------------------------------------ */
     if (entry->entry_type == BP_TYPE_META) {
+        if (!ctx->dry_run && ctx->subject_type == BP_TYPE_DATA && ctx->subject_ok)
+            (void)check_published_subject(ctx);
+        if (!ctx->subject_ok) return NULL;
         if (entry->platform != BP_OS_BEOS) return NULL;
 
         meta_sz = bp_u64_to_u32(entry->original_size);
@@ -1015,14 +1252,13 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->file_count++;
         if (g_verbosity == VERB_DEFAULT)
             printf("    linking: %s\n", entry->name);
-        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        if (ctx->dry_run) { ctx->subject_ok = 1; return bp_archive_dry_run_stream(); }
         output = (extract_output_t *)calloc(1, sizeof(*output));
         if (output == NULL) { ctx->partial_count++; return NULL; }
         output->entry_type = BP_TYPE_SYMLINK;
-        strcpy(output->final_path, path);
-        if (mkdirs_for_file(path) != 0 ||
-            create_sibling_stage(path, output->stage_path,
-                                 sizeof(output->stage_path), &fp) != 0) {
+        strcpy(output->final_path, full_path);
+        output->parent_fd = -1;
+        if (create_extract_stage(ctx->root_fd, path, output, &fp) != 0) {
             free(output);
             ctx->partial_count++;
             return NULL;
@@ -1036,28 +1272,30 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     ctx->file_count++;
     if (g_verbosity == VERB_DEFAULT)
         printf(" extracting: %s\n", entry->name);
-    if (ctx->dry_run) return bp_archive_dry_run_stream();
+    if (ctx->dry_run) { ctx->subject_ok = 1; return bp_archive_dry_run_stream(); }
 
     if (!ctx->force) {
         struct stat st_buf;
-        if (lstat(path, &st_buf) == 0) {
+        {
+            char leaf[256];
+            int parent = extract_open_parent(ctx->root_fd, path, leaf, sizeof(leaf));
+            int exists = parent >= 0 && fstatat(parent, leaf, &st_buf,
+                                                  AT_SYMLINK_NOFOLLOW) == 0;
+            if (parent >= 0) close(parent);
+            if (exists) {
             fprintf(stderr,
                     "boltpack: file exists (use -f to overwrite): %s\n", path);
             ctx->partial_count++;
             return NULL;
+            }
         }
-    }
-    if (mkdirs_for_file(path) != 0) {
-        fprintf(stderr, "boltpack: cannot create parent directory: %s\n", path);
-        ctx->partial_count++;
-        return NULL;
     }
     output = (extract_output_t *)calloc(1, sizeof(*output));
     if (output == NULL) { ctx->partial_count++; return NULL; }
     output->entry_type = BP_TYPE_DATA;
-    strcpy(output->final_path, path);
-    if (create_sibling_stage(path, output->stage_path,
-                             sizeof(output->stage_path), &fp) != 0) {
+    strcpy(output->final_path, full_path);
+    output->parent_fd = -1;
+    if (create_extract_stage(ctx->root_fd, path, output, &fp) != 0) {
         fprintf(stderr, "boltpack: cannot create: %s\n", path);
         free(output);
         return NULL;
@@ -1065,6 +1303,43 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     output->fp = fp;
     bp_io_from_file(&output->io, fp);
     return &output->io;
+}
+
+/* Restore only the staged link's timestamp, never the linked-to object. */
+static int restore_symlink_mtime(int parent_fd, const char *leaf,
+                                 const bp_entry_t *entry)
+{
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+#if !defined(BP_HAIKU_NO_SYMLINK_TIMES) && \
+    defined(AT_SYMLINK_NOFOLLOW) && defined(UTIME_OMIT)
+    {
+        struct timespec times[2];
+        time_t mtime;
+        if (bp_mtime_to_time_t(entry->mtime, &mtime) != BP_OK)
+            return BP_ERR_PARTIAL;
+        times[0].tv_sec = 0; times[0].tv_nsec = UTIME_OMIT;
+        times[1].tv_sec = mtime; times[1].tv_nsec = 0;
+        if (utimensat(parent_fd, leaf, times, AT_SYMLINK_NOFOLLOW) != 0)
+            return BP_ERR_IO;
+    }
+    return BP_OK;
+#else
+    (void)parent_fd; (void)leaf;
+    return BP_ERR_PARTIAL;
+#endif
+}
+
+static int restore_regular_stage_mtime(int fd, const bp_entry_t *entry)
+{
+    struct timespec times[2];
+    time_t mtime;
+    int rc = BP_OK;
+    if (!(entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) return BP_OK;
+    if (bp_mtime_to_time_t(entry->mtime, &mtime) != BP_OK) return BP_ERR_PARTIAL;
+    times[0].tv_sec = mtime; times[0].tv_nsec = 0;
+    times[1].tv_sec = mtime; times[1].tv_nsec = 0;
+    if (futimens(fd, times) != 0) rc = BP_ERR_PARTIAL;
+    return rc;
 }
 
 static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
@@ -1095,9 +1370,20 @@ static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
                 snprintf(path, sizeof(path), "%s", name);
 
             if (rc == BP_OK && haiku_decode_meta(mex->wctx.buf, (int)mex->wctx.len,
-                                  &mode, mime, &mime_len) == 0)
-                rc = haiku_apply_meta(path, mode, mime, mime_len);
-            else if (rc == BP_OK) rc = BP_ERR_PARTIAL;
+                                  &mode, mime, &mime_len) == 0) {
+                if (ctx->subject_type == BP_TYPE_DIR) {
+                    haiku_dir_restore_t *directory = ctx->subject_directory;
+                    if (directory == NULL) rc = BP_ERR_PARTIAL;
+                    else {
+                        directory->has_native = 1;
+                        directory->native_mode = mode;
+                        directory->mime_len = mime_len;
+                        memcpy(directory->mime, mime, (size_t)mime_len + 1);
+                    }
+                } else if (ctx->subject_type == BP_TYPE_DATA && ctx->subject_fd >= 0)
+                    rc = haiku_apply_meta_fd(ctx->subject_fd, mode, mime, mime_len);
+                else rc = BP_ERR_PARTIAL;
+            } else if (rc == BP_OK) rc = BP_ERR_PARTIAL;
         }
         free(mex);
         if (rc != BP_OK) ctx->partial_count++;
@@ -1109,29 +1395,60 @@ static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
         extract_output_t *output = (extract_output_t *)out;
         int rc = status;
         int publish_allowed = 1;
+        int metadata_partial = 0;
+        int pinned_fd = -1;
 
         if (output->fp != NULL) {
             if (status == BP_OK && fflush(output->fp) != 0) rc = BP_ERR_IO;
+            if (rc == BP_OK && entry->entry_type == BP_TYPE_DATA) {
+                if (bp_posix_restore_mode_fd(fileno(output->fp), entry->flags) != BP_OK)
+                    metadata_partial = 1;
+                if (restore_regular_stage_mtime(fileno(output->fp), entry) != BP_OK)
+                    metadata_partial = 1;
+                pinned_fd = dup(fileno(output->fp));
+            }
             if (fclose(output->fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
             output->fp = NULL;
         }
         if (rc != BP_OK) {
-            if (output->stage_path[0] != '\0') unlink(output->stage_path);
+            if (pinned_fd >= 0) close(pinned_fd);
+            if (output->stage_leaf[0] != '\0')
+                unlinkat(output->parent_fd, output->stage_leaf, 0);
+            if (output->parent_fd >= 0) close(output->parent_fd);
             free(output);
             return rc;
         }
+        if (metadata_partial) rc = BP_ERR_PARTIAL;
 
         if (entry->entry_type == BP_TYPE_SYMLINK) {
             char target[4096];
-            FILE *stage_fp = fopen(output->stage_path, "rb");
-            size_t len;
-            if (stage_fp == NULL) rc = BP_ERR_IO;
+            FILE *stage_fp = NULL;
+            size_t len = 0;
+            if (entry->original_size.hi != 0 ||
+                entry->original_size.lo > sizeof(target) - 1)
+                rc = BP_ERR_PARTIAL;
             else {
-                len = fread(target, 1, sizeof(target) - 1, stage_fp);
-                if (ferror(stage_fp) || fgetc(stage_fp) != EOF) rc = BP_ERR_PARTIAL;
-                if (fclose(stage_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
-                target[len] = '\0';
+                {
+                    int stage_fd = openat(output->parent_fd, output->stage_leaf,
+                                          O_RDONLY | O_NOFOLLOW);
+                    if (stage_fd >= 0) stage_fp = fdopen(stage_fd, "rb");
+                    else stage_fp = NULL;
+                }
+                if (stage_fp == NULL) rc = BP_ERR_IO;
+                else {
+                    size_t expected = (size_t)entry->original_size.lo;
+                    int trailing;
+                    len = fread(target, 1, expected, stage_fp);
+                    if (len != expected || ferror(stage_fp)) rc = BP_ERR_IO;
+                    if (rc == BP_OK) {
+                        trailing = fgetc(stage_fp);
+                        if (ferror(stage_fp)) rc = BP_ERR_IO;
+                        else if (trailing != EOF) rc = BP_ERR_PARTIAL;
+                    }
+                    if (fclose(stage_fp) != 0) rc = BP_ERR_IO;
+                }
             }
+            target[len] = '\0';
             if (rc == BP_OK && memchr(target, '\0', len) != NULL) {
                 rc = BP_ERR_PARTIAL;
                 publish_allowed = 0;
@@ -1140,21 +1457,35 @@ static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
                 publish_allowed = 0;
                 rc = BP_ERR_PARTIAL;
             }
+            if (rc != BP_OK) publish_allowed = 0;
             if (rc == BP_OK) {
-                if (unlink(output->stage_path) != 0 ||
-                    symlink(target, output->stage_path) != 0)
+                if (unlinkat(output->parent_fd, output->stage_leaf, 0) != 0 ||
+                    symlinkat(target, output->parent_fd, output->stage_leaf) != 0)
                     rc = BP_ERR_IO;
+                else rc = restore_symlink_mtime(output->parent_fd,
+                                                 output->stage_leaf, entry);
             }
-        } else if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
-                   bp_restore_mtime(output->stage_path, entry->mtime) != BP_OK) {
-            rc = BP_ERR_PARTIAL;
         }
 
         if (publish_allowed && (rc == BP_OK || rc == BP_ERR_PARTIAL) &&
-            publish_sibling_stage(output, ctx->force) != 0)
+            publish_extract_stage(output, ctx->force) != 0)
             rc = BP_ERR_IO;
-        if (rc != BP_OK && output->stage_path[0] != '\0')
-            unlink(output->stage_path);
+        if (publish_allowed && output->stage_leaf[0] == '\0') {
+            ctx->subject_ok = 1;
+            ctx->subject_fd = pinned_fd;
+            pinned_fd = -1;
+            if (entry->entry_type == BP_TYPE_DATA) {
+                strcpy(ctx->subject_path, output->final_path);
+                strcpy(ctx->subject_leaf, output->leaf);
+                ctx->subject_parent_fd = output->parent_fd;
+                output->parent_fd = -1;
+                if (!check_published_subject(ctx)) rc = BP_ERR_PARTIAL;
+            }
+        }
+        if (pinned_fd >= 0) close(pinned_fd);
+        if (rc != BP_OK && output->stage_leaf[0] != '\0')
+            unlinkat(output->parent_fd, output->stage_leaf, 0);
+        if (output->parent_fd >= 0) close(output->parent_fd);
         if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
         free(output);
         return rc;
@@ -1170,12 +1501,19 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     extract_ctx_t ctx;
     int rc;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.subject_fd = -1;
+    ctx.subject_parent_fd = -1;
     ctx.out_dir = out_dir;
     ctx.force = force;
     rc = haiku_extract_preflight(aio, out_dir);
     if (rc != BP_OK) return rc;
+    if (out_dir && mkdirs(out_dir) != 0) return BP_ERR_IO;
+    ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY);
+    if (ctx.root_fd < 0) return BP_ERR_IO;
     rc = bp_archive_extract_all_ex(aio, extract_open, extract_done_status,
                                    NULL, &ctx);
+    finish_directories(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
+    close(ctx.root_fd);
     if (rc == BP_OK && ctx.partial_count != 0) return BP_ERR_PARTIAL;
     return rc;
 }
@@ -1819,14 +2157,25 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     }
 
     memset(&ctx, 0, sizeof(ctx));
+    ctx.subject_fd = -1;
+    ctx.subject_parent_fd = -1;
     ctx.out_dir  = out_dir;
     ctx.force    = force;
     ctx.dry_run  = dry_run;
+    ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY);
+    if (ctx.root_fd < 0 && dry_run) ctx.root_fd = open(".", O_RDONLY | O_DIRECTORY);
+    if (ctx.root_fd < 0) {
+        fprintf(stderr, "boltpack: cannot open extraction root\n");
+        fclose(fp);
+        return 1;
+    }
     start = clock();
 
     rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done_status,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
+    finish_directories(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
+    if (close(ctx.root_fd) != 0) ctx.partial_count++;
     fclose(fp);
     if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));

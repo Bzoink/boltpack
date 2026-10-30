@@ -1,0 +1,13 @@
+{
+  "case": "FS-UAE Amiga OFS and FFS interchange",
+  "files": {
+    "source": {"bytes": 3600, "sha256": "7d1320a2d4b0bc7388b82b9c3b2d711c5f505dda9fccc2c2db97bbc86ee9449f"},
+    "append": {"bytes": 1960, "sha256": "1919987c83a2e580777203e334db2ccab648382315404e9bdd93495a027fcbf6"},
+    "codec": {"bytes": 262144, "sha256": "7f4ce82bd6027678ada01def368464e94afee489c985d8fb66ed659212721e2e"},
+    "conflict": {"bytes": 34, "sha256": "fa51e3ed70eb8f064791981764f72ee9527191d9485e0e22c42936bf45ebd51d"},
+    "deep": {"bytes": 992, "sha256": "95e137fccd6996b717bf8ae54c881b08d4d8f82b9b4bf6446017a793c17bab66"}
+  },
+  "metadata": {"comment": "BoltPack archive comment", "protection_mask": 64, "conflict_protection": 64, "date_stamp": "10000:600:0"},
+  "names": {"source": "SRC.TXT", "append": "NEW.TXT", "nested": "TREE/NEST/FILE.TXT", "empty_directory": "TREE/NEST/EMPTY", "latin1": "café.txt"},
+  "outcomes": {"conflicting_metadata": "partial", "invalid_comment": "refused", "unrepresentable_name": "refused", "case_collision": "refused", "failed_append": "preserve archive", "linux_foreign_metadata": "partial"}
+}

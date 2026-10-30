@@ -19,4 +19,5 @@
 
 #define BP_CREATOR_OS  BP_OS_NEXTSTEP
 #define BP_CREATOR_CPU BP_CPU_M68K
+#define BP_REFUSE_PATH_RACE_EXTRACTION 1
 #include "../linux/main.c"

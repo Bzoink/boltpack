@@ -9,6 +9,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -17,6 +18,13 @@ EXPECTED = json.loads((ROOT / "test/reference/interoperability/ql-sqlux.json")
                       .read_text(encoding="utf-8"))
 PAYLOAD_CASE = EXPECTED["payload"]
 PAYLOAD = bytes(range(256)) * 3 + PAYLOAD_CASE["suffix_utf8"].encode("utf-8")
+EVIDENCE_LOG = None
+
+
+def record(text):
+    if EVIDENCE_LOG is not None:
+        with EVIDENCE_LOG.open("a", encoding="utf-8") as stream:
+            stream.write(text + "\n")
 
 
 def check_payload(data, label):
@@ -44,7 +52,10 @@ def command_version(command):
 
 
 def run(command, *, cwd=None):
+    record("command=" + repr(command) + " cwd=" + repr(str(cwd) if cwd else None))
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    record("exit=" + str(result.returncode) + "\nstdout:\n" + result.stdout +
+           "\nstderr:\n" + result.stderr)
     if result.returncode != 0:
         raise RuntimeError(
             f"command failed ({result.returncode}): {command!r}\n"
@@ -65,6 +76,7 @@ def run_ql(sqlux, rom, shared, command, completion):
     # does not apply the host's local offset to the archive's UTC timestamps.
     env["TZ"] = "UTC"
     env.pop("BP_TZ_OFFSET", None)
+    record("emulator=" + repr(emulator) + " TZ=UTC")
     process = subprocess.Popen(
         emulator, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, start_new_session=True, env=env,
@@ -74,6 +86,7 @@ def run_ql(sqlux, rom, shared, command, completion):
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output, _ = process.communicate()
+            record("emulator exit=" + str(process.returncode) + "\n" + output)
             if process.returncode != 0:
                 raise RuntimeError(
                     f"sQLux exited unexpectedly ({process.returncode}):\n{output}"
@@ -85,6 +98,7 @@ def run_ql(sqlux, rom, shared, command, completion):
             elif time.monotonic() - stable_since >= 0.4:
                 os.killpg(process.pid, signal.SIGTERM)
                 output, _ = process.communicate(timeout=5)
+                record("emulator stopped after output stabilized\n" + output)
                 break
         else:
             stable_since = None
@@ -92,12 +106,14 @@ def run_ql(sqlux, rom, shared, command, completion):
     else:
         os.killpg(process.pid, signal.SIGTERM)
         output, _ = process.communicate(timeout=5)
+        record("emulator timed out\n" + output)
         raise RuntimeError(f"timed out waiting for QDOS command:\n{output}")
     if "using Minerva ROM" not in output:
         raise RuntimeError(f"sQLux did not report a successful ROM boot:\n{output}")
 
 
 def main():
+    global EVIDENCE_LOG
     parser = argparse.ArgumentParser()
     parser.add_argument("--sqlux", required=True, type=pathlib.Path)
     parser.add_argument("--rom", required=True, type=pathlib.Path)
@@ -128,6 +144,15 @@ def main():
     else:
         temp_context = tempfile.TemporaryDirectory(prefix="boltpack-sqlux-")
         root = pathlib.Path(temp_context.name)
+    EVIDENCE_LOG = root / "commands.log"
+    record("invocation=" + repr(sys.argv))
+    (root / "git-status.txt").write_bytes(subprocess.check_output(
+        ["git", "-C", str(ROOT), "status", "--porcelain"]))
+    (root / "git-diff.patch").write_bytes(subprocess.check_output(
+        ["git", "-C", str(ROOT), "diff", "--binary", "HEAD"]))
+    shutil.copyfile(ROOT / "test/reference/interoperability/ql-sqlux.json",
+                    root / "expected.json")
+    shutil.copyfile(pathlib.Path(__file__), root / "runner.py")
     try:
         shared = root / "shared"
         source = root / "source"
@@ -284,6 +309,9 @@ def main():
                 ROOT / "test/reference/interoperability/ql-sqlux.json"),
             "revision": git_revision,
             "worktree_dirty": bool(git_status.stdout.strip()),
+            "invocation": sys.argv,
+            "runner_sha256": sha256_file(root / "runner.py"),
+            "command_log_sha256": sha256_file(root / "commands.log"),
             "host": platform.platform(),
             "locale": os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or "",
             "timezone": "UTC",

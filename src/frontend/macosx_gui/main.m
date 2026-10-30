@@ -803,7 +803,6 @@ typedef struct {
     int               open_error;
     int               root_fd;
     int               dirfd_enabled;
-    int               path_race_limited;
     unsigned long     partial_count;
     cocoa_dir_restore *directories;
     unsigned long     directory_count;
@@ -1020,7 +1019,7 @@ static int cocoa_finish_extract(cocoa_extract_ctx *ctx, int rc)
         rc = ctx->open_error;
     if (rc == BP_OK || rc == BP_ERR_PARTIAL)
         cocoa_finish_directories(ctx);
-    if (rc == BP_OK && (ctx->partial_count != 0 || ctx->path_race_limited))
+    if (rc == BP_OK && ctx->partial_count != 0)
         rc = BP_ERR_PARTIAL;
     return rc;
 }
@@ -1613,9 +1612,10 @@ static int cocoa_extract_done(const bp_entry_t *entry, bp_io_t *out,
     return rc;
 }
 
-/* Preserve the older Intel GUI's 10.9 deployment target. The secure dirfd
- * path is used on 10.10 and later; older systems retain static symlink checks
- * and staged publication, but cannot prevent concurrent parent substitution. */
+/* Preserve the older Intel GUI's 10.9 deployment target. Descriptor-relative
+ * extraction is available on 10.10 and later; older systems may still run the
+ * GUI but extraction is refused because pathname publication cannot prevent
+ * concurrent parent substitution. */
 static int cocoa_dirfd_api_available(void)
 {
 #if defined(__APPLE__) && defined(__clang__)
@@ -1624,6 +1624,19 @@ static int cocoa_dirfd_api_available(void)
 #else
     return 0;
 #endif
+}
+
+/* Fail closed on systems where extraction cannot remain anchored below the
+ * selected directory. The legacy path-based fallback is not race-safe. */
+static BOOL cocoa_require_safe_extraction(void)
+{
+    if (cocoa_dirfd_api_available()) return YES;
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Safe extraction is unavailable"];
+    [alert setInformativeText:
+        @"This macOS version cannot anchor extracted files beneath the selected destination. Upgrade to macOS 10.10 or later. No files were extracted."];
+    [alert runModal];
+    return NO;
 }
 
 static int cocoa_extract_progress(const bp_progress_t *p, void *ud)
@@ -2225,6 +2238,10 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
 
     NSString *destDir = bp_open_panel_first_path(panel);
     if (!destDir) return;
+    if (!cocoa_require_safe_extraction()) {
+        bp_gui_dev_log("doExtract: refused; descriptor-relative extraction unavailable");
+        return;
+    }
     bp_gui_dev_log("doExtract: archive=%s dest=%s",
                    bp_gui_dev_path(_archivePath),
                    bp_gui_dev_path(destDir));
@@ -2243,7 +2260,6 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
     ctx.open_error = BP_OK;
     ctx.root_fd = -1;
     ctx.dirfd_enabled = cocoa_dirfd_api_available();
-    ctx.path_race_limited = !ctx.dirfd_enabled;
     ctx.partial_count = 0;
     ctx.directories = NULL;
     ctx.directory_count = 0;
@@ -2290,9 +2306,6 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
         NSString *details = [NSString stringWithFormat:
             @"%u files were extracted. %u items or attributes could not be restored.",
             (unsigned)ctx.extracted_file_count, (unsigned)ctx.partial_count];
-        if (ctx.path_race_limited)
-            details = [details stringByAppendingString:
-                @" This macOS version cannot prevent concurrent parent-directory changes during extraction."];
         [a setMessageText:@"Extraction partially complete"];
         [a setInformativeText:details];
         [a runModal];
@@ -2362,6 +2375,10 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
 
     NSString *destDir = bp_open_panel_first_path(panel);
     if (!destDir) return;
+    if (!cocoa_require_safe_extraction()) {
+        bp_gui_dev_log("doExtractSelected: refused; descriptor-relative extraction unavailable");
+        return;
+    }
 
     bp_gui_dev_log("doExtractSelected: archive=%s selected=%lu mode=%s dest=%s",
                    bp_gui_dev_path(_archivePath),
@@ -2389,7 +2406,6 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
     ctx.open_error = BP_OK;
     ctx.root_fd = -1;
     ctx.dirfd_enabled = cocoa_dirfd_api_available();
-    ctx.path_race_limited = !ctx.dirfd_enabled;
     ctx.partial_count = 0;
     ctx.directories = NULL;
     ctx.directory_count = 0;
@@ -2436,9 +2452,6 @@ static int list_callback(const bp_entry_t *entry, void *user_data)
         NSString *details = [NSString stringWithFormat:
             @"%u selected files were extracted. %u items or attributes could not be restored.",
             (unsigned)ctx.extracted_file_count, (unsigned)ctx.partial_count];
-        if (ctx.path_race_limited)
-            details = [details stringByAppendingString:
-                @" This macOS version cannot prevent concurrent parent-directory changes during extraction."];
         [a setMessageText:@"Extraction partially complete"];
         [a setInformativeText:details];
         [a runModal];

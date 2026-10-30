@@ -77,6 +77,8 @@ for attempt in $(seq 1 100); do
     sleep 0.1
 done
 test -s "$6"
+test -f "$5/nested/empty.txt"
+test ! -s "$5/nested/empty.txt"
 # Select both nested paths with the same leaf and flatten into the process
 # working directory. The chooser's sidebar target is that directory.
 main=$(xdotool search --sync --onlyvisible --name '^BoltPack$' | head -1)
@@ -380,6 +382,18 @@ def main() -> int:
         source.write_bytes(payload)
         source.chmod(int(entry["mode"], 8))
         os.utime(source, (entry["mtime_epoch"], entry["mtime_epoch"]))
+        empty_entry = manifest["entries"][1]
+        empty_relative = pathlib.PurePosixPath(empty_entry["archive_name"])
+        empty_source = source_root.joinpath(*empty_relative.parts)
+        empty_source.parent.mkdir(parents=True, exist_ok=True)
+        empty_payload = empty_entry["content"].encode("utf-8")
+        if len(empty_payload) != empty_entry["size"] or \
+                hashlib.sha256(empty_payload).hexdigest() != empty_entry["sha256"]:
+            raise SystemExit("GUI empty-file fixture differs from its manifest")
+        empty_source.write_bytes(empty_payload)
+        empty_source.chmod(int(empty_entry["mode"], 8))
+        os.utime(empty_source, (empty_entry["mtime_epoch"],
+                                empty_entry["mtime_epoch"]))
         directory_entry = manifest["directories"][0]
         source.parent.chmod(int(directory_entry["mode"], 8))
         os.utime(source.parent, (directory_entry["mtime_epoch"],
@@ -533,6 +547,14 @@ def main() -> int:
             raise SystemExit("Linux FLTK GUI extraction did not restore file mode")
         if int(restored_stat.st_mtime) != entry["mtime_epoch"]:
             raise SystemExit("Linux FLTK GUI extraction did not restore file mtime")
+        restored_empty = output.joinpath(*empty_relative.parts)
+        empty_bytes = restored_empty.read_bytes()
+        if len(empty_bytes) != empty_entry["size"] or \
+                hashlib.sha256(empty_bytes).hexdigest() != empty_entry["sha256"]:
+            raise SystemExit("Linux FLTK GUI extraction differs for empty file")
+        if stat.S_IMODE(restored_empty.stat().st_mode) != int(empty_entry["mode"], 8) or \
+                int(restored_empty.stat().st_mtime) != empty_entry["mtime_epoch"]:
+            raise SystemExit("Linux FLTK GUI empty-file mode/time was not restored")
         restored_directory = extracted.parent.stat()
         if (stat.S_IMODE(restored_directory.st_mode) !=
                 int(directory_entry["mode"], 8)):

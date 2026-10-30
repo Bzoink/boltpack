@@ -14,6 +14,7 @@
  *   l <archive>              list archive contents
  *   t <archive>              test archive integrity
  *   i <archive>              show archive information
+ *   r <archive> <backup>     restore a verified BK####.BAK if target is missing
  *
  * ANSI C (C89/C90) with Watcom-specific directory scanning.
  *
@@ -37,6 +38,9 @@ static unsigned int bp_test_stack_low = 65535U;
 static const char *bp_test_stack_low_file;
 static unsigned int bp_test_stack_low_line;
 static unsigned long bp_test_dos_block_low = 0xffffffffUL;
+#ifdef BP_TEST_ALLOC_ACCOUNTING
+void bp_test_alloc_report(void);
+#endif
 
 static unsigned int bp_test_largest_dos_block_paras(void)
 {
@@ -75,6 +79,9 @@ static void bp_test_stack_report(void)
         printf("BP_DOS_LARGEST_BLOCK_LOW_BYTES=%lu\n", bp_test_dos_block_low);
     else
         printf("BP_DOS_LARGEST_BLOCK_LOW_BYTES=unknown\n");
+#ifdef BP_TEST_ALLOC_ACCOUNTING
+    bp_test_alloc_report();
+#endif
 }
 #endif
 #include <errno.h>
@@ -236,12 +243,27 @@ static int on_extract_directory(const bp_mini_entry_t *e, void *user_data)
         return BP_ERR_PARTIAL;
     }
 #ifdef __WATCOMC__
+    if (g_verbose) {
+        write(1, "  d  ", 5);
+        print_utf8_safe(e->name, (unsigned int)e->name_len);
+        write(1, "\n", 1);
+    }
+#else
+    if (g_verbose) {
+        printf("  d  ");
+        print_utf8_safe(e->name, (unsigned int)e->name_len);
+        putchar('\n');
+    }
+#endif
+#ifdef __WATCOMC__
     join_sep(path, BP_MAX_PATH, ctx->dest, '\\', local_name);
 #else
     if (ctx->dest[0]) snprintf(path, BP_MAX_PATH, "%s\\%s", ctx->dest, local_name);
     else snprintf(path, BP_MAX_PATH, "%s", local_name);
 #endif
     for (p = path; *p; p++) if (*p == '/') *p = '\\';
+    /* DOS path APIs may reject the trailing slash used to mark archive dirs. */
+    if (p > path && p[-1] == '\\') p[-1] = '\0';
     make_parents(path);
 #ifdef __WATCOMC__
     {
@@ -509,7 +531,12 @@ static void on_test(const bp_mini_entry_t *e, int result, void *user_data)
 #ifdef __WATCOMC__
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
-                    const char *fs_path, bp_uint8 platform);
+                    const char *fs_path, bp_uint8 platform,
+                    unsigned int depth);
+
+/* The 8 KiB DOS16 stack is qualified through 34 nested directory frames.
+ * Reject a deeper tree before entering another recursive frame. */
+#define BP_DOS16_SOURCE_MAX_DEPTH 34U
 
 typedef struct {
     int         fd;
@@ -668,7 +695,8 @@ static int add_dir_entry(bp_mini_archive_t *ar, const char *arc_name,
 }
 
 static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
-                    const char *fs_path, bp_uint8 platform)
+                    const char *fs_path, bp_uint8 platform,
+                    unsigned int depth)
 {
     struct find_t ff;
     bp_mini_path_buffers_t path_buffers;
@@ -686,6 +714,7 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
     BP_STACK_PROBE();
 
     rc      = BP_OK;
+    if (depth > BP_DOS16_SOURCE_MAX_DEPTH) return BP_ERR_NAME_TOO_LONG;
     if (_dos_getfileattr(fs_path, &attr) != 0) return BP_ERR_IO;
     if (!(attr & _A_SUBDIR)) return add_one_file(ar, arc_prefix, fs_path, platform);
     if (arc_prefix[0]) {
@@ -752,7 +781,10 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
         }
 
         if (ff.attrib & _A_SUBDIR) {
-            rc = add_path(ar, child_arc, child_fs, platform);
+            if (depth >= BP_DOS16_SOURCE_MAX_DEPTH)
+                rc = BP_ERR_NAME_TOO_LONG;
+            else
+                rc = add_path(ar, child_arc, child_fs, platform, depth + 1U);
         } else {
             rc = add_one_file(ar, child_arc, child_fs, platform);
         }
@@ -802,9 +834,13 @@ static int dos16_open_archive_stage(const char *target, char *stage,
     unsigned int tries;
     for (tries = 0; tries < 10000U; tries++) {
         int fd;
+        char backup[BP_MAX_PATH];
         unsigned int id = g_archive_stage_id++ % 10000U;
         if (dos16_sibling_name(target, stage, stage_size, "BPK", ".TMP",
                                id) != 0) return -1;
+        if (dos16_sibling_name(target, backup, sizeof(backup), "BK", ".BAK",
+                               id) != 0) return -1;
+        if ((access(backup, 0) == 0) || (errno != ENOENT)) continue;
         fd = open(stage, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0);
         if (fd >= 0) return fd;
         if (errno != EEXIST) return -1;
@@ -812,17 +848,59 @@ static int dos16_open_archive_stage(const char *target, char *stage,
     return -1;
 }
 
-static int dos16_next_backup_name(const char *target, char *backup,
-                                  size_t backup_size)
+static int dos16_stage_id(const char *path, unsigned int *id)
 {
-    unsigned int tries;
-    for (tries = 0; tries < 10000U; tries++) {
-        unsigned int id = g_archive_stage_id++ % 10000U;
-        if (dos16_sibling_name(target, backup, backup_size, "BK", ".BAK",
-                               id) != 0) return -1;
-        if (access(backup, 0) != 0 && errno == ENOENT) return 0;
+    const char *base = path;
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    unsigned int value = 0;
+    unsigned int i;
+    if (slash != NULL && (bslash == NULL || slash > bslash)) base = slash + 1;
+    else if (bslash != NULL) base = bslash + 1;
+    if (strlen(base) != 11U || base[0] != 'B' || base[1] != 'P' ||
+        base[2] != 'K' || base[7] != '.' || base[8] != 'T' ||
+        base[9] != 'M' || base[10] != 'P')
+        return -1;
+    for (i = 3; i < 7; i++) {
+        if (base[i] < '0' || base[i] > '9') return -1;
+        value = value * 10U + (unsigned int)(base[i] - '0');
     }
-    return -1;
+    *id = value;
+    return 0;
+}
+
+static int dos16_backup_id(const char *path, unsigned int *id)
+{
+    const char *base = path;
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    unsigned int value = 0;
+    unsigned int i;
+    if (slash != NULL && (bslash == NULL || slash > bslash)) base = slash + 1;
+    else if (bslash != NULL) base = bslash + 1;
+    if (strlen(base) != 10U || base[0] != 'B' || base[1] != 'K' ||
+        base[6] != '.' || base[7] != 'B' || base[8] != 'A' || base[9] != 'K')
+        return -1;
+    for (i = 2; i < 6; i++) {
+        if (base[i] < '0' || base[i] > '9') return -1;
+        value = value * 10U + (unsigned int)(base[i] - '0');
+    }
+    *id = value;
+    return 0;
+}
+
+static int dos16_path_equal(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a++;
+        char cb = *b++;
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 'a' + 'A');
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 'a' + 'A');
+        if (ca != cb) return 0;
+    }
+    return *a == '\0' && *b == '\0';
 }
 
 static int dos16_publish_archive(const char *target, const char *stage,
@@ -831,8 +909,15 @@ static int dos16_publish_archive(const char *target, const char *stage,
 {
     char backup[BP_MAX_PATH];
     if (original_exists) {
-        if (dos16_next_backup_name(target, backup, sizeof(backup)) != 0 ||
+        unsigned int stage_id;
+        if (dos16_stage_id(stage, &stage_id) != 0 ||
+            dos16_sibling_name(target, backup, sizeof(backup), "BK", ".BAK",
+                               stage_id) != 0 || access(backup, 0) == 0 ||
+            errno != ENOENT ||
             rename(target, backup) != 0) return BP_ERR_IO;
+#ifdef BP_TEST_EXIT_AFTER_BACKUP
+        exit(91);
+#endif
         if (rename(stage, target) != 0) {
             if (rename(backup, target) != 0) {
                 bp_wstr(2, PROG_NAME ": original archive remains at recovery path: ");
@@ -955,7 +1040,7 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
         }
 
 #ifdef __WATCOMC__
-        rc = add_path(&ar, arc_name, argv[i], BP_OS_DOS);
+        rc = add_path(&ar, arc_name, argv[i], BP_OS_DOS, 1U);
 #else
         fprintf(stderr, PROG_NAME ": directory scanning requires Watcom C\n");
         rc = BP_ERR_IO;
@@ -1324,6 +1409,79 @@ static int cmd_test(const char *arc_path)
     return 0;
 }
 
+/* Restore only an explicitly selected, verified transaction backup.  Refuse
+ * to replace any current target so recovery never discards a newer archive. */
+static int cmd_recover(const char *arc_path, const char *backup_path)
+{
+#ifdef __WATCOMC__
+    char expected_backup[BP_MAX_PATH];
+    char stage_path[BP_MAX_PATH];
+    unsigned int backup_id;
+    unsigned int backup_attr;
+    int stage_present;
+    int stage_valid = 0;
+    if (!dos16_path_is_83(arc_path, BP_TYPE_DATA) ||
+        !dos16_path_is_83(backup_path, BP_TYPE_DATA) ||
+        dos16_backup_id(backup_path, &backup_id) != 0 ||
+        dos16_sibling_name(arc_path, expected_backup, sizeof(expected_backup),
+                           "BK", ".BAK", backup_id) != 0 ||
+        !dos16_path_equal(backup_path, expected_backup) ||
+        dos16_sibling_name(arc_path, stage_path, sizeof(stage_path),
+                           "BPK", ".TMP", backup_id) != 0) {
+        bp_wstr(2, PROG_NAME ": recovery requires a same-directory BK####.BAK\n");
+        return 1;
+    }
+    if (access(arc_path, 0) == 0) {
+        bp_wstr(2, PROG_NAME ": recovery target already exists: ");
+        bp_wstr(2, arc_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (errno != ENOENT || _dos_getfileattr(backup_path, &backup_attr) != 0 ||
+        (backup_attr & _A_SUBDIR) != 0) {
+        bp_wstr(2, PROG_NAME ": cannot inspect recovery backup: ");
+        bp_wstr(2, backup_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (cmd_test(backup_path) != 0) {
+        bp_wstr(2, PROG_NAME ": recovery backup failed integrity test\n");
+        return 1;
+    }
+    stage_present = access(stage_path, 0) == 0;
+    if (!stage_present && errno != ENOENT) {
+        bp_wstr(2, PROG_NAME ": cannot inspect recovery stage: ");
+        bp_wstr(2, stage_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (stage_present) stage_valid = cmd_test(stage_path) == 0;
+    if (rename(backup_path, arc_path) != 0) {
+        bp_wstr(2, PROG_NAME ": cannot restore recovery backup: ");
+        bp_wstr(2, backup_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (stage_present && stage_valid && remove(stage_path) != 0) {
+        bp_wstr(2, PROG_NAME ": archive restored; verified replacement stage remains: ");
+        bp_wstr(2, stage_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (stage_present && !stage_valid) {
+        bp_wstr(2, PROG_NAME ": archive restored; unverified stage retained: ");
+        bp_wstr(2, stage_path); write(2, "\n", 1);
+        return 1;
+    }
+    if (g_verbose) {
+        bp_wstr(1, "Restored "); bp_wstr(1, arc_path);
+        bp_wstr(1, " from "); bp_wstr(1, backup_path);
+        write(1, "\n", 1);
+    }
+    return 0;
+#else
+    (void)arc_path;
+    (void)backup_path;
+    fprintf(stderr, PROG_NAME ": recovery is available only in the DOS build\n");
+    return 1;
+#endif
+}
+
 /* ---- cmd_info ---------------------------------------------------------- */
 
 static const char *os_name(bp_uint8 os)
@@ -1462,6 +1620,7 @@ static void usage(void)
         "  bpmini l <archive>             list contents\n"
         "  bpmini t <archive>             test integrity\n"
         "  bpmini i <archive>             show info\n"
+        "  bpmini r <archive> <backup>    restore verified BK####.BAK if target missing\n"
         "Options:\n"
         "  -b8k / -b16k / -b32k           block size (create only)\n"
         "  -m0                            store, no compression\n"
@@ -1478,6 +1637,7 @@ static void usage(void)
           "  bpmini l <archive>             list contents\n"
           "  bpmini t <archive>             test integrity\n"
           "  bpmini i <archive>             show info\n"
+          "  bpmini r <archive> <backup>    restore verified BK####.BAK if target missing\n"
           "Options:\n"
           "  -b8k / -b16k / -b32k           block size (create only)\n"
           "  -m0                            store, no compression\n"
@@ -1579,6 +1739,12 @@ int main(int argc, char **argv)
         return cmd_test(arc_path);
     case 'i':
         return cmd_info(arc_path);
+    case 'r':
+        if (files_start >= argc) {
+            usage();
+            return 1;
+        }
+        return cmd_recover(arc_path, argv[files_start]);
     default:
 #ifdef __WATCOMC__
         bp_wstr(2, PROG_NAME ": unknown command '");

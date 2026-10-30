@@ -1,8 +1,11 @@
 {
-  "case": "Linux mini and full-core interchange on QEMU i386",
+  "case": "Linux mini and full-core interchange on native 32-bit Linux (QEMU override available)",
   "names": {
     "metadata_member": "src/child/file.txt",
-    "file_directory_conflict": ["parent", "parent/child.txt"]
+    "file_directory_conflict": [
+      "parent",
+      "parent/child.txt"
+    ]
   },
   "files": {
     "metadata": {
@@ -28,6 +31,12 @@
     "old_time_source": {
       "bytes": 13,
       "sha256": "3f28ba4a4bc72010030bb807a4bae658ed44be09b5069b310a8b3de00b4d2556"
+    },
+    "empty_file": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode_octal": "0600",
+      "mtime_unix": 0
     }
   },
   "metadata": {
@@ -43,12 +52,16 @@
       "mode_octal": "0751",
       "mtime_unix": 1234567892
     },
-    "negative_time_source_mtime_unix": -86400
+    "negative_time_source_mtime_unix": -86400,
+    "empty_file": {
+      "mode_octal": "0600",
+      "mtime_unix": 0
+    }
   },
   "expected_outcomes": {
     "mini_to_full_profile": "full core extracts the mini-created BoltLite/16 KiB archive byte-identically",
     "full_to_mini_profile": "mini validates and extracts the full-core-created BoltLite/16 KiB archive byte-identically",
-    "metadata": "mini and full extraction preserve mode and epoch-zero file/directory times",
+    "metadata": "mini and full extraction preserve nonempty and empty file modes plus epoch-zero file/directory times",
     "file_directory_conflict_both_orders": "mini and full refuse before changing absent or existing output roots",
     "no_overwrite": "mini refuses and retains existing bytes",
     "corrupt_payload": "mini refuses corrupted data and cleans its stage",

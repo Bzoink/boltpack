@@ -18,4 +18,5 @@
 
 #define BP_CREATOR_OS  BP_OS_SCO
 #define BP_CREATOR_CPU BP_CPU_X86
+#define BP_REFUSE_PATH_RACE_EXTRACTION 1
 #include "../linux/main.c"

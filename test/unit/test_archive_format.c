@@ -1637,6 +1637,7 @@ static void test_dos_time_interop(void)
 static void test_atari_name_projection(void)
 {
     bp_atari_name_set_t set;
+    bp_atari_tree_t tree;
     char key[256];
     char name[16];
     unsigned int key_length;
@@ -1680,6 +1681,34 @@ static void test_atari_name_projection(void)
     UNIT_CHECK(rc == BP_ERR_CORRUPT,
                "case-insensitive destination collision is rejected");
     bp_atari_name_set_free(&set);
+
+    memset(&tree, 0, sizeof(tree));
+    rc = bp_atari_project_name("node", 0, key, sizeof(key), &key_length);
+    if (rc == BP_OK)
+        rc = bp_atari_tree_add(&tree, "node", key, key_length, 0);
+    if (rc == BP_OK) {
+        rc = bp_atari_project_name("node/child", 0, key, sizeof(key),
+                                   &key_length);
+        if (rc == BP_OK)
+            rc = bp_atari_tree_add(&tree, "node/child", key, key_length, 0);
+    }
+    UNIT_CHECK(rc == BP_ERR_CORRUPT,
+               "file then child path is rejected by the Atari tree index");
+    bp_atari_tree_free(&tree);
+
+    memset(&tree, 0, sizeof(tree));
+    rc = bp_atari_project_name("node/child", 0, key, sizeof(key),
+                               &key_length);
+    if (rc == BP_OK)
+        rc = bp_atari_tree_add(&tree, "node/child", key, key_length, 0);
+    if (rc == BP_OK) {
+        rc = bp_atari_project_name("node", 0, key, sizeof(key), &key_length);
+        if (rc == BP_OK)
+            rc = bp_atari_tree_add(&tree, "node", key, key_length, 0);
+    }
+    UNIT_CHECK(rc == BP_ERR_CORRUPT,
+               "child then file path is rejected by the Atari tree index");
+    bp_atari_tree_free(&tree);
 
     bp_atari_name_set_init(&set);
     rc = BP_OK;
@@ -1864,8 +1893,155 @@ static int full_metadata_test_done(const bp_entry_t *entry, bp_io_t *out,
     MiniInteropState *s = (MiniInteropState *)user_data;
     (void)entry; (void)out;
     s->done_count++;
+    s->done_status = status;
     if (status == BP_OK && s->report_partial) return BP_ERR_PARTIAL;
     return status;
+}
+
+static void test_block_payload_boundaries(void)
+{
+    MemIO mem;
+    bp_io_t io, source;
+    bp_archive_t ar;
+    StringSrc input;
+    unsigned char *original, *before;
+    unsigned char output[256];
+    MemIO dest;
+    bp_io_t dest_io;
+    const char *delete_names[1] = { "FILE.TXT" };
+    MiniInteropState state;
+    bp_uint64 table, table_size, compressed;
+    unsigned old_table, new_table, name_len, tail, inline_fields;
+    long original_size;
+    int rc, delta;
+    UNIT_SECTION("Blocked payload size boundaries");
+    mem.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    original = (unsigned char *)malloc(MEM_IO_CAP);
+    before = (unsigned char *)malloc(MEM_IO_CAP);
+    dest.buf = (unsigned char *)malloc(MEM_IO_CAP);
+    if (!mem.buf || !original || !before || !dest.buf) exit(2);
+    mem.pos = mem.size = 0; mem.cap = MEM_IO_CAP;
+    io = make_mem_io(&mem);
+    source = make_string_io(&input, FILE1_DATA, FILE1_LEN);
+    rc = bp_archive_create(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    if (rc == BP_OK)
+        rc = bp_archive_add_entry(&ar, "FILE.TXT", BP_TYPE_DATA, BP_OS_LINUX,
+                                  &source, bp_u64_from_u32(FILE1_LEN), bp_u64_from_u32(0));
+    if (rc == BP_OK) rc = bp_archive_finalize(&ar);
+    bp_archive_close(&ar);
+    UNIT_CHECK(rc == BP_OK, "blocked boundary fixture created");
+    original_size = mem.size;
+    memcpy(original, mem.buf, (size_t)original_size);
+    table = bp_read_le64(original + original_size - BP_FOOTER_SIZE);
+    table_size = bp_read_le64(original + original_size - BP_FOOTER_SIZE + 8);
+    old_table = (unsigned)table.lo;
+    name_len = bp_read_le16(original + old_table + BP_TABLE_HDR_V3);
+    tail = old_table + BP_TABLE_HDR_V3 + 2U + name_len;
+    compressed = bp_read_le64(original + tail + 8);
+    inline_fields = BP_HEADER_SIZE + 4U + name_len;
+    for (delta = -1; delta <= 1; delta += 2) {
+        memcpy(mem.buf, original, (size_t)original_size);
+        mem.pos = 0; mem.size = original_size + delta;
+        new_table = (unsigned)((long)old_table + delta);
+        memmove(mem.buf + new_table, mem.buf + old_table,
+                (size_t)(original_size - (long)old_table));
+        if (delta > 0) mem.buf[old_table] = 0;
+        bp_write_le64(mem.buf + inline_fields + 8,
+                      bp_u64_from_u32((bp_uint32)((long)compressed.lo + delta)));
+        tail = new_table + BP_TABLE_HDR_V3 + 2U + name_len;
+        bp_write_le64(mem.buf + tail + 8,
+                      bp_u64_from_u32((bp_uint32)((long)compressed.lo + delta)));
+        bp_write_le64(mem.buf + mem.size - BP_FOOTER_SIZE, bp_u64_from_u32(new_table));
+        bp_write_le64(mem.buf + 16, bp_u64_from_u32((bp_uint32)mem.size));
+        bp_write_le32(mem.buf + BP_HEADER_TABLE_CRC_OFF,
+                      bp_crc32(0, mem.buf + new_table, table_size.lo));
+        bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                      bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+        UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+                   "full reader rejects blocked payload size mismatch");
+        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+                   "mini reader rejects blocked payload size mismatch");
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                        full_metadata_test_done, NULL, &state);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && state.count == 0 && state.done_count == 0,
+                   "full extraction refuses malformed framing before opening output");
+        memset(&state, 0, sizeof(state));
+        state.output.buf = output; state.output.cap = sizeof(output);
+        state.io = make_mem_io(&state.output);
+        rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                             mini_interop_done, &state);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && state.done_status == BP_ERR_CORRUPT,
+                   "mini extraction reports malformed framing to cleanup");
+        memcpy(before, mem.buf, (size_t)mem.size);
+        rc = bp_archive_open_append(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && memcmp(before, mem.buf, (size_t)mem.size) == 0,
+                   "append rejects malformed source without modifying it");
+        dest.pos = dest.size = 0; dest.cap = MEM_IO_CAP;
+        dest_io = make_mem_io(&dest);
+        rc = bp_archive_create(&ar, &dest_io, BP_BLOCK_8K, BP_METHOD_STORED);
+        if (rc == BP_OK) rc = bp_archive_copy_from(&ar, &io);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && dest.size == BP_HEADER_SIZE,
+                   "copy rejects malformed source before copying entries");
+        bp_archive_close(&ar);
+        dest.pos = dest.size = 0;
+        rc = bp_archive_delete(&io, &dest_io, delete_names, 1, NULL);
+        UNIT_CHECK(rc == BP_ERR_CORRUPT && dest.size == 0 &&
+                   memcmp(before, mem.buf, (size_t)mem.size) == 0,
+                   "delete rejects malformed source before writing output");
+    }
+    /* Turn the same entry into an unframed nonempty subject with no payload.
+     * All offsets, duplicated fields, and CRCs remain internally consistent. */
+    memcpy(mem.buf, original, (size_t)original_size);
+    mem.pos = 0; mem.size = original_size - (long)compressed.lo;
+    new_table = old_table - (unsigned)compressed.lo;
+    memmove(mem.buf + new_table, mem.buf + old_table,
+            (size_t)(original_size - (long)old_table));
+    bp_write_le64(mem.buf + inline_fields + 8, bp_u64_from_u32(0));
+    bp_write_le32(mem.buf + inline_fields + 22, 0);
+    tail = new_table + BP_TABLE_HDR_V3 + 2U + name_len;
+    bp_write_le64(mem.buf + tail + 8, bp_u64_from_u32(0));
+    bp_write_le64(mem.buf + mem.size - BP_FOOTER_SIZE, bp_u64_from_u32(new_table));
+    bp_write_le64(mem.buf + 16, bp_u64_from_u32((bp_uint32)mem.size));
+    bp_write_le32(mem.buf + BP_HEADER_TABLE_CRC_OFF,
+                  bp_crc32(0, mem.buf + new_table, table_size.lo));
+    bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
+                  bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
+    memcpy(before, mem.buf, (size_t)mem.size);
+    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT &&
+               bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+               "full and mini reject nonempty unframed entry without payload");
+    memset(&state, 0, sizeof(state));
+    rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
+                                    full_metadata_test_done, NULL, &state);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT && state.count == 0,
+               "full extraction refuses empty unframed payload before output");
+    memset(&state, 0, sizeof(state));
+    rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
+                                         mini_interop_done, &state);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT && state.count == 0,
+               "mini extraction refuses empty unframed payload before output");
+    rc = bp_archive_open_append(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT && memcmp(before, mem.buf, (size_t)mem.size) == 0,
+               "append refuses empty unframed payload without modifying archive");
+    dest.pos = dest.size = 0; dest.cap = MEM_IO_CAP;
+    dest_io = make_mem_io(&dest);
+    rc = bp_archive_create(&ar, &dest_io, BP_BLOCK_8K, BP_METHOD_STORED);
+    if (rc == BP_OK) rc = bp_archive_copy_from(&ar, &io);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT && dest.size == BP_HEADER_SIZE,
+               "copy refuses empty unframed payload before copying entries");
+    bp_archive_close(&ar);
+    dest.pos = dest.size = 0;
+    rc = bp_archive_delete(&io, &dest_io, delete_names, 1, NULL);
+    UNIT_CHECK(rc == BP_ERR_CORRUPT && dest.size == 0 &&
+               memcmp(before, mem.buf, (size_t)mem.size) == 0,
+               "delete refuses empty unframed payload without writing output");
+    free(original);
+    free(before);
+    free(dest.buf);
+    free(mem.buf);
 }
 
 static void test_portable_metadata_archive(void)
@@ -2601,6 +2777,7 @@ int main(void)
     test_mini_projected_name_index();
     test_portable_metadata();
     test_portable_metadata_archive();
+    test_block_payload_boundaries();
     test_archive_edit_preserves_complete_groups();
     test_mini_local_directory_names();
     test_duplicate_writer_names();

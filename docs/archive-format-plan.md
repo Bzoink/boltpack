@@ -83,8 +83,9 @@ sequence. DOSBox-X FAT12 reports different mode bits for
 check now compares stable file type and object fields without requiring the
 path-derived inode to survive the recovery rename. The separate DOS16/DOSBox
 transfer fixture provides complementary CP437 and FAT timestamp coverage;
-native DOS crash recovery and all target filesystem behavior remain
-unqualified.
+FreeDOS 1.4/QEMU now verifies DOS16 recovery after a process exit between
+publication renames; hardware power-loss durability, native full-DOS recovery,
+and all other target filesystem behavior remain unqualified.
 The full DOS CLI's path-based publication has no protection against a
 concurrent parent-directory change. Its preflight queries DJGPP's LFN support
 for the destination volume and requires a conservative 8.3 profile when LFN is

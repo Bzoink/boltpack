@@ -2021,6 +2021,48 @@ static int read_entry_header(bp_io_t *io, bp_entry_t *entry)
     return BP_OK;
 }
 
+/* Check framing without decoding, so edits can reject structural corruption
+ * even when this build does not support the entry's compression method. */
+static int verify_block_framing(bp_io_t *io, const bp_entry_t *entry)
+{
+    bp_uint64 remaining = entry->original_size;
+    bp_uint64 packed = entry->compressed_size;
+    bp_uint8 hdr[BP_BLOCK_HDR_V3];
+    int rc;
+    if (bp_u64_is_zero(remaining))
+        return bp_u64_is_zero(packed) ? BP_OK : BP_ERR_CORRUPT;
+    if (bp_u64_is_zero(packed)) return BP_ERR_CORRUPT;
+    if (entry->block_size == 0 ||
+        (entry->entry_type == BP_TYPE_SYMLINK &&
+         bp_u64_cmp(packed, remaining) == 0)) return BP_OK;
+    while (!bp_u64_is_zero(remaining)) {
+        bp_uint32 comp, orig;
+        bp_off_t pos, end;
+        bp_uint64 next;
+        if (bp_u64_cmp(packed, bp_u64_from_u32(BP_BLOCK_HDR_V3)) < 0)
+            return BP_ERR_CORRUPT;
+        rc = io_read(io, hdr, BP_BLOCK_HDR_V3);
+        if (rc != BP_OK) return rc;
+        packed = bp_u64_sub(packed, bp_u64_from_u32(BP_BLOCK_HDR_V3));
+        comp = bp_read_le32(hdr);
+        orig = bp_read_le32(hdr + 4);
+        if (comp == 0 || orig == 0 || orig > entry->block_size ||
+            bp_u64_cmp(bp_u64_from_u32(comp), packed) > 0 ||
+            bp_u64_cmp(bp_u64_from_u32(orig), remaining) > 0)
+            return BP_ERR_CORRUPT;
+        pos = io_tell(io);
+        if (pos < 0) return BP_ERR_IO;
+        next = bp_u64_add(bp_off_to_u64(pos), bp_u64_from_u32(comp));
+        if (bp_u64_cmp(next, bp_off_to_u64(pos)) < 0) return BP_ERR_CORRUPT;
+        end = bp_u64_to_off(next);
+        if (end < 0) return BP_ERR_OVERFLOW;
+        if (io_seek(io, end, 0) != 0) return BP_ERR_IO;
+        packed = bp_u64_sub(packed, bp_u64_from_u32(comp));
+        remaining = bp_u64_sub(remaining, bp_u64_from_u32(orig));
+    }
+    return bp_u64_is_zero(packed) ? BP_OK : BP_ERR_CORRUPT;
+}
+
 /* Validate duplicated table and inline fields before any extraction or
  * archive edit can use them. Entry payloads occupy one contiguous region. */
 static int verify_table_entries(bp_io_t *io, bp_uint16 version,
@@ -2065,11 +2107,20 @@ static int verify_table_entries(bp_io_t *io, bp_uint16 version,
                   table.platform == header.platform &&
                   bp_u64_cmp(table.mtime, header.mtime) == 0 &&
                   table.flags == header.flags;
+        if (bp_u64_is_zero(table.original_size) &&
+            !bp_u64_is_zero(table.compressed_size)) matches = 0;
         end = bp_u64_add(table.offset, bp_u64_from_u32(table.header_size));
         if (bp_u64_cmp(end, table.offset) < 0) matches = 0;
         next = bp_u64_add(end, table.compressed_size);
         if (bp_u64_cmp(next, end) < 0 || bp_u64_cmp(next, table_off) > 0)
             matches = 0;
+        if (matches) {
+            rc = verify_block_framing(io, &header);
+            if (rc != BP_OK) {
+                free(header.name); free(table.name);
+                bp_metadata_group_close(&group); return rc;
+            }
+        }
         free(header.name);
         if (matches) {
             rc = bp_metadata_group_record(&group, &table.name,
@@ -2427,6 +2478,7 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
     int rc;
 
     if (bp_u64_is_zero(remaining)) {
+        if (!bp_u64_is_zero(entry->compressed_size)) return BP_ERR_CORRUPT;
         *out_checksum = bp_checksum_seed(ck_type);
         return BP_OK;
     }
@@ -2456,6 +2508,7 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
         bp_uint32 bsize = entry->block_size;
         bp_uint32 alloc_in;
         int single_blob = bsize == 0;
+        bp_uint64 packed_remaining = entry->compressed_size;
         fluff_ctx_t *dfctx = NULL;
 
         if (single_blob) {
@@ -2511,11 +2564,24 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
                 comp_sz = entry->compressed_size.lo;
                 orig_sz = remaining.lo;
             } else {
+                if (bp_u64_cmp(packed_remaining, bp_u64_from_u32(blk_hdr_sz)) < 0) {
+                    if (dfctx) fluff_ctx_free(dfctx);
+                    free(in_buf); free(dec_buf);
+                    return BP_ERR_CORRUPT;
+                }
+                packed_remaining = bp_u64_sub(packed_remaining, bp_u64_from_u32(blk_hdr_sz));
                 rc = io_read(io, blk_hdr, blk_hdr_sz);
                 if (rc != BP_OK) { if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; } free(in_buf); free(dec_buf); return rc; }
                 comp_sz = bp_read_le32(blk_hdr);
                 orig_sz = bp_read_le32(blk_hdr + 4);
             }
+
+            if (bp_u64_cmp(packed_remaining, bp_u64_from_u32(comp_sz)) < 0) {
+                if (dfctx) fluff_ctx_free(dfctx);
+                free(in_buf); free(dec_buf);
+                return BP_ERR_CORRUPT;
+            }
+            packed_remaining = bp_u64_sub(packed_remaining, bp_u64_from_u32(comp_sz));
 
             if (orig_sz > bsize || comp_sz > alloc_in) {
                 if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; }
@@ -2623,6 +2689,11 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
             }
         }
 
+        if (!bp_u64_is_zero(packed_remaining)) {
+            if (dfctx) fluff_ctx_free(dfctx);
+            free(in_buf); free(dec_buf);
+            return BP_ERR_CORRUPT;
+        }
         if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; }
         free(in_buf);
         free(dec_buf);
@@ -3132,10 +3203,10 @@ int bp_archive_copy_from(bp_archive_t *ar, bp_io_t *src_io)
         src_count = bp_read_le32(hdr + 8);
     }
 
-    if (src_count == 0) return BP_OK; /* empty archive, nothing to copy */
-
     rc = verify_table_crc(src_io, src_version);
     if (rc != BP_OK) return rc;
+
+    if (src_count == 0) return BP_OK; /* verified empty archive */
 
     if (ar->profile != BP_PROFILE_NONE) {
         rc = verify_table_entries(src_io, src_version, src_count);

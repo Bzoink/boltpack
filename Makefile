@@ -168,6 +168,39 @@ dos-host-test:
 	python3 test/check_dos_profile.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 
+# QNX, unidentified/pre-7.3 AIX, HP-UX, IRIX, NeXTSTEP, SCO, and Tru64 builds
+# cannot currently guarantee race-safe multi-component traversal. Their
+# wrappers refuse real extraction; host builds verify refusal happens before
+# output creation and dry-run remains available.
+.PHONY: posix-path-extract-refusal-host-test
+posix-path-extract-refusal-host-test:
+	$(MAKE) FRONTEND=qnx CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/qnx-host-test TARGET=build/qnx-host-test/boltpack all
+	$(MAKE) FRONTEND=aix CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/aix-legacy-host-test TARGET=build/aix-legacy-host-test/boltpack all
+	$(MAKE) FRONTEND=hpux CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/hpux-host-test TARGET=build/hpux-host-test/boltpack all
+	$(MAKE) FRONTEND=irix CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/irix-host-test TARGET=build/irix-host-test/boltpack all
+	$(MAKE) FRONTEND=nextstep CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/nextstep-host-test TARGET=build/nextstep-host-test/boltpack all
+	$(MAKE) FRONTEND=sco CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/sco-host-test TARGET=build/sco-host-test/boltpack all
+	$(MAKE) FRONTEND=tru64 CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/tru64-host-test TARGET=build/tru64-host-test/boltpack all
+	$(MAKE) FRONTEND=linux CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    BUILDDIR=build/linux-posix-refusal-host-test \
+	    TARGET=build/linux-posix-refusal-host-test/boltpack all
+	python3 test/check_qnx_extract_refusal.py \
+	    --refusing-boltpack build/qnx-host-test/boltpack \
+	    --refusing-boltpack build/aix-legacy-host-test/boltpack \
+	    --refusing-boltpack build/hpux-host-test/boltpack \
+	    --refusing-boltpack build/irix-host-test/boltpack \
+	    --refusing-boltpack build/nextstep-host-test/boltpack \
+	    --refusing-boltpack build/sco-host-test/boltpack \
+	    --refusing-boltpack build/tru64-host-test/boltpack \
+	    --linux-boltpack build/linux-posix-refusal-host-test/boltpack
+
 # Build selected POSIX wrappers against the host libc with Linux-only feature
 # branches disabled, then exercise directory-relative extraction. These host
 # shims do not replace target-system builds or runtime checks. The AIX shim
@@ -616,8 +649,10 @@ ATARI_PATH_TEST_BIN = build/atari-path-test/test_atari_path
 HATARI ?= hatari
 HCONSOLE ?= /usr/share/hatari/hconsole/hconsole.py
 HATARI_TOS ?=
+EMUTOS_ROM ?=
+FREEMINT_ROOT ?= build/freemint-probe/diskroot
 
-.PHONY: atari atari-cli atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
+.PHONY: atari atari-cli atari-gui-create-test atari-gui-create-fat12-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -716,6 +751,28 @@ macos9-68k-kit:
 	$(MAKE) CC=$(CC) COREDIR=$(MACOS68K_FRONTEND) \
 	    BOLTLZDIR=$(MACOS68K_FRONTEND) \
 	    MACOS68K_BUILDDIR=build/macos9-68k-kit macos9-68k
+
+# Classic Mac OS PPC frontend link using Retro68 and the PowerPC import
+# libraries. Retro68 emits XCOFF here, not a runnable Mac OS 9 PEF application.
+MACOS9_PPC_CC       ?= $(RETRO68_ROOT)/bin/powerpc-apple-macos-gcc
+MACOS9_PPC_LIBDIR   ?= $(RETRO68_ROOT)/universal/libppc
+MACOS9_PPC_BUILDDIR ?= build/macos9-ppc
+
+.PHONY: macos9-ppc-xcoff
+macos9-ppc-xcoff:
+	mkdir -p $(MACOS9_PPC_BUILDDIR)
+	$(MACOS68K_ENV) $(MACOS9_PPC_CC) -O2 \
+	    -I$(RETRO68_ROOT)/universal/CIncludes \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/macos9/main.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -Wl,--start-group $(MACOS9_PPC_LIBDIR)/*.a -Wl,--end-group \
+	    -o $(MACOS9_PPC_BUILDDIR)/BoltPack.xcoff
 
 # macOS (via OSXCross arm64-apple-macosx11-clang)
 MACOSX_CC      = arm64-apple-macosx11-clang
@@ -1106,7 +1163,7 @@ QL_BUILDDIR=build/ql
 QL_CC_EXEC=$(shell command -v $(firstword $(QL_CC)) 2>/dev/null)
 QL_CC_DIR=$(patsubst %/,%,$(dir $(QL_CC_EXEC)))
 
-.PHONY: ql ql-host-test ql-path-test ql-time-host-test
+.PHONY: ql ql-host-test ql-path-test ql-time-host-test ql-sqlux-qdirect-diagnostic
 ql:
 	@if [ -z "$(QL_CC_EXEC)" ]; then
 	    echo "  SKIP  ql ($(firstword $(QL_CC)) not found)"
@@ -1170,11 +1227,22 @@ ql-host-test:
 # Set QL_SQLUX and QL_ROM to the emulator and its Minerva ROM paths.
 QL_SQLUX ?= build/ql-sdk/sqlux-build3/sqlux
 QL_ROM ?= build/ql-sdk/source/sqlux/roms/Minerva_1.98a1.bin
+QL_QDIRECT_OUTPUT ?= build/r07-ql-qdirect-$(shell date +%Y%m%d-%H%M%S)
 ql-sqlux-interoperability-test: ql all linuxmini
 	python3 test/check_sqlux_interop.py --sqlux "$(QL_SQLUX)" \
 	    --rom "$(QL_ROM)" --ql-binary build/ql/boltpack \
 	    --linux-binary build/linux/boltpack \
 	    --mini-binary build/linux32mini/bpmini
+
+ql-sqlux-qdirect-diagnostic: ql all
+	@test -n "$(QL_CC_EXEC)" || { echo "Set QL_CC to the working qcc compiler" >&2; exit 2; }
+	mkdir -p $(QL_BUILDDIR)
+	PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) -o $(QL_BUILDDIR)/qdirect-probe \
+	    test/ql_host/qdirect_probe.c
+	python3 test/check_sqlux_qdirect.py --sqlux "$(QL_SQLUX)" \
+	    --rom "$(QL_ROM)" --probe $(QL_BUILDDIR)/qdirect-probe \
+	    --boltpack $(QL_BUILDDIR)/boltpack --linux-boltpack $(TARGET) \
+	    --output "$(QL_QDIRECT_OUTPUT)"
 
 ql-path-test:
 	mkdir -p build/ql-path-test
@@ -1231,8 +1299,8 @@ x68k-host-test:
 	$(MAKE) CC=$(CC) all linuxmini
 	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini test/reference/interoperability/x68k-host-shim.json $(X68K_HOST_DIR)/create_collision_archive
 
-# Build the Plan 9 frontend against host shims for profile CLI testing. The
-# Plan 9 native compiler and filesystem runtime are qualified separately.
+# Build the Plan 9 frontend against host shims for profile CLI testing. Native
+# Plan 9 runtime qualification is unavailable on this host.
 PLAN9_HOST_DIR = build/plan9-host
 PLAN9_HOST_BIN = $(PLAN9_HOST_DIR)/boltpack
 .PHONY: plan9-host-test
@@ -1418,22 +1486,26 @@ cross-all: all musl arm arm64 riscv \
 
 asan: $(ASAN_TARGET)
 
-# Optional cross-runtime checks for environments with QEMU-i386, Open Watcom,
-# and DOSBox. These complement the host suite without making those tools
-# mandatory for every `make test` run.
+# Optional cross-runtime checks for environments with 32-bit Linux support,
+# QEMU-i386, Open Watcom, and DOSBox. The mini target runs directly by default;
+# set LINUXMINI_RUNNER=qemu-i386 where native 32-bit execution is unavailable.
+LINUXMINI_RUNNER ?=
 .PHONY: linuxmini-interoperability-test dos16-interoperability-test dos16-stack-interoperability-test dosboxx-fat12-interoperability-test dosboxx-fat12-cp850-interoperability-test freedos-cp850-interoperability-test dos-djgpp-dosboxx-fat12-test
 linuxmini-interoperability-test: modern linuxmini
-	BP_TEST_LINUXMINI_RUNNER=qemu-i386 python3 test/check_linuxmini_interop.py
+	BP_TEST_LINUXMINI_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_linuxmini_interop.py
 	python3 test/check_extract_race.py --boltpack build/linux/boltpack
-	BP_TEST_RUNNER=qemu-i386 python3 test/check_extract_race.py \
+	BP_TEST_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_extract_race.py \
 	    --boltpack $(LINUXMINI_EXE) --mini
 
 dos16-interoperability-test: modern dos16 unit-test-dos16
 	$(BUILDDIR)/boltpack t build/unit-test-dos16/LIMIT.BLT
 	python3 test/check_dos16_interop.py
 
-dos16-stack-interoperability-test: modern dos16-stack-probe
-	BP_DOS16_EXE="$(CURDIR)/$(DOS16_STACK_EXE)" BP_DOS16_STACK_REPORT=1 \
+dos16-stack-interoperability-test: modern dos16-stack-probe unit-test-dos16
+	BP_DOS16_EXE="$(CURDIR)/$(DOS16_STACK_EXE)" \
+	    BP_DOS16_WRITER_PROBE="$(CURDIR)/$(DOS16_STACK_WRITER_EXE)" \
+	    BP_DOS16_WRITER_ARCHIVE="$(CURDIR)/$(DOS16_STACK_BDIR)/WRITMAX.BLT" \
+	    BP_DOS16_STACK_REPORT=1 \
 	    BP_DOS16_STACK_REPORT_FILE="$(CURDIR)/$(DOS16_STACK_BDIR)/resource-low-water.txt" \
 	    python3 test/check_dos16_interop.py
 
@@ -1449,14 +1521,17 @@ FREEDOS_BOOT_IMAGE ?=
 FREEDOS_MODE ?=
 FREEDOS_DISPLAY ?=
 FREEDOS_EGA_CPX ?=
+FREEDOS_OUTPUT ?=
 .PHONY: freedos-cp850-interoperability-test
-freedos-cp850-interoperability-test: modern dos16-cp850
+freedos-cp850-interoperability-test: modern dos16-cp850 dos16-cp850-crash-hook
 	@test -f "$(FREEDOS_BOOT_IMAGE)" -a -f "$(FREEDOS_MODE)" -a \
 	    -f "$(FREEDOS_DISPLAY)" -a -f "$(FREEDOS_EGA_CPX)" || { \
 	    echo "Set FREEDOS_BOOT_IMAGE, FREEDOS_MODE, FREEDOS_DISPLAY, and FREEDOS_EGA_CPX" >&2; exit 2; }
 	python3 test/check_freedos_cp850.py --boot-image "$(FREEDOS_BOOT_IMAGE)" \
 	    --mode "$(FREEDOS_MODE)" --display "$(FREEDOS_DISPLAY)" \
-	    --cpx "$(FREEDOS_EGA_CPX)"
+	    --cpx "$(FREEDOS_EGA_CPX)" \
+	    --crash-exe "$(CURDIR)/build/dos16-cp850-crash-hook/bpcrash.exe" \
+	    $(if $(strip $(FREEDOS_OUTPUT)),--output "$(FREEDOS_OUTPUT)",)
 
 # Set CWSDPMI to CWSDPMI.EXE from the DJGPP csdpmi package to qualify the
 # full 32-bit DOS frontend under DOSBox-X, independently from the DOS16 mini.
@@ -1474,8 +1549,9 @@ AMIGA_PUBLISH_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-publish-failure
 AMIGA_PUBLISH_PAUSE_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-publish-pause
 AMIGA_NATIVE_PUBLISH_PAUSE_BIN = $(AMIGA68K_BUILDDIR)/boltpack-native-publish-pause
 AMIGA_SOURCE_PAUSE_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-source-pause
+AMIGA_PARENT_SUBSTITUTION_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-parent-substitution
 
-.PHONY: amiga68k-publish-failure-test amiga68k-publish-pause-test amiga68k-native-publish-pause-test amiga68k-source-pause-test fsuae-interruption-test fsuae-publish-rollback-test fsuae-publish-interruption-test fsuae-native-publish-recovery-test fsuae-native-interoperability-test fsuae-source-race-test
+.PHONY: amiga68k-publish-failure-test amiga68k-publish-pause-test amiga68k-native-publish-pause-test amiga68k-source-pause-test amiga68k-parent-substitution-test fsuae-interruption-test fsuae-publish-rollback-test fsuae-publish-interruption-test fsuae-native-publish-recovery-test fsuae-native-interoperability-test fsuae-source-race-test fsuae-parent-substitution-test
 amiga68k-publish-failure-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_FAIL_PUBLISH \
@@ -1517,11 +1593,27 @@ amiga68k-source-pause-test:
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_SOURCE_PAUSE_TEST_BIN)
 	@echo "  OK    $(AMIGA_SOURCE_PAUSE_TEST_BIN)"
 
+amiga68k-parent-substitution-test:
+	mkdir -p $(AMIGA68K_BUILDDIR)
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_EXTRACT_STAGE \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
+	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PARENT_SUBSTITUTION_TEST_BIN)
+	@echo "  OK    $(AMIGA_PARENT_SUBSTITUTION_TEST_BIN)"
+
 fsuae-source-race-test: modern amiga68k-source-pause-test
 	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --xdftool "$(XDFTOOL)" --size-mib 64 --operation source-replace \
 	    --amiga-cli "$(AMIGA_SOURCE_PAUSE_TEST_BIN)"
+
+fsuae-parent-substitution-test: modern amiga68k-parent-substitution-test
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib 1 --operation parent-substitute \
+	    --amiga-cli "$(AMIGA_PARENT_SUBSTITUTION_TEST_BIN)"
 
 fsuae-interruption-test: modern amiga68k
 	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
@@ -1556,12 +1648,17 @@ fsuae-native-publish-recovery-test: modern amiga68k-native-publish-pause-test am
 	    --xdftool "$(XDFTOOL)" --pause-cli "$(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)" \
 	    --recovery-cli "build/amiga/boltpack" --filesystem ffs
 
+AMIGA_NATIVE_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
+AMIGA_NATIVE_OFS_OUTPUT ?= build/amiga-native-ofs-$(AMIGA_NATIVE_RUN_TAG)
+AMIGA_NATIVE_FFS_OUTPUT ?= build/amiga-native-ffs-$(AMIGA_NATIVE_RUN_TAG)
 fsuae-native-interoperability-test: modern amiga68k
 	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --output "$(AMIGA_NATIVE_OFS_OUTPUT)" \
 	    --xdftool "$(XDFTOOL)" --filesystem ofs --skip-codecs --depth 4 --stack 0
 	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --output "$(AMIGA_NATIVE_FFS_OUTPUT)" \
 	    --xdftool "$(XDFTOOL)" --filesystem ffs --skip-codecs --depth 4 --stack 0
 
 .PHONY: amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
@@ -1612,7 +1709,7 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="
@@ -1792,13 +1889,18 @@ linuxmini:
 
 # ---- dos16: Open Watcom, 16-bit DOS compact model -----------------------
 DOS16_CODEPAGE_FLAGS ?=
+DOS16_TEST_FLAGS ?=
 DOS16_CORE  = -bt=dos -mc -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS)
-DOS16_FRONT = -bt=dos -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS)
+DOS16_FRONT = -bt=dos -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS) $(DOS16_TEST_FLAGS)
 DOS16_BDIR   = build/dos16
 DOS16_EXE    = $(DOS16_BDIR)/bpmini.exe
 DOS16_STACK_BDIR = build/dos16-stack
 DOS16_STACK_EXE = $(DOS16_STACK_BDIR)/bpmini.exe
+DOS16_STACK_WRITER_EXE = $(DOS16_STACK_BDIR)/writer-resource.exe
 DOS16_STACK_BYTES ?= 8192
+DOS16_STACK_ALLOC_FLAGS = -DBP_TEST_ALLOC_ACCOUNTING \
+	-Dmalloc=bp_test_malloc -Dcalloc=bp_test_calloc \
+	-Drealloc=bp_test_realloc -Dfree=bp_test_free
 
 .PHONY: dos16
 dos16:
@@ -1826,20 +1928,25 @@ dos16:
 .PHONY: dos16-stack-probe
 dos16-stack-probe:
 	mkdir -p $(DOS16_STACK_BDIR)
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/archiver.obj $(MINI_COREDIR)/archiver.c
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/compress.obj $(MINI_COREDIR)/compress.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
-	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
-	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/main.obj src/frontend/dos16/main.c
+	$(MINI_ENV) $(WCC16) -bt=dos -mc -0 -za -os -zm -w4 -wcd=202 \
+	    -i=$(WATCOM)/h -fo=$(DOS16_STACK_BDIR)/alloc_probe.obj \
+	    test/dos16_alloc_probe.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
+	    -fo=$(DOS16_STACK_BDIR)/writer_resource.obj test/dos16_writer_resource16.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
 	    option stack=$(DOS16_STACK_BYTES) \
 	    option map=$(DOS16_STACK_BDIR)/bpmini.map \
@@ -1850,13 +1957,32 @@ dos16-stack-probe:
 	    file {$(DOS16_STACK_BDIR)/mini_common.obj} \
 	    file {$(DOS16_STACK_BDIR)/bp_codepage.obj} \
 	    file {$(DOS16_STACK_BDIR)/main.obj} \
+	    file {$(DOS16_STACK_BDIR)/alloc_probe.obj} \
 	    name $(DOS16_STACK_EXE)
 	@echo "  OK    $(DOS16_STACK_EXE)"
+	$(MINI_ENV) WATCOM=$(WATCOM_ROOT) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk \
+	    system dos option eliminate option stack=$(DOS16_STACK_BYTES) \
+	    file {$(DOS16_STACK_BDIR)/archiver.obj} \
+	    file {$(DOS16_STACK_BDIR)/compress.obj} \
+	    file {$(DOS16_STACK_BDIR)/boltlite.obj} \
+	    file {$(DOS16_STACK_BDIR)/boltlz_decomp.obj} \
+	    file {$(DOS16_STACK_BDIR)/mini_common.obj} \
+	    file {$(DOS16_STACK_BDIR)/bp_codepage.obj} \
+	    file {$(DOS16_STACK_BDIR)/writer_resource.obj} \
+	    file {$(DOS16_STACK_BDIR)/alloc_probe.obj} \
+	    name $(DOS16_STACK_WRITER_EXE)
+	@echo "  OK    $(DOS16_STACK_WRITER_EXE)"
 
-.PHONY: dos16-cp850
+.PHONY: dos16-cp850 dos16-cp850-crash-hook
 dos16-cp850:
 	$(MAKE) dos16 DOS16_BDIR=build/dos16-cp850 DOS16_EXE=build/dos16-cp850/bpmini.exe \
 	    DOS16_CODEPAGE_FLAGS=-DBP_MINI_CODEPAGE=BP_CP_850
+
+dos16-cp850-crash-hook:
+	$(MAKE) dos16 DOS16_BDIR=build/dos16-cp850-crash-hook \
+	    DOS16_EXE=build/dos16-cp850-crash-hook/bpcrash.exe \
+	    DOS16_CODEPAGE_FLAGS=-DBP_MINI_CODEPAGE=BP_CP_850 \
+	    DOS16_TEST_FLAGS=-DBP_TEST_EXIT_AFTER_BACKUP
 
 # ---- win16: Open Watcom, 16-bit Windows 3.x compact model ---------------
 # The format-6 validator and metadata support exceed a single 64 KiB code
@@ -2037,7 +2163,7 @@ linux-gui-interoperability-test: modern linuxmini linux-gui $(LINUX_GUI_PREFIX_F
 	python3 test/check_linux_gui_interop.py \
 	    --gui $(LINUX_GUI_BUILDDIR)/boltpack-gui \
 	    --cli build/linux/boltpack --mini $(LINUXMINI_EXE) \
-	    --mini-runner qemu-i386 --prefix-fixture $(LINUX_GUI_PREFIX_FIXTURE)
+	    --mini-runner "$(LINUXMINI_RUNNER)" --prefix-fixture $(LINUX_GUI_PREFIX_FIXTURE)
 
 .PHONY: linux-cli-extract-failure-test
 linux-cli-extract-failure-test: modern
@@ -2466,6 +2592,169 @@ atari-gui:
 	    -lgem \
 	    -o $(ATARI_GUI_BUILDDIR)/boltpack.prg
 	@echo "  OK    $(ATARI_GUI_BUILDDIR)/boltpack.prg"
+
+atari-gui-create-test: modern linuxmini atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	python3 test/check_hatari_gui_create.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg \
+	    --linux-cli $(TARGET) --mini-cli build/linux32mini/bpmini
+
+atari-gui-create-fat12-test: modern linuxmini atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	python3 test/check_hatari_gui_create.py --fat12 --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg \
+	    --linux-cli $(TARGET) --mini-cli build/linux32mini/bpmini
+
+atari-gui-menu-pointer-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action help-about \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action help-documentation \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action archive-validate \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action archive-information \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action archive-close \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action archive-extract \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action archive-quit \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action compression-stored \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action compression-boltlite \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action compression-boltlz \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action compression-fluff \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action compression-profile \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+
+atari-gui-cancel-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_gui_cancel.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-active-cancel-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_gui_cancel.py --active-extraction \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-interruption-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_gui_cancel.py --interrupt-extraction \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-stage-substitution-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_gui_cancel.py --substitute-stage \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-parent-substitution-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_gui_cancel.py --substitute-parent \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+ATARI_GUI_ROLLBACK_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-rollback.prg
+atari-gui-publish-rollback-test: modern
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	mkdir -p $(ATARI_GUI_BUILDDIR)
+	$(ATARI_CC) -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_ATARI_GUI_TEST_FAIL_AFTER_BACKUP \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_ROLLBACK_BIN)
+	xvfb-run -a python3 test/check_hatari_gui_rollback.py \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_ROLLBACK_BIN) --linux-cli $(TARGET)
+
+ATARI_GUI_RECOVERY_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-recovery-test.prg
+atari-gui-recovery-path-test: modern
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	mkdir -p $(ATARI_GUI_BUILDDIR)
+	$(ATARI_CC) -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_ATARI_GUI_TEST_FAIL_AFTER_BACKUP -DBP_ATARI_GUI_TEST_BLOCK_ROLLBACK \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_RECOVERY_BIN)
+	xvfb-run -a python3 test/check_hatari_gui_rollback.py --expect-recovery \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_RECOVERY_BIN) --linux-cli $(TARGET)
+
+ATARI_GUI_INTERRUPT_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-interrupt-backup.prg
+ATARI_GUI_RECOVER_RECORD_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-recovery-record.prg
+atari-gui-interrupt-after-backup-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	mkdir -p $(ATARI_GUI_BUILDDIR)
+	$(ATARI_CC) -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_ATARI_GUI_TEST_PAUSE_AFTER_BACKUP \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_INTERRUPT_BIN)
+	$(ATARI_CC) -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_ATARI_GUI_TEST_RECORD_RECOVERY \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_RECOVER_RECORD_BIN)
+	xvfb-run -a python3 test/check_hatari_gui_interruption.py \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_INTERRUPT_BIN) \
+	    --recovery-gui $(ATARI_GUI_RECOVER_RECORD_BIN) \
+	    --final-gui $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-stage-recovery-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_stage_recovery.py \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --final-gui $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+atari-gui-journal-path-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	xvfb-run -a python3 test/check_hatari_journal_path.py \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+EMUTOS_ROM ?=
+FREEMINT_ROOT ?= build/freemint-probe/diskroot
+ATARI_GUI_FREEMINT_PROBE_BIN = $(ATARI_GUI_BUILDDIR)/freemint-cleanup-test.prg
+atari-gui-freemint-cleanup-test:
+	@test -n "$(EMUTOS_ROM)" || { echo "Set EMUTOS_ROM to an EmuTOS ROM image" >&2; exit 1; }
+	@test -d "$(FREEMINT_ROOT)/AUTO" -a -d "$(FREEMINT_ROOT)/MINT" || { echo "Set FREEMINT_ROOT to a FreeMiNT boot tree" >&2; exit 1; }
+	mkdir -p $(ATARI_GUI_BUILDDIR)
+	$(ATARI_CC) $(ATARI_CFLAGS) -std=gnu99 -Wno-unused-variable \
+	    -DBP_ATARI_GUI_FREEMINT_CLEANUP_TEST $(BP_VER_DEFS) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_FREEMINT_PROBE_BIN)
+	python3 test/check_hatari_freemint_cleanup.py \
+	    --emutos "$(EMUTOS_ROM)" --freemint-root "$(FREEMINT_ROOT)" \
+	    --probe-prg $(ATARI_GUI_FREEMINT_PROBE_BIN) \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)"
+
 
 # ---- Amiga GadTools GUI (68k via bebbo's amiga-gcc) ----
 AMIGA_GUI_BUILDDIR = $(AMIGA68K_BUILDDIR)

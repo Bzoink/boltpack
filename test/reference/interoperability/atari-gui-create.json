@@ -1,0 +1,63 @@
+{
+  "case": "Atari GEM production create/extract flow on Hatari with the supplied TOS ROM",
+  "source": {
+    "select": "TREE",
+    "directories": ["TREE", "TREE/empty", "TREE/nest"],
+    "files": [
+      {
+        "name": "TREE/src.txt",
+        "content": "Atari GEM default Create button regression\n",
+        "repetitions": 16,
+        "bytes": 688,
+        "sha256": "76779b88f76e599a047dc6514b83400932e2d6e296956ff968f261e709c31f89"
+      },
+      {
+        "name": "TREE/nest/deep.txt",
+        "content": "Atari nested directory payload\n",
+        "repetitions": 3,
+        "bytes": 93,
+        "sha256": "48ff7690d41e5f945e27b83250e93fd4d92f02824b56f23fbde0101b09f3cee5"
+      }
+    ]
+  },
+  "collision_archive": {
+    "name": "COLLIDE.BLT",
+    "entries": [
+      {"name": "Alpha.txt", "content": "first collision payload\n"},
+      {"name": "alpha.TXT", "content": "second collision payload\n"}
+    ],
+    "expected": "GUI extraction refuses the projected case collision before output"
+  },
+  "prefix_collision_archive": {
+    "name": "PREFIX.BLT",
+    "entries": ["node", "node/child"],
+    "expected": "GUI extraction refuses file/directory-prefix conflict before output"
+  },
+  "expected": {
+    "archive": "ARCHIVE.BLT",
+    "archive_replacement": "GUI creation replaces a pre-existing archive and removes its transaction stage and backup",
+    "format_version": 6,
+    "creator_os": "Atari ST",
+    "creator_cpu": "Motorola 68k",
+    "fat12_source_attributes": ["archive", "read-only", "hidden", "system"],
+    "fat12_gui_extracted_attributes": ["archive", "read-only", "hidden", "system"],
+    "fat12_source_directory_attributes": ["hidden", "system"],
+    "fat12_gui_extracted_directory_attributes": [],
+    "fat12_directory_attribute_outcome": "TOS does not restore Hidden/System on this directory; GUI reports partial",
+    "source_files": 2,
+    "source_directories": 3,
+    "gui_extraction": "replaces pre-existing files in OUT with exact bytes, preserves directory tree, and removes stages",
+    "fat12_readonly_replacement": {
+      "target": "OUT/TREE/src.txt",
+      "sentinel": "read-only destination must survive failed replacement\n",
+      "expected": "TOS refuses publication over the read-only target; original bytes and READONLY survive, with no stage or recovery entry"
+    },
+    "case_collision": "GUI refuses before writing to precreated COLLIDE directory",
+    "file_directory_prefix_collision": "GUI refuses before writing to precreated PREFIX directory",
+    "fat12_directory_timestamps": "restored at FAT12 resolution on tested TOS 1.06, 1.62, and 2.05",
+    "linux_integrity": "pass",
+    "mini_integrity": "pass",
+    "linux_extraction": "exact bytes; partial for Atari metadata",
+    "mini_extraction": "exact bytes; partial for Atari metadata"
+  }
+}
