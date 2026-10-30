@@ -785,6 +785,27 @@ for Extract, and
 for Quit. Selector Abort and active-extraction cancellation are separately
 qualified.
 
+The same thirteen production menu actions now pass on Hatari 2.5.0 with the
+bundled EmuTOS 1.4 ROM, using the current GUI binary. A first sequence replay
+missed Help → About; isolated retries and the full rerun passed. The pointer
+runner now waits for an initial GUI screenshot, captures the open menu, and
+requires a visible menu-state change before clicking the item. All thirteen
+per-action records pin the same ROM, GUI hash, clean revision, and screenshots;
+all 88 artifact hashes were verified. Records are
+[`build/atari-menu-pointer-ault41ip/run.json`](../build/atari-menu-pointer-ault41ip/run.json),
+[`build/atari-menu-pointer-2q_l_ogk/run.json`](../build/atari-menu-pointer-2q_l_ogk/run.json),
+[`build/atari-menu-pointer-b2nn78oo/run.json`](../build/atari-menu-pointer-b2nn78oo/run.json),
+[`build/atari-menu-pointer-z0yibzza/run.json`](../build/atari-menu-pointer-z0yibzza/run.json),
+[`build/atari-menu-pointer-cs1hq1ta/run.json`](../build/atari-menu-pointer-cs1hq1ta/run.json),
+[`build/atari-menu-pointer-j88ht3tw/run.json`](../build/atari-menu-pointer-j88ht3tw/run.json),
+[`build/atari-menu-pointer-hunslvh5/run.json`](../build/atari-menu-pointer-hunslvh5/run.json),
+[`build/atari-menu-pointer-2a3f56fs/run.json`](../build/atari-menu-pointer-2a3f56fs/run.json),
+[`build/atari-menu-pointer-i4wv390h/run.json`](../build/atari-menu-pointer-i4wv390h/run.json),
+[`build/atari-menu-pointer-yo0z0wmp/run.json`](../build/atari-menu-pointer-yo0z0wmp/run.json),
+[`build/atari-menu-pointer-wmhv_u92/run.json`](../build/atari-menu-pointer-wmhv_u92/run.json),
+[`build/atari-menu-pointer-1qrj4hbi/run.json`](../build/atari-menu-pointer-1qrj4hbi/run.json), and
+[`build/atari-menu-pointer-m14spxai/run.json`](../build/atari-menu-pointer-m14spxai/run.json).
+
 The older Archive → Open pointer capture at
 [`build/atari-mouse-menu-probe/run.json`](../build/atari-mouse-menu-probe/run.json)
 was initially not reproducible because its record omitted the pause between

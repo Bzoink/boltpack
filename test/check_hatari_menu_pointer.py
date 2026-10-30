@@ -175,7 +175,9 @@ def main():
             "sleep 8\nscreenshot\nsleep 8\nscreenshot\n"
             "sleep 8\nscreenshot\nsleep 2\nquit\n")
     else:
-        hconsole_commands = "sleep 8\nscreenshot\nsleep 8\nscreenshot\nsleep 2\nquit\n"
+        hconsole_commands = (
+            "sleep 8\nscreenshot\nsleep 8\nscreenshot\n"
+            "sleep 8\nscreenshot\nsleep 2\nquit\n")
     script.write_text(hconsole_commands, encoding="ascii")
     env = os.environ.copy()
     env.pop("SDL_VIDEODRIVER", None)
@@ -202,20 +204,18 @@ def main():
                 time.sleep(0.25)
             if window is None:
                 raise RuntimeError("visible Hatari window did not appear; evidence: " + str(out))
+            first_capture = out / "grab0001.png"
+            capture_deadline = time.monotonic() + 50
+            while not first_capture.exists() and time.monotonic() < capture_deadline:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+            if not first_capture.exists():
+                raise RuntimeError("initial GUI state was not captured before menu input; evidence: " + str(out))
             if args.action in archive_actions:
-                first_capture = out / "grab0001.png"
-                capture_deadline = time.monotonic() + 50
-                while not first_capture.exists() and time.monotonic() < capture_deadline:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.1)
-                if not first_capture.exists():
-                    raise RuntimeError("archive did not open before menu input; evidence: " + str(out))
                 # Let GEM finish its archive-window redraw/event processing
                 # before sending a pointer event into the menu bar.
                 time.sleep(1)
-            else:
-                time.sleep(5)
             geometry = run(["xdotool", "getwindowgeometry", "--shell", window], out)
             (out / "geometry.txt").write_text(geometry.stdout, encoding="ascii")
             title_x, item_x, item_y, action_name, expected_dialog = {
@@ -259,18 +259,17 @@ def main():
                 if result.returncode != 0:
                     raise RuntimeError("mouse title click failed: " + result.stdout)
             time.sleep(menu_delay)
-            if args.action in archive_actions:
-                menu_capture = out / "grab0002.png"
-                capture_deadline = time.monotonic() + 20
-                while not menu_capture.exists() and time.monotonic() < capture_deadline:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.1)
-                if not menu_capture.exists():
-                    raise RuntimeError("Archive menu did not remain visible; evidence: " + str(out))
-                menu_change = screenshot_difference(first_capture, menu_capture)
-                if menu_change < 1000:
-                    raise RuntimeError("Archive title click did not open its menu; evidence: " + str(out))
+            menu_capture = out / "grab0002.png"
+            capture_deadline = time.monotonic() + 25
+            while not menu_capture.exists() and time.monotonic() < capture_deadline:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+            if not menu_capture.exists():
+                raise RuntimeError("menu checkpoint was not captured; evidence: " + str(out))
+            menu_change = screenshot_difference(first_capture, menu_capture)
+            if menu_change < 1000:
+                raise RuntimeError(action_name + " title click did not open its menu; evidence: " + str(out))
             item_click = [
                 ["xdotool", "mousemove", "--window", window,
                  str(item_x), str(item_y)],
@@ -291,15 +290,14 @@ def main():
                     if result.returncode != 0:
                         raise RuntimeError("reopen compression menu failed: " + result.stdout)
                 inputs.extend(reopen_steps)
-            if args.action in archive_actions:
-                result_capture = out / "grab0003.png"
-                capture_deadline = time.monotonic() + 20
-                while not result_capture.exists() and time.monotonic() < capture_deadline:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.1)
-                if not result_capture.exists():
-                    raise RuntimeError("Archive action result was not captured; evidence: " + str(out))
+            result_capture = out / "grab0003.png"
+            capture_deadline = time.monotonic() + 25
+            while not result_capture.exists() and time.monotonic() < capture_deadline:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+            if not result_capture.exists():
+                raise RuntimeError(action_name + " result was not captured; evidence: " + str(out))
             try:
                 proc.wait(timeout=40)
             except subprocess.TimeoutExpired:
