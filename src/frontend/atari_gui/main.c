@@ -73,6 +73,8 @@ extern FILE *fdopen(int fd, const char *mode);
 #define MAX_ENTRIES   2048
 #define LINE_HEIGHT   16
 #define PROGRESS_PANEL_H  ((LINE_HEIGHT * 4) + 12)
+#define PROGRESS_CANCEL_W 60
+#define PROGRESS_CANCEL_H 18
 #define ATARI_FLUFF_MIN_FREE  (2304L * 1024L)
 #define COL_NAME      8
 #define COL_ORIG      198
@@ -179,6 +181,8 @@ typedef struct {
     unsigned long current_file;
     clock_t       start_ticks;
     int           active;
+    int           cancel_enabled;
+    int           cancelled;
     int           total_pct;
     int           last_pct;
     int           last_file_index;
@@ -527,6 +531,46 @@ static void show_alert(const char *msg)
     form_alert(1, buf);
 }
 
+static void show_recovery_alert(const char *path)
+{
+    const char *name = path;
+    char msg[220];
+    const char *slash;
+    size_t prefix_len;
+    if (path == NULL || path[0] == '\0') {
+        show_alert("Extraction failed; original may need recovery");
+        return;
+    }
+    slash = strrchr(path, '\\');
+    if (slash == NULL) slash = strrchr(path, '/');
+    if (slash != NULL) name = slash + 1;
+    strcpy(msg, "Recovery file remains at:|");
+    prefix_len = strlen(msg);
+    strncpy(msg + prefix_len, name, sizeof(msg) - prefix_len - 1);
+    msg[sizeof(msg) - 1] = '\0';
+    show_alert(msg);
+}
+
+static void show_stale_stage_alert(const char *path)
+{
+    const char *name = path;
+    char msg[220];
+    const char *slash;
+    size_t prefix_len;
+    if (path == NULL || path[0] == '\0') {
+        show_alert("A temporary extraction file may remain");
+        return;
+    }
+    slash = strrchr(path, '\\');
+    if (slash == NULL) slash = strrchr(path, '/');
+    if (slash != NULL) name = slash + 1;
+    strcpy(msg, "Temp file or journal may remain:|");
+    prefix_len = strlen(msg);
+    strncpy(msg + prefix_len, name, sizeof(msg) - prefix_len - 1);
+    msg[sizeof(msg) - 1] = '\0';
+    show_alert(msg);
+}
+
 static void show_about_dialog(void)
 {
     char free_buf[32];
@@ -671,8 +715,8 @@ static void restore_main_window_after_dialog(void)
 }
 
 static void start_progress_ui(atari_progress_ui_t *ctx, const char *verb,
-                              const char *codec_name,
-                              double total_bytes, unsigned long total_files)
+                              const char *codec_name, double total_bytes,
+                              unsigned long total_files, int cancel_enabled)
 {
     ctx->verb = verb;
     ctx->codec_name = codec_name;
@@ -684,6 +728,8 @@ static void start_progress_ui(atari_progress_ui_t *ctx, const char *verb,
     ctx->current_file = 0UL;
     ctx->start_ticks = clock();
     ctx->active = 1;
+    ctx->cancel_enabled = cancel_enabled;
+    ctx->cancelled = 0;
     ctx->total_pct = 0;
     ctx->last_pct = -1;
     ctx->last_file_index = -1;
@@ -701,6 +747,25 @@ static int update_progress_ui(const bp_progress_t *p, void *user_data)
     unsigned long file_count;
     int pct;
     int file_index;
+
+    /* Poll the pointer at every codec block, even when the displayed integer
+       percentage has not changed. This keeps the GEM Cancel button responsive
+       without running a second event loop during synchronous extraction. */
+    if (ctx->cancel_enabled && !ctx->cancelled) {
+        short mx, my, buttons, key_state;
+        short work_x, work_y, work_w, work_h;
+        graf_mkstate(&mx, &my, &buttons, &key_state);
+        (void)key_state;
+        if ((buttons & 1) != 0 &&
+            wind_get(win_handle, WF_WORKXYWH,
+                     &work_x, &work_y, &work_w, &work_h) &&
+            mx >= work_x + work_w - PROGRESS_CANCEL_W - 6 &&
+            mx < work_x + work_w - 6 &&
+            my >= work_y + 1 && my < work_y + PROGRESS_CANCEL_H + 1) {
+            ctx->cancelled = 1;
+            return 1;
+        }
+    }
 
     done = u64_to_dbl(p->archive_orig_done);
     total = ctx->total_bytes > 0.0 ? ctx->total_bytes
@@ -763,6 +828,7 @@ static void draw_progress_panel(short clip_x, short clip_y, short clip_w)
 {
     atari_progress_ui_t *ctx;
     short pxy[4];
+    short cancel_box[10];
     short y;
     char line[160];
     char done_buf[32];
@@ -782,6 +848,20 @@ static void draw_progress_panel(short clip_x, short clip_y, short clip_w)
     else
         strcpy(line, ctx->verb);
     v_gtext(vdi_handle, clip_x + COL_NAME, y, line);
+
+    if (ctx->cancel_enabled) {
+        short left = clip_x + clip_w - PROGRESS_CANCEL_W - 6;
+        short top = clip_y + 1;
+        short right = left + PROGRESS_CANCEL_W;
+        short bottom = top + PROGRESS_CANCEL_H;
+        cancel_box[0] = left;  cancel_box[1] = top;
+        cancel_box[2] = right; cancel_box[3] = top;
+        cancel_box[4] = right; cancel_box[5] = bottom;
+        cancel_box[6] = left;  cancel_box[7] = bottom;
+        cancel_box[8] = left;  cancel_box[9] = top;
+        v_pline(vdi_handle, 5, cancel_box);
+        v_gtext(vdi_handle, left + 8, top + 13, "Cancel");
+    }
 
     y += LINE_HEIGHT;
     if (ctx->total_files > 0)
@@ -1340,10 +1420,27 @@ static int selector_build_path(const char *pattern, const char *fname,
 
 #define GUI_ATARI_DIR_QUEUE_MAX 256U
 #define GUI_ATARI_DIR_QUEUE_BYTES_MAX 32768UL
+#define GUI_ATARI_RECOVERY_JOURNAL "BPRECOVR.JRN"
+#define GUI_ATARI_JOURNAL_VERSION 1UL
+
+typedef struct {
+    unsigned char magic[8];
+    bp_uint32 version;
+    bp_uint32 checksum;
+    bp_uint32 old_existed;
+    bp_uint32 old_size;
+    bp_uint32 old_checksum;
+    bp_uint32 new_size;
+    bp_uint32 new_checksum;
+    char target[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    char temporary[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    char backup[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+} atari_gui_recovery_record_t;
 
 typedef struct {
     char dest_dir[BP_MAX_PATH];
-    int cancelled;
+    char recovery_path[BP_MAX_PATH];
+    char stale_stage_path[BP_MAX_PATH];
     int partial;
     int invalid_entry;
     int subject_ok;
@@ -1374,12 +1471,30 @@ typedef struct {
     int fd;
     char target[BP_MAX_PATH];
     char temporary[BP_MAX_PATH];
+    char backup[BP_MAX_PATH];
+    char recovery_path[BP_MAX_PATH];
+    char journal_path[BP_MAX_PATH];
+    bp_uint32 journal_checksum;
+    struct stat temporary_snapshot;
+    int temporary_snapshot_valid;
+    bp_uint64 expected_size;
+    bp_uint32 expected_checksum;
+    int verify_content;
     int target_existed;
     int committed;
     int preserve_target_attributes;
     unsigned char target_attributes;
     struct stat target_snapshot;
+    DIR *parent_dir;
+    DIR *destination_dir;
+    char temporary_name[BP_MAX_PATH];
 } atari_gui_staged_output_t;
+
+static int atari_gui_clear_stage_journal(atari_gui_staged_output_t *stage);
+static int atari_gui_clear_recovery_record(const char *path,
+                                           bp_uint32 expected_checksum);
+static int atari_gui_parent_path(const char *path, char *parent,
+                                 size_t capacity);
 
 typedef struct {
     bp_io_t io;
@@ -1522,6 +1637,53 @@ static int atari_gui_same_file(const struct stat *a, const struct stat *b)
            a->st_dev == b->st_dev &&
            a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
            a->st_ctime == b->st_ctime;
+}
+
+static int atari_gui_same_staged_file(const struct stat *a,
+                                      const struct stat *b)
+{
+    /* FAT12 GEMDOS can revise ctime when the final open handle closes. The
+       open-descriptor snapshot was already matched strictly to the pathname. */
+    return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
+           a->st_dev == b->st_dev && a->st_size == b->st_size &&
+           a->st_mtime == b->st_mtime;
+}
+
+static int atari_gui_real_parent_chain(const char *path)
+{
+    char parent[BP_MAX_PATH];
+    char *slash, *backslash, *last, *p;
+    struct stat st;
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(parent)) return -1;
+    strcpy(parent, path);
+    slash = strrchr(parent, '/');
+    backslash = strrchr(parent, '\\');
+    last = backslash != NULL && (slash == NULL || backslash > slash)
+         ? backslash : slash;
+    if (last == NULL) return 0;
+    if (last == parent ||
+        (last == parent + 2 && parent[1] == ':')) {
+        last[1] = '\0';
+    } else {
+        *last = '\0';
+    }
+    for (p = parent; *p; p++) {
+        char saved;
+        if (*p != '/' && *p != '\\') continue;
+        if (p == parent || (p == parent + 2 && parent[1] == ':')) continue;
+        saved = *p;
+        *p = '\0';
+        if (lstat(parent, &st) != 0 || !S_ISDIR(st.st_mode) ||
+            S_ISLNK(st.st_mode)) {
+            *p = saved;
+            return -1;
+        }
+        *p = saved;
+    }
+    if (lstat(parent, &st) != 0 || !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
+        return -1;
+    return 0;
 }
 
 static int atari_gui_sibling_name(const char *target, const char *base,
@@ -1783,13 +1945,467 @@ static void finish_directory_restores(extract_ctx_t *ctx)
     ctx->directory_path_bytes = 0;
 }
 
+static void snapshot_staged_output(atari_gui_staged_output_t *stage)
+{
+    if (stage->fd < 0) return;
+    if (fstat(stage->fd, &stage->temporary_snapshot) == 0)
+        stage->temporary_snapshot_valid = 1;
+    else
+        stage->temporary_snapshot_valid = 0;
+}
+
+static int verify_staged_output_content(atari_gui_staged_output_t *stage)
+{
+    unsigned char buffer[4096];
+    struct stat opened, current;
+    bp_uint32 crc = 0, total = 0;
+    int fd, failed = 0;
+    if (!stage->verify_content) return 0;
+    if (stage->expected_size.hi != 0 || stage->expected_size.lo > 0x7FFFFFFFUL)
+        failed = 1;
+    fd = failed ? -1 : open(stage->temporary, O_RDONLY);
+    if (fd < 0 || fstat(fd, &opened) != 0 ||
+        !atari_gui_same_staged_file(&stage->temporary_snapshot, &opened)) {
+        if (fd >= 0) (void)close(fd);
+        stage->temporary_snapshot_valid = 0;
+        return -1;
+    }
+    for (;;) {
+        long count = (long)read(fd, buffer, sizeof(buffer));
+        if (count < 0) { failed = 1; break; }
+        if (count == 0) break;
+        if ((bp_uint32)count > 0xFFFFFFFFUL - total) {
+            failed = 1;
+            break;
+        }
+        total += (bp_uint32)count;
+        crc = bp_crc32(crc, buffer, (bp_uint32)count);
+    }
+    if (close(fd) != 0) failed = 1;
+    if (lstat(stage->temporary, &current) != 0 ||
+        !atari_gui_same_staged_file(&opened, &current) ||
+        total != stage->expected_size.lo || crc != stage->expected_checksum)
+        failed = 1;
+    if (failed) {
+        /* A mismatched stage path may now name somebody else's file. Leave it
+         * in place rather than deleting it during failure cleanup. */
+        stage->temporary_snapshot_valid = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static int atari_gui_unlink_held(DIR *directory, const char *name,
+                                const struct stat *expected)
+{
+    struct stat current;
+    int old_directory, directory_fd, result = -1, saved_errno = 0;
+    if (directory == NULL || name == NULL || name[0] == '\0' ||
+        expected == NULL) return -1;
+    directory_fd = dirfd(directory);
+    if (directory_fd < 0) return -1;
+    old_directory = open(".", O_RDONLY);
+    if (old_directory < 0) return -1;
+    if (fchdir(directory_fd) != 0) {
+        saved_errno = errno;
+    } else if (lstat(name, &current) == 0 &&
+               atari_gui_same_staged_file(expected, &current)) {
+        result = unlink(name);
+        if (result != 0) saved_errno = errno;
+    } else {
+        saved_errno = errno;
+    }
+    if (fchdir(old_directory) != 0 && result == 0) {
+        result = -1;
+        saved_errno = errno;
+    }
+    close(old_directory);
+    if (saved_errno != 0) errno = saved_errno;
+    return result;
+}
+
+static int atari_gui_clear_journal_held(atari_gui_staged_output_t *stage)
+{
+    int old_directory, directory_fd, rc, saved_errno = 0;
+    if (stage->journal_checksum == 0) return 0;
+    if (stage->destination_dir == NULL)
+        return atari_gui_clear_stage_journal(stage);
+    directory_fd = dirfd(stage->destination_dir);
+    if (directory_fd < 0) return -1;
+    old_directory = open(".", O_RDONLY);
+    if (old_directory < 0) return -1;
+    if (fchdir(directory_fd) != 0) {
+        saved_errno = errno;
+        rc = -1;
+    } else {
+        rc = atari_gui_clear_recovery_record(GUI_ATARI_RECOVERY_JOURNAL,
+                                             stage->journal_checksum);
+        if (rc != 0) saved_errno = errno;
+    }
+    if (fchdir(old_directory) != 0 && rc == 0) {
+        rc = -1;
+        saved_errno = errno;
+    }
+    close(old_directory);
+    if (rc == 0) stage->journal_checksum = 0;
+    if (saved_errno != 0) errno = saved_errno;
+    return rc;
+}
+
+static void atari_gui_close_stage_directories(atari_gui_staged_output_t *stage)
+{
+    if (stage->parent_dir != NULL) {
+        (void)closedir(stage->parent_dir);
+        stage->parent_dir = NULL;
+    }
+    if (stage->destination_dir != NULL) {
+        (void)closedir(stage->destination_dir);
+        stage->destination_dir = NULL;
+    }
+}
+
+static void atari_gui_pin_stage_directories(atari_gui_staged_output_t *stage,
+                                            const char *destination)
+{
+    char parent[BP_MAX_PATH];
+    const char *slash, *backslash, *base;
+    if (atari_gui_parent_path(stage->temporary, parent, sizeof(parent)) == 0) {
+        slash = strrchr(stage->temporary, '/');
+        backslash = strrchr(stage->temporary, '\\');
+        if (backslash != NULL && (slash == NULL || backslash > slash))
+            slash = backslash;
+        base = slash != NULL ? slash + 1 : stage->temporary;
+        if (strlen(base) < sizeof(stage->temporary_name)) {
+            strcpy(stage->temporary_name, base);
+            stage->parent_dir = opendir(parent);
+        }
+    }
+    stage->destination_dir = opendir(destination);
+}
+
 static void discard_staged_output(atari_gui_staged_output_t *stage)
 {
+    struct stat current;
+    int removed = 0;
+    snapshot_staged_output(stage);
     if (stage->fd >= 0) { (void)close(stage->fd); stage->fd = -1; }
     if (stage->temporary[0]) {
-        (void)unlink(stage->temporary);
-        stage->temporary[0] = '\0';
+        /* Never remove or publish a different file substituted at our stage
+         * pathname while the verified output was open. */
+        if (stage->temporary_snapshot_valid && stage->parent_dir != NULL &&
+            stage->temporary_name[0] != '\0') {
+            removed = atari_gui_unlink_held(stage->parent_dir,
+                                            stage->temporary_name,
+                                            &stage->temporary_snapshot) == 0;
+        } else if (stage->temporary_snapshot_valid && stage->parent_dir == NULL &&
+            lstat(stage->temporary, &current) == 0 &&
+            atari_gui_same_staged_file(&stage->temporary_snapshot, &current)) {
+            removed = unlink(stage->temporary) == 0;
+        }
+        if (removed) {
+            stage->temporary[0] = '\0';
+            (void)atari_gui_clear_journal_held(stage);
+        }
     }
+    atari_gui_close_stage_directories(stage);
+}
+
+static void discard_extraction_stage(extract_ctx_t *ctx,
+                                     atari_gui_staged_output_t *stage)
+{
+    discard_staged_output(stage);
+    if (stage->temporary[0] != '\0' || stage->journal_checksum != 0) {
+        const char *remaining = stage->temporary[0] != '\0'
+            ? stage->temporary : GUI_ATARI_RECOVERY_JOURNAL;
+        strncpy(ctx->stale_stage_path, remaining,
+                sizeof(ctx->stale_stage_path) - 1);
+        ctx->stale_stage_path[sizeof(ctx->stale_stage_path) - 1] = '\0';
+    }
+}
+
+static void remember_recovery_path(atari_gui_staged_output_t *stage,
+                                   const char *path)
+{
+    strncpy(stage->recovery_path, path, sizeof(stage->recovery_path) - 1);
+    stage->recovery_path[sizeof(stage->recovery_path) - 1] = '\0';
+}
+
+static int atari_gui_file_crc(const char *path, bp_uint32 *length,
+                              bp_uint32 *checksum)
+{
+    unsigned char buffer[4096];
+    bp_uint32 total = 0, crc = 0;
+    int fd = open(path, O_RDONLY);
+    int failed = 0;
+    if (fd < 0) return -1;
+    for (;;) {
+        long count = (long)read(fd, buffer, sizeof(buffer));
+        if (count < 0) { failed = 1; break; }
+        if (count == 0) break;
+        if ((bp_uint32)count > 0xFFFFFFFFUL - total) {
+            failed = 1;
+            break;
+        }
+        total += (bp_uint32)count;
+        crc = bp_crc32(crc, buffer, (bp_uint32)count);
+    }
+    if (close(fd) != 0) failed = 1;
+    if (failed) return -1;
+    *length = total;
+    *checksum = crc;
+    return 0;
+}
+
+static bp_uint32 atari_gui_recovery_record_crc(
+    const atari_gui_recovery_record_t *record)
+{
+    atari_gui_recovery_record_t copy = *record;
+    copy.checksum = 0;
+    return bp_crc32(0, (const unsigned char *)&copy,
+                    (bp_uint32)sizeof(copy));
+}
+
+static int atari_gui_write_recovery_record(atari_gui_staged_output_t *stage,
+                                           const char *backup)
+{
+    atari_gui_recovery_record_t record;
+    struct stat after_read;
+    bp_uint32 old_size = 0, old_checksum = 0;
+    size_t target_length = strlen(stage->target);
+    size_t temporary_length = strlen(stage->temporary);
+    size_t backup_length = backup != NULL ? strlen(backup) : 0;
+    size_t offset = 0;
+    int fd, failed = 0;
+    if (stage->journal_path[0] == '\0') return BP_OK;
+    if (target_length > BP_ATARI_GEMDOS_PATH_MAX ||
+        temporary_length > BP_ATARI_GEMDOS_PATH_MAX ||
+        backup_length > BP_ATARI_GEMDOS_PATH_MAX ||
+        (stage->expected_size.hi != 0))
+        return BP_ERR_NAME_TOO_LONG;
+    {
+        const unsigned char *a = (const unsigned char *)stage->target;
+        const unsigned char *b = (const unsigned char *)stage->journal_path;
+        while (*a && *b) {
+            unsigned char ca = *a++, cb = *b++;
+            if (ca >= 'a' && ca <= 'z') ca = (unsigned char)(ca - 'a' + 'A');
+            if (cb >= 'a' && cb <= 'z') cb = (unsigned char)(cb - 'a' + 'A');
+            if (ca != cb) break;
+        }
+        if (*a == '\0' && *b == '\0') return BP_ERR_NAME_TOO_LONG;
+    }
+    memset(&record, 0, sizeof(record));
+    memcpy(record.magic, "BPTXN6\0", 7);
+    record.version = GUI_ATARI_JOURNAL_VERSION;
+    record.old_existed = (bp_uint32)(stage->target_existed != 0);
+    record.new_size = stage->expected_size.lo;
+    record.new_checksum = stage->expected_checksum;
+    if (stage->target_existed) {
+        if (atari_gui_file_crc(stage->target, &old_size, &old_checksum) != 0 ||
+            lstat(stage->target, &after_read) != 0 ||
+            !atari_gui_same_file(&stage->target_snapshot, &after_read))
+            return BP_ERR_PARTIAL;
+        record.old_size = old_size;
+        record.old_checksum = old_checksum;
+    }
+    strcpy(record.target, stage->target);
+    strcpy(record.temporary, stage->temporary);
+    if (backup != NULL) strcpy(record.backup, backup);
+    record.checksum = atari_gui_recovery_record_crc(&record);
+    fd = open(stage->journal_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) return BP_ERR_IO;
+    while (offset < sizeof(record)) {
+        long count = (long)write(fd, (const unsigned char *)&record + offset,
+                                 (bp_uint32)(sizeof(record) - offset));
+        if (count <= 0) { failed = 1; break; }
+        offset += (size_t)count;
+    }
+    if (close(fd) != 0) failed = 1;
+    if (failed) {
+        (void)unlink(stage->journal_path);
+        return BP_ERR_IO;
+    }
+    stage->journal_checksum = record.checksum;
+    return BP_OK;
+}
+
+static int atari_gui_read_recovery_record(const char *path,
+                                          atari_gui_recovery_record_t *record)
+{
+    unsigned char extra;
+    size_t offset = 0;
+    int fd;
+    struct stat st;
+    if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(st.st_mode) || st.st_size != (long)sizeof(*record)) return -1;
+    memset(record, 0, sizeof(*record));
+    fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    while (offset < sizeof(*record)) {
+        long count = (long)read(fd, (unsigned char *)record + offset,
+                                (bp_uint32)(sizeof(*record) - offset));
+        if (count <= 0) { (void)close(fd); return -1; }
+        offset += (size_t)count;
+    }
+    if (read(fd, &extra, 1) != 0 || close(fd) != 0) return -1;
+    if (memcmp(record->magic, "BPTXN6\0", 7) != 0 ||
+        record->version != GUI_ATARI_JOURNAL_VERSION ||
+        record->checksum != atari_gui_recovery_record_crc(record) ||
+        memchr(record->target, '\0', sizeof(record->target)) == NULL ||
+        memchr(record->temporary, '\0', sizeof(record->temporary)) == NULL ||
+        memchr(record->backup, '\0', sizeof(record->backup)) == NULL)
+        return -1;
+    return 1;
+}
+
+static int atari_gui_clear_recovery_record(const char *path,
+                                           bp_uint32 expected_checksum)
+{
+    atari_gui_recovery_record_t current;
+    int rc = atari_gui_read_recovery_record(path, &current);
+    if (rc == 0) return 0;
+    if (rc != 1 || current.checksum != expected_checksum) return -1;
+    return unlink(path);
+}
+
+static int atari_gui_clear_stage_journal(atari_gui_staged_output_t *stage)
+{
+    if (stage->journal_checksum == 0) return 0;
+    if (atari_gui_clear_recovery_record(stage->journal_path,
+                                        stage->journal_checksum) != 0)
+        return -1;
+    stage->journal_checksum = 0;
+    return 0;
+}
+
+static int atari_gui_same_parent_path(const char *a, const char *b)
+{
+    const char *a_slash = strrchr(a, '\\'), *a_forward = strrchr(a, '/');
+    const char *b_slash = strrchr(b, '\\'), *b_forward = strrchr(b, '/');
+    const char *a_last = a_slash != NULL &&
+        (a_forward == NULL || a_slash > a_forward) ? a_slash : a_forward;
+    const char *b_last = b_slash != NULL &&
+        (b_forward == NULL || b_slash > b_forward) ? b_slash : b_forward;
+    size_t a_length = a_last != NULL ? (size_t)(a_last - a + 1) : 0;
+    size_t b_length = b_last != NULL ? (size_t)(b_last - b + 1) : 0;
+    return a_length == b_length && memcmp(a, b, a_length) == 0;
+}
+
+static int atari_gui_file_matches(const char *path, bp_uint32 expected_size,
+                                  bp_uint32 expected_checksum)
+{
+    struct stat st;
+    bp_uint32 size, checksum;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode) ||
+        atari_gui_file_crc(path, &size, &checksum) != 0)
+        return 0;
+    return size == expected_size && checksum == expected_checksum;
+}
+
+static int atari_gui_recover_pending_transaction(const char *root,
+                                                extract_ctx_t *ctx)
+{
+    atari_gui_recovery_record_t record;
+    char journal[BP_MAX_PATH];
+    struct stat st;
+    int journal_rc, target_exists, backup_exists, stage_exists;
+    int target_old = 0, target_new = 0, backup_old = 0;
+#ifdef BP_ATARI_GUI_TEST_RECORD_RECOVERY
+    int restored_old = 0;
+#endif
+    if (atari_gui_build_path(root, GUI_ATARI_RECOVERY_JOURNAL, journal,
+                             sizeof(journal)) != 0)
+        return BP_ERR_NAME_TOO_LONG;
+    journal_rc = atari_gui_read_recovery_record(journal, &record);
+    if (journal_rc == 0) return BP_OK;
+    if (journal_rc < 0 || !bp_atari_path_under_root(root, record.target) ||
+        !bp_atari_path_under_root(root, record.temporary) ||
+        (record.old_existed && !bp_atari_path_under_root(root, record.backup)) ||
+        !atari_gui_same_parent_path(record.target, record.temporary) ||
+        (record.old_existed &&
+         !atari_gui_same_parent_path(record.target, record.backup)) ||
+        strncmp(strrchr(record.temporary, '\\') != NULL
+                    ? strrchr(record.temporary, '\\') + 1
+                    : strrchr(record.temporary, '/') != NULL
+                        ? strrchr(record.temporary, '/') + 1
+                        : record.temporary, "BP", 2) != 0 ||
+        (record.old_existed &&
+         strncmp(strrchr(record.backup, '\\') != NULL
+                    ? strrchr(record.backup, '\\') + 1
+                    : strrchr(record.backup, '/') != NULL
+                        ? strrchr(record.backup, '/') + 1
+                        : record.backup, "BR", 2) != 0))
+        return BP_ERR_CORRUPT;
+    target_exists = lstat(record.target, &st) == 0;
+    backup_exists = record.old_existed && lstat(record.backup, &st) == 0;
+    stage_exists = lstat(record.temporary, &st) == 0;
+    if (target_exists) {
+        target_new = atari_gui_file_matches(record.target, record.new_size,
+                                            record.new_checksum);
+        if (record.old_existed)
+            target_old = atari_gui_file_matches(record.target, record.old_size,
+                                                record.old_checksum);
+    }
+    if (backup_exists)
+        backup_old = atari_gui_file_matches(record.backup, record.old_size,
+                                            record.old_checksum);
+    if (target_new) {
+        if (backup_exists && (!backup_old || unlink(record.backup) != 0)) {
+            strncpy(ctx->recovery_path, record.backup,
+                    sizeof(ctx->recovery_path) - 1);
+            ctx->recovery_path[sizeof(ctx->recovery_path) - 1] = '\0';
+            return BP_ERR_PARTIAL;
+        }
+    } else if (record.old_existed && target_old && !backup_exists) {
+        /* The journal was written, but the old target had not moved yet. */
+    } else if (!target_exists && record.old_existed && backup_exists && backup_old) {
+        if (atari_gui_rename_noreplace(record.backup, record.target) != 0 ||
+            !atari_gui_file_matches(record.target, record.old_size,
+                                    record.old_checksum)) {
+            strncpy(ctx->recovery_path, record.backup,
+                    sizeof(ctx->recovery_path) - 1);
+            ctx->recovery_path[sizeof(ctx->recovery_path) - 1] = '\0';
+            return BP_ERR_PARTIAL;
+        }
+#ifdef BP_ATARI_GUI_TEST_RECORD_RECOVERY
+        restored_old = 1;
+#endif
+    } else if (!target_exists && !record.old_existed && !backup_exists) {
+        /* A new-file transaction had not published its stage yet. */
+    } else {
+        if (backup_exists)
+            strncpy(ctx->recovery_path, record.backup,
+                    sizeof(ctx->recovery_path) - 1);
+        else
+            strncpy(ctx->recovery_path, record.target,
+                    sizeof(ctx->recovery_path) - 1);
+        ctx->recovery_path[sizeof(ctx->recovery_path) - 1] = '\0';
+        return BP_ERR_PARTIAL;
+    }
+    if (stage_exists) {
+        if (atari_gui_file_matches(record.temporary, record.new_size,
+                                   record.new_checksum)) {
+            if (unlink(record.temporary) != 0) ctx->partial = 1;
+        } else {
+            /* An incomplete or substituted stage is not safe to delete. */
+            ctx->partial = 1;
+        }
+    }
+    if (atari_gui_clear_recovery_record(journal, record.checksum) != 0)
+        return BP_ERR_PARTIAL;
+#ifdef BP_ATARI_GUI_TEST_RECORD_RECOVERY
+    if (restored_old) {
+        char marker[BP_MAX_PATH];
+        int marker_fd;
+        if (atari_gui_build_path(root, "RECOVER.TST", marker,
+                                 sizeof(marker)) != 0)
+            return BP_ERR_IO;
+        marker_fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (marker_fd < 0) return BP_ERR_IO;
+        if (close(marker_fd) != 0) return BP_ERR_IO;
+        for (;;) { }
+    }
+#endif
+    return BP_OK;
 }
 
 static int commit_staged_output(atari_gui_staged_output_t *stage)
@@ -1798,6 +2414,15 @@ static int commit_staged_output(atari_gui_staged_output_t *stage)
     char backup[BP_MAX_PATH], template[BP_MAX_PATH];
     unsigned char current_attributes;
     int fd, backup_moved = 0;
+    backup[0] = '\0';
+    if (atari_gui_real_parent_chain(stage->target) != 0 ||
+        !stage->temporary_snapshot_valid || lstat(stage->temporary, &current) != 0)
+        return BP_ERR_PARTIAL;
+    if (!atari_gui_same_staged_file(&stage->temporary_snapshot, &current))
+        return BP_ERR_PARTIAL;
+    if (verify_staged_output_content(stage) != 0) return BP_ERR_PARTIAL;
+    if (atari_gui_real_parent_chain(stage->target) != 0) return BP_ERR_PARTIAL;
+    stage->temporary_snapshot = current;
     if (lstat(stage->target, &current) == 0) {
         if (!stage->target_existed || !atari_gui_same_file(&stage->target_snapshot,
                                                            &current))
@@ -1807,42 +2432,126 @@ static int commit_staged_output(atari_gui_staged_output_t *stage)
         (atari_gui_get_attr(stage->target, &current_attributes) != 0 ||
          current_attributes != stage->target_attributes)) return BP_ERR_PARTIAL;
     if (stage->target_existed) {
-        if (atari_gui_sibling_name(stage->target, "BRXXXXXX", template,
-                                   sizeof(template)) != 0) return BP_ERR_NAME_TOO_LONG;
-        fd = mkstemp(template);
-        if (fd < 0) return BP_ERR_IO;
-        if (close(fd) != 0 || unlink(template) != 0) {
-            (void)unlink(template);
+        if (stage->backup[0] != '\0') {
+            strcpy(backup, stage->backup);
+        } else {
+            if (atari_gui_sibling_name(stage->target, "BRXXXXXX", template,
+                                       sizeof(template)) != 0)
+                return BP_ERR_NAME_TOO_LONG;
+            fd = mkstemp(template);
+            if (fd < 0) return BP_ERR_IO;
+            if (close(fd) != 0 || unlink(template) != 0) {
+                (void)unlink(template);
+                return BP_ERR_IO;
+            }
+            strcpy(backup, template);
+        }
+    }
+    if (stage->target_existed) {
+        if (atari_gui_real_parent_chain(stage->target) != 0) {
+            (void)atari_gui_clear_journal_held(stage);
+            return BP_ERR_PARTIAL;
+        }
+        if (atari_gui_rename_noreplace(stage->target, backup) != 0) {
+            (void)atari_gui_clear_journal_held(stage);
             return BP_ERR_IO;
         }
-        strcpy(backup, template);
-        if (atari_gui_rename_noreplace(stage->target, backup) != 0) return BP_ERR_IO;
         backup_moved = 1;
         if (lstat(backup, &backup_stat) != 0 ||
             !atari_gui_same_file(&stage->target_snapshot, &backup_stat)) {
-            if (atari_gui_rename_noreplace(backup, stage->target) != 0)
+            if (atari_gui_rename_noreplace(backup, stage->target) != 0) {
+                remember_recovery_path(stage, backup);
                 printf("Changed destination remains at recovery path: %s\n", backup);
+            } else {
+                (void)atari_gui_clear_journal_held(stage);
+            }
             return BP_ERR_PARTIAL;
         }
         if (stage->preserve_target_attributes &&
             (atari_gui_get_attr(backup, &current_attributes) != 0 ||
              current_attributes != stage->target_attributes)) {
-            if (atari_gui_rename_noreplace(backup, stage->target) != 0)
+            if (atari_gui_rename_noreplace(backup, stage->target) != 0) {
+                remember_recovery_path(stage, backup);
                 printf("Changed archive remains at recovery path: %s\n", backup);
+            } else {
+                (void)atari_gui_clear_journal_held(stage);
+            }
             return BP_ERR_PARTIAL;
         }
+#ifdef BP_ATARI_GUI_TEST_PAUSE_AFTER_BACKUP
+        if (stage->verify_content) {
+            char pause_path[BP_MAX_PATH];
+            int pause_fd;
+            if (atari_gui_sibling_name(stage->target, "HOLD.TST", pause_path,
+                                       sizeof(pause_path)) != 0)
+                return BP_ERR_NAME_TOO_LONG;
+            pause_fd = open(pause_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (pause_fd < 0) return BP_ERR_IO;
+            (void)close(pause_fd);
+            /* The dedicated test runner kills Hatari after observing this
+               marker and the absent target. Never present in release builds. */
+            for (;;) { }
+        }
+#endif
     }
-    if (atari_gui_rename_noreplace(stage->temporary, stage->target) != 0) {
-        if (backup_moved && atari_gui_rename_noreplace(backup, stage->target) != 0)
+    if (atari_gui_real_parent_chain(stage->target) != 0) {
+        if (backup_moved &&
+            atari_gui_rename_noreplace(backup, stage->target) != 0) {
+            remember_recovery_path(stage, backup);
             printf("Original file remains at recovery path: %s\n", backup);
-        return BP_ERR_IO;
+        } else {
+            (void)atari_gui_clear_journal_held(stage);
+        }
+        return BP_ERR_PARTIAL;
+    }
+    {
+        int publish_failed;
+#ifdef BP_ATARI_GUI_TEST_FAIL_AFTER_BACKUP
+        /* Exercise the real post-backup rollback path in a dedicated Hatari
+           binary. This hook is absent from normal release builds. */
+        publish_failed = stage->verify_content;
+        if (!publish_failed)
+            publish_failed = atari_gui_rename_noreplace(stage->temporary,
+                                                        stage->target) != 0;
+#else
+        publish_failed = atari_gui_rename_noreplace(stage->temporary,
+                                                    stage->target) != 0;
+#endif
+        if (publish_failed) {
+#ifdef BP_ATARI_GUI_TEST_BLOCK_ROLLBACK
+            if (stage->verify_content) {
+                static const char blocker[] = "test-only rollback blocker\n";
+                int blocker_fd = open(stage->target,
+                                      O_WRONLY | O_CREAT | O_EXCL, 0600);
+                if (blocker_fd >= 0) {
+                    (void)write(blocker_fd, blocker, sizeof(blocker) - 1);
+                    (void)close(blocker_fd);
+                }
+            }
+#endif
+            if (backup_moved &&
+                atari_gui_rename_noreplace(backup, stage->target) != 0) {
+                remember_recovery_path(stage, backup);
+                printf("Original file remains at recovery path: %s\n", backup);
+            } else {
+                (void)atari_gui_clear_journal_held(stage);
+            }
+            return BP_ERR_IO;
+        }
     }
     stage->temporary[0] = '\0';
     stage->committed = 1;
-    if (backup_moved && unlink(backup) != 0) {
-        printf("Cannot remove replaced-file backup: %s\n", backup);
-        return BP_ERR_PARTIAL;
+    if (backup_moved) {
+        if (lstat(backup, &backup_stat) != 0 ||
+            !atari_gui_same_file(&stage->target_snapshot, &backup_stat) ||
+            unlink(backup) != 0) {
+            remember_recovery_path(stage, backup);
+            printf("Replaced-file backup remains at recovery path: %s\n", backup);
+            return BP_ERR_PARTIAL;
+        }
     }
+    if (atari_gui_clear_journal_held(stage) != 0) return BP_ERR_PARTIAL;
+    atari_gui_close_stage_directories(stage);
     return BP_OK;
 }
 
@@ -1874,6 +2583,11 @@ static int open_archive_stage(const char *target,
     fd = mkstemp(stage->temporary);
     if (fd < 0) return BP_ERR_IO;
     stage->fd = fd;
+    if (fstat(fd, &stage->temporary_snapshot) != 0) {
+        discard_staged_output(stage);
+        return BP_ERR_IO;
+    }
+    stage->temporary_snapshot_valid = 1;
     *stream = fdopen(fd, "w+b");
     if (*stream == NULL) {
         discard_staged_output(stage);
@@ -1885,16 +2599,27 @@ static int open_archive_stage(const char *target,
 static int finish_archive_stage(FILE **stream,
                                 atari_gui_staged_output_t *stage)
 {
+    struct stat current;
     int rc = BP_OK;
     if (fflush(*stream) != 0) rc = BP_ERR_IO;
+    snapshot_staged_output(stage);
+    if (!stage->temporary_snapshot_valid) rc = BP_ERR_IO;
     if (fclose(*stream) != 0) rc = BP_ERR_IO;
     *stream = NULL;
     stage->fd = -1;
-    if (rc == BP_OK && stage->preserve_target_attributes &&
-        atari_gui_apply_attr(stage->temporary,
-                             (unsigned char)(BP_META_FAT_MASK & ~FA_RDONLY),
-                             stage->target_attributes) != 0)
-        rc = BP_ERR_IO;
+    if (rc == BP_OK && stage->preserve_target_attributes) {
+        if (lstat(stage->temporary, &current) != 0 ||
+            !atari_gui_same_staged_file(&stage->temporary_snapshot, &current)) {
+            rc = BP_ERR_PARTIAL;
+        } else if (atari_gui_apply_attr(stage->temporary,
+                    (unsigned char)(BP_META_FAT_MASK & ~FA_RDONLY),
+                    stage->target_attributes) != 0) {
+            rc = BP_ERR_IO;
+        } else if (lstat(stage->temporary, &stage->temporary_snapshot) != 0) {
+            stage->temporary_snapshot_valid = 0;
+            rc = BP_ERR_IO;
+        }
+    }
     if (rc == BP_OK) rc = commit_staged_output(stage);
     if (rc != BP_OK) discard_staged_output(stage);
     return rc;
@@ -1979,11 +2704,18 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     }
     {
         atari_gui_staged_output_t *stage;
-        int fd;
+        int fd, backup_fd;
         stage = (atari_gui_staged_output_t *)calloc(1, sizeof(*stage));
         if (stage == NULL) { ctx->partial = 1; return NULL; }
         stage->fd = -1;
         strcpy(stage->target, full);
+        if (atari_gui_build_path(ctx->dest_dir, GUI_ATARI_RECOVERY_JOURNAL,
+                                 stage->journal_path,
+                                 sizeof(stage->journal_path)) != 0) {
+            free(stage);
+            ctx->partial = 1;
+            return NULL;
+        }
         if (lstat(full, &st) == 0) {
             if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
                 free(stage);
@@ -2005,6 +2737,41 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
             return NULL;
         }
         stage->fd = fd;
+        stage->expected_size = entry->original_size;
+        stage->expected_checksum = entry->checksum;
+        stage->verify_content = 1;
+        if (fstat(fd, &stage->temporary_snapshot) != 0) {
+            discard_extraction_stage(ctx, stage);
+            free(stage);
+            ctx->partial = 1;
+            return NULL;
+        }
+        stage->temporary_snapshot_valid = 1;
+        atari_gui_pin_stage_directories(stage, ctx->dest_dir);
+        if (stage->target_existed) {
+            if (atari_gui_sibling_name(full, "BRXXXXXX", stage->backup,
+                                       sizeof(stage->backup)) != 0 ||
+                (backup_fd = mkstemp(stage->backup)) < 0) {
+                discard_extraction_stage(ctx, stage);
+                free(stage);
+                ctx->partial = 1;
+                return NULL;
+            }
+            if (close(backup_fd) != 0 || unlink(stage->backup) != 0) {
+                (void)unlink(stage->backup);
+                discard_extraction_stage(ctx, stage);
+                free(stage);
+                ctx->partial = 1;
+                return NULL;
+            }
+        }
+        if (atari_gui_write_recovery_record(
+                stage, stage->target_existed ? stage->backup : NULL) != BP_OK) {
+            discard_extraction_stage(ctx, stage);
+            free(stage);
+            ctx->partial = 1;
+            return NULL;
+        }
         strcpy(ctx->subject, entry->name);
         stage->io.read = NULL;
         stage->io.write = staged_output_write;
@@ -2069,30 +2836,36 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
     {
         atari_gui_staged_output_t *stage =
             (atari_gui_staged_output_t *)out->handle;
-        int close_rc = close(stage->fd);
+        int close_rc = 0;
         int rc;
+        snapshot_staged_output(stage);
+        if (stage->fd >= 0) close_rc = close(stage->fd);
         stage->fd = -1;
         if (close_rc != 0) {
-            discard_staged_output(stage);
+            discard_extraction_stage(ctx, stage);
             free(stage);
             ctx->subject_ok = 0;
             ctx->partial = 1;
             return status == BP_OK ? BP_ERR_IO : BP_OK;
         }
         if (status != BP_OK) {
-            discard_staged_output(stage);
+            discard_extraction_stage(ctx, stage);
             free(stage);
             ctx->subject_ok = 0;
             return BP_OK;
         }
-        if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-            if (bp_restore_mtime(stage->temporary, entry->mtime) != BP_OK)
-                ctx->partial = 1;
-        }
         if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial = 1;
         rc = commit_staged_output(stage);
+        if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+            bp_restore_mtime(stage->target, entry->mtime) != BP_OK)
+            ctx->partial = 1;
         if (rc != BP_OK) {
-            discard_staged_output(stage);
+            if (stage->recovery_path[0] != '\0') {
+                strncpy(ctx->recovery_path, stage->recovery_path,
+                        sizeof(ctx->recovery_path) - 1);
+                ctx->recovery_path[sizeof(ctx->recovery_path) - 1] = '\0';
+            }
+            discard_extraction_stage(ctx, stage);
             free(stage);
             ctx->subject_ok = 0;
             ctx->partial = 1;
@@ -2193,6 +2966,14 @@ static void do_extract(void)
                    "Cannot validate archive names");
         return;
     }
+    rc = atari_gui_recover_pending_transaction(ctx.dest_dir, &ctx);
+    if (rc != BP_OK) {
+        if (ctx.recovery_path[0] != '\0')
+            show_recovery_alert(ctx.recovery_path);
+        else
+            show_alert("Cannot safely recover the previous extraction");
+        return;
+    }
     if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
         show_alert("Cannot rewind archive after name checks");
         return;
@@ -2200,7 +2981,8 @@ static void do_extract(void)
 
     start_progress_ui(&ctx.progress, "Extracting archive", NULL,
                       u64_to_dbl(archive_info.total_original),
-                      (unsigned long)(archive_info.entry_count - archive_info.dir_count));
+                      (unsigned long)(archive_info.entry_count - archive_info.dir_count),
+                      1);
     graf_mouse(BUSYBEE, NULL);
     io = make_io(archive_fp);
     rc = bp_archive_extract_all_ex(&io, extract_open_cb, extract_done_cb,
@@ -2213,9 +2995,17 @@ static void do_extract(void)
     graf_mouse(ARROW, NULL);
     stop_progress_ui(&ctx.progress);
 
-    if (rc == BP_ERR_PARTIAL)
+    if (ctx.recovery_path[0] != '\0')
+        show_recovery_alert(ctx.recovery_path);
+    if (ctx.stale_stage_path[0] != '\0')
+        show_stale_stage_alert(ctx.stale_stage_path);
+    else if (ctx.recovery_path[0] == '\0' &&
+             rc == BP_ERR_ABORTED && ctx.progress.cancelled)
+        show_alert("Extraction cancelled; completed files remain");
+    else if (ctx.recovery_path[0] == '\0' && rc == BP_ERR_PARTIAL)
         show_alert("Partial extraction: some data or attributes were not restored");
-    else if (rc != BP_OK && rc != BP_ERR_ABORTED)
+    else if (ctx.recovery_path[0] == '\0' &&
+             rc != BP_OK && rc != BP_ERR_ABORTED)
         show_alert("Extraction failed; incomplete files were not published");
 }
 
@@ -2586,7 +3376,7 @@ static void do_create_from_paths(char **paths, int path_count)
 
     start_progress_ui(&progress, "Creating archive",
                       current_interchange_profile ? "Interchange 1" : method_name(current_method),
-                      total_bytes, (unsigned long)gather_count);
+                      total_bytes, (unsigned long)gather_count, 0);
 
     graf_mouse(BUSYBEE, NULL);
 
@@ -2598,6 +3388,8 @@ static void do_create_from_paths(char **paths, int path_count)
         rc = bp_archive_create(&ar, &outio, 0, current_method);
     if (rc != BP_OK) {
         bp_archive_close(&ar);
+        (void)fflush(outfp);
+        snapshot_staged_output(&archive_stage);
         (void)fclose(outfp);
         outfp = NULL;
         archive_stage.fd = -1;
@@ -2743,6 +3535,8 @@ static void do_create_from_paths(char **paths, int path_count)
         archive_published = archive_stage.committed;
     } else {
         if (outfp != NULL) {
+            (void)fflush(outfp);
+            snapshot_staged_output(&archive_stage);
             (void)fclose(outfp);
             outfp = NULL;
             archive_stage.fd = -1;
@@ -2755,7 +3549,10 @@ static void do_create_from_paths(char **paths, int path_count)
     free_gather_files();
 
     if (rc != BP_OK) {
-        if (rc == BP_ERR_PARTIAL && archive_published) {
+        if (archive_stage.recovery_path[0] != '\0') {
+            show_recovery_alert(archive_stage.recovery_path);
+            if (archive_published) do_open(out_path);
+        } else if (rc == BP_ERR_PARTIAL && archive_published) {
             show_alert("Archive created, but its replacement backup needs attention");
             do_open(out_path);
         } else {
@@ -2824,7 +3621,8 @@ static void do_create(void)
         }
         path_count++;
 
-        again = form_alert(1,
+        /* Return should finish source selection by default, not reopen it. */
+        again = form_alert(2,
             "[1][Added to archive list.|Select another file or folder?][More|Create]");
         if (again != 1)
             break;
@@ -3000,6 +3798,119 @@ static void event_loop(void)
 /*  Main                                                                  */
 /* ====================================================================== */
 
+#ifdef BP_ATARI_GUI_FREEMINT_CLEANUP_TEST
+static int freemint_ensure_directory(const char *path)
+{
+    struct stat st;
+    if (mkdir(path, 0777) != 0 && errno != EEXIST) return -1;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
+        return -1;
+    return 0;
+}
+
+static void freemint_cleanup_result(FILE *results, int *failed,
+                                    const char *name, int passed)
+{
+    if (results != NULL) {
+        fprintf(results, "%s=%s\r\n", name, passed ? "PASS" : "FAIL");
+        (void)fflush(results);
+    }
+    if (!passed) *failed = 1;
+}
+
+int main(void)
+{
+    static const char payload[] = "partial-stage-data";
+    static const char sentinel[] = "preserve-this-sentinel";
+    atari_gui_staged_output_t stage;
+    extract_ctx_t ctx;
+    FILE *results;
+    int failed = 0, fd = -1, rename_rc, stage_absent, journal_absent;
+    char temporary[BP_MAX_PATH], contents[64];
+    struct stat st;
+
+    memset(&stage, 0, sizeof(stage));
+    memset(&ctx, 0, sizeof(ctx));
+    stage.fd = -1;
+    results = fopen("C:\\RESULT.TXT", "wb");
+    freemint_cleanup_result(results, &failed, "result-file-open", results != NULL);
+    if (results == NULL) return 1;
+
+    freemint_cleanup_result(results, &failed, "create-output-root",
+                            freemint_ensure_directory("C:\\OUT") == 0);
+    freemint_cleanup_result(results, &failed, "create-stage-parent",
+                            freemint_ensure_directory("C:\\OUT\\SUB") == 0);
+    {
+        FILE *sentinel_file = fopen("C:\\OUT\\KEEP.TXT", "wb");
+        int sentinel_ok = sentinel_file != NULL;
+        if (sentinel_file != NULL) {
+            if (fwrite(sentinel, 1, sizeof(sentinel) - 1, sentinel_file) !=
+                sizeof(sentinel) - 1) sentinel_ok = 0;
+            if (fclose(sentinel_file) != 0) sentinel_ok = 0;
+        }
+        freemint_cleanup_result(results, &failed, "create-sentinel", sentinel_ok);
+    }
+
+    strcpy(stage.target, "C:\\OUT\\SUB\\TARGET.TXT");
+    strcpy(stage.journal_path, "C:\\OUT\\BPRECOVR.JRN");
+    if (atari_gui_sibling_name(stage.target, "BPXXXXXX", stage.temporary,
+                               sizeof(stage.temporary)) == 0)
+        fd = mkstemp(stage.temporary);
+    freemint_cleanup_result(results, &failed, "create-stage", fd >= 0);
+    if (fd >= 0) {
+        stage.fd = fd;
+        if (write(fd, payload, sizeof(payload) - 1) !=
+            (long)(sizeof(payload) - 1) || fstat(fd, &stage.temporary_snapshot) != 0)
+            failed = 1;
+        else
+            stage.temporary_snapshot_valid = 1;
+    }
+    strcpy(temporary, stage.temporary);
+    stage.expected_size.lo = (bp_uint32)(sizeof(payload) - 1);
+    stage.expected_checksum = bp_crc32(0, (const unsigned char *)payload,
+                                       (bp_uint32)(sizeof(payload) - 1));
+    freemint_cleanup_result(results, &failed, "write-recovery-journal",
+        stage.temporary_snapshot_valid &&
+        atari_gui_write_recovery_record(&stage, NULL) == BP_OK);
+
+    atari_gui_pin_stage_directories(&stage, "C:\\OUT");
+    freemint_cleanup_result(results, &failed, "pin-stage-parent",
+                            stage.parent_dir != NULL);
+    freemint_cleanup_result(results, &failed, "pin-output-root",
+                            stage.destination_dir != NULL);
+
+    rename_rc = rename("C:\\OUT", "C:\\MOVED");
+    freemint_cleanup_result(results, &failed, "rename-open-root-refused",
+        rename_rc != 0 && stat("C:\\OUT", &st) == 0 &&
+        stat("C:\\MOVED", &st) != 0);
+
+    strncpy(ctx.dest_dir, "C:\\OUT", sizeof(ctx.dest_dir) - 1);
+    discard_extraction_stage(&ctx, &stage);
+    stage_absent = lstat(temporary, &st) != 0 && errno == ENOENT;
+    journal_absent = lstat("C:\\OUT\\BPRECOVR.JRN", &st) != 0 &&
+                     errno == ENOENT;
+    freemint_cleanup_result(results, &failed, "held-parent-stage-cleanup",
+                            stage_absent);
+    freemint_cleanup_result(results, &failed, "held-root-journal-cleanup",
+                            journal_absent && stage.journal_checksum == 0);
+    freemint_cleanup_result(results, &failed, "no-stale-stage-warning",
+                            ctx.stale_stage_path[0] == '\0');
+
+    {
+        FILE *sentinel_file = fopen("C:\\OUT\\KEEP.TXT", "rb");
+        int sentinel_ok = sentinel_file != NULL &&
+            fgets(contents, sizeof(contents), sentinel_file) != NULL &&
+            strcmp(contents, sentinel) == 0;
+        if (sentinel_file != NULL) (void)fclose(sentinel_file);
+        freemint_cleanup_result(results, &failed, "sentinel-preserved", sentinel_ok);
+    }
+
+    fprintf(results, "overall=%s\r\n", failed ? "FAIL" : "PASS");
+    (void)fclose(results);
+    (void)sync();
+    return failed ? 1 : 0;
+}
+#else
 int main(void)
 {
     int i;
@@ -3068,3 +3979,4 @@ int main(void)
 
     return 0;
 }
+#endif

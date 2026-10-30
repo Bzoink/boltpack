@@ -100,6 +100,12 @@ def main():
         expected_source = EXPECTED["metadata"]["source_directory"]
         os.chmod(file, int(expected_file["mode_octal"], 8))
         os.utime(file, (expected_file["mtime_unix"], expected_file["mtime_unix"]))
+        empty_expected = EXPECTED["files"]["empty_file"]
+        empty_file = child / "empty.bin"
+        empty_file.write_bytes(b"")
+        os.chmod(empty_file, int(empty_expected["mode_octal"], 8))
+        os.utime(empty_file, (empty_expected["mtime_unix"],
+                              empty_expected["mtime_unix"]))
         os.chmod(child, int(expected_child["mode_octal"], 8))
         os.utime(child, (expected_child["mtime_unix"], expected_child["mtime_unix"]))
         os.chmod(source, int(expected_source["mode_octal"], 8))
@@ -113,6 +119,10 @@ def main():
         check_manifest_file(target, "metadata")
         assert stat.S_IMODE(target.stat().st_mode) == int(expected_file["mode_octal"], 8)
         assert int(target.stat().st_mtime) == expected_file["mtime_unix"]
+        empty_target = restored / "child/empty.bin"
+        check_manifest_file(empty_target, "empty_file")
+        assert stat.S_IMODE(empty_target.stat().st_mode) == int(empty_expected["mode_octal"], 8)
+        assert int(empty_target.stat().st_mtime) == empty_expected["mtime_unix"]
         assert stat.S_IMODE((restored / "child").stat().st_mode) == int(expected_child["mode_octal"], 8)
         assert int((restored / "child").stat().st_mtime) == expected_child["mtime_unix"]
         assert stat.S_IMODE(restored.stat().st_mode) == int(expected_source["mode_octal"], 8)
@@ -132,8 +142,12 @@ def main():
         full_restored = root / "full/src"
         full_target = full_restored / "child/file.txt"
         check_manifest_file(full_target, "metadata")
+        full_empty = full_restored / "child/empty.bin"
+        check_manifest_file(full_empty, "empty_file")
         assert stat.S_IMODE(full_target.stat().st_mode) == int(expected_file["mode_octal"], 8)
         assert int(full_target.stat().st_mtime) == expected_file["mtime_unix"]
+        assert stat.S_IMODE(full_empty.stat().st_mode) == int(empty_expected["mode_octal"], 8)
+        assert int(full_empty.stat().st_mtime) == empty_expected["mtime_unix"]
         assert stat.S_IMODE((full_restored / "child").stat().st_mode) == int(expected_child["mode_octal"], 8)
         assert int((full_restored / "child").stat().st_mtime) == expected_child["mtime_unix"]
         assert stat.S_IMODE(full_restored.stat().st_mode) == int(expected_source["mode_octal"], 8)

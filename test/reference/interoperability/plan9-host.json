@@ -1,5 +1,5 @@
 {
-  "case": "Plan 9 frontend host-shim archive interoperability and extraction safety",
+  "case": "Plan 9 frontend host-shim archive interoperability and fail-closed extraction",
   "environment": "GCC host build with Plan 9 libc shims; this is not a native Plan 9 runtime result",
   "profile": {
     "number": 1,
@@ -19,6 +19,12 @@
         "sha256": "66e0b4b2770e40cb6735937018bc552904ddff29fbc5364df35e4e5304b00c28"
       }
     }
+  },
+  "extraction": {
+    "real": "refuse-before-output",
+    "dry_run": "succeed-without-output",
+    "refusal_message": "cannot anchor output paths safely",
+    "existing_destination": "preserve byte-for-byte"
   },
   "directory_metadata": {
     "archive_name": "locked/",

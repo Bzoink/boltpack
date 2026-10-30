@@ -1119,6 +1119,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
     p9_path_index_free(&preflight.index);
+    /* Plan 9 exposes pathname-based create/wstat operations here, but no
+     * held-parent traversal or safe staged publication. Refuse real
+     * extraction until an equivalent race-safe implementation exists. */
+    if (!dry_run) {
+        fprint(2,
+               "boltpack: extraction is disabled because this platform cannot anchor output paths safely\n");
+        close(fd);
+        return 1;
+    }
     if (out_dir && !dry_run && mkdirs(out_dir) < 0) {
         close(fd);
         fprint(2, "boltpack: cannot create output directory: %s\n", out_dir);

@@ -340,7 +340,8 @@ static int ql_to_arcname(const char *qdos_rel, int is_directory, char *out,
 static int qdirect_get_name(const qdirect_t *e, char *buf, int bufsz)
 {
     int n = (int)(unsigned short)e->d_szname;  /* big-endian on M68k */
-    if (n <= 0 || n > QDOS_NAME_MAX || n >= bufsz) return 0;
+    if (n == 0) return 0; /* QDOS directory-stream end marker */
+    if (n > QDOS_NAME_MAX || n >= bufsz) return -1;
     strncpy(buf, e->d_name, (size_t)n);
     buf[n] = '\0';
     return n;
@@ -433,6 +434,8 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
     char       child_arc[BP_MAX_PATH];
     int        rc = BP_OK;
     int        is_directory;
+    int        name_length;
+    size_t     record_bytes;
 
     dp = fopen(qdos_dir, "r");
     if (!dp) {
@@ -440,9 +443,19 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
         return BP_ERR_IO;
     }
 
-    while (rc == BP_OK &&
-           fread(&ent, 1, sizeof(ent), dp) == sizeof(ent)) {
-        if (!qdirect_get_name(&ent, ent_name, sizeof(ent_name))) continue;
+    while (rc == BP_OK) {
+        record_bytes = fread(&ent, 1, sizeof(ent), dp);
+        if (record_bytes == 0) break;
+        if (record_bytes != sizeof(ent)) {
+            rc = BP_ERR_CORRUPT;
+            break;
+        }
+        name_length = qdirect_get_name(&ent, ent_name, sizeof(ent_name));
+        if (name_length == 0) break;
+        if (name_length < 0) {
+            rc = BP_ERR_CORRUPT;
+            break;
+        }
 
         /* Build full QDOS path: device path ends with '_', so just append */
         if (ql_path_join2(child_qdos, sizeof(child_qdos), qdos_dir,

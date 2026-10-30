@@ -195,11 +195,17 @@ copied core inventory and byte identity before building:
 make macos9-core-sync-test
 make macos9-68k
 make macos9-68k-kit
+make macos9-ppc-xcoff
 ```
 
 `macos9-68k-kit` compiles from `src/frontend/macos9/68k/Source`. Both targets
 produce the application and merged resource file under `build/`; neither
 qualifies runtime behavior on Mac OS 9.
+`macos9-ppc-xcoff` uses the Retro68 PowerPC compiler and Universal import
+libraries to build `build/macos9-ppc/BoltPack.xcoff`. This checks frontend
+compilation and linking only: Retro68 emits XCOFF, not a runnable Mac OS 9
+application. Finder resource packaging and target runtime qualification remain
+open.
 
 Classic Mac OS 9 PowerPC now has a separate native source kit for CodeWarrior
 builds inside the target environment:
@@ -512,12 +518,32 @@ make FRONTEND=hurd BUILDDIR=build/hurd TARGET=build/hurd/boltpack
 
 ---
 
+### 16-bit mini frontends
+
+The DOS16, Win16, and OS/2 1.x mini frontends use Open Watcom 2.0. Set
+`WATCOM_ROOT` and `WATCOM_BIN` in the Makefile to match the local install, then
+build the targets:
+
+```bash
+make dos16
+make win16
+make os2-16
+```
+
+`make mini-all` builds all three and the C89 mini compatibility fixture.
+These are cross-build commands; Windows 3.x and OS/2 1.x runtime validation
+requires their respective guest environments.
+
+---
+
 ### Platforms without a root Makefile target
 
 Plan 9 and OpenVMS frontends are present, but the root `Makefile` does not
 build them. The Plan 9 manual `6c`/`6l` command is documented under the Plan 9
 frontend in `frontends.md` and was built and run on 9front amd64 under QEMU
-TCG; native Plan 9 metadata restoration and other CPU targets remain
+TCG. Plan 9 currently refuses real extraction because safe anchored staging
+and publication are not implemented; create/add and dry-run remain available.
+The historical guest run cannot be repeated here, and other CPU targets remain
 unqualified. The z/OS manual build command is also documented there, but it
 has not been target-built or runtime-qualified. The build commands in this
 guide apply only to targets defined by the root `Makefile`.

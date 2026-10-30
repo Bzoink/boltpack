@@ -11,6 +11,68 @@
 #define BP_ATARI_PATH_BUCKETS 64U
 #define BP_ATARI_GEMDOS_PATH_MAX 125U
 
+static int bp_atari_path_separator(char c)
+{
+    return c == '\\' || c == '/';
+}
+
+static int bp_atari_path_component_safe(const char *path)
+{
+    size_t i = 0;
+    if (path == NULL || path[0] == '\0') return 0;
+    while (path[i] != '\0') {
+        size_t start, length;
+        if (bp_atari_path_separator(path[i])) {
+            if (i != 0 && bp_atari_path_separator(path[i - 1])) return 0;
+            i++;
+            continue;
+        }
+        start = i;
+        while (path[i] != '\0' && !bp_atari_path_separator(path[i])) {
+            if (path[i] == ':' &&
+                !(start == 0 && i == 1 &&
+                  ((path[0] >= 'A' && path[0] <= 'Z') ||
+                   (path[0] >= 'a' && path[0] <= 'z'))))
+                return 0;
+            i++;
+        }
+        length = i - start;
+        if ((length == 1U && path[start] == '.') ||
+            (length == 2U && path[start] == '.' && path[start + 1] == '.'))
+            return 0;
+        if (bp_atari_path_separator(path[i]) &&
+            path[i + 1] != '\0' && bp_atari_path_separator(path[i + 1]))
+            return 0;
+    }
+    return 1;
+}
+
+/* Check a journal path lexically before using it for recovery. GEMDOS paths
+ * are case-insensitive, and both slash forms are accepted by the frontend. */
+static int bp_atari_path_under_root(const char *root, const char *path)
+{
+    size_t root_length, path_length, i;
+    if (!bp_atari_path_component_safe(root) ||
+        !bp_atari_path_component_safe(path))
+        return 0;
+    root_length = strlen(root);
+    path_length = strlen(path);
+    if (path_length <= root_length ||
+        bp_atari_path_separator(path[path_length - 1])) return 0;
+    for (i = 0; i < root_length; i++) {
+        unsigned char a = (unsigned char)root[i];
+        unsigned char b = (unsigned char)path[i];
+        if (bp_atari_path_separator((char)a) &&
+            bp_atari_path_separator((char)b))
+            continue;
+        if (a >= 'a' && a <= 'z') a = (unsigned char)(a - 'a' + 'A');
+        if (b >= 'a' && b <= 'z') b = (unsigned char)(b - 'a' + 'A');
+        if (a != b) return 0;
+    }
+    if (bp_atari_path_separator(root[root_length - 1])) return 1;
+    return bp_atari_path_separator(path[root_length]);
+}
+
 static int bp_atari_selector_dir(const char *pattern, size_t pattern_capacity,
                                  char *dir, size_t capacity)
 {

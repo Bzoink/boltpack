@@ -3033,6 +3033,15 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
 
+#ifdef BP_REFUSE_PATH_RACE_EXTRACTION
+    if (!dry_run) {
+        fprintf(stderr,
+                "boltpack: extraction is disabled because this platform cannot anchor output paths safely\n");
+        fclose(fp);
+        return 1;
+    }
+#endif
+
     if (out_dir && !dry_run) {
         if (mkdirs(out_dir) != 0) {
             fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);

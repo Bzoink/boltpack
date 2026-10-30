@@ -2,17 +2,44 @@
 """Exercise Amiga/Linux exchange and metadata on a disposable native floppy."""
 import argparse
 import hashlib
+import json
 import locale
 import os
 from pathlib import Path
 import platform
 import shutil
+import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
+EXPECTED_PATH = ROOT / "test/reference/interoperability/amiga-native.json"
+EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
+
+
+def check_payload(data, key):
+    record = EXPECTED["files"][key]
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise RuntimeError("independent native manifest mismatch: " + key)
+
+
+def check_outcome(key, returncode):
+    """Apply an independently declared refusal/partial expectation."""
+    expected = EXPECTED["outcomes"][key]
+    if expected == "refused":
+        valid = returncode != 0
+    elif expected == "partial":
+        valid = returncode == 1
+    elif expected == "preserve archive":
+        valid = returncode != 0
+    else:
+        raise RuntimeError("unhandled expected outcome %s=%r" % (key, expected))
+    if not valid:
+        raise RuntimeError("%s outcome was %r, command return code was %d" %
+                           (key, expected, returncode))
 
 
 def command_version(command):
@@ -22,6 +49,29 @@ def command_version(command):
     except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable: " + str(exc)
     return output.strip().splitlines()[0] if output.strip() else "unknown"
+
+
+def python_script_package_version(executable, package):
+    """Read a Python CLI's distribution version through its own interpreter."""
+    resolved = shutil.which(executable) or executable
+    try:
+        with open(resolved, "r", encoding="utf-8") as stream:
+            first_line = stream.readline().strip()
+        if not first_line.startswith("#!"):
+            return "unavailable: no Python script interpreter is declared"
+        interpreter = shlex.split(first_line[2:])
+        if not interpreter:
+            return "unavailable: empty Python script interpreter"
+        if Path(interpreter[0]).name == "env":
+            interpreter = interpreter[1:]
+        if not interpreter:
+            return "unavailable: empty env interpreter"
+        python = shutil.which(interpreter[0]) or interpreter[0]
+        command = [python, "-c", "import importlib.metadata; "
+                   "print(importlib.metadata.version(%r))" % package]
+        return command_version(command)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return "unavailable: " + str(exc)
 
 
 def main():
@@ -35,7 +85,8 @@ def main():
     p.add_argument("--amiga-cli", type=Path, default=ROOT / "build/amiga/boltpack")
     p.add_argument("--linux-cli", type=Path, default=ROOT / "build/linux/boltpack")
     p.add_argument("--output", type=Path)
-    p.add_argument("--timeout", type=int, default=90)
+    p.add_argument("--timeout", type=int, default=600,
+                   help="maximum FS-UAE runtime in seconds (default: 600)")
     p.add_argument("--stack", type=int, default=262144,
                    help="guest shell stack in bytes; 0 keeps its default")
     p.add_argument("--chip-memory", type=int, choices=(512, 1024, 2048),
@@ -69,17 +120,26 @@ def main():
     codec_data = (bytes((i * 73 + i // 17) & 0xff for i in range(256 * 1024))
                   if not args.skip_codecs else b"")
     extra = b"append on native Amiga disk\n" * 70
-    (drive / "SRC.TXT").write_bytes(payload)
+    source_name = EXPECTED["names"]["source"]
+    append_name = EXPECTED["names"]["append"]
+    accent_name = EXPECTED["names"]["latin1"]
+    nested_name = EXPECTED["names"]["nested"]
+    empty_directory_name = EXPECTED["names"]["empty_directory"]
+    check_payload(payload, "source")
+    check_payload(extra, "append")
+    if not args.skip_codecs:
+        check_payload(codec_data, "codec")
+    (drive / source_name).write_bytes(payload)
     if not args.skip_codecs:
         (drive / "CODEC.DAT").write_bytes(codec_data)
-    (drive / "NEW.TXT").write_bytes(extra)
-    accent_name = "caf\u00e9.txt"
+    (drive / append_name).write_bytes(extra)
     (drive / accent_name).write_bytes(extra)
     emoji_name = "face\U0001f600.txt"
     (drive / emoji_name).write_bytes(extra)
-    (drive / "TREE" / "NEST" / "EMPTY").mkdir(parents=True)
+    (drive / Path(empty_directory_name)).mkdir(parents=True)
     (drive / "TREE" / "NEST" / "FILE.TXT").write_bytes(payload)
     deep_payload = b"native Amiga deep tree fixture\n" * 32
+    check_payload(deep_payload, "deep")
     # Keep the cumulative pathname below AmigaDOS's legacy path limit so this
     # exercises traversal depth rather than failing on path length first.
     deep_parts = ["D" for _ in range(args.depth)]
@@ -288,49 +348,52 @@ def main():
                 stack_fields["cli_default_stack_longwords"] <= 0):
             raise RuntimeError("guest stack probe returned an invalid size %r; evidence: %s" %
                                (stack_report, out))
-        for name in ("FAILADD", "UNREP", "CASE"):
-            if (drive / (name + ".RC")).read_text().strip() == "0":
-                raise RuntimeError("native refusal returned success: " + name + "; evidence: " + str(out))
-        if (drive / "BADMETA.RC").read_text().strip() == "0":
-            raise RuntimeError("embedded-NUL Amiga comment was accepted; evidence: " + str(out))
+        for name, outcome in (("FAILADD", "failed_append"),
+                              ("UNREP", "unrepresentable_name"),
+                              ("CASE", "case_collision")):
+            check_outcome(outcome, int((drive / (name + ".RC")).read_text().strip()))
+        check_outcome("invalid_comment",
+                      int((drive / "BADMETA.RC").read_text().strip()))
         malformed_comment = (drive / "BADMETA.META.TXT").read_bytes()
         if not malformed_comment.endswith(b":\n"):
             raise RuntimeError("malformed Amiga comment was partially applied: " +
                                repr(malformed_comment) + "; evidence: " + str(out))
         for name in ("NATFST", "PORTFST"):
-            if ((drive / (name + ".RC")).read_text().strip() != "1" or
+            if (int((drive / (name + ".RC")).read_text().strip()) != 1 or
                     b"[foreign metadata]" not in
                     (drive / (name + ".LOG")).read_bytes()):
                 raise RuntimeError("conflicting metadata did not report partial: " + name +
                                    "; evidence: " + str(out))
+            check_outcome("conflicting_metadata",
+                          int((drive / (name + ".RC")).read_text().strip()))
             metadata = (drive / (name + ".META.TXT")).read_text().strip()
-            if not metadata.startswith("64:"):
+            if not metadata.startswith(str(EXPECTED["metadata"]["conflict_protection"]) + ":"):
                 raise RuntimeError("portable metadata changed native Amiga protection " +
                                    name + ": " + metadata + "; evidence: " + str(out))
         before = (drive / "BEFORE.TXT").read_bytes()
-        if (b"BoltPack archive comment" not in before or not (int(before.split(b":", 1)[0]) & 64) or
+        if (EXPECTED["metadata"]["comment"].encode() not in before or not (int(before.split(b":", 1)[0]) & EXPECTED["metadata"]["protection_mask"]) or
                 before != (drive / "AFTER.TXT").read_bytes()):
             raise RuntimeError("native file metadata mismatch; evidence: " + str(out))
-        if ((drive / "TIMEBEF.TXT").read_text().strip() != "10000:600:0" or
+        if ((drive / "TIMEBEF.TXT").read_text().strip() != EXPECTED["metadata"]["date_stamp"] or
                 (drive / "TIMEBEF.TXT").read_bytes() != (drive / "TIMEAFT.TXT").read_bytes()):
             raise RuntimeError("native file timestamp mismatch; evidence: " + str(out))
         for name in ("TREE", "NEST", "EMPTY", "TREEFILE"):
             before_meta = (drive / (name + "SRC.TXT")).read_bytes()
             after_meta = (drive / (name + "DST.TXT")).read_bytes()
-            if (b"BoltPack archive comment" not in before_meta or
-                    not (int(before_meta.split(b":", 1)[0]) & 64) or
+            if (EXPECTED["metadata"]["comment"].encode() not in before_meta or
+                    not (int(before_meta.split(b":", 1)[0]) & EXPECTED["metadata"]["protection_mask"]) or
                     before_meta != after_meta):
                 raise RuntimeError("native tree metadata mismatch for %s; evidence: %s" %
                                    (name, out))
         for name in ("TREE", "NEST", "EMPTY"):
             before_time = (drive / (name + "TIMEBEF.TXT")).read_text().strip()
             after_time = (drive / (name + "TIMEAFT.TXT")).read_text().strip()
-            if before_time != "10000:600:0" or after_time != before_time:
+            if before_time != EXPECTED["metadata"]["date_stamp"] or after_time != before_time:
                 raise RuntimeError("native directory timestamp mismatch for %s: %s -> %s; evidence: %s" %
                                    (name, before_time, after_time, out))
-        for source, dest in (("OUT/SRC.TXT", "linux-to-amiga"),
-                             ("RESTORE/SRC.TXT", "amiga-restored"),
-                             ("RESTORE/NEW.TXT", "amiga-added"), ("AMIGA.BLT", "amiga.blt"),
+        for source, dest in (("OUT/" + source_name, "linux-to-amiga"),
+                             ("RESTORE/" + source_name, "amiga-restored"),
+                             ("RESTORE/" + append_name, "amiga-added"), ("AMIGA.BLT", "amiga.blt"),
                              ("SNAP.BLT", "before-failure.blt"), ("FAILADD.BLT", "after-failure.blt"),
                              ("UOUT/" + accent_name, "unicode-to-amiga"), ("ACCENT.BLT", "accent.blt"),
                              ("TREE.BLT", "tree.blt"),
@@ -364,6 +427,11 @@ def main():
         raise RuntimeError("native file bytes differ; evidence: " + str(out))
     if (out / "badmeta-payload").read_bytes() != b"Amiga metadata precedence fixture\n":
         raise RuntimeError("malformed metadata damaged verified payload; evidence: " + str(out))
+    for filename, key in (("linux-to-amiga", "source"), ("amiga-restored", "source"),
+                          ("amiga-added", "append"), ("unicode-to-amiga", "append"),
+                          ("native-first-conflict", "conflict"),
+                          ("portable-first-conflict", "conflict"), ("badmeta-payload", "conflict")):
+        check_payload((out / filename).read_bytes(), key)
     if (out / "before-failure.blt").read_bytes() != (out / "after-failure.blt").read_bytes():
         raise RuntimeError("failed native append changed archive; evidence: " + str(out))
     if not args.skip_codecs:
@@ -381,6 +449,7 @@ def main():
             (out / ("linux-native-codec-" + codec + "-extract.log")).write_bytes(extracted.stdout)
             if extracted.returncode != 1 or (target / "CODEC.DAT").read_bytes() != codec_data:
                 raise RuntimeError("Linux extraction of native %s archive differed; evidence: %s" % (codec, out))
+            check_payload((target / "CODEC.DAT").read_bytes(), "codec")
     tree_target = out / "tree-output"
     tree_target.mkdir()
     result = subprocess.run([str(linux), "x", "-o", str(tree_target), str(out / "tree.blt")],
@@ -388,9 +457,10 @@ def main():
     (out / "linux-tree-extract.log").write_bytes(result.stdout)
     if (result.returncode != 1 or
             b"some entries or attributes were not restored" not in result.stdout or
-            not (tree_target / "TREE" / "NEST" / "EMPTY").is_dir() or
-            (tree_target / "TREE" / "NEST" / "FILE.TXT").read_bytes() != payload):
+            not (tree_target / empty_directory_name).is_dir() or
+            (tree_target / nested_name).read_bytes() != payload):
         raise RuntimeError("Linux extraction of native directory archive failed; evidence: " + str(out))
+    check_payload((tree_target / nested_name).read_bytes(), "source")
     accent_target = out / "linux-accent"
     accent_target.mkdir()
     accent_result = subprocess.run([str(linux), "x", "-o", str(accent_target), str(out / "accent.blt")],
@@ -401,20 +471,27 @@ def main():
         raise RuntimeError("Amiga Latin-1 filename transfer failed; evidence: " + str(out))
     result = subprocess.run([str(linux), "l", str(out / "amiga.blt")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
     (out / "linux-list.log").write_bytes(result.stdout)
-    if b"SRC.TXT" not in result.stdout or b"NEW.TXT" in result.stdout:
+    if source_name.encode() not in result.stdout or append_name.encode() in result.stdout:
         raise RuntimeError("native delete result incorrect; evidence: " + str(out))
     target = out / "linux-output"
     target.mkdir()
     result = subprocess.run([str(linux), "x", "-o", str(target), str(out / "amiga.blt")],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (out / "linux-extract.log").write_bytes(result.stdout)
+    check_outcome("linux_foreign_metadata", result.returncode)
     if (result.returncode != 1 or b"some entries or attributes were not restored" not in result.stdout or
-            (target / "SRC.TXT").read_bytes() != payload or (target / "NEW.TXT").exists()):
+            (target / source_name).read_bytes() != payload or (target / append_name).exists()):
         raise RuntimeError("Linux extraction of native-created archive failed; evidence: " + str(out))
+    check_payload((target / source_name).read_bytes(), "source")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
                                      text=True).strip()
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"],
                                          cwd=ROOT, text=True).strip())
+    (out / "git-status.txt").write_bytes(subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=ROOT))
+    (out / "git-diff.patch").write_bytes(subprocess.check_output(
+        ["git", "diff", "--binary", "HEAD"], cwd=ROOT))
+    shutil.copyfile(EXPECTED_PATH, out / "expected.json")
     try:
         current_locale = locale.setlocale(locale.LC_ALL, None)
     except locale.Error:
@@ -438,10 +515,13 @@ def main():
         ": native protection preserved in both record orders; unsupported portable FAT metadata reported partial",
         "commit=" + commit,
         "worktree_dirty=" + str(dirty).lower(),
+        "invocation=" + repr(sys.argv),
         "host=" + platform.platform(),
         "locale=" + current_locale,
         "timezone=" + ",".join(time.tzname),
         "fs_uae=" + command_version([args.fs_uae, "--version"]),
+        "xdftool_amitools=" + python_script_package_version(args.xdftool, "amitools"),
+        "host_compiler=" + command_version([args.host_cc, "--version"]),
         "amiga_compiler=" + command_version([args.amiga_cc, "--version"]),
         "metadata_probe_flags=-noixemul -O2",
         "amiga_cli=" + str(args.amiga_cli.resolve()),
@@ -450,6 +530,9 @@ def main():
         "linux_cli_sha256=" + hashlib.sha256(linux.read_bytes()).hexdigest(),
         "rom_sha256=" + hashlib.sha256(rom.read_bytes()).hexdigest(),
         "workbench_sha256=" + hashlib.sha256(wb.read_bytes()).hexdigest(),
+        "expected_manifest_sha256=" + hashlib.sha256(EXPECTED_PATH.read_bytes()).hexdigest(),
+        "amiga_archive_sha256=" + hashlib.sha256((out / "amiga.blt").read_bytes()).hexdigest(),
+        "tree_archive_sha256=" + hashlib.sha256((out / "tree.blt").read_bytes()).hexdigest(),
     ]
     (out / "manifest.txt").write_text("\n".join(manifest) + "\n")
     print("PASS: native Amiga " + args.filesystem.upper() + " interchange, edits and file metadata; evidence:", out)

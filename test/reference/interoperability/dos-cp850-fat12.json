@@ -29,8 +29,25 @@
     },
     "expected_archive_name": "\u00f8.TXT"
   },
+  "dos_directory_metadata": {
+    "member": "TREE",
+    "directories": ["EMPTY", "NEST"],
+    "file": "NEST/TREE.TXT",
+    "source_mtime_unix": 946684800,
+    "source_directory_attributes": ["H", "S"],
+    "empty_directory_attributes": ["H"],
+    "payload": {
+      "text": "DOS16 nested directory metadata transfer\n",
+      "bytes": 41,
+      "sha256": "06b06a73719b6eb10d09fc8181744c94ab96ebcb65a96d0b322fad8f2e56c6a9"
+    },
+    "expected": "Linux and DOS16 transfer exact nested directory and file structure; DOS FAT hidden/system directory flags round-trip; DOS directory timestamps are unsupported and extraction reports partial"
+  },
   "expected_outcomes": {
     "dosboxx_uppercase_transfer": "exact bytes and UTF-8 archive name; FAT short name starts with CP850 0x9D",
-    "freedos_lowercase_transfer": "exact bytes and UTF-8 archive name after loading/selecting CP850; FAT short name uppercases to 0x9D"
+    "freedos_lowercase_transfer": "exact bytes and UTF-8 archive name after loading/selecting CP850; FAT short name uppercases to 0x9D",
+    "freedos_low_space_replacement": "staged replacement fails with insufficient FAT12 space; prior archive bytes survive and no stage/backup remains",
+    "freedos_backup_recovery": "same-directory BK####.BAK is integrity-tested before restoring a missing target; existing targets and corrupt backups are refused without modification",
+    "freedos_interrupted_replacement": "process exit after target-to-backup rename leaves paired BK####.BAK and BPK####.TMP; next boot restores the old archive and removes the verified stage"
   }
 }

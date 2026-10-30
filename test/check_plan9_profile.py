@@ -3,7 +3,6 @@
 import hashlib
 import json
 import pathlib
-import stat
 import subprocess
 import sys
 import tempfile
@@ -18,6 +17,25 @@ def main():
     manifest_path = pathlib.Path(sys.argv[5]).resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     profile_files = manifest["profile"]["files"]
+    extraction_expected = manifest["extraction"]
+    assert extraction_expected["real"] == "refuse-before-output"
+    assert extraction_expected["dry_run"] == "succeed-without-output"
+    refusal_text = extraction_expected["refusal_message"].encode("ascii")
+
+    def check_refused_extract(archive, output, cwd, existing=None):
+        result = run(plan9, "x", "-qq", "-o", str(output), str(archive), cwd=cwd)
+        assert result.returncode != 0, "Plan 9 unexpectedly performed unsafe extraction"
+        assert refusal_text in result.stderr
+        assert not output.exists(), "refused extraction created its output root"
+        if existing is not None:
+            assert existing.read_bytes() == b"preserve this destination\n"
+        dry_run = run(plan9, "x", "-n", "-qq", "-o", str(output),
+                      str(archive), cwd=cwd)
+        require_ok(dry_run, "Plan 9 extraction dry-run")
+        assert not output.exists(), "Plan 9 dry-run created its output root"
+        default_output = run(plan9, "x", "-qq", str(archive), cwd=cwd)
+        assert default_output.returncode != 0
+        assert refusal_text in default_output.stderr
 
     def pinned_bytes(record):
         data = record["content"].encode("utf-8") * record["repetitions"]
@@ -43,9 +61,16 @@ def main():
             require_ok(run(reader, "t", "-qq", "profile.blt", cwd=root),
                        f"profile create integrity with {reader.name}")
         extracted = root / "profile-output"
-        require_ok(run(plan9, "x", "-qq", "-o", str(extracted),
-                       "profile.blt", cwd=root), "Plan 9 profile extraction")
-        assert (extracted / "first.bin").read_bytes() == first_bytes
+        check_refused_extract("profile.blt", extracted, root)
+
+        preserved = root / "existing-output"
+        preserved.mkdir()
+        existing_file = preserved / "first.bin"
+        existing_file.write_bytes(b"preserve this destination\n")
+        result = run(plan9, "x", "-f", "-qq", "-o", str(preserved),
+                     "profile.blt", cwd=root)
+        assert result.returncode != 0 and refusal_text in result.stderr
+        assert existing_file.read_bytes() == b"preserve this destination\n"
 
         result = run(plan9, "a", "--interchange-profile-1", "-qq",
                      "profile.blt", "second.bin", cwd=root)
@@ -57,10 +82,7 @@ def main():
             require_ok(run(reader, "t", "-qq", "profile.blt", cwd=root),
                        f"profile append integrity with {reader.name}")
         appended_output = root / "appended-output"
-        require_ok(run(plan9, "x", "-qq", "-o", str(appended_output),
-                       "profile.blt", cwd=root), "Plan 9 appended archive extraction")
-        assert (appended_output / "first.bin").read_bytes() == first_bytes
-        assert (appended_output / "second.bin").read_bytes() == second_bytes
+        check_refused_extract("profile.blt", appended_output, root)
 
         result = run(plan9, "c", "--interchange-profile-1", "-0", "-qq",
                      "stored.blt", "first.bin", cwd=root)
@@ -90,23 +112,13 @@ def main():
         metadata_archive = root / "directory-metadata.blt"
         subprocess.run([str(collision_fixture), str(metadata_archive), "metadata"],
                        check=True, cwd=root)
+        for reader in (plan9, full, mini):
+            require_ok(run(reader, "t", "-qq", str(metadata_archive), cwd=root),
+                       f"metadata fixture integrity with {reader.name}")
         metadata_output = root / "directory-metadata-output"
-        result = run(plan9, "x", "-qq", "-o", str(metadata_output),
-                     str(metadata_archive), cwd=root)
-        require_ok(result, "Plan 9 nested directory metadata extraction")
-        locked = metadata_output / "locked"
-        child = locked / "child.txt"
-        metadata = manifest["directory_metadata"]
-        file_metadata = metadata["file"]
-        child_bytes = file_metadata["content"].encode("utf-8")
-        assert hashlib.sha256(child_bytes).hexdigest() == file_metadata["sha256"]
-        assert child.read_bytes() == child_bytes
-        assert stat.S_IMODE(locked.stat().st_mode) == int(metadata["mode"], 8)
-        assert stat.S_IMODE(child.stat().st_mode) == int(file_metadata["mode"], 8)
-        assert int(locked.stat().st_mtime) == metadata["mtime_epoch"]
-        assert int(child.stat().st_mtime) == file_metadata["mtime_epoch"]
+        check_refused_extract(metadata_archive, metadata_output, root)
 
-    print("Plan 9 profile, extraction-preflight, and metadata host checks passed")
+    print("Plan 9 profile, extraction-preflight, fail-closed, and dry-run host checks passed")
 
 
 if __name__ == "__main__":

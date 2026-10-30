@@ -406,7 +406,7 @@ python3 test/check_dos_profile.py --boltpack build/dos-host-test/boltpack \
   --mini-boltpack build/linux32mini/bpmini
 ```
 
-It runs the mini reader through `qemu-i386`. `make dos-djgpp` builds the DOS
+It runs the mini reader as a native 32-bit Linux process on this host. `make dos-djgpp` builds the DOS
 executable when the `i586-pc-msdosdjgpp-gcc` toolchain is available. To run
 the full frontend on DOSBox-X FAT12, provide `CWSDPMI.EXE` from DJGPP's
 `csdpmi` package:
@@ -1905,11 +1905,14 @@ Uses `dirread(fd)` to obtain a `Dir *` array for a directory opened with `open(p
 After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_OS_PLAN9` is written. The payload is 2 bytes: the lower 16 bits of `Dir.mode`.
 
 The low 9 bits of `Dir.mode` are the familiar owner/group/others rwx bits.
-Extraction defers directory metadata until children are written, restores
-representable 32-bit timestamps, and preserves the target's `DMDIR` type bit
-when calling `dirwstat()` to restore permissions. The native mode/time path was
-exercised on 9front amd64 under QEMU TCG; other Plan 9 CPUs and filesystem
-variants remain unqualified.
+Archive creation stores these mode bits. Real extraction currently refuses
+after archive preflight and before creating output: the frontend has only
+pathname-based create/metadata operations and cannot safely anchor or publish
+under a selected output directory. Dry-run, listing, integrity testing, create,
+and append remain available. Earlier native mode/time restoration results are
+historical and do not describe current extraction behavior. Re-enable real
+extraction only after safe anchored staging/publication is implemented and
+qualified.
 
 ### Plan 9: Text Encoding
 
@@ -1926,6 +1929,9 @@ Plan 9 was the first production operating system to adopt UTF-8, designed by Rob
 | `t`     | Test archive integrity        |
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
+
+`x` currently refuses real extraction for the safety reason above; `-n`
+remains available for extraction dry-run.
 
 | Option    | Description                                   |
 | --------- | --------------------------------------------- |
@@ -2226,8 +2232,9 @@ These frontends define `BP_CREATOR_OS` and `BP_CREATOR_CPU`, then `#include "../
 Extraction uses directory-relative no-follow operations on Linux, FreeBSD,
 NetBSD, OpenBSD, GNU Hurd, Solaris 11, illumos, and z/OS builds. The AIX wrapper
 selects that path when the target compiler defines `_AIX73`; older or
-unidentified AIX targets retain path-based symlink checks and the corresponding
-parent-substitution race. Other thin wrappers retain path-based checks and
+unidentified AIX builds refuse extraction before output creation. QNX also
+refuses extraction because its resource-manager model cannot guarantee safe
+multi-component traversal. Other thin wrappers retain path-based checks and
 require native build/runtime qualification.
 
 | Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
@@ -2237,13 +2244,13 @@ require native build/runtime qualification.
 | OpenBSD      | `src/frontend/openbsd/main.c`  | `BP_OS_OPENBSD`  | `BP_CPU_X86_64` | `openbsd-gcc`                |                                                       |
 | Solaris      | `src/frontend/solaris/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `sparc-sun-solaris2-gcc`     | Override with `BP_CPU_SPARC` or `BP_CPU_SPARC64`      |
 | HP-UX        | `src/frontend/hpux/main.c`     | `BP_OS_HPUX`     | `BP_CPU_PARISC` | `hppa-hp-hpux-gcc`           | Override with `BP_CPU_IA64` for Itanium               |
-| AIX          | `src/frontend/aix/main.c`      | `BP_OS_AIX`      | `BP_CPU_PPC64`  | `powerpc-ibm-aix-gcc`        | `_AIX73` selects dirfd extraction; override with `BP_CPU_PPC32` for 32-bit AIX |
+| AIX          | `src/frontend/aix/main.c`      | `BP_OS_AIX`      | `BP_CPU_PPC64`  | `powerpc-ibm-aix-gcc`        | `_AIX73` selects dirfd extraction; older/unidentified AIX refuses extraction; override with `BP_CPU_PPC32` for 32-bit AIX |
 | IRIX         | `src/frontend/irix/main.c`     | `BP_OS_IRIX`     | `BP_CPU_MIPS64` | `mips-sgi-irix6.5-gcc`       | MIPS hardware only (R4000–R16000)                     |
 | illumos      | `src/frontend/illumos/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `x86_64-unknown-illumos-gcc` | OpenIndiana, OmniOS, SmartOS                          |
 | GNU Hurd     | `src/frontend/hurd/main.c`     | `BP_OS_HURD`     | `BP_CPU_X86_64` | `hurd-gcc`                   | Override with `BP_CPU_X86` for 32-bit                 |
 | Tru64        | `src/frontend/tru64/main.c`    | `BP_OS_TRU64`    | `BP_CPU_ALPHA`  | `alpha-dec-tru64-gcc`        | End-of-life; Alpha hardware only                      |
 | SCO          | `src/frontend/sco/main.c`      | `BP_OS_SCO`      | `BP_CPU_X86`    | `sco-gcc`                    | End-of-life; x86 only                                 |
-| QNX Neutrino | `src/frontend/qnx/main.c`      | `BP_OS_QNX`      | `BP_CPU_X86`    | `qcc` (QNX SDP)              | Override with `BP_CPU_X86_64` or `BP_CPU_ARM64`       |
+| QNX Neutrino | `src/frontend/qnx/main.c`      | `BP_OS_QNX`      | `BP_CPU_X86`    | `qcc` (QNX SDP)              | Override with `BP_CPU_X86_64` or `BP_CPU_ARM64`; listing/test/dry-run work, extraction is refused until safe traversal is available |
 | NeXTSTEP     | `src/frontend/nextstep/main.c` | `BP_OS_NEXTSTEP` | `BP_CPU_M68K`   | NeXT `cc`                    | End-of-life; also x86/SPARC/PA-RISC                   |
 
 **Build commands:** `make freebsd`, `make netbsd`, `make openbsd`, `make solaris`, `make hpux`, `make aix`, `make irix`, `make illumos`, `make hurd`, `make tru64`, `make sco`, `make qnx`
@@ -2716,16 +2723,58 @@ to unrestricted full-format creation.
 Extraction preflights projected names and file/directory-prefix conflicts
 before creating output. The index is capped at 1,024 names and 32 KiB of keys,
 and full GEMDOS paths are limited to 125 bytes. It rejects unrepresentable or
-non-8.3 names, checks existing path components for symlinks, and stages regular
+non-8.3 names, attempts to check existing path components for symlinks, and stages regular
 files beside their destinations until checksum verification and close
-succeed. Existing files are replaced through a recovery rename. File times
+succeed. The open stage records device, size, and modification time; publication and
+cleanup require the stage path to retain those values. File-time restoration
+follows publication so FAT12 timestamp conversion cannot invalidate that check. Before
+publication the frontend reopens the stage and verifies its exact archived length and
+CRC. A same-size/same-mtime substituted file with different contents is refused; the
+old destination is preserved and the substituted stage is left untouched. CRC
+collisions and substitutions after the final content/path validation remain possible.
+The Atari runtime follows host symlinks in Hatari host-drive mode: a TOS 1.62
+probe reports `lstat("C:\\OUT")` as a directory and `opendir()` returns
+`ENOSYS`, so the parent-chain symlink check is ineffective there. A production
+GUI probe redirected `OUT` to a different directory while a 1 MiB stage was
+open. The stage-path check refused publication and preserved both pre-existing
+targets, but cleanup could not reach the stage through the new parent path; a
+full-size `BP` stage remained in the moved directory
+(`build/atari-gui-cancel-u4rjzscu`). Native TOS filesystems do not provide
+POSIX symlinks; behavior on MiNT symlink filesystems remains unqualified.
+Existing files are replaced
+through a recovery rename. File times
 and matching native TOS attributes are restored; portable FAT attributes are
 the fallback, and directory timestamps and attributes are deferred until
 children finish. Unsupported links, resource forks, foreign metadata, and
 POSIX modes are reported as partial. These path checks retain a concurrent
 parent-substitution race. `make atari-gui` passes a 68k cross-build with
-warnings treated as errors; no Hatari runtime is available for round-trip
-testing.
+warnings treated as errors. Hatari 2.5.0 runs the production GUI on TOS 1.06,
+1.62, and 2.05 with FAT12 create/extract fixtures. Archive, Read-only, Hidden,
+and System file flags round-trip. Directory timestamps remain at FAT defaults
+and report partial on all three tested TOS versions. A hidden/system empty
+directory's archived flags are not restored on TOS 1.06, 1.62, or 2.05, and
+the GUI reports partial. On TOS 1.62, the GUI replaced two pre-existing files
+with exact archive bytes on both FAT12 and GEMDOS host-directory targets. Active extraction cancellation on TOS 1.06, 1.62, and 2.05 preserves
+a pre-existing target and removes its stage. Evidence is retained at
+`build/atari-gui-cancel-n5_73lb5`, `build/atari-gui-cancel-l_60i0ez`, and
+`build/atari-gui-cancel-dv4mcp6n`. On TOS 1.62 FAT12, a read-only existing
+target causes the production GUI to report incomplete extraction while
+preserving its bytes and READONLY flag and cleaning the stage; the standard
+TOS 1.62 FAT12 create/extract suite passed after the stage-identity and
+content guards were added (`build/atari-gui-create-5l4vrz2o`). The complete
+production flow also passed on the GEMDOS host directory at
+`build/atari-gui-create-1q0nwqmg`. The deterministic
+`atari-gui-stage-substitution-test` on Hatari/TOS 1.62 replaced the open 1 MiB
+stage with different bytes while preserving its size and mtime; the original
+destination stayed byte-identical and the substituted stage was not deleted
+(`build/atari-gui-cancel-xo5h9aof`). Evidence is
+under `build/atari-gui-create-msxh3kx1/failed-replacement`. A separate Hatari process-termination fixture preserves the old destination
+after 32 KiB reaches a sibling stage; a production retry restores the exact
+16 MiB payload while leaving the old partial stage
+(`build/atari-gui-cancel-jh47lf8m`). Interruption after moving the old target
+and safe stale-stage cleanup remain open. These
+runtime results and screenshots are retained in
+`docs/interoperability-remaining-steps.md` and the referenced `build/` evidence.
 
 ---
 

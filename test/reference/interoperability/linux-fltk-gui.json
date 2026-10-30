@@ -1,5 +1,5 @@
 {
-  "case": "Linux FLTK GUI Profile 1 archive creation, mini-reader extraction, collision preflight, open, and nested extraction under Xvfb/QEMU-i386",
+  "case": "Linux FLTK GUI Profile 1 archive creation, mini-reader extraction, collision preflight, open, and nested extraction under Xvfb/QEMU-i386, including empty-file extraction",
   "filesystem": "temporary Linux host directory",
   "created_archive_name": "gui-created.blt",
   "created_entry_name": "profile.bin",
@@ -16,6 +16,14 @@
       "mode": "0640",
       "mtime_epoch": 0,
       "sha256": "d72468f7b607990b6f9e39f94626e9aacec500d8cdfd3a5469d0434e5346b51c"
+    },
+    {
+      "archive_name": "nested/empty.txt",
+      "content": "",
+      "size": 0,
+      "mode": "0600",
+      "mtime_epoch": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
   ],
   "directories": [
@@ -53,5 +61,5 @@
     "existing_content": "preserve this file if extraction is cancelled\n",
     "expected": "Cancellation, checksum failure, and injected write, flush, close, and timestamp-restoration failures leave the old file byte-identical and remove all .boltpack-gui-* stages."
   },
-  "expected": "Create an Interchange Profile 1 BoltLite/16 KiB archive through the GUI and verify it with the full and mini readers against pinned bytes; restore file and directory modes and epoch-zero timestamps; reject a file/child prefix conflict without writing output; flatten colliding selected files without replacing an existing destination; preserve an existing file on cancellation and checksum failure."
+  "expected": "Create an Interchange Profile 1 BoltLite/16 KiB archive through the GUI and verify it with the full and mini readers against pinned bytes; restore file and directory modes and epoch-zero timestamps; extract a zero-byte file and preserve its mode/time; reject a file/child prefix conflict without writing output; flatten colliding selected files without replacing an existing destination; preserve an existing file on cancellation and checksum failure."
 }

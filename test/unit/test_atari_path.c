@@ -115,6 +115,24 @@ static void test_index_bounds(void)
     bp_atari_name_set_free(&set);
 }
 
+static void test_recovery_path_validation(void)
+{
+    check(bp_atari_path_under_root("C:\\OUT", "C:\\OUT\\FILE.TXT"),
+          "recovery target is below the selected root");
+    check(bp_atari_path_under_root("c:/out/", "C:\\OUT\\DIR\\FILE.TXT"),
+          "recovery path containment folds case and slash forms");
+    check(!bp_atari_path_under_root("C:\\OUT", "C:\\OUTSIDE\\FILE.TXT"),
+          "recovery path containment checks the root boundary");
+    check(!bp_atari_path_under_root("C:\\OUT", "C:\\OUT\\..\\OUTSIDE\\FILE.TXT"),
+          "recovery paths cannot escape through a parent component");
+    check(!bp_atari_path_under_root("C:\\OUT", "C:\\OUT\\DIR\\..\\FILE.TXT"),
+          "recovery paths reject parent components even inside the root");
+    check(!bp_atari_path_under_root("C:\\OUT", "D:\\OUT\\FILE.TXT"),
+          "recovery paths cannot switch volumes");
+    check(!bp_atari_path_under_root("C:\\OUT", "C:\\OUT\\DIR\\"),
+          "recovery file paths cannot end with a separator");
+}
+
 static int tree_add(bp_atari_tree_t *tree, const char *name, int directory)
 {
     char key[BP_ATARI_GEMDOS_PATH_MAX + 1];
@@ -224,6 +242,7 @@ int main(void)
 
     test_collision_set();
     test_index_bounds();
+    test_recovery_path_validation();
 
     printf("\nResults: %u passed, %u failed\n", tests_run - tests_failed,
            tests_failed);

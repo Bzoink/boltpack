@@ -99,6 +99,11 @@ working files outside the repository.
 
 ## Plan 9: 9front amd64 under QEMU
 
+The following setup and run record is historical. The user has clarified that
+there is no usable Plan 9 emulation environment available for current work, so
+native guest checks are deferred and must not be claimed as freshly verified.
+The image path or presence of QEMU alone does not establish a runnable guest.
+
 The native Plan 9 CLI was built and exercised in 9front 12111 amd64 with QEMU
 TCG. The qcow2 image is stored outside the repository at
 `~/images/Plan9/9front-12111.amd64.qcow2`; the official [9front nightly build
@@ -137,15 +142,23 @@ rebuilt guest CLI extracted it, restoring both modes and the directory mtime.
 Directory mode restoration preserves Plan 9’s `DMDIR` bit. Other CPUs, broader
 filesystem/API edge cases, and graphical startup remain unqualified.
 
-## Linux mini: QEMU-i386
+R05 subsequently disabled real extraction because the frontend only used
+pathname-based output operations and could not safely anchor staging or
+publication. The historical extraction and metadata results above do not
+describe the current behavior. The host-shim test now verifies that real
+extraction refuses before output creation and that `-n` dry-run remains
+available. Re-enable guest extraction only after the safe publication path is
+implemented and target-qualified.
 
-The Linux mini interoperability fixture runs the 32-bit executable under
-`qemu-i386` because direct 32-bit execution is blocked by this container's
-syscall filter:
+## Linux mini: native 32-bit Linux (QEMU fallback)
 
-```sh
-make CC=gcc linuxmini-interoperability-test
-```
+On the current Debian host, the 32-bit Linux mini executable runs directly.
+`make CC=gcc linuxmini-interoperability-test` uses native execution and passes.
+An explicit probe found `qemu-i386` returns no entries for `readdir` on the
+fixture directory, causing recursive-create tests to produce incomplete
+archives. On another host where direct 32-bit execution is unavailable, try
+`make CC=gcc LINUXMINI_RUNNER=qemu-i386 linuxmini-interoperability-test` and
+verify the directory-enumeration fixture before relying on it.
 
 `test/reference/interoperability/linux-mini-qemu.json` independently pins the
 metadata and Profile 1 payload hashes. The runner checks Profile 1 archives in
@@ -196,7 +209,8 @@ qualifies that path with its country/codepage tables loaded.
 
 FreeDOS's floppy edition provides an independent DOS filesystem runtime. The
 runner modifies a disposable copy of the boot floppy, loads the FreeDOS
-CP850 country and console tables, and runs both transfer directions:
+CP850 country and console tables, and checks lowercase-name transfer plus
+nested directory transfers in both directions:
 
 ```sh
 make CC=gcc \
@@ -204,18 +218,47 @@ make CC=gcc \
   FREEDOS_MODE=/path/to/MODE.COM \
   FREEDOS_DISPLAY=/path/to/DISPLAY.EXE \
   FREEDOS_EGA_CPX=/path/to/EGA.CPX \
+  FREEDOS_OUTPUT=build/freedos-cp850-run \
   freedos-cp850-interoperability-test
 ```
 
 The boot image is `144m/x86BOOT.img` from the [FreeDOS 1.4 Floppy Edition](https://download.freedos.org/1.4/FD14-FloppyEdition.zip).
 Extract `MODE.COM` and `EGA.CPX` from the `mode.zip` base package, and
 `DISPLAY.EXE` from `display.zip` in the [official FreeDOS package repository](https://ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/latest/base/).
+The downloaded archive SHA-256 values used here are `45b1fa7c52dd996c3bfa5e352ffcd410781b952a6ad629f15a4c9ec4bbaefc5a`
+(Floppy Edition), `c92e07e9bea8f132437c542184c0cadc7fbabe3543174209c2799407ab671bdb`
+(`mode.zip`), and `1ae9498e8b4ba12db3fcf0d83fea0cb0fa4c44ee0a02ac5e1ee9a29700cca459`
+(`display.zip`). The run record contains SHA-256 values for the extracted boot
+image and executables.
 The runner uses `DISPLAY`, `MODE CON CP PREPARE/SELECT`, and `CHCP 850`; it
 asserts that DOS `DIR` resolves lowercase `ø.TXT`, that DOS16 archives that
 name as UTF-8 for Linux, and that extraction of a Linux-created lowercase
 archive reproduces the payload on FAT12. FreeDOS reports its active codepage
 as 850 (while its system codepage remains 437); this setup still resolves the
-CP850 FAT short-name case mapping correctly.
+CP850 FAT short-name case mapping correctly. The runner also checks nested
+Linux-created and DOS-created trees, exact file bytes, empty directories, and
+Hidden/System directory attribute restoration, and a low-space archive replacement
+that must fail while preserving the previous archive byte-for-byte without a
+stage or recovery-backup leak. It tests `bpmini r TARGET.BLT BK####.BAK`, which
+integrity-tests a same-directory recovery backup, refuses an existing target,
+restores a missing target, refuses to overwrite an existing target, and rejects a corrupt backup without changing it. Replacement reserves a paired `BPK####.TMP`
+stage and `BK####.BAK` backup; a test build exits after the target-to-backup
+rename, then a second FreeDOS boot runs the production recovery command and
+checks the original archive and stage. DOS cannot restore directory mtime
+through its file timestamp API, so the expected outcome is partial.
+
+This machine's FreeDOS 1.4 boot image and package files are in
+`/home/tony/images/FreeDOS`. The repeatable CP850-only record is retained at
+`build/r10-freedos-cp850-20261030-make/`. The expanded interoperability,
+low-space publication, and recovery run and disposable image are retained at
+`build/r10-freedos-recovery-corrupt-negative-20261030/`; `run.json` records asset, binary,
+manifest, payload, recovery, and floppy hashes plus QEMU/mtools versions.
+Set `FREEDOS_OUTPUT=build/<run-name>` on the Make target to retain a new run
+instead of using its default temporary directory. The 2026-10-30 run passed
+under QEMU 10.0.13 with exact bytes in both transfer directions.
+The process-exit injection verifies the rename interruption boundary and
+explicit recovery on FreeDOS FAT12; it does not establish hardware power-loss
+durability, native DOS behavior, or behavior on other filesystems.
 
 The full DJGPP frontend can also run with CWSDPMI from the DJGPP `csdpmi`
 package:
@@ -266,10 +309,14 @@ labels. The menu builder now names the first Desk title `BoltPack`, reserves
 its full width, aligns each pull-down with its title, and uses the specified
 visible `G_BOX` menu bar. The rebuilt application displays `BoltPack`,
 `Archive`, `Compression`, and `Help` without overprinting in Hatari. This
-qualifies startup and menu rendering. Hatari keyboard injection verified
-Ctrl+N opens the create file selector. A mouse press/drag also selected
-Archive → Open and opened the archive selector in the rebuilt application.
-The keyboard check exposed and fixed an AES binding mismatch: the legacy
+qualifies startup and menu rendering. An earlier Hatari keyboard injection
+verified Ctrl+N opens the create file selector, but a fresh-build replay failed
+to reproduce it with lowercase or uppercase key input. An older mouse
+press/drag capture showed Archive → Open opening the archive selector, but
+replaying the documented fast-click input failed against both current and
+captured older binaries. The repeatable menu-pointer runner now inserts a pause
+between clicks and verifies that the selector appears. The keyboard
+investigation exposed and fixed an AES binding mismatch: the legacy
 `evnt_multi()` wrapper shifted its keyboard outputs for this mintlib, so the
 GEM event loop now uses the structure-based `evnt_multi_fast()` API. The
 selectors now start at the GEMDOS current drive's root instead of assuming
@@ -311,8 +358,8 @@ A later replay check with a fresh `make CC=gcc atari-gui` build also failed to
 reproduce the earlier Ctrl+N result through hconsole. Both lowercase and
 uppercase key events left the application at its main window, so the literal
 `2` alert-button input was never tested. Captures and scripts are in
-`/tmp/boltpack-atari-create-key2-_ns0az8h` and
-`/tmp/boltpack-atari-create-upperN-af5sgkrg`. Retain the earlier Ctrl+N run as
+`build/r02-retained-20261030/boltpack-atari-create-key2-_ns0az8h` and
+`build/r02-retained-20261030/boltpack-atari-create-upperN-af5sgkrg`. Retain the earlier Ctrl+N run as
 positive evidence, but treat it as non-reproducible with the current headless
 input setup; production Create-button and save-flow interaction remain open.
 
@@ -364,7 +411,7 @@ cleanup over an existing destination. It also checks nested and empty
 directories and pre-output refusal of a long name, case-colliding files, and
 case-colliding implicit parents. On 2026-10-29, the same fixture passed under
 TOS 1.06 and 2.05 as well as the previously tested TOS 1.62. Evidence is in
-`/tmp/boltpack-hatari-pp7plo0t` (1.06) and `/tmp/boltpack-hatari-he45l44l`
+`build/r02-retained-20261030/boltpack-hatari-pp7plo0t` (1.06) and `build/r02-retained-20261030/boltpack-hatari-he45l44l`
 (2.05).
 Directory timestamp restoration reports partial on this backend. Linux reports
 partial preservation for Atari-specific metadata. It does not validate a native FAT disk, attributes,
@@ -382,20 +429,20 @@ the control-console `quit` ejects it. The test therefore reads the final files
 back from the image with mtools after Hatari exits. FAT12 file hidden/system
 flags and timestamps round-trip. Generated conflict fixtures on TOS 1.06,
 1.62, and 2.05 verify native TOS HIDDEN wins over portable ARCHIVE in both
-metadata record orders. Evidence is in `/tmp/boltpack-atari-fat-0_ye2d3a`,
-`/tmp/boltpack-atari-fat-8lbfpw9y`, and
-`/tmp/boltpack-atari-fat-27zmstyp`. TOS 1.62 reports partial for directory times
+metadata record orders. Evidence is in `build/r02-retained-20261030/boltpack-atari-fat-0_ye2d3a`,
+`build/r02-retained-20261030/boltpack-atari-fat-8lbfpw9y`, and
+`build/r02-retained-20261030/boltpack-atari-fat-27zmstyp`. TOS 1.62 reports partial for directory times
 and nonzero directory attributes. The GUI startup/shortcut check does not
 qualify file selection, archive operations, or metadata behavior.
 
 The FAT12 runner was repeated on 2026-10-29 after the current frontend changes;
 TOS 1.06, 1.62, and 2.05 all passed guest transfer, archive edits, file FAT
 flags/timestamps, and metadata precedence checks. Retained run directories are
-`/tmp/boltpack-atari-fat-eduejk3t` (1.06),
-`/tmp/boltpack-atari-fat-m134gjg8` (1.62), and
-`/tmp/boltpack-atari-fat-y_mzqmnc` (2.05). The host-directory interoperability
+`build/r02-retained-20261030/boltpack-atari-fat-eduejk3t` (1.06),
+`build/r02-retained-20261030/boltpack-atari-fat-m134gjg8` (1.62), and
+`build/r02-retained-20261030/boltpack-atari-fat-y_mzqmnc` (2.05). The host-directory interoperability
 runner also passed again on TOS 1.62; its logs and exchange files are in
-`/tmp/boltpack-hatari-qfqjcm8i`.
+`build/r02-retained-20261030/boltpack-hatari-qfqjcm8i`.
 A direct GEMDOS probe on the same TOS/FAT12 setup returned `-33` (`EFILNF`)
 for `Fattrib` directory reads and writes and for opening a directory with
 `Fopen`, so handle-based `Fdatime` cannot set a directory timestamp either.
@@ -403,8 +450,8 @@ This result is specific to the tested TOS 1.62 environment.
 
 The FAT12 guest transfer/edit test also passed with TOS 1.06 and 2.05 on
 2026-10-29, including verification of the saved floppy image after clean
-shutdown. Evidence is in `/tmp/boltpack-atari-fat-a066pl85` (1.06) and
-`/tmp/boltpack-atari-fat-6bdokojg` (2.05). These runs extend CLI and FAT12
+shutdown. Evidence is in `build/r02-retained-20261030/boltpack-atari-fat-a066pl85` (1.06) and
+`build/r02-retained-20261030/boltpack-atari-fat-6bdokojg` (2.05). These runs extend CLI and FAT12
 coverage across three TOS versions; they do not qualify native hardware or the
 GEM GUI.
 
@@ -426,12 +473,12 @@ bytes, the Amiga name projection, nested file, and empty directory. The Amiga
 validates all 15 Atari archive entries; both directions extract exact payloads
 and report partial for the other platform's native metadata. The full combined
 run passed again on 2026-10-29 with evidence in
-`/tmp/boltpack-atari-amiga-twyz0hzg`; this run rebuilt both guest binaries and
+`build/r02-retained-20261030/boltpack-atari-amiga-twyz0hzg`; this run rebuilt both guest binaries and
 repeated the transfer in both directions. An earlier invocation without the
 documented `XDFTOOL` override could not start the Amiga phase because `xdftool`
 is installed only in the project venv on this machine. The prior passing run is
-in `/tmp/boltpack-atari-amiga-jjfobm6w`; separate consumer runs are retained at
-`/tmp/boltpack-atari-amiga-oxdq54d6` and `/tmp/boltpack-amiga-atari-reverse`.
+in `build/r02-retained-20261030/boltpack-atari-amiga-jjfobm6w`; separate consumer runs are retained at
+`build/r02-retained-20261030/boltpack-atari-amiga-oxdq54d6` and `build/r02-retained-20261030/boltpack-amiga-atari-reverse`.
 Host-directory Amiga storage does not qualify OFS/FFS semantics.
 
 ## Amiga: FS-UAE
@@ -492,7 +539,7 @@ Its independent expected-result manifest is
 The manifest pins profile, append, nested-tree, and codec payloads; both Amiga
 guest extraction and Linux cross-extraction are checked against those hashes.
 The expanded 16 KiB host-directory run passed on 2026-10-29; the manifest-backed
-rerun is in `/tmp/boltpack-fsuae-neoktew4`.
+rerun is in `build/r02-retained-20261030/boltpack-fsuae-neoktew4`.
 It defaults to a 256 KiB shell stack; add `--stack 0` to use the guest default.
 The CLI binary carries an AmigaDOS `$STACK:8192` cookie and, on libnix builds,
 calls libnix's stack initializer to expand undersized process stacks and restore
@@ -502,7 +549,7 @@ the explicit libnix initialization also covers our Workbench 2.04 CLI launch.
 Without startup expansion, the shallow tree create stalled at the 4 KiB
 default, while explicit 8 KiB, 16 KiB, and 256 KiB stacks passed. With it, the
 64-level create/extract, profile/edit, and four-codec corpus passes with
-`--stack 0`; evidence is `/tmp/boltpack-fsuae-_0zil2jv`. Repeated one-character
+`--stack 0`; evidence is `build/r02-retained-20261030/boltpack-fsuae-_0zil2jv`. Repeated one-character
 directory names keep that fixture inside the AmigaDOS path limit. The CLI has
 also reduced core writer and traversal stack use. The host-directory runner also tests and
 extracts Stored, BoltLite, BoltLZ and Fluff archives over a 512 KiB input with
@@ -512,7 +559,7 @@ all-codec runs on native floppy filesystems are qualified below.
 After changing archive transaction names to include a target hint and pair the
 recovery backup with its stage, `test/check_fsuae_interop.py` passed again on
 2026-10-29, including the host-directory edit and four-codec round trips at
-256 KiB blocks. Evidence is in `/tmp/boltpack-fsuae-oo0d3xik`.
+256 KiB blocks. Evidence is in `build/r02-retained-20261030/boltpack-fsuae-oo0d3xik`.
 The runner accepts `--chip-memory`, `--fast-memory`, and `--codec-block` to
 qualify resource-constrained configurations. This command uses the A500+'s
 512 KiB chip RAM, no fast RAM, the shell's default stack, and 16 KiB blocks:
@@ -529,10 +576,10 @@ That low-memory run passed profile transfer/edit checks and Stored, BoltLite,
 and BoltLZ round trips in both guest and Linux. Fluff creation returned
 nonzero without publishing an archive or leaving a stage; Fluff extraction
 was therefore not attempted. The original evidence is in
-`/tmp/boltpack-fsuae-h_m6dzqc`; after adding the libnix stack expansion, the
-same workload also passed at `--stack 0` in `/tmp/boltpack-fsuae-ag4i8b4j`.
+`build/r02-retained-20261030/boltpack-fsuae-h_m6dzqc`; after adding the libnix stack expansion, the
+same workload also passed at `--stack 0` in `build/r02-retained-20261030/boltpack-fsuae-ag4i8b4j`.
 An explicit 16 KiB shell stack passed as well in
-`/tmp/boltpack-fsuae-rqay1fec`. This checks one constrained workload, not
+`build/r02-retained-20261030/boltpack-fsuae-rqay1fec`. This checks one constrained workload, not
 general heap-exhaustion handling. Linux reports partial
 preservation for Amiga-native metadata. Hardware power-loss durability, the
 GUI, and additional archived metadata coverage remain open.
@@ -542,7 +589,7 @@ On 2026-10-29, the complete OFS and FFS transfer/edit/metadata/name-refusal
 corpora passed with 512 KiB chip RAM, no fast RAM, and the Workbench default
 shell stack (`--stack 0`). The corpus sets and compares timestamps on three
 nested directories in both filesystems. Results are retained in
-`/tmp/boltpack-amiga-ofs-4vpuos0_` and `/tmp/boltpack-amiga-ffs-63mltyc8`.
+`build/r02-retained-20261030/boltpack-amiga-ofs-4vpuos0_` and `build/r02-retained-20261030/boltpack-amiga-ffs-63mltyc8`.
 This qualifies those workloads under constrained guest memory; it does not
 qualify every codec under constrained memory.
 
@@ -550,15 +597,15 @@ With normal A500+ memory, native OFS and FFS also passed all four codec
 round trips on 2026-10-29. The guest created and tested Stored, BoltLite,
 BoltLZ, and Fluff archives from a 256 KiB file using 256 KiB blocks. Linux
 independently tested and extracted each archive byte-for-byte. Evidence is in
-`/tmp/boltpack-amiga-ofs-causbh48` and `/tmp/boltpack-amiga-ffs-hu_1pcai`;
+`build/r02-retained-20261030/boltpack-amiga-ofs-causbh48` and `build/r02-retained-20261030/boltpack-amiga-ffs-hu_1pcai`;
 both manifests record the filesystem, guest memory, block size, and fixture
 size. Run with `--codec-block 256k --timeout 300` to reproduce.
 
 The native transfer/edit/metadata suite was repeated on 2026-10-29 with the
 default A500+ memory configuration, `--skip-codecs --depth 4 --stack 0`.
 Both filesystems passed; retained evidence is in
-`/tmp/boltpack-amiga-ofs-90l0l1jb` (OFS) and
-`/tmp/boltpack-amiga-ffs-2mp6wwkf` (FFS).
+`build/r02-retained-20261030/boltpack-amiga-ofs-90l0l1jb` (OFS) and
+`build/r02-retained-20261030/boltpack-amiga-ffs-2mp6wwkf` (FFS).
 
 The host-directory backend does not establish symlink-safe creation: in a
 probe, FS-UAE exposed a host symlink as a regular file and the CLI archived its
@@ -571,12 +618,12 @@ the emulator after a sibling stage had received data during forced extraction
 and archive append. The existing extraction destination remained byte-identical;
 the original archive hash also remained identical. Each interrupted operation
 left its incomplete sibling stage because process termination bypassed normal
-cleanup. Evidence is in `/tmp/boltpack-amiga-interrupt-xl1qrycr` (extraction)
-and `/tmp/boltpack-amiga-interrupt-wjouwy_m` (append). Reproduce with
+cleanup. Evidence is in `build/r02-retained-20261030/boltpack-amiga-interrupt-xl1qrycr` (extraction)
+and `build/r02-retained-20261030/boltpack-amiga-interrupt-wjouwy_m` (append). Reproduce with
 `--size-mib 64 --operation extract` or `--operation append`. On 2026-10-29, I
 reran both 64 MiB cases successfully; evidence is in
-`/tmp/boltpack-amiga-interrupt-1_so52kc` (extraction) and
-`/tmp/boltpack-amiga-interrupt-h11wz8jn` (append). The current environment did
+`build/r02-retained-20261030/boltpack-amiga-interrupt-1_so52kc` (extraction) and
+`build/r02-retained-20261030/boltpack-amiga-interrupt-h11wz8jn` (append). The current environment did
 not have `xdftool` on PATH, so I installed pinned amitools 0.8.1 into the
 ignored `build/venv-amiga-tools` environment. Reproduce both checks with:
 
@@ -595,8 +642,11 @@ The separate `fsuae-publish-rollback-test` target builds a test-only CLI with a
 one-shot failure injected at the stage-to-target rename, after the old archive
 has moved to its backup name. The runner confirms the original archive hash is
 unchanged, Linux can still verify the archive, and the rollback removes the
-stage and backup. On 2026-10-29 this passed with evidence in
-`/tmp/boltpack-amiga-interrupt-ethaf3ml`. Reproduce with:
+stage and backup. The test passed again on 2026-10-30. The durable run record, command, emulator
+log, source snapshot, original/replacement archives, and state are retained in
+`build/r11-amiga-publish-failure-20261030-retained/`; its `run.json` records
+FS-UAE 3.1.66, amitools 0.8.1, compiler, ROM, Workbench, binary, and archive
+hashes. Reproduce with:
 
 ```sh
 make CC=gcc XDFTOOL=build/venv-amiga-tools/bin/xdftool fsuae-publish-rollback-test
@@ -610,7 +660,7 @@ file. The runner replaces that pathname from the host, resumes the guest, and
 checks that the source identity recheck rejects the operation, leaves the
 existing archive byte-identical, and removes the archive stage. On 2026-10-29
 this passed on the FS-UAE host-directory backend; evidence is in
-`/tmp/boltpack-amiga-interrupt-ojan6mms`.
+`build/r02-retained-20261030/boltpack-amiga-interrupt-ojan6mms`.
 Reproduce with:
 
 ```sh
@@ -630,7 +680,7 @@ second valid backup/stage pair with the same target hint, verifies that
 `boltpack r INTERRUPT.BLT` refuses the ambiguity, then invokes
 `boltpack r INTERRUPT.BLT BRINTERRUPTBLTDUP001` and checks the original is
 restored while the unselected pair remains untouched. On 2026-10-29 this
-passed; evidence is in `/tmp/boltpack-amiga-interrupt-jy3ea2br`.
+passed; evidence is in `build/r02-retained-20261030/boltpack-amiga-interrupt-jy3ea2br`.
 Reproduce with:
 
 ```sh
@@ -657,8 +707,8 @@ had time to flush before the runner terminates FS-UAE. A second boot runs the
 production recovery command, then `xdftool` reads the restored archive and
 retained stage back for independent Linux integrity checks. Both filesystems
 passed on 2026-10-29: OFS evidence is in
-`/tmp/boltpack-amiga-native-recovery-uqdx3d0b`; FFS evidence is in
-`/tmp/boltpack-amiga-native-recovery-9o6wgxsi`. This covers process termination
+`build/r02-retained-20261030/boltpack-amiga-native-recovery-uqdx3d0b`; FFS evidence is in
+`build/r02-retained-20261030/boltpack-amiga-native-recovery-9o6wgxsi`. This covers process termination
 on FS-UAE's writable ADF backend after buffer settling. It does not model
 hardware power loss or qualify physical floppy hardware.
 
@@ -684,27 +734,27 @@ limits. `--timeout 300` allows the slow native floppy create/extract fixture to
 finish; the emulator's default timeout may be too short for deeper trees.
 After adding Amiga source identity checks, the native OFS and FFS fixtures were
 rerun with `--skip-codecs --depth 4`; both passed with the current 68k build.
-Evidence is in `/tmp/boltpack-amiga-ofs-lvaace5z` (OFS) and
-`/tmp/boltpack-amiga-ffs-ewtnkm4u` (FFS).
+Evidence is in `build/r02-retained-20261030/boltpack-amiga-ofs-lvaace5z` (OFS) and
+`build/r02-retained-20261030/boltpack-amiga-ffs-ewtnkm4u` (FFS).
 FS-UAE passed 49-level trees on both OFS and FFS with the default shell stack.
 Both runs used `--skip-codecs --timeout 300` to isolate traversal from the
 slower codec workload. The guest extracted each archive back onto the
 disposable floppy, and the runner read the saved leaf from the image and checked
-its bytes. Evidence is in `/tmp/boltpack-amiga-ofs-xs7y75m8` and
-`/tmp/boltpack-amiga-ffs-lmg413hf`. Both OFS and FFS also pass 56- and
+its bytes. Evidence is in `build/r02-retained-20261030/boltpack-amiga-ofs-xs7y75m8` and
+`build/r02-retained-20261030/boltpack-amiga-ffs-lmg413hf`. Both OFS and FFS also pass 56- and
 64-level create/extract/readback with a 16 KiB shell stack, 2 MiB chip RAM,
 and 8 MiB fast RAM. More recently, both pass the full 64-level fixture with an
 explicit 4 KiB stack at the same memory settings; these runs used
 `--skip-codecs --timeout 300` and are retained at
-`/tmp/boltpack-amiga-ofs-czinf8rz` (OFS) and
-`/tmp/boltpack-amiga-ffs-l_z74afe` (FFS). The 16 KiB 56-level runs are
-`/tmp/boltpack-amiga-ofs-op458crf` and `/tmp/boltpack-amiga-ffs-ah054847`;
-64-level 16 KiB runs are `/tmp/boltpack-amiga-ofs-vxmstmb6` and
-`/tmp/boltpack-amiga-ffs-1z4qonhx`. Earlier runs also passed these depths with
+`build/r02-retained-20261030/boltpack-amiga-ofs-czinf8rz` (OFS) and
+`build/r02-retained-20261030/boltpack-amiga-ffs-l_z74afe` (FFS). The 16 KiB 56-level runs are
+`build/r02-retained-20261030/boltpack-amiga-ofs-op458crf` and `build/r02-retained-20261030/boltpack-amiga-ffs-ah054847`;
+64-level 16 KiB runs are `build/r02-retained-20261030/boltpack-amiga-ofs-vxmstmb6` and
+`build/r02-retained-20261030/boltpack-amiga-ffs-1z4qonhx`. Earlier runs also passed these depths with
 a 256 KiB stack. On 2026-10-29, both OFS and FFS also passed the full 64-level
 fixture with `--stack 0`, 2 MiB chip RAM, and 8 MiB fast RAM, using
 `--skip-codecs --timeout 300`. Evidence is in
-`/tmp/boltpack-amiga-ofs-2997misu` and `/tmp/boltpack-amiga-ffs-97_b_6rq`.
+`build/r02-retained-20261030/boltpack-amiga-ofs-2997misu` and `build/r02-retained-20261030/boltpack-amiga-ffs-97_b_6rq`.
 Each run's `manifest.txt` and `host/STACK.TXT` record a 3,200-byte probe
 process stack and `cli_DefaultStack` of 1,024 longwords (4,096 bytes). The
 explicit `--stack 4096` setting produced the same values; AmigaDOS defines the
@@ -713,18 +763,26 @@ CLI field as the minimum stack allocated for commands, and its default is
 So `--stack 4096` is not evidence of a larger-than-default stack. The previous
 default-stack timeouts were not reproduced with the 300-second runner timeout.
 Low-memory directory-time evidence is in
-`/tmp/boltpack-amiga-ofs-dko1vgfd` and `/tmp/boltpack-amiga-ffs-954opbc8`.
+`build/r02-retained-20261030/boltpack-amiga-ofs-dko1vgfd` and `build/r02-retained-20261030/boltpack-amiga-ffs-954opbc8`.
 On 2026-10-29, the native runner also verified conflicting Amiga protection
 and portable FAT metadata in both record orders on OFS and FFS. Native
 protection remained exactly 64, extracted bytes matched, and the unsupported
 portable record was reported partial. The reproducible target passed on
 2026-10-29. Evidence: OFS
-`/tmp/boltpack-amiga-ofs-4pfxha_n`; FFS
-`/tmp/boltpack-amiga-ffs-1961fuon`. The runner builds the Linux fixture with
+`build/r02-retained-20261030/boltpack-amiga-ofs-4pfxha_n`; FFS
+`build/r02-retained-20261030/boltpack-amiga-ffs-1961fuon`. The runner builds the Linux fixture with
 `--host-cc` (defaulting to `$CC` or `cc`) and runs the conflict cases each time.
 The full focused OFS/FFS corpus, including these precedence cases, is available
 as `make CC=gcc XDFTOOL=build/venv-amiga-tools/bin/xdftool
-fsuae-native-interoperability-test`.
+fsuae-native-interoperability-test`. The target writes timestamped, complete
+run directories under `build/amiga-native-ofs-*` and
+`build/amiga-native-ffs-*`. On 2026-10-30, this corpus exposed that AmigaDOS
+can return `ETXTBSY` when `lstat()` examines a still-open staged file in a
+nested directory. The production CLI now snapshots the stage through its open
+handle and checks pathname identity after close, before publication. OFS and
+FFS pass the nested file and metadata round trip; current records are in
+`build/amiga-native-ofs-20261030-224048` and
+`build/amiga-native-ffs-20261030-224048`.
 
 ## Windows: Wine (partial 64-bit CLI feedback)
 
@@ -785,7 +843,7 @@ python3 test/check_wcx_unicode_wine.py \
   --runner build/win64/wcx_unicode_wine.exe \
   --wcx build/win64/boltpack.wcx64 \
   --linux-boltpack build/linux/boltpack --keep \
-  > /tmp/boltpack-wcx-wine-20261029.log 2>&1
+  > build/r02-retained-20261030/boltpack-wcx-wine-20261029.log 2>&1
 ```
 
 The 2026-10-29 run passed `OpenArchiveW`, `ReadHeaderExW`,
@@ -794,7 +852,7 @@ supplementary-Unicode archive and entry paths. Linux verified the packed
 archive bytes and final entries; directory time was checked after close. The
 ANSI header call refused the non-ACP entry. Retained evidence is in
 `/home/tony/.wine/dosdevices/c:/boltpack-wcx-wine-u50d4hk_`, with the runner
-transcript at `/tmp/boltpack-wcx-wine-20261029.log`. This remains a Wine API
+transcript at `build/r02-retained-20261030/boltpack-wcx-wine-20261029.log`. This remains a Wine API
 fixture; it does not verify behavior inside Total Commander or native Windows.
 
 The Win32 and Win64 CLI builds had an undeclared runtime dependency on

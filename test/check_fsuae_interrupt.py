@@ -2,6 +2,7 @@
 """Exercise Amiga staged-output interruption and archive replacement rollback."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import platform
 
 ROOT = Path(__file__).resolve().parent.parent
 PATTERN = bytes((i * 73 + i // 17) & 0xff for i in range(64 * 1024))
@@ -17,6 +19,21 @@ PATTERN = bytes((i * 73 + i // 17) & 0xff for i in range(64 * 1024))
 def sibling_files(directory, prefix):
     return [path for path in directory.glob(prefix + "*")
             if path.is_file() and not path.name.lower().endswith(".uaem")]
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def tool_version(command):
+    result = subprocess.run(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    return {"command": command, "returncode": result.returncode,
+            "output": result.stdout.strip()}
 
 
 def main():
@@ -29,10 +46,11 @@ def main():
     parser.add_argument("--amiga-cli", type=Path, default=ROOT / "build/amiga/boltpack")
     parser.add_argument("--recovery-cli", type=Path, default=ROOT / "build/amiga/boltpack")
     parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("--size-mib", type=int, choices=(64, 128, 256), default=128)
+    parser.add_argument("--size-mib", type=int, choices=(1, 8, 16, 64, 128, 256), default=128)
     parser.add_argument("--operation",
                         choices=("extract", "append", "publish-failure",
-                                 "publish-interrupt", "source-replace"),
+                                 "publish-interrupt", "source-replace",
+                                 "parent-substitute"),
                         default="extract")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -77,7 +95,7 @@ def main():
     sentinel = b"original destination must survive an interrupted extraction\n"
     if args.operation == "extract":
         target.write_bytes(sentinel)
-    else:
+    elif args.operation != "parent-substitute":
         (drive / ("REPLACEMENT.BIN" if args.operation.startswith("publish-")
                   else "ADD.BIN")).write_bytes(
                       b"replacement archive content\n" if args.operation.startswith("publish-")
@@ -91,6 +109,8 @@ def main():
     startup = out / "startup"
     if args.operation == "extract":
         guest_command = "DH0:boltpack x -f -o DH0:OUT DH0:INTERRUPT.BLT >DH0:EXTRACT.LOG"
+    elif args.operation == "parent-substitute":
+        guest_command = "DH0:boltpack x -o DH0:OUT DH0:INTERRUPT.BLT >DH0:EXTRACT.LOG"
     elif args.operation == "append":
         guest_command = "DH0:boltpack a DH0:INTERRUPT.BLT DH0:ADD.BIN >DH0:APPEND.LOG"
     elif args.operation.startswith("publish-"):
@@ -142,6 +162,9 @@ def main():
                 while time.monotonic() < deadline:
                     if (drive / "SOURCE-OPENED.TXT").exists():
                         break
+                    if (drive / "DONE.TXT").exists():
+                        rc_text = (drive / "OPERATION.RC").read_text(encoding="ascii").strip()
+                        raise RuntimeError("source operation finished before open pause (rc=" + rc_text + "); evidence: " + str(out))
                     if guest.poll() is not None:
                         raise RuntimeError("guest exited before opening source; evidence: " + str(out))
                     time.sleep(0.01)
@@ -174,6 +197,33 @@ def main():
                     time.sleep(0.002)
                 else:
                     raise RuntimeError("did not observe original at recovery name; evidence: " + str(out))
+            elif args.operation == "parent-substitute":
+                while time.monotonic() < deadline:
+                    candidates = sibling_files(output, "BP")
+                    if candidates:
+                        stage = candidates[0]
+                        stage_size = stage.stat().st_size
+                        os.killpg(guest.pid, signal.SIGSTOP)
+                        break
+                    if (drive / "DONE.TXT").exists() or guest.poll() is not None:
+                        raise RuntimeError("guest completed before parent-substitution pause; evidence: " + str(out))
+                    time.sleep(0.002)
+                else:
+                    raise RuntimeError("no extraction stage appeared before timeout; evidence: " + str(out))
+                moved_output = drive / "OUT.MOVED"
+                os.replace(output, moved_output)
+                output.mkdir()
+                parent_sentinel = b"replacement output directory must remain untouched\n"
+                (output / "SENTINEL.TXT").write_bytes(parent_sentinel)
+                os.killpg(guest.pid, signal.SIGCONT)
+                while time.monotonic() < deadline:
+                    if (drive / "DONE.TXT").exists():
+                        break
+                    if guest.poll() is not None:
+                        raise RuntimeError("guest exited before parent-substitution result; evidence: " + str(out))
+                    time.sleep(0.01)
+                else:
+                    raise RuntimeError("guest did not finish parent-substitution case; evidence: " + str(out))
             else:
                 stage_dir = output if args.operation == "extract" else drive
                 while time.monotonic() < deadline:
@@ -203,8 +253,20 @@ def main():
                 os.killpg(guest.pid, signal.SIGKILL)
                 guest.wait()
 
+    operation_rc = None
+    parent_substitution_stage = None
     if args.operation == "extract" and target.read_bytes() != sentinel:
         raise RuntimeError("interrupted extraction changed the existing destination; evidence: " + str(out))
+    if args.operation == "parent-substitute":
+        operation_rc = (drive / "OPERATION.RC").read_text(encoding="ascii").strip()
+        moved = drive / "OUT.MOVED"
+        stages = sibling_files(moved, "BP")
+        if (operation_rc == "0" or (output / "LARGE.BIN").exists() or
+                (output / "SENTINEL.TXT").read_bytes() !=
+                b"replacement output directory must remain untouched\n" or
+                len(stages) != 1):
+            raise RuntimeError("parent substitution was not refused safely; evidence: " + str(out))
+        parent_substitution_stage = stages[0]
     if args.operation == "append" and hashlib.sha256(archive.read_bytes()).hexdigest() != original_archive_hash:
         raise RuntimeError("interrupted append changed the original archive; evidence: " + str(out))
     if args.operation == "publish-failure":
@@ -328,6 +390,10 @@ def main():
         state = ("result=PASS\noperation=source-path-replacement\n"
                  "opened_source=kept open while host pathname was replaced\n"
                  "archive=original hash preserved\nstage=cleaned\n")
+    elif args.operation == "parent-substitute":
+        state = ("result=PASS\noperation=output-parent-substitution\n"
+                 "replacement_output=sentinel preserved; extracted file not published\n"
+                 "original_output=renamed directory retains one unpublished stage\n")
     else:
         state = ("result=PASS\noperation=%s\ndestination=%s\n"
                  "stage_size=%d\nexpected_size=%d\n" % (
@@ -335,12 +401,67 @@ def main():
                      "original sentinel preserved" if args.operation == "extract" else "archive hash preserved",
                      stage_size, stage_expected_size))
     (out / "interrupted-state.txt").write_text(state, encoding="ascii")
+    status = subprocess.run(["git", "status", "--short"], cwd=ROOT,
+                           stdout=subprocess.PIPE, check=True).stdout
+    source_diff = subprocess.run(["git", "diff", "--binary"], cwd=ROOT,
+                                 stdout=subprocess.PIPE, check=True).stdout
+    (out / "source-status.txt").write_bytes(status)
+    (out / "source-diff.patch").write_bytes(source_diff)
+    manifest = {
+        "purpose": "Amiga CLI %s publication and recovery interoperability" % args.operation,
+        "result": "PASS",
+        "operation": args.operation,
+        "date": time.strftime("%Y-%m-%d", time.gmtime()),
+        "source_revision": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                           stdout=subprocess.PIPE, check=True,
+                                           text=True).stdout.strip(),
+        "worktree_dirty": bool(status.strip()),
+        "source_status_sha256": hashlib.sha256(status).hexdigest(),
+        "source_diff_sha256": hashlib.sha256(source_diff).hexdigest(),
+        "runner_sha256": sha256(Path(__file__)),
+        "host": platform.platform(),
+        "locale": {name: os.environ.get(name)
+                   for name in ("LANG", "LC_ALL", "LC_CTYPE", "TZ")},
+        "filesystem": "Workbench hard drive host directory on FS-UAE",
+        "emulator_command": command,
+        "guest_command": guest_command,
+        "guest_return_code": operation_rc,
+        "evidence": state.splitlines(),
+        "tools": [tool_version([args.fs_uae, "--version"]),
+                  tool_version([str(Path(args.xdftool).resolve().parent / "python"),
+                               "-c", "from importlib.metadata import version; print(version('amitools'))"]),
+                  tool_version(["/opt/amiga/bin/m68k-amigaos-gcc", "--version"])],
+        "assets": {"kickstart_sha256": sha256(rom),
+                   "workbench_sha256": sha256(workbench),
+                   "xdftool_sha256": sha256(args.xdftool)},
+        "executables": {"linux_cli_sha256": sha256(linux),
+                        "amiga_cli_sha256": sha256(amiga),
+                        "recovery_cli_sha256": sha256(recovery_cli)},
+        "artifacts": {"workbench_disk_sha256": sha256(system_disk),
+                      "archive_before_sha256": original_archive_hash,
+                      "archive_after_sha256": sha256(archive),
+                      "source_payload_sha256": digest.hexdigest(),
+                      "source_payload_bytes": source_size},
+    }
+    if parent_substitution_stage is not None:
+        replacement_sentinel = output / "SENTINEL.TXT"
+        manifest["parent_substitution"] = {
+            "replacement_output_sentinel_sha256": sha256(replacement_sentinel),
+            "replacement_output_file_published": False,
+            "renamed_original_stage_name": parent_substitution_stage.name,
+            "renamed_original_stage_size": parent_substitution_stage.stat().st_size,
+            "renamed_original_stage_sha256": sha256(parent_substitution_stage),
+        }
+    (out / "run.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                   encoding="utf-8")
     if args.operation == "publish-failure":
         print("PASS: failed Amiga archive replacement restored and verified the original; evidence:", out)
     elif args.operation == "publish-interrupt":
         print("PASS: Amiga recovery restored the original archive and retained the valid replacement stage; evidence:", out)
     elif args.operation == "source-replace":
         print("PASS: Amiga CLI rejected a replaced source path and preserved the original archive; evidence:", out)
+    elif args.operation == "parent-substitute":
+        print("PASS: Amiga CLI rejected a replaced extraction parent without publishing into its replacement; evidence:", out)
     else:
         print("PASS: interrupted Amiga", args.operation,
               "preserved the original destination; stage remains at", stage,
