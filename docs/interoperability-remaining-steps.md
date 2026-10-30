@@ -162,6 +162,19 @@ XDFTOOL=build/venv-amiga-tools/bin/xdftool fsuae-native-interoperability-test`.
 This raises the qualified depth by one level; maximum supported depth and
 additional constrained-memory thresholds are still unmeasured.
 
+Higher-depth diagnostics on 2026-10-31 did not extend that qualification. The
+128-level OFS source-creation attempt returned failure and produced no archive;
+its deepest member path is 269 characters, so the result cannot isolate a
+resource limit from path handling. At 117 levels the OFS source archive was
+created, but extraction did not finish before the runner's 600-second FS-UAE
+limit; the runner stopped before byte verification, and the sequential target
+therefore did not reach FFS. These attempts do not establish a supported
+maximum depth. `check_fsuae_native.py` now writes a hash-indexed `failure.json`
+with the exception, source/worktree snapshot, environment, inputs, manifest,
+and retained artifacts when a run fails after output setup. A controlled
+preflight-failure check verified the record and every indexed artifact hash.
+The 65-level OFS/FFS pass remains the current deep-traversal qualification.
+
 The independent Amiga fixture now includes a Linux-created symbolic-link
 entry. FS-UAE OFS and FFS runs both returned the expected partial result, left
 the destination link absent, and preserved the input archive byte-for-byte;

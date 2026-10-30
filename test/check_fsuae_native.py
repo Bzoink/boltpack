@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise Amiga/Linux exchange and metadata on a disposable native floppy."""
 import argparse
+import datetime
 import hashlib
 import json
 import locale
@@ -14,10 +15,107 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_PATH = ROOT / "test/reference/interoperability/amiga-native.json"
 EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
+ACTIVE_OUTPUT = None
+ACTIVE_ARGS = None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_failure_record(error):
+    """Retain a machine-readable snapshot when a run fails after setup."""
+    if ACTIVE_OUTPUT is None or not ACTIVE_OUTPUT.is_dir():
+        return
+    out = ACTIVE_OUTPUT
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+    (out / "git-status.txt").write_bytes(status)
+    (out / "git-diff.patch").write_bytes(diff)
+    try:
+        locale_name = locale.setlocale(locale.LC_ALL, None)
+    except locale.Error:
+        locale_name = "unknown"
+    args = ACTIVE_ARGS or {}
+    inputs = {}
+    for name in ("rom", "workbench", "amiga_cli", "linux_cli", "xdftool"):
+        value = args.get(name)
+        if value is None:
+            continue
+        candidate = Path(value).expanduser()
+        try:
+            candidate = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if candidate.is_file():
+            inputs[name] = {"path": str(candidate), "sha256": sha256_file(candidate)}
+    artifacts = {
+        path.relative_to(out).as_posix(): {
+            "size": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        for path in sorted(out.rglob("*"))
+        if path.is_file() and path.name != "failure.json"
+    }
+    source_paths = (
+        Path(__file__).resolve(), EXPECTED_PATH,
+        ROOT / "src/core/archiver.c", ROOT / "src/core/compress.c",
+        ROOT / "src/core/boltlite.c", ROOT / "src/core/fluff.c",
+        ROOT / "src/core/bp_codepage.c", ROOT / "src/core/boltlz.c",
+        ROOT / "src/frontend/amiga/main.c",
+    )
+    record = {
+        "result": "FAIL",
+        "error": repr(error),
+        "traceback": traceback.format_exc(),
+        "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "invocation": sys.argv,
+        "revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "worktree_status": status.decode("utf-8", "replace").splitlines(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "locale": locale_name,
+            "timezone": list(time.tzname),
+            "fs_uae": command_version([args.get("fs_uae", "fs-uae"), "--version"]),
+            "xdftool_amitools": python_script_package_version(
+                args.get("xdftool", "xdftool"), "amitools"),
+            "host_compiler": command_version(
+                [args.get("host_cc", "cc"), "--version"]),
+            "amiga_compiler": command_version(
+                [args.get("amiga_cc", "/opt/amiga/bin/m68k-amigaos-gcc"),
+                 "--version"]),
+        },
+        "filesystem": args.get("filesystem"),
+        "depth": args.get("depth"),
+        "guest_stack_bytes": args.get("stack"),
+        "chip_memory_kib": args.get("chip_memory"),
+        "fast_memory_kib": args.get("fast_memory"),
+        "timeout_seconds": args.get("timeout"),
+        "inputs": inputs,
+        "expected_manifest": {
+            "path": EXPECTED_PATH.relative_to(ROOT).as_posix(),
+            "sha256": sha256_file(EXPECTED_PATH),
+        },
+        "source_sha256": {
+            path.relative_to(ROOT).as_posix(): sha256_file(path)
+            for path in source_paths if path.is_file()
+        },
+        "artifacts": artifacts,
+    }
+    (out / "failure.json").write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
 def check_payload(data, key):
@@ -75,6 +173,7 @@ def python_script_package_version(executable, package):
 
 
 def main():
+    global ACTIVE_OUTPUT, ACTIVE_ARGS
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--rom", type=Path, required=True)
     p.add_argument("--workbench", type=Path, required=True)
@@ -106,6 +205,8 @@ def main():
     out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-amiga-" + args.filesystem + "-"))
     if args.output:
         out.mkdir(parents=True, exist_ok=False)
+    ACTIVE_OUTPUT = out
+    ACTIVE_ARGS = vars(args)
     drive = out / "host"
     drive.mkdir()
     home = out / "home"
@@ -574,4 +675,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        try:
+            write_failure_record(exc)
+        except Exception as record_error:
+            print("could not write failure record:", record_error, file=sys.stderr)
+        raise
