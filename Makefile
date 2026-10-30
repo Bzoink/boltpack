@@ -1554,7 +1554,7 @@ AMIGA_NATIVE_PUBLISH_PAUSE_BIN = $(AMIGA68K_BUILDDIR)/boltpack-native-publish-pa
 AMIGA_SOURCE_PAUSE_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-source-pause
 AMIGA_PARENT_SUBSTITUTION_TEST_BIN = $(AMIGA68K_BUILDDIR)/boltpack-parent-substitution
 
-.PHONY: amiga68k-publish-failure-test amiga68k-publish-pause-test amiga68k-native-publish-pause-test amiga68k-source-pause-test amiga68k-parent-substitution-test fsuae-interruption-test fsuae-publish-rollback-test fsuae-publish-interruption-test fsuae-native-publish-recovery-test fsuae-native-interoperability-test fsuae-source-race-test fsuae-parent-substitution-test
+.PHONY: amiga68k-publish-failure-test amiga68k-publish-pause-test amiga68k-native-publish-pause-test amiga68k-source-pause-test amiga68k-parent-substitution-test fsuae-interruption-test fsuae-publish-rollback-test fsuae-publish-interruption-test fsuae-native-publish-recovery-test fsuae-native-interoperability-test fsuae-source-race-test fsuae-source-swap-restore-test fsuae-parent-substitution-test
 amiga68k-publish-failure-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_FAIL_PUBLISH \
@@ -1611,6 +1611,14 @@ fsuae-source-race-test: modern amiga68k-source-pause-test
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --xdftool "$(XDFTOOL)" --size-mib 64 --operation source-replace \
 	    --amiga-cli "$(AMIGA_SOURCE_PAUSE_TEST_BIN)"
+
+AMIGA_SOURCE_SWAP_RESTORE_OUTPUT ?= build/r05-amiga-source-swap-restore-$(shell date +%Y%m%d-%H%M%S)
+fsuae-source-swap-restore-test: modern amiga68k-source-pause-test
+	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
+	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
+	    --xdftool "$(XDFTOOL)" --size-mib 1 --operation source-swap-restore \
+	    --amiga-cli "$(AMIGA_SOURCE_PAUSE_TEST_BIN)" \
+	    --output "$(AMIGA_SOURCE_SWAP_RESTORE_OUTPUT)"
 
 fsuae-parent-substitution-test: modern amiga68k-parent-substitution-test
 	python3 test/check_fsuae_interrupt.py --rom "$(AMIGA_ROM)" \
