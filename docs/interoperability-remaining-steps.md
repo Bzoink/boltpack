@@ -652,7 +652,15 @@ reopen the menu and verify the selected checkmark; records are
 [`build/atari-menu-pointer-ubm9y72c/run.json`](../build/atari-menu-pointer-ubm9y72c/run.json), and
 [`build/atari-menu-pointer-fdx63g99/run.json`](../build/atari-menu-pointer-fdx63g99/run.json).
 The expanded thirteen-action `atari-gui-menu-pointer-test` target passed on
-TOS 1.62. For Archive → Validate, Information, Close, Extract, and Quit, it
+TOS 1.62. A fresh rerun on 2026-10-30 passed all thirteen production menu
+actions; its records are retained under `build/atari-menu-pointer-emnowwz9`,
+`build/atari-menu-pointer-g_zdkmdv`, `build/atari-menu-pointer-yxovn0y5`,
+`build/atari-menu-pointer-7lxn6vaa`, `build/atari-menu-pointer-qp4oe0o8`,
+`build/atari-menu-pointer-07n9xw35`, `build/atari-menu-pointer-n5nn42dy`,
+`build/atari-menu-pointer-vsdzpx6r`, `build/atari-menu-pointer-ci5oxtzu`,
+`build/atari-menu-pointer-0e8316qj`, `build/atari-menu-pointer-d4ord4dj`,
+`build/atari-menu-pointer-fgfangcj`, and `build/atari-menu-pointer-6x1ybbfe`.
+For Archive → Validate, Information, Close, Extract, and Quit, it
 creates and opens a Linux-generated archive, opens the Archive menu, captures
 the open menu as a checkpoint, then selects the action and verifies the
 resulting screen. Validate reports one file and “all passed”; Information
