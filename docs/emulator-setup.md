@@ -368,10 +368,15 @@ result manifest for payload sizes and SHA-256 hashes, plus the expected refusal
 and partial outcomes. Run it with:
 
 ```sh
-python3 test/check_hatari_interop.py --tos "$HOME/images/Atari/tos162se.img"
+python3 test/check_hatari_interop.py --tos "$HOME/images/Atari/tos162se.img" \
+  --output build/r02-atari-host-20261031
 ```
 
-It prints the location of its disposable exchange drive and run log on success.
+The run retains its exchange drive, command log, source snapshot, independent
+manifest hash, and hash-indexed artifacts under the output path. `run.json`
+records the Hatari and compiler versions and the GEMDOS host-directory
+filesystem limitation. Without `--output`, it creates a unique directory under
+`build/`.
 
 A temporary Hatari 2.6.1-devel build (upstream commit `23bc3060`) exposed its
 new `mousemove`, `leftdown`, and `leftup` control events. Under Xvfb, these
@@ -399,7 +404,8 @@ Other menu item actions, choosing files in the selector, archive
 creation/extraction, cancellation, and GUI metadata behavior still need runtime
 validation. A reproducible CLI exchange test uses
 Hatari's host-directory drive and retains its commands, exit statuses, logs,
-files and ROM/payload hashes in a temporary evidence directory:
+files, source snapshot, tool versions, and artifact hashes in a build evidence
+directory:
 
 ```sh
 python3 test/check_hatari_interop.py --tos "$HOME/images/Atari/tos162se.img"
