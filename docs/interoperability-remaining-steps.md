@@ -614,6 +614,15 @@ This qualifies the cleanup helper path on FreeMiNT, not the interactive GEM
 application or move-and-recreate redirection. The runner requires an EmuTOS
 ROM and FreeMiNT boot tree supplied through those variables.
 
+A fresh production-GUI launch probe booted FreeMiNT 1.18.0 and reached the
+XaAES loader with EmuTOS 1.4/STE/4 MiB. With the 68000 `xaaes000.km`
+copied to the loader’s expected `xaaes.km` name and the required XaAES
+resources present, the loader still reports `Fcntl(KM_RUN) failed` with
+error `-25`, then falls back to a missing `sh`; BoltPack never opens. The
+cause is not isolated, so this is not GUI qualification. The boot image,
+XaAES log screen, exact assets and hashes are retained in
+[`build/freemint-prod-gui-xaaes000/run.json`](../build/freemint-prod-gui-xaaes000/run.json).
+
 The same production GUI FAT12 create/extract flow passes on TOS 1.06; the
 original run is `build/atari-gui-create-6nw6brzd/run.json`. Fresh complete
 reruns on TOS 1.06 and 2.05 now also pass the same corpus and restore directory
