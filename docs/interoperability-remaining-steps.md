@@ -222,6 +222,15 @@ compiler and Hatari versions, TOS and executable hashes, and the source diff:
 The run uses Hatari's GEMDOS host-directory backend; it is separate from the
 Atari FAT12 evidence above.
 
+The standalone Atari FAT12 runner also retains a hash-indexed `run.json` and
+uses a dated output directory under `build/` by default (or `--output DIR` for
+an explicit path). Its 2026-10-31 TOS 1.62 run passed the guest transfer, archive
+edit, metadata, refusal, and failure-preservation cases; all 53 artifact hashes
+and its independent manifest hash were verified. It records the TOS and CLI
+input hashes, Hatari/compiler/environment details, commands, source revision
+and diff, and the TOS directory-metadata limitation:
+[`build/r02-atari-fat12-20261031/run.json`](../build/r02-atari-fat12-20261031/run.json).
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,

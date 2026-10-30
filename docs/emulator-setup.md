@@ -426,7 +426,8 @@ timestamps, or GUI interactions; test those separately.
 For FAT12 floppy testing, run:
 
 ```sh
-python3 test/check_hatari_fat.py --tos "$HOME/images/Atari/tos162se.img"
+python3 test/check_hatari_fat.py --tos "$HOME/images/Atari/tos162se.img" \
+  --output build/r02-atari-fat12-20261031
 ```
 
 This uses a disposable 720 KiB image and `hconsole.py` for a normal Hatari
@@ -440,6 +441,15 @@ metadata record orders. Evidence is in `build/r02-retained-20261030/boltpack-ata
 `build/r02-retained-20261030/boltpack-atari-fat-27zmstyp`. TOS 1.62 reports partial for directory times
 and nonzero directory attributes. The GUI startup/shortcut check does not
 qualify file selection, archive operations, or metadata behavior.
+
+The runner now writes a `run.json` alongside the command log, manifest, floppy
+image, and extracted fixtures. It records the independent manifest and source
+hashes, tool and environment versions, source revision/worktree diff, inputs,
+limitations, and a SHA-256 index of all run artifacts. The 2026-10-31 TOS 1.62
+rerun passed; all 53 indexed artifact hashes and the independent manifest hash
+were verified in `build/r02-atari-fat12-20261031/run.json`. The Make target
+`atari-hatari-fat-test` also assigns a dated output directory under `build/` by
+default, so its evidence is retained without a manual `--output` argument.
 
 The FAT12 runner was repeated on 2026-10-29 after the current frontend changes;
 TOS 1.06, 1.62, and 2.05 all passed guest transfer, archive edits, file FAT
