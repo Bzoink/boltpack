@@ -678,11 +678,14 @@ atari-cli:
 
 # Run the Atari/Linux FAT12 guest transfer fixture. Supply the TOS ROM path,
 # for example: make atari-hatari-fat-test HATARI_TOS=~/images/Atari/tos162se.img
+ATARI_HATARI_FAT_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
+ATARI_HATARI_FAT_OUTPUT ?= build/atari-hatari-fat-$(ATARI_HATARI_FAT_RUN_TAG)
 atari-hatari-fat-test: all atari-cli
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
 	python3 test/check_hatari_fat.py --hatari "$(HATARI)" \
 	    --hconsole "$(HCONSOLE)" --tos "$(HATARI_TOS)" \
-	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET)
+	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
+	    --output "$(ATARI_HATARI_FAT_OUTPUT)"
 
 ATARI_AMIGA_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
 ATARI_AMIGA_OUTPUT ?= build/atari-amiga-interoperability-$(ATARI_AMIGA_RUN_TAG)
