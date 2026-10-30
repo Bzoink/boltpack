@@ -8,6 +8,6 @@
     "deep": {"bytes": 992, "sha256": "95e137fccd6996b717bf8ae54c881b08d4d8f82b9b4bf6446017a793c17bab66"}
   },
   "metadata": {"comment": "BoltPack archive comment", "protection_mask": 64, "conflict_protection": 64, "date_stamp": "10000:600:0"},
-  "names": {"source": "SRC.TXT", "append": "NEW.TXT", "nested": "TREE/NEST/FILE.TXT", "empty_directory": "TREE/NEST/EMPTY", "latin1": "café.txt"},
-  "outcomes": {"conflicting_metadata": "partial", "invalid_comment": "refused", "unrepresentable_name": "refused", "case_collision": "refused", "failed_append": "preserve archive", "linux_foreign_metadata": "partial"}
+  "names": {"source": "SRC.TXT", "append": "NEW.TXT", "nested": "TREE/NEST/FILE.TXT", "empty_directory": "TREE/NEST/EMPTY", "latin1": "café.txt", "symlink": "LINK.TXT", "symlink_target": "SRC.TXT"},
+  "outcomes": {"conflicting_metadata": "partial", "invalid_comment": "refused", "unrepresentable_name": "refused", "case_collision": "refused", "failed_append": "preserve archive", "linux_foreign_metadata": "partial", "unsupported_symlink": "partial"}
 }
