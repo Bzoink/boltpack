@@ -1282,6 +1282,7 @@ x68k:
 # Interchange Profile 1 output where the Human68k toolchain is unavailable.
 X68K_HOST_DIR = build/x68k-host
 X68K_HOST_BIN = $(X68K_HOST_DIR)/boltpack
+X68K_HOST_OUTPUT_ROOT ?= $(X68K_HOST_DIR)/runs
 x68k-host-test:
 	mkdir -p $(X68K_HOST_DIR)
 	$(CC) -D_DEFAULT_SOURCE -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
@@ -1297,7 +1298,7 @@ x68k-host-test:
 	    src/core/compress.c src/core/boltlite.c src/core/boltlz.c \
 	    src/core/fluff.c -o $(X68K_HOST_DIR)/create_collision_archive
 	$(MAKE) CC=$(CC) all linuxmini
-	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini test/reference/interoperability/x68k-host-shim.json $(X68K_HOST_DIR)/create_collision_archive
+	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini test/reference/interoperability/x68k-host-shim.json $(X68K_HOST_DIR)/create_collision_archive --output-root $(X68K_HOST_OUTPUT_ROOT) --compiler "$(CC)" --version-major $(BP_VERSION_MAJOR) --version-minor $(BP_VERSION_MINOR)
 
 # Build the Plan 9 frontend against host shims for profile CLI testing. Native
 # Plan 9 runtime qualification is unavailable on this host.

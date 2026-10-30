@@ -155,6 +155,13 @@ they do not qualify a physical QDOS filing system. Plan 9 host-shim checks remai
 in scope; native run recording is deferred until a usable emulator/runtime is
 available.
 
+The X68000 host-shim Profile 1 runner now retains its generated inputs, archives,
+outputs, command log, compiler/environment data, source diff, and hashes. The
+2026-10-30 rerun passed 53 recorded subprocess cases against the independent
+[`x68k-host-shim.json`](../test/reference/interoperability/x68k-host-shim.json);
+all 30 recorded artifact hashes and the manifest hash were verified. Evidence
+is in [`build/x68k-host/runs/x68k-profile-r0e813j9/run.json`](../build/x68k-host/runs/x68k-profile-r0e813j9/run.json). This closes the X68000 adapted-run evidence gap only; native Human68k behavior remains unqualified.
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,
