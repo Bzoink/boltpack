@@ -123,6 +123,8 @@ def main():
     source_name = EXPECTED["names"]["source"]
     append_name = EXPECTED["names"]["append"]
     accent_name = EXPECTED["names"]["latin1"]
+    symlink_name = EXPECTED["names"]["symlink"]
+    symlink_target = EXPECTED["names"]["symlink_target"]
     nested_name = EXPECTED["names"]["nested"]
     empty_directory_name = EXPECTED["names"]["empty_directory"]
     check_payload(payload, "source")
@@ -130,6 +132,7 @@ def main():
     if not args.skip_codecs:
         check_payload(codec_data, "codec")
     (drive / source_name).write_bytes(payload)
+    (drive / symlink_name).symlink_to(symlink_target)
     if not args.skip_codecs:
         (drive / "CODEC.DAT").write_bytes(codec_data)
     (drive / append_name).write_bytes(extra)
@@ -178,13 +181,25 @@ def main():
              "-o", str(drive / "METAPROBE")])
         run([str(linux), "c", "--interchange-profile-1", "-1", "LINUX.BLT", "SRC.TXT"], drive)
         run([str(linux), "c", "--interchange-profile-1", "-1", "UNICODE.BLT", accent_name], drive)
+        link_archive = drive / "LINK.BLT"
+        run([str(linux), "c", "--interchange-profile-1",
+             link_archive.name, symlink_name], drive)
+        run([str(linux), "t", str(link_archive)])
+        link_listing = subprocess.run([str(linux), "l", str(link_archive)],
+                                      stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT,
+                                      check=True).stdout
+        if symlink_name.encode() not in link_listing or b"LINK" not in link_listing:
+            raise RuntimeError("Linux symlink fixture was not archived as a link")
+        (out / "linux-link-list.log").write_bytes(link_listing)
+        link_archive_hash = hashlib.sha256(link_archive.read_bytes()).hexdigest()
         run([str(linux), "c", "--interchange-profile-1", "UNREP.BLT", "SRC.TXT", emoji_name], drive)
         run([str(linux), "c", "--interchange-profile-1", "CASE.BLT", "Foo/A.TXT", "foo/B.TXT"], drive)
         run([args.xdftool, str(native), "create"])
         fmt = [args.xdftool, str(native), "format", "BPNATIVE"]
         if args.filesystem == "ffs": fmt.append("ffs")
         run(fmt)
-        names_to_copy = ["SRC.TXT", "NEW.TXT", "LINUX.BLT",
+        names_to_copy = ["SRC.TXT", "NEW.TXT", "LINUX.BLT", "LINK.BLT",
                          "NATFST.BLT", "PORTFST.BLT", "BADMETA.BLT"]
         if not args.skip_codecs:
             names_to_copy.append("CODEC.DAT")
@@ -197,6 +212,7 @@ def main():
         run([args.xdftool, str(native), "makedir", "OUT"])
         run([args.xdftool, str(native), "makedir", "RESTORE"])
         run([args.xdftool, str(native), "makedir", "UOUT"])
+        run([args.xdftool, str(native), "makedir", "LINKOUT"])
         run([args.xdftool, str(native), "makedir", "BADNAME"])
         run([args.xdftool, str(native), "makedir", "BADCASE"])
         run([args.xdftool, str(native), "makedir", "BADMETA"])
@@ -244,6 +260,8 @@ def main():
                  "C:Echo $RC >DH0:DEEPCRT.RC",
                  "DH0:boltpack x -o DF1:DEEPOUT DF1:DEEP.BLT >DH0:DEEPEXTRACT.LOG",
                  "C:Echo $RC >DH0:DEEPEXTRACT.RC"] if args.depth else []) ),
+            "DH0:boltpack x -o DF1:LINKOUT DF1:LINK.BLT >DH0:LINK.LOG",
+            "C:Echo $RC >DH0:LINK.RC",
             "DH0:boltpack x -o DF1:OUT DF1:LINUX.BLT >DH0:EXTRACT.LOG", "C:Echo $RC >DH0:EXTRACT.RC",
             "DH0:boltpack x -o DF1:NATIVEFIRST DF1:NATFST.BLT >DH0:NATFST.LOG", "C:Echo $RC >DH0:NATFST.RC",
             "DH0:boltpack x -o DF1:PORTABLEFIRST DF1:PORTFST.BLT >DH0:PORTFST.LOG", "C:Echo $RC >DH0:PORTFST.RC",
@@ -323,6 +341,21 @@ def main():
                          "CODELICRT", "CODECLZT", "CODEFLT", "CODESTT", "CODELIT")):
             if (drive / (name + ".RC")).read_text().strip() != "0":
                 raise RuntimeError("guest failed " + name + "; evidence: " + str(out))
+        check_outcome("unsupported_symlink",
+                      int((drive / "LINK.RC").read_text().strip()))
+        if b"symbolic links are not supported on Amiga" not in \
+                (drive / "LINK.LOG").read_bytes():
+            raise RuntimeError("Amiga did not report its unsupported symlink result")
+        link_output = subprocess.run(
+            [args.xdftool, "-r", str(native), "list", "LINKOUT"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True).stdout
+        (out / "amiga-link-output.list").write_bytes(link_output)
+        if symlink_name.encode() in link_output:
+            raise RuntimeError("Amiga created an object for an unsupported symlink")
+        run([args.xdftool, "-r", str(native), "read", "LINK.BLT",
+             str(out / "link-after.blt")])
+        if hashlib.sha256((out / "link-after.blt").read_bytes()).hexdigest() != link_archive_hash:
+            raise RuntimeError("Amiga symlink refusal modified the input archive")
         for name in ("TREEDATE", "NESTDATE", "EMPTYDATE"):
             if (drive / (name + ".RC")).read_text().strip() != "0":
                 raise RuntimeError("cannot set native directory timestamp: " + name + "; evidence: " + str(out))
@@ -510,6 +543,8 @@ def main():
         "fast_memory_kib=" + str(args.fast_memory),
         "codec_block=" + ("skipped" if args.skip_codecs else args.codec_block),
         "codec_fixture_bytes=" + str(len(codec_data)),
+        "foreign_symlink_extraction=partial; no link object created; input archive preserved",
+        "foreign_symlink_archive_sha256=" + link_archive_hash,
         "directory_mtime_roundtrip=three nested directory timestamps verified",
         "native_portable_metadata_precedence=" + args.filesystem.upper() +
         ": native protection preserved in both record orders; unsupported portable FAT metadata reported partial",
