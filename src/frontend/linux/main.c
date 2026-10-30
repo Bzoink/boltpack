@@ -133,6 +133,49 @@ static long file_read(void *handle, void *buf, bp_uint32 count)
     return (long)fread(buf, 1, (size_t)count, (FILE *)handle);
 }
 
+typedef struct {
+    FILE *fp;
+    bp_uint32 checksum;
+} source_checksum_reader_t;
+
+static long source_checksum_read(void *handle, void *buf, bp_uint32 count)
+{
+    source_checksum_reader_t *reader = (source_checksum_reader_t *)handle;
+    size_t n = fread(buf, 1, (size_t)count, reader->fp);
+    if (n != 0)
+        reader->checksum = bp_crc32(reader->checksum, (const bp_uint8 *)buf,
+                                    (bp_uint32)n);
+    return (long)n;
+}
+
+static int source_checksum_seek(void *handle, bp_off_t offset, int origin)
+{
+    source_checksum_reader_t *reader = (source_checksum_reader_t *)handle;
+    return fseeko(reader->fp, (off_t)offset, origin);
+}
+
+static bp_off_t source_checksum_tell(void *handle)
+{
+    source_checksum_reader_t *reader = (source_checksum_reader_t *)handle;
+    return (bp_off_t)ftello(reader->fp);
+}
+
+static int source_file_checksum(FILE *fp, bp_uint32 *checksum)
+{
+    bp_uint8 buffer[16384];
+    bp_uint32 value = 0;
+    size_t n;
+
+    if (fp == NULL || checksum == NULL || fseeko(fp, (off_t)0, SEEK_SET) != 0)
+        return -1;
+    clearerr(fp);
+    while ((n = fread(buffer, 1, sizeof(buffer), fp)) != 0)
+        value = bp_crc32(value, buffer, (bp_uint32)n);
+    if (ferror(fp)) return -1;
+    *checksum = value;
+    return 0;
+}
+
 static long file_write(void *handle, const void *buf, bp_uint32 count)
 {
     return (long)fwrite(buf, 1, (size_t)count, (FILE *)handle);
@@ -600,6 +643,8 @@ typedef struct {
     time_t     source_ctime;
     long       source_mtime_nsec;
     long       source_ctime_nsec;
+    bp_uint32  packed_checksum;
+    int        packed_checksum_valid;
 } add_job_t;
 
 typedef struct {
@@ -621,7 +666,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 static int collect_path_jobs(add_job_list_t *list, const char *path,
                              const char *arcname);
 #ifdef BOLTPACK_FAST_FLUFF
-static int add_job_list_parallel(bp_archive_t *ar, const add_job_list_t *list);
+static int add_job_list_parallel(bp_archive_t *ar, add_job_list_t *list);
 #endif
 
 static void free_add_job(add_job_t *job)
@@ -692,6 +737,8 @@ static int append_job(add_job_list_t *list, const char *path,
     list->items[list->count].source_mode = source_stat->st_mode;
     list->items[list->count].source_mtime = source_stat->st_mtime;
     list->items[list->count].source_ctime = source_stat->st_ctime;
+    list->items[list->count].packed_checksum = 0;
+    list->items[list->count].packed_checksum_valid = 0;
 #ifdef BP_STAT_HAS_NSEC
     list->items[list->count].source_mtime_nsec = source_stat->st_mtim.tv_nsec;
     list->items[list->count].source_ctime_nsec = source_stat->st_ctim.tv_nsec;
@@ -850,7 +897,7 @@ static void print_added_data_result(bp_archive_t *ar, const char *arcname,
     }
 }
 
-static int add_job(bp_archive_t *ar, const add_job_t *job)
+static int add_job(bp_archive_t *ar, add_job_t *job)
 {
     int rc;
     struct stat st;
@@ -879,6 +926,7 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
     if (job->entry_type == BP_TYPE_DATA) {
         FILE *fp;
         bp_io_t fio;
+        source_checksum_reader_t source_reader;
         double file_d;
         int use_progress;
         bp_progress_fn saved_fn;
@@ -903,7 +951,13 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
             return BP_ERR_IO;
         }
 
-        bp_io_from_file(&fio, fp);
+        source_reader.fp = fp;
+        source_reader.checksum = 0;
+        fio.read = source_checksum_read;
+        fio.write = file_write;
+        fio.seek = source_checksum_seek;
+        fio.tell = source_checksum_tell;
+        fio.handle = &source_reader;
 
         /* Install per-block progress for large files so the terminal is not
          * silent for minutes at a time.  Save and restore so nested callers
@@ -945,6 +999,8 @@ static int add_job(bp_archive_t *ar, const add_job_t *job)
             return rc;
         }
 
+        job->packed_checksum = source_reader.checksum;
+        job->packed_checksum_valid = 1;
         print_added_data_result(ar, job->arcname, actual_size);
         return BP_OK;
     }
@@ -1326,7 +1382,7 @@ static int collect_arg_jobs(add_job_list_t *list, int argc, char **argv)
     return BP_OK;
 }
 
-static int add_job_list_serial(bp_archive_t *ar, const add_job_list_t *list)
+static int add_job_list_serial(bp_archive_t *ar, add_job_list_t *list)
 {
     int i;
     int rc;
@@ -1363,6 +1419,26 @@ static int validate_source_jobs(const add_job_list_t *list)
                     "boltpack: source changed during archive creation: %s\n",
                     job->path);
             return BP_ERR_IO;
+        }
+        if (job->entry_type == BP_TYPE_DATA && job->packed_checksum_valid) {
+            FILE *fp = fopen(job->path, "rb");
+            bp_uint32 checksum;
+            int valid = fp != NULL;
+            if (valid &&
+                (fstat(fileno(fp), &st) != 0 || !S_ISREG(st.st_mode) ||
+                 !source_stat_matches(job, &st) ||
+                 source_file_checksum(fp, &checksum) != 0 ||
+                 checksum != job->packed_checksum ||
+                 fstat(fileno(fp), &st) != 0 || !source_stat_matches(job, &st)))
+                valid = 0;
+            if (fp != NULL && fclose(fp) != 0) valid = 0;
+            if (!valid || lstat(job->path, &st) != 0 ||
+                !source_stat_matches(job, &st)) {
+                fprintf(stderr,
+                        "boltpack: source changed during archive creation: %s\n",
+                        job->path);
+                return BP_ERR_IO;
+            }
         }
     }
     return BP_OK;
@@ -1432,7 +1508,7 @@ static int choose_parallel_compression_threads(const add_job_list_t *list,
 }
 
 static int add_job_list_with_policy(bp_archive_t *ar,
-                                    const add_job_list_t *list,
+                                    add_job_list_t *list,
                                     bp_uint8 method)
 {
     int threads;
@@ -1532,7 +1608,7 @@ static int choose_data_batch_size(const bp_archive_t *ar,
     return batch_n > 0 ? batch_n : 1;
 }
 
-static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
+static int add_data_job_batch(bp_archive_t *ar, add_job_t *jobs,
                               int batch_n)
 {
     packed_job_t *packed_jobs;
@@ -1667,6 +1743,8 @@ static int add_data_job_batch(bp_archive_t *ar, const add_job_t *jobs,
             free(packed_jobs);
             return rc;
         }
+        jobs[i].packed_checksum = packed_jobs[i].packed.checksum;
+        jobs[i].packed_checksum_valid = 1;
         /* Use packed.original_size (reflects actual size used during pack). */
         print_added_data_result(ar, jobs[i].arcname,
                                 packed_jobs[i].packed.original_size);
@@ -1691,7 +1769,7 @@ static int tmp_fits_in_ram(double hint_bytes)
            (double)st.f_bavail * (double)st.f_frsize;
 }
 
-static int add_job_list_parallel(bp_archive_t *ar, const add_job_list_t *list)
+static int add_job_list_parallel(bp_archive_t *ar, add_job_list_t *list)
 {
     int i;
     int batch_n;
@@ -1763,6 +1841,7 @@ static int add_paths_queued(bp_archive_t *ar, int argc, char **argv)
     }
 
     rc = add_job_list_parallel(ar, &list);
+    if (rc == BP_OK) rc = validate_source_jobs(&list);
     free_job_list(&list);
     return rc;
 }

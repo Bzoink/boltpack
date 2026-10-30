@@ -186,6 +186,7 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags)
     const char *outside = getenv("BP_TEST_OUTSIDE");
     if (!real_fstatat) real_fstatat = dlsym(RTLD_NEXT, "fstatat");
     rc = real_fstatat(dirfd, path, st, flags);
+    if (rc == 0) bp_coarsen_stat(st);
     if (!symlink_swapped && rc == 0 &&
         getenv("BP_TEST_SYMLINK_NAME") &&
         strcmp(path, getenv("BP_TEST_SYMLINK_NAME")) == 0 &&
@@ -326,6 +327,45 @@ def run_inplace_case(binary: Path, parallel: bool) -> None:
             "failed append changed the existing archive"
 
 
+def run_coarse_content_change_case(binary: Path, parallel: bool) -> None:
+    with tempfile.TemporaryDirectory(prefix="bp_source_coarse_content_") as temp:
+        root = Path(temp)
+        source = root / "source.bin"
+        seed = root / "seed.bin"
+        archive = root / "archive.blt"
+        source.write_bytes(b"original data")
+        seed.write_bytes(b"archive seed")
+        subprocess.run([str(binary), "c", archive.name, seed.name],
+                       cwd=root, capture_output=True, check=True)
+        original_archive_hash = digest(archive)
+        interposer_c = root / "interpose.c"
+        interposer_so = root / "interpose.so"
+        interposer_c.write_text(INTERPOSER)
+        subprocess.run(["cc", "-shared", "-fPIC", str(interposer_c),
+                        "-ldl", "-o", str(interposer_so)],
+                       capture_output=True, check=True)
+        env = os.environ.copy()
+        env.update(LD_PRELOAD=str(interposer_so), BP_TEST_SOURCE=source.name,
+                   BP_TEST_COARSE_STAT="1", BP_TEST_MUTATE_DURING_READ="1")
+        command = [str(binary), "a"]
+        if parallel:
+            command += ["-F", "-j", "2"]
+        command += [archive.name, source.name]
+        result = subprocess.run(command, cwd=root, env=env,
+                                capture_output=True, text=True)
+        assert source.read_bytes() == b"replacement!!", \
+            f"coarse source mutation was not triggered: {result.stderr}"
+        assert result.returncode != 0, \
+            "same-size content mutation with coarse timestamps was accepted"
+        assert "source changed" in result.stderr, result.stderr + result.stdout
+        assert digest(archive) == original_archive_hash, \
+            "coarse-timestamp content mutation changed the existing archive"
+        leftovers = [p.name for p in root.iterdir()
+                     if p.name.startswith(".boltpack-") or p.name.startswith("BPK")]
+        assert not leftovers, \
+            f"coarse-timestamp content mutation left stages: {leftovers}"
+
+
 def run_coarse_size_change_case(binary: Path, parallel: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="bp_source_coarse_size_") as temp:
         root = Path(temp)
@@ -404,9 +444,11 @@ def run_after_read_case(binary: Path, parallel: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="bp_source_after_read_") as temp:
         root = Path(temp)
         source = root / "source.bin"
+        seed = root / "seed.bin"
         archive = root / "archive.blt"
         source.write_bytes(b"original data")
-        subprocess.run([str(binary), "c", archive.name, source.name],
+        seed.write_bytes(b"archive seed")
+        subprocess.run([str(binary), "c", archive.name, seed.name],
                        cwd=root, capture_output=True, check=True)
         original_archive_hash = digest(archive)
         interposer_c = root / "interpose.c"
@@ -417,6 +459,7 @@ def run_after_read_case(binary: Path, parallel: bool) -> None:
                        capture_output=True, check=True)
         env = os.environ.copy()
         env.update(LD_PRELOAD=str(interposer_so), BP_TEST_SOURCE=source.name,
+                   BP_TEST_COARSE_STAT="1",
                    BP_TEST_MUTATE_AFTER_CLOSE="1")
         command = [str(binary), "a"]
         if parallel:
@@ -519,6 +562,7 @@ def main() -> None:
     run_case(args.boltpack.resolve(), False)
     run_directory_case(args.boltpack.resolve(), False)
     run_inplace_case(args.boltpack.resolve(), False)
+    run_coarse_content_change_case(args.boltpack.resolve(), False)
     run_coarse_size_change_case(args.boltpack.resolve(), False)
     run_coarse_mode_change_case(args.boltpack.resolve(), False)
     run_after_read_case(args.boltpack.resolve(), False)
@@ -528,12 +572,13 @@ def main() -> None:
         run_case(args.parallel_boltpack.resolve(), True)
         run_directory_case(args.parallel_boltpack.resolve(), True)
         run_inplace_case(args.parallel_boltpack.resolve(), True)
+        run_coarse_content_change_case(args.parallel_boltpack.resolve(), True)
         run_coarse_size_change_case(args.parallel_boltpack.resolve(), True)
         run_coarse_mode_change_case(args.parallel_boltpack.resolve(), True)
         run_after_read_case(args.parallel_boltpack.resolve(), True)
         run_symlink_case(args.parallel_boltpack.resolve(), True)
         run_symlink_transient_case(args.parallel_boltpack.resolve(), True)
-    print("Source checks reject substitutions, writes, and coarse-time size/mode changes")
+    print("Source checks reject substitutions, writes, and coarse-time content/size/mode changes")
 
 
 if __name__ == "__main__":

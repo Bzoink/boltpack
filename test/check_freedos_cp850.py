@@ -2,6 +2,7 @@
 """Verify DOS16 CP850 lowercase filenames on a disposable FreeDOS floppy."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,9 +10,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = "\u00f8.TXT"
-PAYLOAD = b"FreeDOS CP850 lowercase filename\n"
-PAYLOAD_SHA256 = "d4966271c485065cb77871ca0944f5899b5913ba2cb05d1ae1dd89dedb8af9fa"
+EXPECTED = json.loads((ROOT / "test/reference/interoperability/dos-cp850-fat12.json")
+                      .read_text(encoding="utf-8"))
+CASE = EXPECTED["freedos_lowercase"]
+NAME = CASE["name_unicode"]
+PAYLOAD = CASE["payload"]["text"].encode("utf-8")
 
 
 def run(command, **kwargs):
@@ -21,7 +24,9 @@ def run(command, **kwargs):
 
 def check_payload(path):
     data = path.read_bytes()
-    if data != PAYLOAD or hashlib.sha256(data).hexdigest() != PAYLOAD_SHA256:
+    expected = CASE["payload"]
+    if len(data) != expected["bytes"] or \
+            hashlib.sha256(data).hexdigest() != expected["sha256"]:
         raise RuntimeError("FreeDOS CP850 payload mismatch: " + str(path))
 
 
@@ -83,6 +88,7 @@ def main():
     source = out / "source"
     source.mkdir()
     (source / NAME).write_bytes(PAYLOAD)
+    check_payload(source / NAME)
     run([str(linux), "c", "--store", "OEM.BLT", NAME], cwd=source)
     shutil.copyfile(ROOT / "build/dos16-cp850/bpmini.exe", out / "BPMINI.EXE")
     shutil.copyfile(source / "OEM.BLT", out / "OEM.BLT")
@@ -162,7 +168,7 @@ def main():
     extracted = out / "linux-to-freedos-ø.TXT"
     run(["mcopy", "-i", str(image), "::/OUT/" + NAME, str(extracted)])
     check_payload(extracted)
-    if b"\x9d       TXT" not in image.read_bytes():
+    if bytes.fromhex(CASE["fat_short_name_hex"]) not in image.read_bytes():
         raise RuntimeError("FreeDOS FAT12 short name did not uppercase CP850 ø to byte 0x9D")
     (out / "result.txt").write_text(
         "PASS: FreeDOS CP850 lowercase ø.TXT archive creation and extraction in both directions\n",

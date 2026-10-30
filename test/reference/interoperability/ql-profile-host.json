@@ -1,0 +1,51 @@
+{
+  "case": "Sinclair QL host-profile and staged-extraction fixture",
+  "profile": {
+    "block_bytes": 16384,
+    "files": {
+      "first.bin": {
+        "pattern_utf8": "profile transfer\n",
+        "repetitions": 4096,
+        "bytes": 69632,
+        "sha256": "052e43bdb856b2b3f04e44470a765d07ab79c42d879e3d20d92252a2fb0c36c7"
+      },
+      "second.bin": {
+        "pattern_utf8": "append transfer\n",
+        "repetitions": 1024,
+        "bytes": 16384,
+        "sha256": "55d471277aaa492be27546d3a4cce23561efd829dceb6114ce81ba2f7db185fc"
+      }
+    },
+    "unknown_mtime": {"mtime": 0, "valid": false},
+    "stored_codec_id": 0
+  },
+  "names": {
+    "timed_file": "LEAF",
+    "exact_native_component": "123456789012345678901234567890123456",
+    "maximum_qdos_path_bytes": 36
+  },
+  "timestamps": {
+    "timed_file_payload": {
+      "text": "timed directory transfer\n",
+      "bytes": 25,
+      "sha256": "70dad09ca30ad5d4c1bf1b2281a420838fdf98042b2e9758bc1ea293860024fc"
+    },
+    "timed_file_epoch_seconds": 1600000003,
+    "unsupported_future_epoch_seconds": 2100000000,
+    "unavailable_source_time": {"mtime": 0, "valid": false}
+  },
+  "expected_refusals": {
+    "case": "destination name collision",
+    "latin1-case": "destination name collision",
+    "prefix": "file/directory name conflict",
+    "dir-alias": "destination name collision",
+    "unmappable": "name is not representable on QL",
+    "overlong": "output path is too long for QL"
+  },
+  "expected_outcomes": {
+    "profile_transfer": "exact bytes; 16 KiB Profile 1 entries accepted by QL, full and mini readers",
+    "failed_extract": "existing target preserved and temporary stages cleaned",
+    "collision_preflight": "refused before creating output roots",
+    "future_timestamp": "verified bytes retained and unsupported time reported"
+  }
+}
