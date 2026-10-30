@@ -1,16 +1,52 @@
 #!/usr/bin/env python3
 """Exercise Linux/Atari CLI exchange on Hatari's GEMDOS host-directory drive."""
 import argparse
+import datetime
 import hashlib
 import json
+import locale
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED = json.loads((ROOT / "test/reference/interoperability/atari-host-directory.json").read_text())
+EXPECTED_PATH = ROOT / "test/reference/interoperability/atari-host-directory.json"
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def command_version(command):
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unavailable: " + str(exc)
+    return result.stdout.strip().splitlines()[0] if result.stdout.strip() else \
+        "unknown (exit %d)" % result.returncode
+
+
+def artifact_index(root):
+    return {
+        path.relative_to(root).as_posix(): {
+            "size": path.stat().st_size,
+            "sha256": sha256(path),
+        }
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path != root / "run.json"
+    }
 
 
 def check_manifest_file(path, relative_name):
@@ -48,9 +84,13 @@ def main():
     parser.add_argument("--atari-cli", type=Path, default=ROOT / "build/atari/boltpack.tos")
     parser.add_argument("--output", type=Path, help="new directory in which to retain evidence")
     args = parser.parse_args()
-    output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-hatari-"))
     if args.output:
+        output = args.output.resolve()
         output.mkdir(parents=True, exist_ok=False)
+    else:
+        build = ROOT / "build"
+        build.mkdir(exist_ok=True)
+        output = Path(tempfile.mkdtemp(prefix="atari-host-directory-", dir=build))
     drive = output / "drive"
     drive.mkdir()
     log = output / "run.log"
@@ -189,7 +229,62 @@ def main():
     (output / "manifest.txt").write_text("backend=Hatari GEMDOS host directory\nrom=" + str(tos) +
         "\nrom_sha256=" + hashlib.sha256(tos.read_bytes()).hexdigest() +
         "\npayload_sha256=" + hashlib.sha256(data).hexdigest() + "\n", encoding="utf-8")
-    print("PASS: Atari exchange, archive edits and failure cleanup; evidence:", output)
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+    (output / "git-status.txt").write_bytes(status)
+    (output / "git-diff.patch").write_bytes(diff)
+    try:
+        locale_name = locale.setlocale(locale.LC_ALL, None)
+    except locale.Error:
+        locale_name = "unknown"
+    source_paths = (
+        ROOT / "Makefile", Path(__file__).resolve(), EXPECTED_PATH,
+        ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver.c",
+        ROOT / "src/core/compress.c", ROOT / "src/core/bp_codepage.c",
+    )
+    record = {
+        "purpose": "Linux/Atari CLI exchange on Hatari GEMDOS host-directory storage",
+        "result": "PASS: exchange, edits, expected refusal/partial results, and failure cleanup",
+        "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "worktree_status": status.decode("utf-8", "replace").splitlines(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "locale": locale_name,
+            "timezone": list(time.tzname),
+            "hatari": command_version([args.hatari, "--version"]),
+            "atari_compiler": command_version([args.cc, "--version"]),
+        },
+        "filesystem": "GEMDOS host-directory drive under Hatari; not FAT12",
+        "commands": "run.log",
+        "expected_manifest": {
+            "path": EXPECTED_PATH.relative_to(ROOT).as_posix(),
+            "size": EXPECTED_PATH.stat().st_size,
+            "sha256": sha256(EXPECTED_PATH),
+        },
+        "inputs": {
+            "tos_sha256": sha256(tos),
+            "linux_cli_sha256": sha256(linux),
+            "atari_cli_sha256": sha256(args.atari_cli.resolve(strict=True)),
+            "guest_runner_source_sha256": sha256(ROOT / "test/atari/guest_runner.c"),
+        },
+        "source_sha256": {
+            path.relative_to(ROOT).as_posix(): sha256(path)
+            for path in source_paths if path.is_file()
+        },
+        "artifacts": artifact_index(output),
+        "limitations": [
+            "This run uses Hatari's GEMDOS host-directory backend, not a native FAT filesystem.",
+            "GEMDOS directory timestamp restoration is an expected partial result.",
+        ],
+    }
+    (output / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                     encoding="utf-8")
+    print("PASS: Atari exchange, archive edits and failure cleanup; evidence:",
+          output / "run.json")
 
 
 if __name__ == "__main__":

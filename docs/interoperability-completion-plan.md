@@ -1,6 +1,6 @@
 # Interoperability completion plan
 
-**Updated:** 2026-10-30
+**Updated:** 2026-10-31
 
 **State:** execution plan; the tracked implementation goal is active.
 
@@ -443,6 +443,12 @@ archive edits, failure preservation, checksum cleanup, nested/empty
 directories, and name-collision refusal as the TOS 1.62 run. Their evidence
 directories are `build/r02-retained-20261030/boltpack-hatari-pp7plo0t` (1.06) and
 `build/r02-retained-20261030/boltpack-hatari-he45l44l` (2.05).
+
+The TOS 1.62 host-directory runner now retains a machine-readable record and
+artifact hashes. The 2026-10-31 run passed all 55 artifact hash checks against
+its independent expected-result manifest:
+`build/r02-atari-host-20261031/run.json`. It records the GEMDOS host-directory
+backend; it does not replace the separate FAT12 floppy qualification.
 
 On 2026-10-28, `test/check_hatari_fat.py` also ran the full CLI against a
 disposable 720 KiB FAT12 floppy image under Hatari. Linux-created BoltLite

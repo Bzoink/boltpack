@@ -214,6 +214,14 @@ The Atari side uses TOS 1.62 FAT12 under Hatari; the Amiga side uses FS-UAE's
 host-directory backend. This record does not qualify native Amiga OFS/FFS; those
 are tracked separately under R02/R11.
 
+The standalone Atari GEMDOS host-directory runner also now writes a retained
+`run.json`. Its 2026-10-31 TOS 1.62 run passed 55 artifact hash checks and the
+independent expected-result manifest; it records guest commands/results,
+compiler and Hatari versions, TOS and executable hashes, and the source diff:
+[`build/r02-atari-host-20261031/run.json`](../build/r02-atari-host-20261031/run.json).
+The run uses Hatari's GEMDOS host-directory backend; it is separate from the
+Atari FAT12 evidence above.
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,
