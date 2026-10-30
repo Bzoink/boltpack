@@ -101,8 +101,8 @@ def main():
                    help="add a nested source tree at this depth (0 disables it)")
     p.add_argument("--filesystem", choices=("ofs", "ffs"), default="ofs")
     args = p.parse_args()
-    if args.depth < 0 or args.depth > 64:
-        p.error("--depth must be between 0 and 64")
+    if args.depth < 0 or args.depth > 128:
+        p.error("--depth must be between 0 and 128")
     out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-amiga-" + args.filesystem + "-"))
     if args.output:
         out.mkdir(parents=True, exist_ok=False)

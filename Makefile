@@ -1667,15 +1667,18 @@ fsuae-native-publish-recovery-test: modern amiga68k-native-publish-pause-test am
 AMIGA_NATIVE_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
 AMIGA_NATIVE_OFS_OUTPUT ?= build/amiga-native-ofs-$(AMIGA_NATIVE_RUN_TAG)
 AMIGA_NATIVE_FFS_OUTPUT ?= build/amiga-native-ffs-$(AMIGA_NATIVE_RUN_TAG)
+AMIGA_NATIVE_DEPTH ?= 4
 fsuae-native-interoperability-test: modern amiga68k
 	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --output "$(AMIGA_NATIVE_OFS_OUTPUT)" \
-	    --xdftool "$(XDFTOOL)" --filesystem ofs --skip-codecs --depth 4 --stack 0
+	    --xdftool "$(XDFTOOL)" --filesystem ofs --skip-codecs \
+	    --depth "$(AMIGA_NATIVE_DEPTH)" --stack 0
 	python3 test/check_fsuae_native.py --rom "$(AMIGA_ROM)" \
 	    --workbench "$(AMIGA_WORKBENCH)" --fs-uae "$(FSUAE_BIN)" \
 	    --output "$(AMIGA_NATIVE_FFS_OUTPUT)" \
-	    --xdftool "$(XDFTOOL)" --filesystem ffs --skip-codecs --depth 4 --stack 0
+	    --xdftool "$(XDFTOOL)" --filesystem ffs --skip-codecs \
+	    --depth "$(AMIGA_NATIVE_DEPTH)" --stack 0
 
 .PHONY: amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
 amiga-meta-host-test:
