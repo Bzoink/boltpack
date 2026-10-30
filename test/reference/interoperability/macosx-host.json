@@ -1,0 +1,33 @@
+{
+  "case": "macOS POSIX frontend host-shim lifecycle and profile transfer",
+  "format": 6,
+  "profile": {
+    "first.txt": {
+      "content": "first archive member\n",
+      "bytes": 21,
+      "sha256": "92b56b7ed7944a16d232bc316ce0359933e6ccb55f4b9df11798c4476c85d52f"
+    },
+    "second.txt": {
+      "content": "second archive member\n",
+      "bytes": 22,
+      "sha256": "15081bdf7952996184014cbcff704487c4840206040193ca312079d70b788f3c"
+    }
+  },
+  "timestamps": {
+    "pre_epoch": {
+      "content": "macOS host pre-epoch timestamp\n",
+      "bytes": 31,
+      "mtime": -1,
+      "archived_mtime": 0,
+      "valid_flag": false,
+      "sha256": "d7e0ccd37e94fe9ad51f452bae6e5822fc07ed5b76d3a82cd3ecaff5463d254b"
+    },
+    "epoch_zero": 0
+  },
+  "metadata": {
+    "file_content": "format six host lifecycle\n",
+    "file_mode": 416,
+    "directory_mode": 488,
+    "sha256": "ac961c72a351f9bf305c288fbd2abdf04a65b3c147bfa72e254272ab31e083eb"
+  }
+}

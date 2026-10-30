@@ -800,7 +800,9 @@ macosx:
 .PHONY: macosx-host-test
 macosx-host-test: modern
 	python3 test/check_macosx_host.py --cc "$(CC)" \
-	    --linux-boltpack build/linux/boltpack
+	    --linux-boltpack build/linux/boltpack \
+	    --output-root build/macosx-host/runs \
+	    --manifest test/reference/interoperability/macosx-host.json
 
 # Haiku / BeOS (x86_64)
 HAIKU_CC      = x86_64-unknown-haiku-gcc

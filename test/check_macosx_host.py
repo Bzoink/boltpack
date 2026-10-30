@@ -6,8 +6,14 @@ not exercise Apple resource forks, Finder xattrs, or the macOS target APIs.
 """
 
 import argparse
+import atexit
+import contextlib
+import datetime
+import hashlib
+import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import struct
 import subprocess
@@ -16,11 +22,172 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_DIR = None
+RUN_STATE = "FAIL: runner exited before all checks completed"
+RUN_ERROR = None
+COMMANDS = []
+
+
+def _path_text(path):
+    return os.fsdecode(os.fspath(path))
+
+
+def recorded_run(command, **kwargs):
+    check = kwargs.pop("check", False)
+    result = None
+    try:
+        result = subprocess.run(command, check=False, **kwargs)
+        return result
+    finally:
+        entry = {
+            "command": [_path_text(part) for part in command],
+            "cwd": _path_text(kwargs["cwd"]) if kwargs.get("cwd") else None,
+        }
+        env = kwargs.get("env")
+        if env is not None:
+            entry["environment"] = {
+                key: env.get(key, "<unset>")
+                for key in ("LD_PRELOAD", "BP_TEST_RENAME_TARGET",
+                            "BP_TEST_RENAME_MARKER", "TZ", "LANG",
+                            "LC_ALL")
+            }
+        if result is not None:
+            entry.update({
+                "exit_code": result.returncode,
+                "stdout": result.stdout.decode("utf-8", "replace")
+                if isinstance(result.stdout, bytes) else result.stdout,
+                "stderr": result.stderr.decode("utf-8", "replace")
+                if isinstance(result.stderr, bytes) else result.stderr,
+            })
+        COMMANDS.append(entry)
+        if check and result is not None and result.returncode:
+            raise subprocess.CalledProcessError(
+                result.returncode, command, output=result.stdout,
+                stderr=result.stderr)
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_run_record():
+    if RUN_DIR is None:
+        return
+    (RUN_DIR / "command-log.jsonl").write_text(
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in COMMANDS),
+        encoding="utf-8")
+    status = subprocess.check_output(["git", "status", "--short"], cwd=ROOT,
+                                     text=True).splitlines()
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"],
+                                   cwd=ROOT)
+    (RUN_DIR / "tracked-diff.patch").write_bytes(diff)
+    source_paths = [
+        ROOT / "Makefile",
+        ROOT / "test/check_macosx_host.py",
+        write_run_record.manifest,
+        ROOT / "src/frontend/macosx/main.c",
+        ROOT / "src/frontend/posix/path.h",
+        ROOT / "test/macosx_stubs/sys/xattr.h",
+        ROOT / "test/unit/test_posix_restore_mode.c",
+        ROOT / "src/core/archiver.c",
+        ROOT / "src/core/compress.c",
+        ROOT / "src/core/boltlite.c",
+        ROOT / "src/core/boltlz.c",
+        ROOT / "src/core/fluff.c",
+        ROOT / "src/core/bp_codepage.c",
+    ]
+    artifacts = {}
+    for path in sorted(RUN_DIR.rglob("*")):
+        if path.is_file() and path.name != "run.json":
+            artifacts[path.relative_to(RUN_DIR).as_posix()] = {
+                "size": path.stat().st_size,
+                "sha256": sha256(path),
+            }
+    compiler = getattr(write_run_record, "compiler", "cc")
+    compiler_version = subprocess.run(shlex.split(compiler) + ["--version"],
+                                      capture_output=True, text=True,
+                                      check=False)
+    filesystem_name = "POSIX host filesystem (type not queried)"
+    if sys.platform.startswith("linux"):
+        filesystem = subprocess.run(
+            ["stat", "-f", "--format=%T", str(RUN_DIR)],
+            capture_output=True, text=True, check=False)
+        if filesystem.returncode == 0 and filesystem.stdout.strip():
+            filesystem_name = filesystem.stdout.strip()
+    executable_paths = {
+        "macos_posix_host_cli": getattr(write_run_record, "binary", None),
+        "linux_fixture_cli": getattr(write_run_record, "linux_cli", None),
+    }
+    record = {
+        "purpose": "macOS POSIX CLI host-shim lifecycle and interoperability checks",
+        "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "result": RUN_STATE,
+        "error": RUN_ERROR,
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "compiler": compiler,
+            "compiler_version": compiler_version.stdout.splitlines()[0]
+            if compiler_version.stdout else "unknown",
+            "filesystem": filesystem_name,
+            "locale": {key: os.environ.get(key, "<unset>")
+                       for key in ("LANG", "LC_ALL", "LC_CTYPE")},
+            "timezone": os.environ.get("TZ", "<unset>"),
+            "scope": "Host POSIX libc and Apple API syntax stubs; no macOS runtime, xattrs, resource forks, or Finder metadata qualification",
+        },
+        "compiler_flags": [
+            "-U__linux__", "-ansi", "-pedantic", "-Wall", "-Wextra",
+            "-Wno-unused-function", "-O2", "-DBP_VERSION_MAJOR=1",
+            "-DBP_VERSION_MINOR=9",
+        ],
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                              cwd=ROOT, text=True).strip(),
+        "worktree_status": status,
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "independent_manifest": {
+            "path": "test/reference/interoperability/macosx-host.json",
+            "sha256": sha256(ROOT / "test/reference/interoperability/macosx-host.json"),
+        },
+        "commands": len(COMMANDS),
+        "command_log": "command-log.jsonl",
+        "sources": {path.relative_to(ROOT).as_posix(): sha256(path)
+                    for path in source_paths if path.is_file()},
+        "executables": {
+            name: {"path": str(path), "size": path.stat().st_size,
+                   "sha256": sha256(path)}
+            for name, path in executable_paths.items()
+            if path is not None and path.is_file()
+        },
+        "missing_executables": [name for name, path in executable_paths.items()
+                                if path is None or not path.is_file()],
+        "cases": [
+            "Profile 1 create/append/test/delete and listing",
+            "pre-epoch time becomes unknown; epoch-zero file and directory mode/time restore",
+            "dry-run, no-overwrite, corrupt-checksum preservation, and symlink-parent refusal",
+            "edit publication failures preserve the old archive and clean stages",
+            "case-fold collision preflight; Linux-created archive cross-read",
+            "directory-relative extraction and atomic staged symlink helper checks",
+            "Apple API branch syntax checked with host stubs",
+        ],
+        "artifacts": artifacts,
+    }
+    (RUN_DIR / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                       encoding="utf-8")
+
+
+def record_unhandled_exception(exc_type, exc, traceback):
+    global RUN_ERROR
+    RUN_ERROR = "%s: %s" % (exc_type.__name__, exc)
+    sys.__excepthook__(exc_type, exc, traceback)
 
 
 def run(args, cwd, expected=0, env=None):
-    result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+    result = recorded_run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
     if result.returncode != expected:
         raise AssertionError(
             f"command {args!r} returned {result.returncode}, expected {expected}\n"
@@ -45,7 +212,7 @@ def build_host_cli(cc, output):
         str(ROOT / "src/core/boltlz.c"),
         "-o", str(output),
     ]
-    subprocess.run(command, cwd=ROOT, check=True)
+    recorded_run(command, cwd=ROOT, check=True, capture_output=True)
 
 
 def primary_mtimes(path):
@@ -76,7 +243,7 @@ def check_apple_branches_syntax(cc):
         "-I" + str(ROOT / "src/core"),
         str(ROOT / "src/frontend/macosx/main.c"),
     ]
-    subprocess.run(command, cwd=ROOT, check=True)
+    recorded_run(command, cwd=ROOT, check=True, capture_output=True)
 
 
 def build_rename_failure_interposer(cc, output, source):
@@ -107,9 +274,9 @@ int rename(const char *old_path, const char *new_path)
     return real_rename_fn(old_path, new_path);
 }
 ''', encoding="ascii")
-    subprocess.run(shlex.split(cc) + ["-shared", "-fPIC", str(source),
-                                      "-ldl", "-o", str(output)],
-                   cwd=ROOT, check=True)
+    recorded_run(shlex.split(cc) + ["-shared", "-fPIC", str(source),
+                                    "-ldl", "-o", str(output)],
+                 cwd=ROOT, check=True, capture_output=True)
 
 
 def check_edit_publication_failure(binary, root, archive, operation, args,
@@ -135,17 +302,47 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cc", default=os.environ.get("CC", "cc"))
     parser.add_argument("--linux-boltpack", default=str(ROOT / "build/linux/boltpack"))
+    parser.add_argument("--manifest", type=Path,
+                        default=ROOT / "test/reference/interoperability/macosx-host.json")
+    parser.add_argument("--output-root", type=Path,
+                        default=ROOT / "build/macosx-host/runs")
     args = parser.parse_args()
+    manifest_path = args.manifest.resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    output_root = args.output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    global RUN_DIR
+    RUN_DIR = Path(tempfile.mkdtemp(prefix="macosx-host-", dir=output_root))
+    write_run_record.compiler = args.cc
+    write_run_record.binary = RUN_DIR / "boltpack-macosx-host"
+    write_run_record.linux_cli = Path(args.linux_boltpack).resolve()
+    write_run_record.manifest = manifest_path
+    atexit.register(write_run_record)
+    sys.excepthook = record_unhandled_exception
+    (RUN_DIR / "macosx-host.json").write_bytes(manifest_path.read_bytes())
 
-    with tempfile.TemporaryDirectory(prefix="boltpack-macosx-host-") as temp:
+    for name, record in manifest["profile"].items():
+        payload = record["content"].encode("utf-8")
+        assert len(payload) == record["bytes"]
+        assert hashlib.sha256(payload).hexdigest() == record["sha256"]
+    pre_epoch_fixture = manifest["timestamps"]["pre_epoch"]
+    pre_epoch_bytes = pre_epoch_fixture["content"].encode("utf-8")
+    assert len(pre_epoch_bytes) == pre_epoch_fixture["bytes"]
+    assert hashlib.sha256(pre_epoch_bytes).hexdigest() == \
+        pre_epoch_fixture["sha256"]
+    metadata_bytes = manifest["metadata"]["file_content"].encode("utf-8")
+    assert hashlib.sha256(metadata_bytes).hexdigest() == \
+        manifest["metadata"]["sha256"]
+
+    with contextlib.nullcontext(str(RUN_DIR)) as temp:
         root = Path(temp)
         mode_test = root / "test-posix-restore-mode"
-        subprocess.run(shlex.split(args.cc) + [
+        recorded_run(shlex.split(args.cc) + [
             "-ansi", "-pedantic", "-Wall", "-Wextra", "-Wno-unused-function",
             "-I" + str(ROOT / "src/core"),
             "-I" + str(ROOT / "src/frontend/posix"),
             str(ROOT / "test/unit/test_posix_restore_mode.c"),
-            "-o", str(mode_test)], cwd=ROOT, check=True)
+            "-o", str(mode_test)], cwd=ROOT, check=True, capture_output=True)
         run([str(mode_test)], root)
 
         binary = root / "boltpack-macosx-host"
@@ -153,8 +350,10 @@ def main():
         build_host_cli(args.cc, binary)
 
         # Profile create, append, test, and delete all operate on staged files.
-        (root / "first.txt").write_bytes(b"first archive member\n")
-        (root / "second.txt").write_bytes(b"second archive member\n")
+        (root / "first.txt").write_bytes(
+            manifest["profile"]["first.txt"]["content"].encode("utf-8"))
+        (root / "second.txt").write_bytes(
+            manifest["profile"]["second.txt"]["content"].encode("utf-8"))
         run([str(binary), "c", "--interchange-profile-1", "profile.bolt",
              "first.txt"], root)
         run([str(binary), "a", "--interchange-profile-1", "profile.bolt",
@@ -167,13 +366,15 @@ def main():
 
         # A pre-epoch POSIX mtime is unknown in format 6, never wrapped.
         pre_epoch = root / "pre-epoch.txt"
-        pre_epoch.write_bytes(b"macOS host pre-epoch timestamp\n")
-        os.utime(pre_epoch, (-1, -1))
+        pre_epoch.write_bytes(pre_epoch_bytes)
+        os.utime(pre_epoch, (pre_epoch_fixture["mtime"],
+                             pre_epoch_fixture["mtime"]))
         pre_epoch_archive = root / "pre-epoch.bolt"
         run([str(binary), "c", "-0", str(pre_epoch_archive),
              pre_epoch.name], root)
         mtime, flags = primary_mtimes(pre_epoch_archive)[pre_epoch.name]
-        assert mtime == 0 and not (flags & 0x4000), \
+        assert mtime == pre_epoch_fixture["archived_mtime"] and \
+            bool(flags & 0x4000) == pre_epoch_fixture["valid_flag"], \
             "macOS frontend marked pre-epoch time as valid"
         run([str(binary), "t", str(pre_epoch_archive)], root)
 
@@ -196,13 +397,15 @@ def main():
         # File/directory attributes, including valid Unix epoch zero, round-trip.
         source = root / "source"
         source.mkdir()
-        payload = b"format six host lifecycle\n"
+        payload = metadata_bytes
         source_file = source / "epoch.txt"
         source_file.write_bytes(payload)
-        source_file.chmod(0o640)
-        os.utime(source_file, (0, 0))
-        source.chmod(0o750)
-        os.utime(source, (0, 0))
+        source_file.chmod(manifest["metadata"]["file_mode"])
+        os.utime(source_file, (manifest["timestamps"]["epoch_zero"],
+                               manifest["timestamps"]["epoch_zero"]))
+        source.chmod(manifest["metadata"]["directory_mode"])
+        os.utime(source, (manifest["timestamps"]["epoch_zero"],
+                          manifest["timestamps"]["epoch_zero"]))
         run([str(binary), "c", "-0", "metadata.bolt", "source"], root)
         run([str(binary), "t", "metadata.bolt"], root)
 
@@ -215,10 +418,10 @@ def main():
         output_file = extracted / "source/epoch.txt"
         output_dir = extracted / "source"
         assert output_file.read_bytes() == payload
-        assert output_file.stat().st_mode & 0o777 == 0o640
-        assert int(output_file.stat().st_mtime) == 0
-        assert output_dir.stat().st_mode & 0o777 == 0o750
-        assert int(output_dir.stat().st_mtime) == 0
+        assert output_file.stat().st_mode & 0o777 == manifest["metadata"]["file_mode"]
+        assert int(output_file.stat().st_mtime) == manifest["timestamps"]["epoch_zero"]
+        assert output_dir.stat().st_mode & 0o777 == manifest["metadata"]["directory_mode"]
+        assert int(output_dir.stat().st_mtime) == manifest["timestamps"]["epoch_zero"]
 
         # An existing file is preserved on a no-overwrite skip.
         output_file.write_bytes(b"existing content\n")
@@ -273,13 +476,17 @@ def main():
 
         # Exercise the directory-relative extraction path and staged symlink
         # publication used by the macOS frontend, using host libc APIs.
-        subprocess.run([sys.executable, str(ROOT / "test/check_extract_race.py"),
-                        "--boltpack", str(binary)], cwd=ROOT, check=True)
-        subprocess.run([sys.executable, str(ROOT / "test/check_symlink_atomic.py"),
-                        "--boltpack", str(binary), "--cc", args.cc],
-                       cwd=ROOT, check=True)
+        recorded_run([sys.executable, str(ROOT / "test/check_extract_race.py"),
+                      "--boltpack", str(binary)], cwd=ROOT, check=True,
+                     capture_output=True)
+        recorded_run([sys.executable, str(ROOT / "test/check_symlink_atomic.py"),
+                      "--boltpack", str(binary), "--cc", args.cc],
+                     cwd=ROOT, check=True, capture_output=True)
 
+    global RUN_STATE
+    RUN_STATE = "PASS: macOS POSIX host lifecycle checks passed"
     print("macOS POSIX host lifecycle checks passed")
+    print("Evidence: " + str(RUN_DIR / "run.json"))
     return 0
 
 
