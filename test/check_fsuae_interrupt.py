@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parent.parent
 PATTERN = bytes((i * 73 + i // 17) & 0xff for i in range(64 * 1024))
 
 
+def source_pattern(size):
+    return (PATTERN * ((size + len(PATTERN) - 1) // len(PATTERN)))[:size]
+
+
 def sibling_files(directory, prefix):
     return [path for path in directory.glob(prefix + "*")
             if path.is_file() and not path.name.lower().endswith(".uaem")]
@@ -50,7 +54,7 @@ def main():
     parser.add_argument("--operation",
                         choices=("extract", "append", "publish-failure",
                                  "publish-interrupt", "source-replace",
-                                 "parent-substitute"),
+                                 "source-swap-restore", "parent-substitute"),
                         default="extract")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -75,7 +79,8 @@ def main():
     # after staging, so the large payload used by kill-mid-copy cases is unnecessary.
     source_mib = (min(args.size_mib, 1)
                   if args.operation.startswith("publish-") or
-                  args.operation == "source-replace" else args.size_mib)
+                  args.operation in ("source-replace", "source-swap-restore")
+                  else args.size_mib)
     source_size = source_mib * 1024 * 1024
     source = drive / "LARGE.BIN"
     digest = hashlib.sha256()
@@ -119,7 +124,7 @@ def main():
                          if args.operation == "publish-failure" else
                          "DH0:boltpack c DH0:INTERRUPT.BLT DH0:REPLACEMENT.BIN "
                          ">DH0:REPLACE.LOG")
-    elif args.operation == "source-replace":
+    elif args.operation in ("source-replace", "source-swap-restore"):
         guest_command = "DH0:boltpack c DH0:INTERRUPT.BLT DH0:LARGE.BIN >DH0:REPLACE.LOG"
     startup.write_text("\n".join([
         "C:SetPatch >NIL: QUIET",
@@ -158,7 +163,7 @@ def main():
                     time.sleep(0.01)
                 else:
                     raise RuntimeError("guest did not finish publish-failure case; evidence: " + str(out))
-            elif args.operation == "source-replace":
+            elif args.operation in ("source-replace", "source-swap-restore"):
                 while time.monotonic() < deadline:
                     if (drive / "SOURCE-OPENED.TXT").exists():
                         break
@@ -172,7 +177,14 @@ def main():
                     raise RuntimeError("guest did not reach source-open pause; evidence: " + str(out))
                 replacement = drive / "LARGE.NEW"
                 replacement.write_bytes(b"R" * source_size)
-                os.replace(replacement, source)
+                if args.operation == "source-replace":
+                    os.replace(replacement, source)
+                else:
+                    parked_source = drive / "LARGE.OLD"
+                    os.replace(source, parked_source)
+                    os.replace(replacement, source)
+                    source.unlink()
+                    os.replace(parked_source, source)
                 (drive / "CONTINUE.TXT").write_text("continue\n", encoding="ascii")
                 while time.monotonic() < deadline:
                     if (drive / "DONE.TXT").exists():
@@ -290,6 +302,34 @@ def main():
             raise RuntimeError("source replacement left archive stages; evidence: " + str(out))
         subprocess.run([str(linux), "t", str(archive)], check=True, timeout=120,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if args.operation == "source-swap-restore":
+        operation_rc = (drive / "OPERATION.RC").read_text(encoding="ascii").strip()
+        if operation_rc != "0":
+            raise RuntimeError("source swap-and-restore was not accepted; evidence: " + str(out))
+        expected_source = source_pattern(source_size)
+        if (hashlib.sha256(archive.read_bytes()).hexdigest() == original_archive_hash or
+                source.read_bytes() != expected_source):
+            raise RuntimeError("source swap-and-restore produced unexpected source/archive state; evidence: " + str(out))
+        verify = subprocess.run([str(linux), "t", str(archive)], check=False,
+                                timeout=120, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        if verify.returncode != 0:
+            raise RuntimeError("Linux rejected archive after source swap-and-restore; evidence: " + str(out))
+        extracted = out / "swap-restore-extracted"
+        extracted.mkdir()
+        extraction = subprocess.run(
+            [str(linux), "x", "-f", "-o", str(extracted), str(archive)],
+            check=False, timeout=120, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT)
+        (out / "source-swap-restore-linux-extract.log").write_bytes(
+            extraction.stdout)
+        if extraction.returncode not in (0, 1):
+            raise RuntimeError("Linux could not extract Amiga archive: " +
+                               extraction.stdout.decode("utf-8", "replace"))
+        if ((extracted / "LARGE.BIN").read_bytes() != expected_source or
+                b"some entries or attributes were not restored" not in
+                extraction.stdout):
+            raise RuntimeError("source swap-and-restore changed archived bytes; evidence: " + str(out))
     if args.operation == "publish-interrupt":
         backups = sibling_files(drive, "BR")
         stages = sibling_files(drive, "BP")
@@ -390,6 +430,11 @@ def main():
         state = ("result=PASS\noperation=source-path-replacement\n"
                  "opened_source=kept open while host pathname was replaced\n"
                  "archive=original hash preserved\nstage=cleaned\n")
+    elif args.operation == "source-swap-restore":
+        state = ("result=PASS\noperation=source-path-swap-and-restore\n"
+                 "opened_source=original inode remained open during transient pathname replacement\n"
+                 "source_path=original inode restored before final path validation\n"
+                 "archive=accepted; Linux integrity and byte-exact extraction passed\n")
     elif args.operation == "parent-substitute":
         state = ("result=PASS\noperation=output-parent-substitution\n"
                  "replacement_output=sentinel preserved; extracted file not published\n"
@@ -460,6 +505,8 @@ def main():
         print("PASS: Amiga recovery restored the original archive and retained the valid replacement stage; evidence:", out)
     elif args.operation == "source-replace":
         print("PASS: Amiga CLI rejected a replaced source path and preserved the original archive; evidence:", out)
+    elif args.operation == "source-swap-restore":
+        print("PASS: Amiga CLI source swap-and-restore probe completed; evidence:", out)
     elif args.operation == "parent-substitute":
         print("PASS: Amiga CLI rejected a replaced extraction parent without publishing into its replacement; evidence:", out)
     else:

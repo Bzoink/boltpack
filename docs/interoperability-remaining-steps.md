@@ -463,8 +463,16 @@ hash/worktree run record are retained at
   parent lock did not provide a safe deletion route on the FS-UAE host drive,
   so cleanup remains an explicit limitation; the runner requires the stage to
   remain with the moved original rather than risk deleting a replacement file.
-  This closes the tested redirection case, not the Amiga path-API check/use window;
-  a concurrent swap-and-restore can still evade pathname identity checks.
+  This closes the tested redirection case, not the Amiga path-API check/use window.
+  A production FS-UAE probe now swaps the source pathname to a same-size
+  substitute and restores the original while the original file is open but
+  before it is read. The CLI accepts this transient path change; the retained
+  archive passes Linux integrity and byte-exact extraction against the original
+  1 MiB source. The open AmigaDOS stream pins the original inode, so this
+  after-open pathname swap did not change the archived bytes. Evidence is
+  [`build/r05-amiga-source-swap-restore-20261030-234624/run.json`](../build/r05-amiga-source-swap-restore-20261030-234624/run.json).
+  This does not observe a path change that is fully restored before a pathname
+  check, but the tested after-open case preserves the object already opened.
   The 2026-10-30 nested-tree rerun exposed an AmigaDOS filesystem behavior:
   `lstat()` on a still-open nested stage can fail with `ETXTBSY`, causing the
   stage to be discarded and the file omitted. The CLI now snapshots the inode
@@ -474,8 +482,8 @@ hash/worktree run record are retained at
   [`build/amiga-native-ofs-20261030-224048`](../build/amiga-native-ofs-20261030-224048/manifest.txt)
   and [`build/amiga-native-ffs-20261030-224048`](../build/amiga-native-ffs-20261030-224048/manifest.txt).
   Windows reparse/path races remain
-  in R08, DOS and OS/2 parent/target races in R10, and Amiga swap-and-restore
-  source races plus native GUI replacement behavior in R11. Plan 9 real
+  in R08, DOS and OS/2 parent/target races in R10, and native Amiga GUI
+  replacement behavior in R11. Plan 9 real
   extraction now refuses before output creation because its frontend only has
   pathname-based operations; `make CC=gcc plan9-host-test` verifies refusal,
   existing-destination preservation, dry-run, create/add, and reader
