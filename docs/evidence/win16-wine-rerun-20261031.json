@@ -1,0 +1,51 @@
+{
+  "purpose": "Win16 Wine follow-up: separate archive-format execution from Win16 process teardown",
+  "date": "2026-10-31",
+  "revision": "c2573084d5376280c941af861e37dfe9f9b8648b",
+  "runtime": {
+    "container_image": "boltpack-win16-wine:trixie",
+    "image_id": "sha256:32330b6386273c547056de253d58c928af77a5399f4a41e7b69707a4c1812c33",
+    "wine": "wine-10.0 (Debian 10.0~repack-6)",
+    "guest": "Win16 NE / Windows 3.0",
+    "display": "Xvfb 1280x1024x24"
+  },
+  "build": {
+    "command": "make win16",
+    "compiler": "Open Watcom 2.0 beta (2026-10-14 build)",
+    "result": "completed with 0 warnings and 0 errors",
+    "binary": "build/win16/bpmini.exe",
+    "binary_sha256": "33786ad2ac4341ff52f3ee167c028129a6db3f842ba8c906d46ebe50ce63a7c6"
+  },
+  "create_transfer": {
+    "command": "timeout -k 2s 20s wine ../win16/bpmini.exe c OUT-FINAL.BLT -q -m0 INPUT.TXT",
+    "cwd": "build/win16-wine-rerun-20261031",
+    "timeout_exit_status": 124,
+    "archive_size": 352,
+    "linux_full_integrity_exit_status": 0,
+    "linux_mini_integrity_exit_status": 0,
+    "linux_mini_extraction": "INPUT.TXT payload is byte-identical; command reports partial because foreign metadata was not restored",
+    "classification": "Win16 execution produced a format-6 archive accepted by both Linux readers and transferable payload bytes. Wine did not return a process exit status within 20 seconds, so Win16 lifecycle/exit behavior remains unqualified."
+  },
+  "path_differential": {
+    "absolute_source_path": "A Z: absolute source pathname left only the 32-byte archive header; trace reached add_path return but not finalize.",
+    "relative_source_path": "The relative INPUT.TXT pathname produced the complete 352-byte archive.",
+    "classification": "The original incomplete-output reproduction is explained by the absolute source path being used as the archive member name and rejected before local-entry bytes are written. The relative-path transfer works; exact runtime diagnostics remain obscured by Wine teardown/console behavior."
+  },
+  "instrumented_control_flow": {
+    "note": "Temporary BP_TEST_WIN16_TRACE instrumentation was removed from source and the normal binary rebuilt after tracing.",
+    "last_marker": "create-before-success-return",
+    "meaning": "The Win16 main function completed archive finalization, archive close, and file-descriptor close before returning from the create command.",
+    "trace": "win16-wine-rerun-20261031.trace.txt",
+    "trace_sha256": "fa22d87a2345efddce48711879ee269667f6ffb5446aee99567624b3235784ea"
+  },
+  "source_sha256": {
+    "src/frontend/win16/main.c": "d6007fe52e076da81862777b4d6e49c2796899dbbffaedc4955e855bbea40c7e",
+    "src/core/mini/archiver.c": "abd7e9770684bc2a09359b0f81fdeb6e164ba4acf409a7726b600971fc8e864f"
+  },
+  "payload_sha256": "15fe91613ac8a906037fa4b224f429801568c59adfaa36685994ae4727483baa",
+  "archive_sha256": "155f5fc2de1e5c70217d12c44fd9dbef4519d2694ba3d6d3fe3e50dee24ec5c5",
+  "remaining": [
+    "Run the lifecycle and diagnostics in a real Windows 3.x environment or a Wine configuration that terminates Win16 tasks and provides their expected console handles.",
+    "Run Win16 names, metadata, Profile 1, and resource-bound cases; OS/2-16 remains untested at runtime."
+  ]
+}
