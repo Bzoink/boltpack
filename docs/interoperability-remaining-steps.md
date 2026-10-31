@@ -718,7 +718,7 @@ manifest. Hatari 2.5.0/TOS 1.62 opens it, displays the production
 `OUT` directory empty, so the representable sibling is not partially
 published. The retained host-directory run records ROM, GUI, Linux CLI,
 runner, manifest, archive, screenshot and log hashes at
-[`build/atari-gui-unicode-mbzl1p5v/run.json`](../build/atari-gui-unicode-mbzl1p5v/run.json).
+[`build/atari-gui-unicode-k9_m68vd/run.json`](../build/atari-gui-unicode-k9_m68vd/run.json).
 This qualifies Hatari GEMDOS host storage on TOS 1.62; FAT12 and other TOS
 versions are not inferred from this run.
 

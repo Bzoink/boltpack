@@ -69,7 +69,7 @@ representable sibling and a U+1F9EA filename. TOS 1.62 shows the
 empty, so it does not publish only the representable sibling. The independent
 manifest is [`atari-gui-unicode-refusal.json`](../test/reference/interoperability/atari-gui-unicode-refusal.json)
 and the hash-recorded Hatari result is
-[`build/atari-gui-unicode-mbzl1p5v/run.json`](../build/atari-gui-unicode-mbzl1p5v/run.json).
+[`build/atari-gui-unicode-k9_m68vd/run.json`](../build/atari-gui-unicode-k9_m68vd/run.json).
 This qualifies Hatari GEMDOS host storage on TOS 1.62.
 
 The checksummed journal is written before stage streaming. Host-drive process-kill retry and a FAT12 seeded crash-state fixture both restore the exact replacement bytes, clear the journal, and retain the unverifiable partial stage (`build/atari-gui-cancel-ywuowb13/run.json`, `build/atari-stage-recovery-g3763geu/run.json`). Crash recovery after the backup rename restores the original, removes the complete verified stage, and retries successfully (`build/atari-gui-interrupt-backup-6q_jm0mo/run.json`). Process termination during pre-publication
