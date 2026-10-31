@@ -2812,6 +2812,9 @@ int main(void)
     UWORD list_height;
     UWORD status_height;
     UWORD status_top;
+    UWORD window_height;
+    UWORD content_height;
+    UWORD fixed_height;
 
     init_log();
     log_message("BoltPack Amiga GUI startup begin");
@@ -2861,8 +2864,18 @@ int main(void)
 
     memset(&ng, 0, sizeof(ng));
     list_top          = pub_screen->BarHeight + 4;
-    list_height       = 296;
     status_height     = (UWORD)(pub_screen->Font->ta_YSize + 6);
+    window_height     = 400;
+    if (pub_screen->Height > 20 &&
+        window_height > (UWORD)(pub_screen->Height - 20))
+        window_height = (UWORD)(pub_screen->Height - 20);
+    content_height = window_height;
+    if (content_height > (UWORD)(pub_screen->Font->ta_YSize + 10))
+        content_height = (UWORD)(content_height -
+                                 pub_screen->Font->ta_YSize - 10);
+    fixed_height = (UWORD)(list_top + 6 + status_height * 3 + 4);
+    list_height = content_height > fixed_height + 32
+        ? (UWORD)(content_height - fixed_height) : 32;
     status_top        = list_top + list_height + 6;
 
     ng.ng_LeftEdge   = 4;
@@ -2918,7 +2931,7 @@ int main(void)
         WA_Left,        40,
         WA_Top,         20,
         WA_Width,       640,
-        WA_Height,      400,
+        WA_Height,      window_height,
         WA_Title,       (ULONG)"BoltPack",
         WA_Flags,       WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET |
                         WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
