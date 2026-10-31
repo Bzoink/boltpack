@@ -61,5 +61,32 @@
     "linux_archive_sha256": "b2b4083c1da22d1cdca7f7edebb438db6ee2bcfafcf82825e523cad3b9c58b73",
     "extracted_sha256": "7f0dd5a540675a49592328fcc79ef62a437bfef749c0698bdedb1804bcabf8a1",
     "classification": "Wine Win16 extraction produced exact archived payload bytes, but process exit and completion status were not observed before timeout."
+  },
+  "win16_16k_boltlite_create": {
+    "command": "timeout -k 2s 30s wine ../win16/bpmini.exe c PROFILE1.BLT -q -b16k -m1 INPUT.BIN",
+    "input_size": 131072,
+    "archive_size": 2799,
+    "timeout_exit_status": 124,
+    "creator_os": "Windows 3.x",
+    "local_data_entry_method": "BoltLite (1)",
+    "local_data_entry_block_size": 16384,
+    "entry_count": 2,
+    "linux_full_integrity_exit_status": 0,
+    "linux_mini_integrity_exit_status": 0,
+    "linux_full_extraction": {
+      "exit_status": 1,
+      "payload_byte_identical": true,
+      "partial_reason": "foreign metadata not restored"
+    },
+    "linux_mini_extraction": {
+      "exit_status": 1,
+      "payload_byte_identical": true,
+      "partial_reason": "foreign metadata not restored"
+    },
+    "input_sha256": "17aa7b0efbbd07ae8b0dcea876effc8ce4cacc0d7d8892087e38f21f6ee4773a",
+    "archive_sha256": "93bcfa9dee6156037588613e49fe754bf28e24c70331c676dd0f1820cc11a3fc",
+    "full_output_sha256": "17aa7b0efbbd07ae8b0dcea876effc8ce4cacc0d7d8892087e38f21f6ee4773a",
+    "mini_output_sha256": "17aa7b0efbbd07ae8b0dcea876effc8ce4cacc0d7d8892087e38f21f6ee4773a",
+    "classification": "Win16 emitted a 16 KiB BoltLite archive within Profile 1 limits; both Linux readers verified it and extracted exact payload bytes. Wine did not return a process status, and the Linux extractions reported foreign metadata as partial."
   }
 }
