@@ -2404,6 +2404,44 @@ static FILE *open_utf8_file(const std::string &path, const wchar_t *mode)
     return _wfopen(wide.c_str(), mode);
 }
 
+/* Open source bytes from the checked Windows file object itself. Opening with
+   FILE_FLAG_OPEN_REPARSE_POINT and checking the handle closes the pathname
+   attribute-check/open gap for file symlinks and other reparse files. */
+static FILE *open_windows_source_file(const char *path, struct _stat64 *st)
+{
+    std::wstring wide;
+    HANDLE handle;
+    BY_HANDLE_FILE_INFORMATION info;
+    int fd;
+    FILE *fp;
+
+    if (path == NULL || st == NULL || !win_utf8_to_wide(path, &wide))
+        return NULL;
+    handle = CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                         OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) return NULL;
+    if (!GetFileInformationByHandle(handle, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT |
+                                  FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    fd = _open_osfhandle((intptr_t)handle, _O_RDONLY | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    if (_fstat64(fd, st) != 0 || !S_ISREG(st->st_mode)) {
+        _close(fd);
+        return NULL;
+    }
+    fp = _fdopen(fd, "rb");
+    if (fp == NULL) _close(fd);
+    return fp;
+}
+
 static int ensure_windows_directories(const std::string &root,
                                      const std::string &relative,
                                      bool include_leaf)
@@ -3163,7 +3201,11 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         return add_dir_recursive(ar, filepath, dname.c_str());
     }
 
+#ifdef _WIN32
+    FILE *fp = open_windows_source_file(filepath, &st);
+#else
     FILE *fp = fopen(filepath, "rb");
+#endif
     if (!fp) return BP_ERR_IO;
 
     bp_io_t fio;

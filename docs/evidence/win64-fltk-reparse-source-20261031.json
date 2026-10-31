@@ -1,7 +1,7 @@
 {
   "date": "2026-10-31",
   "purpose": "Refuse detected Windows reparse points during Win64 FLTK source archive creation.",
-  "change": "The creator checks the selected root attributes and refuses enumerated children with FILE_ATTRIBUTE_REPARSE_POINT. This prevents traversal through reparse points that Windows reports to those APIs.",
+  "change": "The creator checks the selected root attributes and refuses enumerated children with FILE_ATTRIBUTE_REPARSE_POINT. It opens regular source files with FILE_FLAG_OPEN_REPARSE_POINT, checks the opened handle attributes, derives size/time from that handle, and denies concurrent write/delete opens.",
   "build": {
     "target": "make CC=gcc win64-fltk-gui",
     "result": "passed"
@@ -13,6 +13,16 @@
     "run_record": "../../build/r08-win64-fltk-wine-create-czd_qgqs/run.json",
     "run_record_sha256": "efd3dbb79b7061cc4247181bf7a908dbe7d94e4fe6be9a3173b2be468ccf8176",
     "gui_sha256": "0359538d3e2184d7cbaa7097704eef4674504ae65ce4ce91b32183676cf8cc76",
+    "unicode_payload_byte_identical": true,
+    "linux_full_and_mini_readers_passed": true,
+    "wine_exit_status": 0
+  },
+  "opened_handle_regression": {
+    "target": "make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-create-test",
+    "result": "passed_under_wine",
+    "run_record": "../../build/r08-win64-fltk-wine-create-4ear0b_b/run.json",
+    "run_record_sha256": "824d9fcbadf58624f275929dcbfb1d4b54a73eeef9879577ce46f4b24787a728",
+    "gui_sha256": "8dfaa471bf7ad568fcda905c9d5d6033700cf56c35de2a5f7d85b2f18aac2075",
     "unicode_payload_byte_identical": true,
     "linux_full_and_mini_readers_passed": true,
     "wine_exit_status": 0
@@ -35,7 +45,7 @@
   "scope_limits": [
     "The ordinary Wine regression does not exercise Windows reparse-point refusal.",
     "The Wine symlink probe fails because Wine exposes the host symlink as an ordinary file; native Windows reparse behavior remains unqualified.",
-    "A reparse-point substitution between the attribute check and file open remains a Windows source check/use race.",
+    "Directory substitution during recursive enumeration remains a Windows source race.",
     "Native Windows behavior remains unqualified."
   ]
 }
