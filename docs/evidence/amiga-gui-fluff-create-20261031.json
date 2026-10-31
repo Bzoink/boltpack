@@ -1,0 +1,71 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Create and cross-verify a genuinely Fluff-compressed format-6 archive through the AmigaOS GUI",
+  "date": "2026-10-31",
+  "revision": "174a7d6",
+  "related_evidence": "amiga-gui-create-20261031.json",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf_sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275",
+    "host_directory_volume": "build/amiga-gui-runtime-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-runtime-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Logging-only additions around menu dispatch and ASL Open; codec and archive behavior matches src/frontend/amiga_gui/main.c."
+  },
+  "input": {
+    "path": "DH0:FLUFF-PATTERN.TXT",
+    "bytes": 65536,
+    "sha256": "156c38442089c1323d3e3ba549a6ac24341c47e8b6367bec4740c9b8c865826e",
+    "contents": "65,536 repeated ASCII A bytes",
+    "selected_codec": "Fluff",
+    "archive_output": "FLUFF-PATTERN.BLTarchive.bolt",
+    "save_dialog_note": "The ASL save field starts with archive.bolt; typed text was inserted before that default."
+  },
+  "created_archive": {
+    "path": "build/amiga-gui-runtime-probe/drive/FLUFF-PATTERN.BLTarchive.bolt",
+    "sha256": "39af1a96996702c817dc7d236fbf4fdffbc13cba1188b955b85031317c938b81",
+    "bytes": 585,
+    "format_version": 6,
+    "creator_os": "AmigaOS (68k)",
+    "creator_cpu": "Motorola 68k",
+    "methods": ["Stored", "Fluff"],
+    "primary_payload_method": "Fluff",
+    "guest_create_log": "method=fluff profile=0; create and finalize returned success"
+  },
+  "cross_reader_verification": {
+    "linux_full_test": "Both physical entries passed; 2 files OK.",
+    "linux_full_extract": {
+      "status": "Partial only because Amiga native metadata is unsupported on Linux",
+      "output": "build/amiga-gui-runtime-probe/fluff-linux-extract/FLUFF-PATTERN.TXT",
+      "bytes": 65536,
+      "sha256": "156c38442089c1323d3e3ba549a6ac24341c47e8b6367bec4740c9b8c865826e",
+      "matches_source": true
+    },
+    "linux_mini_test": "The metadata record passed; the Fluff primary entry was refused because the mini reader does not support Fluff."
+  },
+  "guest_log": {
+    "path": "build/amiga-gui-runtime-probe/drive/boldpack.log",
+    "sha256": "39da9f2fae53234cfe1189835fbb1a6817e50ac149bd8fcba55593a707165ca3"
+  },
+  "fs_uae_stdout": {
+    "path": "build/amiga-gui-runtime-probe/fs-uae-gui-fluff-pattern.log",
+    "sha256": "a0163bb1892f968f137d0dac7e27c0327a9a1a27049044d398dbcd96e518693f"
+  },
+  "screenshot": {
+    "path": "build/amiga-gui-runtime-probe/screen-gui-fluff-pattern-complete.png",
+    "sha256": "7fcc3d2149048aa7671b185e5128d082ce87015cb5ea3a745e85067842922e38"
+  },
+  "scope_limit": "This proves one Fluff GUI encode on an FS-UAE host-directory volume and Linux full-reader extraction. The mini reader lacks Fluff by design. It does not qualify other payload distributions, resource bounds, Profile 1 with Fluff (which is disallowed), or native OFS/FFS GUI behavior."
+}
