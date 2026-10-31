@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import getpass
+import re
 import subprocess
 import tempfile
 import time
@@ -84,6 +85,8 @@ def main():
     parser.add_argument("--mini-cli", type=Path,
                         default=ROOT / "build/linux32mini/bpmini")
     parser.add_argument("--output-root", type=Path, default=ROOT / "build")
+    parser.add_argument("--profile1", action="store_true",
+                        help="enable Interchange Profile 1 in the FLTK preferences")
     args = parser.parse_args()
     if not os.environ.get("DISPLAY"):
         parser.error("run under Xvfb or a desktop display")
@@ -112,6 +115,18 @@ def main():
     env = os.environ.copy()
     env["WINEPREFIX"] = str(prefix)
     env["WINEDEBUG"] = "-all"
+    prefs_path = (prefix / "drive_c" / "users" / args.wine_user /
+                  "AppData" / "Roaming" / "BoltPack" / "gui.conf")
+    previous_prefs = None
+    if args.profile1:
+        previous_prefs = prefs_path.read_bytes() if prefs_path.exists() else None
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = (previous_prefs.decode("utf-8").splitlines()
+                 if previous_prefs is not None else [])
+        lines = [line for line in lines
+                 if not re.match(r"^\s*interchange_profile=", line)]
+        lines.append("interchange_profile=1")
+        prefs_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     command = [args.wine, str(gui), "--shell-create-boltlz", str(source_dir)]
     process = subprocess.Popen(command, cwd=out, env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -152,10 +167,16 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+    if args.profile1:
+        if previous_prefs is None:
+            prefs_path.unlink(missing_ok=True)
+        else:
+            prefs_path.write_bytes(previous_prefs)
 
     linux_test_status = None
     mini_test_status = None
     extract_status = None
+    archive_info = ""
     extracted.mkdir()
     output = extracted / manifest["source_directory"] / member
     if archive.is_file():
@@ -163,15 +184,25 @@ def main():
             [linux, "t", archive], out, out / "linux-test.log")
         mini_test_status = run_command(
             [mini, "t", archive], out, out / "mini-test.log")
+        info = subprocess.run(
+            [str(linux), "i", str(archive)], cwd=out,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False)
+        archive_info = info.stdout
+        (out / "linux-info.log").write_text(archive_info, encoding="utf-8")
         extract_status = run_command(
             [linux, "x", "-o", extracted, archive], out,
             out / "linux-extract.log")
+        profile_ok = (not args.profile1 or
+                      (manifest.get("profile1_expected", {}).get("method") ==
+                       "BoltLite" and "Method:         BoltLite (1)" in archive_info and
+                       mini_test_status == 0))
         if (linux_test_status == 0 and mini_test_status == 0 and
                 extract_status == 0 and output.is_file() and
-                output.read_bytes() == payload):
+                output.read_bytes() == payload and profile_ok):
             result = "passed_under_wine"
         else:
-            error = "Linux full/mini cross-read or exact-byte extraction failed"
+            error = "Linux full/mini/profile check or exact-byte extraction failed"
 
     version = subprocess.run(
         [args.wine, "--version"], env=env, stdout=subprocess.PIPE,
@@ -179,6 +210,11 @@ def main():
     revision, status, diff_sha = source_snapshot()
     record = {
         "purpose": manifest["case"],
+        "profile1_requested": args.profile1,
+        "profile1_method_observed": ("BoltLite" if
+                                     "Method:         BoltLite (1)" in archive_info
+                                     else None),
+        "archive_info": archive_info,
         "result": result,
         "error": error,
         "source_revision": revision,
