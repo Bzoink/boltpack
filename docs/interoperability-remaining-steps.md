@@ -244,6 +244,15 @@ input hashes, Hatari/compiler/environment details, commands, source revision
 and diff, and the TOS directory-metadata limitation:
 [`build/r02-atari-fat12-20261031/run.json`](../build/r02-atari-fat12-20261031/run.json).
 
+The Atari CLI FAT12 fixture now also creates and integrity-tests a Linux v6
+archive containing a representable sibling and `payload-🧪.txt`. TOS 1.62's
+whole-archive preflight reports `unsafe or unrepresentable Atari name`, returns
+failure, and leaves the existing empty output directory untouched. The
+independent expectations are in
+[`atari-cli-unicode-refusal.json`](../test/reference/interoperability/atari-cli-unicode-refusal.json);
+the complete rerun, including all regular FAT12 cases, is
+[`build/atari-cli-unicode-20261031/run.json`](../build/atari-cli-unicode-20261031/run.json).
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,
