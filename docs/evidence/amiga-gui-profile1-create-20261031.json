@@ -1,0 +1,74 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Create a small Interchange Profile 1 archive through the AmigaOS 2.04 GadTools GUI and cross-read it on Linux",
+  "date": "2026-10-31",
+  "revision": "5cfb60f",
+  "related_evidence": "amiga-gui-create-20261031.json",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf_sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275",
+    "host_directory_volume": "build/amiga-gui-runtime-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-runtime-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Logging-only additions around menu dispatch and ASL Open; create behavior matches src/frontend/amiga_gui/main.c."
+  },
+  "input": {
+    "source": "DH0:PAYLOAD.TXT",
+    "source_bytes": 37,
+    "source_sha256": "415dcc60e0d2cf99f9819a710292f50014537559eafb06f9671e8e90c1e094aa",
+    "actions": [
+      "Compression -> Interchange Profile 1",
+      "Compression -> Create New...",
+      "Select PAYLOAD.TXT in the ASL File field"
+    ],
+    "save_dialog_entry": "PROFILE1.BLTarchive.bolt",
+    "save_dialog_note": "The requester starts with archive.bolt and typed text was inserted before that default."
+  },
+  "created_archive": {
+    "path": "build/amiga-gui-runtime-probe/drive/PROFILE1.BLTarchive.bolt",
+    "sha256": "eb604a6b7eda4e3026609d704b4326f681eedc91967a41f7d26e1d3add1ba002",
+    "bytes": 350,
+    "format_version": 6,
+    "creator_os": "AmigaOS (68k)",
+    "creator_cpu": "Motorola 68k",
+    "profile_selection": "Guest log says method=BoltLite profile=1",
+    "reader_reported_methods": ["Stored", "BoltLite"],
+    "entries": "One primary PAYLOAD.TXT file plus one Amiga native metadata record"
+  },
+  "cross_reader_verification": {
+    "linux_full_test": "Both physical entries passed; 2 files OK.",
+    "linux_mini_test": "Both physical entries passed.",
+    "linux_full_extract": {
+      "status": "Partial because Amiga native metadata is unsupported on Linux",
+      "output": "build/amiga-gui-runtime-probe/profile1-linux-extract/PAYLOAD.TXT",
+      "bytes": 37,
+      "sha256": "415dcc60e0d2cf99f9819a710292f50014537559eafb06f9671e8e90c1e094aa",
+      "matches_source": true
+    }
+  },
+  "guest_log": {
+    "path": "build/amiga-gui-runtime-probe/drive/boldpack.log",
+    "sha256": "75d29ebb566f6bd6e65ea04cbd78365c56361393a1696fa3be84559ff2bea6cc"
+  },
+  "fs_uae_stdout": {
+    "path": "build/amiga-gui-runtime-probe/fs-uae-gui-profile1-create.log",
+    "sha256": "99f87cc5594407a8cb45dbd1c1c508c392951ccb80aacce7ba1c9a58da3ca119"
+  },
+  "screenshot": {
+    "path": "build/amiga-gui-runtime-probe/screen-gui-profile1-create-complete.png",
+    "sha256": "3e7e9e763012a0b10e972d6ae9a827d70c1455303eab3487f514e731d887df0b"
+  },
+  "scope_limit": "This tests one small Profile 1 GUI creation on a host-directory volume, with Linux full and mini cross-reader verification. It does not exercise Profile 1 size/count boundaries, edit/append, replacement, cancellation, metadata preservation on Amiga, OFS/FFS, or other codecs."
+}
