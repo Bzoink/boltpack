@@ -253,6 +253,14 @@ independent expectations are in
 the complete rerun, including all regular FAT12 cases, is
 [`build/atari-cli-unicode-20261031/run.json`](../build/atari-cli-unicode-20261031/run.json).
 
+The DOSBox-X CP850 transfer runner now writes to a retained `build/r02-*`
+directory by default and emits a machine-readable run record. Its 2026-10-31
+rerun passed `Ø.TXT` archive creation and bidirectional extraction on FAT12;
+the record pins the independent `dos-cp850-fat12.json` manifest, source and
+binary hashes, DOSBox-X/mtools versions, commands, environment, worktree
+snapshot, and 16 artifact hashes:
+[`build/r02-dosboxx-cp850-wsh5pi75/run.json`](../build/r02-dosboxx-cp850-wsh5pi75/run.json).
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,
