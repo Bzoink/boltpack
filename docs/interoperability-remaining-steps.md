@@ -305,6 +305,11 @@ Wine Desktop. Linux extraction returns the expected partial-metadata status
 for foreign Windows attributes while retaining exact payload bytes. Evidence
 is [`build/r08-win64-fltk-wine-create-orjcm65r/run.json`](../build/r08-win64-fltk-wine-create-orjcm65r/run.json).
 This extends Wine coverage only; native Windows behavior remains open.
+The combined `win64-fltk-wine-profile1-attributes-test` also selects Profile 1,
+requires BoltLite while allowing Stored metadata blocks, verifies with full and
+mini Linux readers, and restores the same attributes and exact bytes through a
+separate production GUI extraction. Its run is
+[`build/r08-win64-fltk-wine-create-k4u101q4/run.json`](../build/r08-win64-fltk-wine-create-k4u101q4/run.json).
 
 The Amiga/Linux FS-UAE host-directory runner now emits a machine-readable run
 record and defaults to retained output under `build/`. The 2026-10-31 run
