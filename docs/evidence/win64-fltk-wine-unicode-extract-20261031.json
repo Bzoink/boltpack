@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-31",
+  "purpose": "Exercise the production Win64 FLTK archive-open and extract path under Wine with a UTF-8 member name.",
+  "result": "passed_under_wine",
+  "source_revision": "38323cd",
+  "build": {
+    "command": "make win64-fltk-gui",
+    "compiler": "MinGW-w64 x86_64 cross compiler",
+    "binary": "build/win64-fltk-gui/boltpack-gui.exe",
+    "binary_sha256": "adbddd2d2a5750c08f32f60d45e7cd5cd4fd456cbc9a998c61f9a2aab772ba7e"
+  },
+  "runtime": {
+    "wine": "wine-10.0 (Debian 10.0~repack-6)",
+    "display": "Xvfb",
+    "wine_prefix": "build/win64/wineprefix-interop64"
+  },
+  "fixture": {
+    "writer": "Linux full CLI",
+    "archive": "build/r08-win64-fltk-wine-extract-2/unicode.blt",
+    "archive_sha256": "723ab65772291ca170f6926ef5f5b7018a5b4bfa8f08bec94221ff3939eed7c5",
+    "member": "payload-🧪-win64-gui-2.txt",
+    "source_sha256": "1c4d4c70290ee7041ff03cdb20c373f5141517ab32d3f8b895b8d7e98b7f36c8"
+  },
+  "command": "xvfb-run -a python3 <automation>: launch boltpack-gui.exe --shell-extract unicode.blt, accept the Wine Browse for Folder dialog's selected Desktop with Return, compare extracted bytes, dismiss completion, and close with Ctrl+Q",
+  "observed": {
+    "main_window": "BoltPack",
+    "folder_dialog": "Browse for Folder",
+    "destination": "Wine prefix drive_c/users/tony/Desktop",
+    "extracted_path": "build/win64/wineprefix-interop64/drive_c/users/tony/Desktop/payload-🧪-win64-gui-2.txt",
+    "extracted_sha256": "1c4d4c70290ee7041ff03cdb20c373f5141517ab32d3f8b895b8d7e98b7f36c8",
+    "payload_byte_identical": true,
+    "wine_exit_status": 0
+  },
+  "scope_limit": "This is an interactive Win64 FLTK extraction under Wine, not native Windows qualification. It does not cover archive creation, metadata restoration, cancellation, replacement preservation, or native NTFS/FAT behavior."
+}
