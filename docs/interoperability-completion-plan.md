@@ -225,17 +225,21 @@ The QL CLI no longer labels direct file arguments as Unix epoch zero when no
 parent qdirect timestamp is available. Recursive source traversal carries
 regular-file and directory dates from qdirect records; pre-epoch or missing
 dates are unknown, while QDOS's exact Unix epoch remains valid zero. The
-expanded QDOS ABI probe establishes that direct nested-file access succeeds on
-sQLux hostFS while stdio returns a 64-byte all-zero qdirect record and the raw
-`io_fstrg` call returns 65535 on its first read. A production QDOS create then terminates but produces
-only a directory entry, dropping the populated host directory's files. The QL
-frontend now stops at the zero-length qdirect name instead of looping and
-rejects malformed name lengths. This fixes the hang; recursive hostFS source
-transfer remains unqualified because the backend supplies no records. The
-reproducer and run artifacts are retained in
-`build/r07-ql-qdirect-20261030-final2`. `make CC=gcc ql-host-test` checks
-unknown direct-file times and Linux full/mini archive verification. Extraction now restores representable file and directory dates
-through `FS.DATE`; sQLux hostFS verifies exact nested timestamp restoration
+QDOS directory traversal initially opened the directory as a regular file,
+producing an all-zero stdio record and a misleading `io_fstrg` EOF result.
+Enumeration requires opening the channel with `Q_DIR == 4`; the production QL
+frontend and native probe now use `io_open(path, Q_DIR)` and read 64-byte
+qdirect records through `IO_FSTRG`. The sQLux hostFS probe returns the expected
+file and directory entries, including its `QF_DIR_TYPE` marker and `ERR_EF`
+end-of-directory result. The QDOS frontend normalizes parent-prefixed hostFS
+names, recurses through nested directories, and creates an archive containing
+both independent fixture files and directories. Linux full and mini readers
+test and extract the exact paths and bytes. The hash-indexed record is
+`build/r07-ql-qdirect-final-20261031/run.json`. Direct file arguments without a
+parent qdirect timestamp remain unknown, while recursive file/directory dates
+come from qdirect records. `make CC=gcc ql-host-test` checks unknown direct-file
+times and Linux full/mini archive verification. Extraction now restores
+representable file and directory dates through `FS.DATE`; sQLux hostFS verifies exact nested timestamp restoration
 with a UTC emulator clock. The QDOS frontend accepts a fixed
 `--tz-offset MINUTES` in minutes east of UTC, defaulting to zero and without
 daylight-saving logic. The +60 minute setting is now verified in sQLux; other
