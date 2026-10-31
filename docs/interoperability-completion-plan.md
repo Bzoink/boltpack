@@ -562,9 +562,11 @@ alert, and both precreated `PREFIX` directories remain empty. Evidence is under
 `build/atari-gui-create-qmi4zzf8/prefix-run`. The shared Atari name tree also
 rejects file/child conflicts in both orders in `make unit-test`. File attributes,
 case-fold collision refusal, and file/directory-prefix refusal are qualified on
-TOS 1.62. Directory timestamp loss is an explicit partial result; directory
-attribute restoration, other TOS versions, selector/active-extraction
-cancellation, replacement, and failure recovery remain open.
+TOS 1.62. Directory timestamps are now restored at FAT12 resolution on TOS
+1.06, 1.62, and 2.05. Directory Hidden/System restoration remains an explicit
+partial result; selector and active-extraction cancellation, replacement, and
+failure recovery have since gained the cases recorded in the current
+remaining-steps checklist.
 
 The Amiga GadTools GUI now includes directories, including empty directories,
 and captures native protection and comments for files and directories. It

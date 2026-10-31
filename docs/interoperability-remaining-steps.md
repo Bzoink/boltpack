@@ -574,10 +574,11 @@ bytes and report partial for Atari metadata. The repeatable runner selects
 then drives production create/save and Ctrl+E extraction into `OUT`.
 `atari-gui-create-fat12-test` seeds `TREE/src.txt` with Archive, Read-only,
 Hidden, and System attributes; all four survive GUI create/extract. The files
-and directories also extract exactly, including the empty directory. TOS 1.62
-leaves all three extracted directory timestamps at the FAT default
-`1990-01-01 0:13` instead of the source `2026-10-30 10:48` and displays the
-partial-extraction alert. The earlier FAT12 run, including that alert and
+and directories also extract exactly, including the empty directory. That initial
+TOS 1.62 FAT12 run left all three extracted directory timestamps at the FAT
+default `1990-01-01 0:13` instead of the source `2026-10-30 10:48` and displayed
+the partial-extraction alert. Later full FAT12 runs on TOS 1.06, 1.62, and 2.05
+restored directory times at FAT12 resolution. The earlier FAT12 run, including that alert and
 per-directory timestamp evidence, is retained under
 `build/atari-gui-create-7h0qxv97`; the earlier host-directory run is under
 `build/atari-gui-create-9zvjpbze`. The later Escape-probe runs are under
@@ -595,8 +596,10 @@ the precreated `PREFIX` destination remains empty. Current evidence is under
 collision and empty output. The later Escape runs at `4l70_lo0` and
 `nrbkhzlb` are not collision evidence because the selector remained open.
 `make unit-test` also verifies the shared Atari name tree rejects file/child
-conflicts in either insertion order. TOS 1.62 directory timestamp loss remains
-a verified partial outcome. A separate Xvfb mouse test now clicks the selector's
+conflicts in either insertion order. The earlier TOS 1.62 timestamp-loss
+observation was superseded by the later full FAT12 corpus: TOS 1.06, 1.62, and 2.05 now restore directory timestamps at
+FAT12 resolution. Directory Hidden/System loss remains a verified partial
+outcome. A separate Xvfb mouse test now clicks the selector's
 Abort button after opening a valid archive for extraction. On TOS 1.06, 1.62,
 and 2.05 the selector closes to the archive window and the existing `OUT`
 directory remains empty; before/after screens and ROM/build hashes are retained
