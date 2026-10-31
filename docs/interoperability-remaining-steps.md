@@ -694,6 +694,18 @@ in [`build/atari-attr-probe/run.json`](../build/atari-attr-probe/run.json).
 The FreeMiNT held-directory cleanup probe passed again after this change at
 [`build/freemint-probe/production-cleanup-y6rc5iil/run.json`](../build/freemint-probe/production-cleanup-y6rc5iil/run.json), preserving descriptor-relative cleanup where supported.
 
+An out-of-range timestamp metadata case is now qualified on TOS 1.62. The
+repeatable `make CC=gcc HATARI_TOS=/home/tony/images/Atari/tos162se.img
+atari-gui-time-range-test` extracts a Linux-created archive whose valid file
+mtime is 2,208,988,800 seconds (2040-01-01), beyond mintlib's signed 32-bit
+`time_t`. The production GUI displays its partial-extraction alert, preserves
+the exact 77-byte payload, and leaves no stage or recovery journal. The
+screenshot, archive and source hashes, command, and result are retained at
+[`build/atari-gui-time-range-6ugg9z80/run.json`](../build/atari-gui-time-range-6ugg9z80/run.json).
+This verifies the unsupported-time outcome; incomplete pre-publication stage
+cleanup remains deliberately unresolved where the filesystem cannot prove
+stage identity after restart.
+
 The parent-path probe `make CC=gcc
 HATARI_TOS=/home/tony/images/Atari/tos162se.img
 atari-gui-parent-substitution-test` redirects `OUT` to a separate directory while
@@ -871,7 +883,8 @@ is qualified on TOS 1.62.
 
 - Continue auditing the TOS-version-specific directory timestamp and attribute
   outcomes; test rollback with a real device publication error and safe cleanup
-  of incomplete pre-publication stages. Injected rollback failure with a
+  of incomplete pre-publication stages. Out-of-range file timestamps now have
+  an explicit partial-result regression. Injected rollback failure with a
   competing destination and crash recovery after moving the old target are
   already covered. Active-extraction cancellation is qualified on TOS 1.06, 1.62, and
   2.05. The
