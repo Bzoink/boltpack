@@ -1,12 +1,12 @@
 {
   "date": "2026-10-31",
   "purpose": "Refuse detected Windows reparse points during Win64 FLTK source archive creation.",
-  "change": "The creator checks the selected root attributes and refuses enumerated children with FILE_ATTRIBUTE_REPARSE_POINT. This prevents detected junction/symlink traversal and cycles.",
+  "change": "The creator checks the selected root attributes and refuses enumerated children with FILE_ATTRIBUTE_REPARSE_POINT. This prevents traversal through reparse points that Windows reports to those APIs.",
   "build": {
     "target": "make CC=gcc win64-fltk-gui",
     "result": "passed"
   },
-  "regression": {
+  "ordinary_unicode_regression": {
     "target": "make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-create-test",
     "result": "passed_under_wine",
     "runtime": "Wine 10.0 (Debian 10.0~repack-6), Xvfb",
@@ -17,10 +17,24 @@
     "linux_full_and_mini_readers_passed": true,
     "wine_exit_status": 0
   },
+  "reparse_probe": {
+    "target": "make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-reparse-test",
+    "result": "failed_symlink_target_archived",
+    "runtime": "Wine 10.0 (Debian 10.0~repack-6), Xvfb",
+    "run_record": "../../build/r08-win64-fltk-reparse-093hhy7w/run.json",
+    "run_record_sha256": "f2c1e25a5b61a54bbba4b628e84084937a6b863ce5bdbd07621e68101c799589",
+    "runner_sha256": "fd8c1b6680ecc024bba4500c4079bfad855d62334c17a92c28688807bb1a7d70",
+    "archive_sha256": "28f5334968cb95363cd4d1a3c2718e00bed4a2ed2df6a329c70268ca81067694",
+    "outside_target_sha256": "18360a518340419ad702dab0ea93445238746b8326b90b48860370b488554b74",
+    "linux_integrity_status": 0,
+    "linux_extraction_status": 0,
+    "extracted_member_matches_outside_target": true,
+    "finding": "Wine's Z: mapped host symlink was not reported as FILE_ATTRIBUTE_REPARSE_POINT; the GUI archived the outside target bytes. This does not qualify native Windows reparse behavior."
+  },
   "source_revision": "4a1523c08527d97ea2eed24265ebbdd830456032",
   "scope_limits": [
-    "The Wine regression exercises ordinary Unicode source creation, not reparse-point refusal.",
-    "No runtime reparse-point fixture has verified the refusal yet.",
+    "The ordinary Wine regression does not exercise Windows reparse-point refusal.",
+    "The Wine symlink probe fails because Wine exposes the host symlink as an ordinary file; native Windows reparse behavior remains unqualified.",
     "A reparse-point substitution between the attribute check and file open remains a Windows source check/use race.",
     "Native Windows behavior remains unqualified."
   ]

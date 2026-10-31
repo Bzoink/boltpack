@@ -1,0 +1,9 @@
+{
+  "case": "win64-fltk-wine-reparse-source-refusal",
+  "source_directory": "unsafe-source",
+  "outside_filename": "outside-sentinel.txt",
+  "outside_payload_utf8": "This target is outside the selected source tree.\n",
+  "gui_codec": "BoltLZ",
+  "expected_archive": "unsafe-source.blt",
+  "expected_result": "refused_without_output"
+}
