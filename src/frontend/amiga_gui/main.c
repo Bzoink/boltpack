@@ -2142,8 +2142,10 @@ static void do_create_from_paths(const char **paths, int path_count)
     struct stat out_st;
     int gather_rc;
     int preservation_partial;
+    int closed_current_archive;
     int have_base;
     int rc, i;
+    char previous_archive_path[BP_MAX_PATH];
 
     log_message("Create requested for %d selected path(s)", path_count);
     for (i = 0; i < path_count; i++)
@@ -2314,6 +2316,8 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     memset(&archive_stage, 0, sizeof(archive_stage));
     archive_stage.fd = -1;
+    closed_current_archive = 0;
+    previous_archive_path[0] = '\0';
     strcpy(archive_stage.target, out_path);
     if (lstat(out_path, &out_st) == 0) {
         if (!S_ISREG(out_st.st_mode) || S_ISLNK(out_st.st_mode)) {
@@ -2509,6 +2513,19 @@ static void do_create_from_paths(const char **paths, int path_count)
             rc = BP_ERR_IO;
         }
     }
+    if (rc == BP_OK && archive_fp && archive_stage.target_existed) {
+        struct stat opened_archive_st;
+        if (fstat(fileno(archive_fp), &opened_archive_st) == 0 &&
+            gui_same_file(&archive_stage.target_snapshot, &opened_archive_st)) {
+            strncpy(previous_archive_path, archive_path,
+                    sizeof(previous_archive_path) - 1);
+            previous_archive_path[sizeof(previous_archive_path) - 1] = '\0';
+            log_message("Closing currently open archive before replacement: %s",
+                        previous_archive_path);
+            close_archive();
+            closed_current_archive = 1;
+        }
+    }
     if (rc == BP_OK) {
         rc = gui_commit_stage(&archive_stage);
         if (rc == BP_ERR_PARTIAL && archive_stage.temporary[0] == '\0') {
@@ -2525,6 +2542,8 @@ static void do_create_from_paths(const char **paths, int path_count)
     if (rc != BP_OK) {
         log_message("Create failed for '%s': rc=%d (%s)",
                     out_path, rc, bp_strerror(rc));
+        if (closed_current_archive && previous_archive_path[0])
+            do_open(previous_archive_path);
         show_requester("Error", "Create failed");
         refresh_window_title();
         return;
