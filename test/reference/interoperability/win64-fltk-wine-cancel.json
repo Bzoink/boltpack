@@ -1,0 +1,10 @@
+{
+  "case": "win64-fltk-wine-cancel-preserves-existing-destination",
+  "member_prefix": "cancel-payload-",
+  "member_suffix": ".bin",
+  "payload_size": 134217728,
+  "payload_chunk_utf8": "BoltPack cancellation fixture 0123456789abcdef\r\n",
+  "payload_sha256": "cd50e459d331678007ae9917829da8fa33ec18fbe9f93fd3a415c39be171357c",
+  "destination_sentinel_utf8": "preexisting destination sentinel\r\n",
+  "expected_result": "cancel leaves sentinel byte-identical and removes stage"
+}
