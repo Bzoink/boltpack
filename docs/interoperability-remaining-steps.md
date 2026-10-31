@@ -261,6 +261,14 @@ binary hashes, DOSBox-X/mtools versions, commands, environment, worktree
 snapshot, and 16 artifact hashes:
 [`build/r02-dosboxx-cp850-wsh5pi75/run.json`](../build/r02-dosboxx-cp850-wsh5pi75/run.json).
 
+The DOSBox-X CP437 FAT12 runner now uses the same retained-record format. Its
+2026-10-31 run passed café filename extraction, DOS16 archive creation and
+replacement, Linux cross-extraction, and FAT attribute preservation; its
+metadata-only loss remains an explicit partial result. The run record pins the
+independent `dos16-fat12.json` manifest, environment, commands, worktree
+snapshot, and 25 artifact hashes:
+[`build/r02-dosboxx-cp437-jgv9qfjp/run.json`](../build/r02-dosboxx-cp437-jgv9qfjp/run.json).
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,

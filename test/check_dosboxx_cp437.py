@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Verify DOS16 CP437 filename extraction on a DOSBox-X FAT12 floppy."""
 import argparse
+import datetime
 import hashlib
 import json
+import locale
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
+import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED = json.loads((ROOT / "test/reference/interoperability/dos16-fat12.json").read_text(encoding="utf-8"))
+EXPECTED_PATH = ROOT / "test/reference/interoperability/dos16-fat12.json"
+EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
 
 
 def check_manifest_file(path, key):
@@ -27,13 +33,46 @@ def run(command, **kwargs):
                           stderr=subprocess.STDOUT, **kwargs).stdout
 
 
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def artifact_index(root):
+    return {
+        path.relative_to(root).as_posix(): {
+            "size": path.stat().st_size,
+            "sha256": sha256(path),
+        }
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path != root / "run.json"
+    }
+
+
+def command_version(command):
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unavailable: " + str(exc)
+    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else "unknown"
+    return first if result.returncode == 0 else "%s (exit %d)" % (first, result.returncode)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox-x", default="dosbox-x")
     parser.add_argument("--output", type=Path,
                         help="new directory for retained floppy image and logs")
     args = parser.parse_args()
-    out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-dosboxx-cp437-"))
+    output_root = ROOT / "build"
+    output_root.mkdir(exist_ok=True)
+    out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(
+        prefix="r02-dosboxx-cp437-", dir=output_root))
     if args.output:
         out.mkdir(parents=True, exist_ok=False)
     image = out / "dos16-fat12.img"
@@ -79,6 +118,9 @@ def main():
                 "-c", "CHECK.BAT", "-c", "exit"]
     output = run(emulator, env=env, timeout=60, cwd=out)
     (out / "dosboxx.log").write_bytes(output)
+    version = subprocess.run([args.dosbox_x, "--version"], check=False,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out / "dosboxx-version.txt").write_bytes(version.stdout)
     version = subprocess.run([args.dosbox_x, "--version"], check=False,
                              stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT).stdout.decode("utf-8", "replace")
@@ -136,8 +178,64 @@ def main():
         status = "complete"
     if not dos_archive.exists() or not replacement_archive.exists():
         raise RuntimeError("DOS16 did not create archives on FAT12; evidence: " + str(out))
-    (out / "result.txt").write_text("PASS: CP437 extraction, DOS16-to-Linux archive creation, archive replacement, and FAT attribute preservation verified on DOSBox-X FAT12\nresult=" + status + "\n")
-    print("PASS: DOS16 CP437 extraction, creation, replacement, and FAT attribute preservation under DOSBox-X FAT12;", status + "; evidence:", out)
+    result_text = ("PASS: CP437 extraction, DOS16-to-Linux archive creation, archive replacement, "
+                   "and FAT attribute preservation verified on DOSBox-X FAT12\nresult=" +
+                   status + "\n")
+    (out / "result.txt").write_text(result_text, encoding="utf-8")
+    try:
+        locale_name = locale.setlocale(locale.LC_ALL, None)
+    except locale.Error:
+        locale_name = "unknown"
+    git_status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+    (out / "git-status.txt").write_bytes(git_status)
+    (out / "git-diff.patch").write_bytes(diff)
+    mini = ROOT / "build/dos16/bpmini.exe"
+    sources = (Path(__file__).resolve(), EXPECTED_PATH, ROOT / "Makefile", linux, mini)
+    record = {
+        "case": "DOS16 CP437 filename extraction and FAT12 interoperability",
+        "result": result_text.strip(),
+        "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                             cwd=ROOT, text=True).strip(),
+        "worktree_status": git_status.decode("utf-8", "replace").splitlines(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "locale": locale_name,
+            "timezone": list(time.tzname),
+            "dosbox_x": command_version([args.dosbox_x, "--version"]),
+            "mformat": command_version(["mformat", "--version"]),
+        },
+        "filesystem": "720 KiB FAT12 floppy image under DOSBox-X",
+        "commands": {
+            "linux_create": [str(linux), "c", "--store", "OEM.BLT", "café.txt"],
+            "guest_batch": commands,
+            "emulator": emulator,
+            "linux_list": [str(linux), "l", str(dos_archive)],
+            "linux_extract": [str(linux), "x", "-o", str(extracted_dos), str(dos_archive)],
+            "linux_extract_replacement": [str(linux), "x", "-o", str(replacement_output),
+                                          str(replacement_archive)],
+        },
+        "expected_manifest": {
+            "path": EXPECTED_PATH.relative_to(ROOT).as_posix(),
+            "size": EXPECTED_PATH.stat().st_size,
+            "sha256": sha256(EXPECTED_PATH),
+        },
+        "source_sha256": {
+            path.relative_to(ROOT).as_posix(): sha256(path)
+            for path in sources if path.is_relative_to(ROOT)
+        },
+        "inputs": {
+            "linux_cli_sha256": sha256(linux),
+            "dos16_mini_sha256": sha256(mini),
+        },
+        "artifacts": artifact_index(out),
+    }
+    (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                   encoding="utf-8")
+    print("PASS: DOS16 CP437 extraction, creation, replacement, and FAT attribute preservation under DOSBox-X FAT12;", status + "; evidence:", out / "run.json")
 
 
 if __name__ == "__main__":
