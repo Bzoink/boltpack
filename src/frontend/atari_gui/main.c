@@ -2078,9 +2078,20 @@ static void atari_gui_pin_stage_directories(atari_gui_staged_output_t *stage,
         if (strlen(base) < sizeof(stage->temporary_name)) {
             strcpy(stage->temporary_name, base);
             stage->parent_dir = opendir(parent);
+            /* Some base GEMDOS libraries provide opendir() without a usable
+               dirfd(). Keep the existing checked pathname cleanup path on
+               those systems instead of treating the stream as a held handle. */
+            if (stage->parent_dir != NULL && dirfd(stage->parent_dir) < 0) {
+                (void)closedir(stage->parent_dir);
+                stage->parent_dir = NULL;
+            }
         }
     }
     stage->destination_dir = opendir(destination);
+    if (stage->destination_dir != NULL && dirfd(stage->destination_dir) < 0) {
+        (void)closedir(stage->destination_dir);
+        stage->destination_dir = NULL;
+    }
 }
 
 static void discard_staged_output(atari_gui_staged_output_t *stage)

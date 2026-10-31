@@ -665,6 +665,22 @@ exact extraction. The latest TOS 1.62 run record and artifacts are in
 [`build/atari-gui-create-jz0atcvj/run.json`](../build/atari-gui-create-jz0atcvj/run.json); all three ROMs restore directory timestamps at FAT12 resolution. The preceding TOS 1.62 rerun is at
 [`build/atari-gui-create-ugv8qel7/run.json`](../build/atari-gui-create-ugv8qel7/run.json).
 
+The same production FAT12 GUI corpus initially failed on EmuTOS 1.4: file
+bytes published, but file-attribute metadata was skipped and the recovery
+journal remained in `OUT`. EmuTOS returns a directory stream from `opendir()`
+while `dirfd()` returns `-1`; cleanup had treated that stream as a held
+directory handle and stopped after publication. Directory pinning now keeps
+only streams with a usable descriptor and otherwise selects the existing
+checked pathname cleanup path. The EmuTOS rerun passed the full create/extract,
+file-attribute, directory timestamp, collision, read-only replacement, and
+Linux reader checks, and verifies no journal or stage names remain in `OUT`.
+Evidence is retained at
+[`build/atari-gui-create-emutos-fixed/atari-gui-create-17o5weao/run.json`](../build/atari-gui-create-emutos-fixed/atari-gui-create-17o5weao/run.json).
+The strengthened output-root journal check also passed on TOS 1.62 at
+[`build/atari-gui-create-tos162-fixed/atari-gui-create-5434qcwl/run.json`](../build/atari-gui-create-tos162-fixed/atari-gui-create-5434qcwl/run.json).
+The FreeMiNT held-directory cleanup probe passed again after this change at
+[`build/freemint-probe/production-cleanup-y6rc5iil/run.json`](../build/freemint-probe/production-cleanup-y6rc5iil/run.json), preserving descriptor-relative cleanup where supported.
+
 The parent-path probe `make CC=gcc
 HATARI_TOS=/home/tony/images/Atari/tos162se.img
 atari-gui-parent-substitution-test` redirects `OUT` to a separate directory while

@@ -336,9 +336,12 @@ file: the list callback filters supplementary META and RSRC records. The
 normal GUI then extracted that archive to a fresh `OUT` directory; output bytes
 matched the source and its timestamp restored to whole-second precision. The
 host-directory drive changed the POSIX mode from 0664 to 0644, so this does not
-qualify native FAT attributes or POSIX mode preservation. Mouse activation of
-Create in the shipped dialog, cancellation, and GUI metadata restoration on a
-native FAT volume remain unqualified. GEM's leftmost Desk
+qualify POSIX mode preservation. Mouse activation of Create in the shipped
+dialog remains unqualified. Production GUI extraction, file attributes, and
+filesystem-specific partial outcomes are qualified on Hatari FAT12 with TOS
+1.06, 1.62, 2.05, and EmuTOS 1.4; see the R06 evidence in
+[`interoperability-remaining-steps.md`](interoperability-remaining-steps.md).
+GEM's leftmost Desk
 title is the application name and aligns with its pull-down; see the
 [Atari Compendium, AES menu bar and GEM menu guidelines](https://info-coach.fr/atari/software/_development/Atari-Compendium.pdf)
 (§6.26 and §11.15); the same reference documents the `evnt_multi` keyboard
