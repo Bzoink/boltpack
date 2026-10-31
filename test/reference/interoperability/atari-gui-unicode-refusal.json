@@ -15,8 +15,7 @@
   ],
   "expected": {
     "linux_archive_integrity": "pass",
-    "atari_extraction": "refuse before publishing any entry",
-    "destination": "pre-existing empty OUT remains empty",
-    "partial_result": true
+    "atari_extraction": "explicit refusal before publishing any entry",
+    "destination": "pre-existing empty OUT remains empty"
   }
 }
