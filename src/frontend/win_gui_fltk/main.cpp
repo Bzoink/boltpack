@@ -2347,6 +2347,19 @@ struct StagedExtractFile {
     bp_io_t io;                 /* must remain first: callbacks receive &io */
     std::string target;
     std::string temporary;
+    HANDLE retained_handle;
+    BY_HANDLE_FILE_INFORMATION temporary_info;
+
+    StagedExtractFile() : retained_handle(INVALID_HANDLE_VALUE)
+    {
+        memset(&temporary_info, 0, sizeof(temporary_info));
+    }
+
+    ~StagedExtractFile()
+    {
+        if (retained_handle != INVALID_HANDLE_VALUE)
+            CloseHandle(retained_handle);
+    }
 };
 
 static LONG g_extract_temp_counter = 0;
@@ -2548,7 +2561,8 @@ static int guard_windows_directory(ExtractCtx *ctx, const std::string &path,
     if (attributes == INVALID_FILE_ATTRIBUTES ||
         (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
             FILE_ATTRIBUTE_DIRECTORY) return BP_ERR_INVALID_ARG;
-    handle = CreateFileW(wide.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+    handle = CreateFileW(wide.c_str(), FILE_LIST_DIRECTORY | FILE_ADD_FILE |
+                         FILE_READ_ATTRIBUTES,
                          FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                          NULL);
@@ -2612,8 +2626,135 @@ static int ensure_windows_directories(ExtractCtx *ctx,
     return BP_OK;
 }
 
+static bool win_mark_handle_for_delete(HANDLE handle)
+{
+    FILE_DISPOSITION_INFO disposition;
+    disposition.DeleteFile = TRUE;
+    return SetFileInformationByHandle(handle, FileDispositionInfo,
+                                      &disposition, sizeof(disposition)) != 0;
+}
+
+static void win_discard_staged_file(StagedExtractFile *staged)
+{
+    if (staged == NULL || staged->retained_handle == INVALID_HANDLE_VALUE)
+        return;
+    (void)win_mark_handle_for_delete(staged->retained_handle);
+    CloseHandle(staged->retained_handle);
+    staged->retained_handle = INVALID_HANDLE_VALUE;
+}
+
+static bool win_staged_path_matches(const StagedExtractFile *staged)
+{
+    std::wstring wide;
+    HANDLE path_handle;
+    BY_HANDLE_FILE_INFORMATION info;
+    bool same;
+    if (staged == NULL || staged->retained_handle == INVALID_HANDLE_VALUE ||
+        !win_utf8_to_wide(staged->temporary.c_str(), &wide)) return false;
+    path_handle = CreateFileW(wide.c_str(), FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                  FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING,
+                              FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (path_handle == INVALID_HANDLE_VALUE) return false;
+    same = GetFileInformationByHandle(path_handle, &info) &&
+           (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
+                                     FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
+           info.dwVolumeSerialNumber ==
+               staged->temporary_info.dwVolumeSerialNumber &&
+           info.nFileIndexHigh == staged->temporary_info.nFileIndexHigh &&
+           info.nFileIndexLow == staged->temporary_info.nFileIndexLow;
+    CloseHandle(path_handle);
+    return same;
+}
+
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+static void win_test_record_stage_publish_error(DWORD phase, DWORD error)
+{
+    DWORD values[2];
+    DWORD written;
+    HANDLE file = CreateFileW(L"stage-publish-error.bin", GENERIC_WRITE, 0,
+                              NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return;
+    values[0] = phase;
+    values[1] = error;
+    WriteFile(file, values, sizeof(values), &written, NULL);
+    CloseHandle(file);
+}
+#endif
+
+static bool win_publish_staged_file(ExtractCtx *ctx,
+                                    StagedExtractFile *staged)
+{
+    std::wstring wide_target;
+    size_t info_size;
+    std::vector<BYTE> buffer;
+    FILE_RENAME_INFO *rename_info;
+    if (!win_directory_guards_still_name_paths(ctx)) {
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+        win_test_record_stage_publish_error(1, GetLastError());
+#endif
+        return false;
+    }
+    if (!win_staged_path_matches(staged)) {
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+        win_test_record_stage_publish_error(2, GetLastError());
+#endif
+        return false;
+    }
+    if (!win_utf8_to_wide(staged->target.c_str(), &wide_target) ||
+        wide_target.empty() || wide_target.size() > (MAXDWORD / sizeof(WCHAR))) {
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+        win_test_record_stage_publish_error(3, GetLastError());
+#endif
+        return false;
+    }
+    /* Include a trailing NUL in the backing buffer for Wine and filesystem
+       providers that inspect it, while FileNameLength remains the byte count
+       mandated by FILE_RENAME_INFO (excluding the terminator). */
+    info_size = offsetof(FILE_RENAME_INFO, FileName) +
+                (wide_target.size() + 1) * sizeof(WCHAR);
+    buffer.resize(info_size);
+    rename_info = (FILE_RENAME_INFO *)&buffer[0];
+    memset(rename_info, 0, info_size);
+    rename_info->ReplaceIfExists = TRUE;
+    rename_info->RootDirectory = NULL;
+    rename_info->FileNameLength = (DWORD)(wide_target.size() * sizeof(WCHAR));
+    memcpy(rename_info->FileName, wide_target.data(), rename_info->FileNameLength);
+    if (!SetFileInformationByHandle(staged->retained_handle, FileRenameInfo,
+                                    rename_info, (DWORD)info_size)) {
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+        win_test_record_stage_publish_error(4, GetLastError());
+#endif
+        return false;
+    }
+    return true;
+}
+
+static int win_set_staged_mtime(StagedExtractFile *staged, bp_uint64 mtime)
+{
+    const ULONGLONG ticks_per_second = 10000000ULL;
+    const ULONGLONG unix_epoch_filetime = 11644473600ULL * ticks_per_second;
+    bp_off_t seconds = bp_u64_to_off(mtime);
+    time_t converted = (time_t)seconds;
+    ULONGLONG ticks;
+    FILETIME file_time;
+    if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+        (bp_off_t)converted != seconds ||
+        (ULONGLONG)seconds >
+            ((ULONGLONG)~(ULONGLONG)0 - unix_epoch_filetime) /
+                ticks_per_second) return BP_ERR_PARTIAL;
+    ticks = unix_epoch_filetime + (ULONGLONG)seconds * ticks_per_second;
+    file_time.dwLowDateTime = (DWORD)ticks;
+    file_time.dwHighDateTime = (DWORD)(ticks >> 32);
+    return SetFileTime(staged->retained_handle, NULL, NULL, &file_time)
+         ? BP_OK : BP_ERR_PARTIAL;
+}
+
 static int open_windows_staged_file(const std::string &target,
-                                    std::string *temporary, FILE **file)
+                                    std::string *temporary, FILE **file,
+                                    HANDLE *retained_handle,
+                                    BY_HANDLE_FILE_INFORMATION *identity)
 {
     std::string directory = target;
     size_t slash = directory.find_last_of("\\/");
@@ -2629,7 +2770,10 @@ static int open_windows_staged_file(const std::string &target,
         snprintf(suffix, sizeof(suffix), ".boltpack-%08lx.tmp",
                  (unsigned long)(GetTickCount() ^ GetCurrentProcessId() ^ serial));
         *temporary = directory + suffix;
-        handle = CreateFileA(temporary->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW,
+        HANDLE retained;
+        handle = CreateFileA(temporary->c_str(),
+                             GENERIC_WRITE | FILE_WRITE_ATTRIBUTES | DELETE,
+                             0, NULL, CREATE_NEW,
                              FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT,
                              NULL);
         if (handle == INVALID_HANDLE_VALUE) {
@@ -2637,10 +2781,31 @@ static int open_windows_staged_file(const std::string &target,
             if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
             return BP_ERR_IO;
         }
+        if (!GetFileInformationByHandle(handle, identity) ||
+            (identity->dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
+                                           FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+            (identity->nFileIndexHigh == 0 && identity->nFileIndexLow == 0) ||
+            !DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(),
+                             &retained, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            (void)win_mark_handle_for_delete(handle);
+            CloseHandle(handle);
+            return BP_ERR_IO;
+        }
         fd = _open_osfhandle((intptr_t)handle, _O_BINARY | _O_WRONLY);
-        if (fd < 0) { CloseHandle(handle); DeleteFileA(temporary->c_str()); return BP_ERR_IO; }
+        if (fd < 0) {
+            (void)win_mark_handle_for_delete(retained);
+            CloseHandle(retained);
+            CloseHandle(handle);
+            return BP_ERR_IO;
+        }
         fp = _fdopen(fd, "wb");
-        if (fp == NULL) { _close(fd); DeleteFileA(temporary->c_str()); return BP_ERR_IO; }
+        if (fp == NULL) {
+            (void)win_mark_handle_for_delete(retained);
+            CloseHandle(retained);
+            _close(fd);
+            return BP_ERR_IO;
+        }
+        *retained_handle = retained;
         *file = fp;
         return BP_OK;
     }
@@ -3057,7 +3222,9 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     StagedExtractFile *staged = new (std::nothrow) StagedExtractFile();
     if (staged == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
     FILE *fp = NULL;
-    rc = open_windows_staged_file(path, &staged->temporary, &fp);
+    rc = open_windows_staged_file(path, &staged->temporary, &fp,
+                                  &staged->retained_handle,
+                                  &staged->temporary_info);
     if (rc != BP_OK) {
         delete staged;
         ctx->open_error = rc;
@@ -3066,6 +3233,7 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     }
     if (!win_directory_guards_still_name_paths(ctx)) {
         fclose(fp);
+        win_discard_staged_file(staged);
         delete staged;
         ctx->open_error = BP_ERR_IO;
         ctx->last_subject_valid = false;
@@ -3125,49 +3293,37 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
     int result = status;
     if (status != BP_OK) {
         fclose(fp);
-        if (win_directory_guards_still_name_paths(ctx))
-            DeleteFileA(staged->temporary.c_str());
+        win_discard_staged_file(staged);
         delete staged;
         ctx->last_subject_ok = false;
         return status;
     }
     if (fclose(fp) != 0) result = BP_ERR_IO;
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+    if (result == BP_OK) win_test_pause_for_phase(L"extract-stage");
+#endif
     if ((result == BP_OK || result == BP_ERR_PARTIAL) &&
-        !win_directory_guards_still_name_paths(ctx)) result = BP_ERR_IO;
+        (!win_directory_guards_still_name_paths(ctx) ||
+         !win_staged_path_matches(staged))) result = BP_ERR_IO;
     if (result == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)) {
-        bp_off_t seconds = bp_u64_to_off(entry->mtime);
-        time_t t = (time_t)seconds;
-        struct _stat64 st;
-        struct utimbuf ut;
-        if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), entry->mtime) != 0 ||
-            (bp_off_t)t != seconds || _stat64(staged->temporary.c_str(), &st) != 0) {
-            result = BP_ERR_PARTIAL;
-        } else {
-            ut.actime = (time_t)st.st_atime;
-            ut.modtime = t;
-            if (utime(staged->temporary.c_str(), &ut) != 0) result = BP_ERR_PARTIAL;
-        }
+        result = win_set_staged_mtime(staged, entry->mtime);
     }
     if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) result = BP_ERR_PARTIAL;
     if (result == BP_OK || result == BP_ERR_PARTIAL) {
         if (!win_directory_guards_still_name_paths(ctx)) result = BP_ERR_IO;
     }
     if (result == BP_OK || result == BP_ERR_PARTIAL) {
-        if (!MoveFileExA(staged->temporary.c_str(), staged->target.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            if (win_directory_guards_still_name_paths(ctx))
-                DeleteFileA(staged->temporary.c_str());
-            delete staged;
-            ctx->last_subject_ok = false;
-            return BP_ERR_IO;
-        }
+        if (!win_publish_staged_file(ctx, staged)) result = BP_ERR_IO;
+    }
+    if (result == BP_OK || result == BP_ERR_PARTIAL) {
+        CloseHandle(staged->retained_handle);
+        staged->retained_handle = INVALID_HANDLE_VALUE;
         ctx->last_subject_ok = true;
         delete staged;
         if (result == BP_ERR_PARTIAL) ctx->partial_count++;
         return result;
     }
-    if (win_directory_guards_still_name_paths(ctx))
-        DeleteFileA(staged->temporary.c_str());
+    win_discard_staged_file(staged);
     delete staged;
     ctx->last_subject_ok = false;
     return result;
@@ -3474,6 +3630,7 @@ static void win_test_pause_for_phase(const wchar_t *phase)
     static bool directory_paused = false;
     static bool child_paused = false;
     static bool extract_root_paused = false;
+    static bool extract_stage_paused = false;
     wchar_t requested[32];
     bool *paused = NULL;
     const wchar_t *ready_name;
@@ -3493,6 +3650,10 @@ static void win_test_pause_for_phase(const wchar_t *phase)
         paused = &extract_root_paused;
         ready_name = L"extract-root.ready";
         release_name = L"extract-root.release";
+    } else if (wcscmp(phase, L"extract-stage") == 0) {
+        paused = &extract_stage_paused;
+        ready_name = L"extract-stage.ready";
+        release_name = L"extract-stage.release";
     } else {
         paused = &child_paused;
         ready_name = L"child-enumerated.ready";
