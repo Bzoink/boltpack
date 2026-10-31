@@ -1,0 +1,11 @@
+create-before-loop
+create-before-addpath
+addpath-attr-before
+addpath-attr-after
+addfile-open-before
+addfile-open-after
+addfile-length-before
+addfile-length-after
+addfile-entry-before
+addfile-entry-after
+create-after-addpath

@@ -873,11 +873,15 @@ Commander host and native Windows behavior remain open.
 2. Qualify CP437/CP850 names through actual DOS, Win16, and OS/2 filename APIs.
    DOS16 CP437 passes on DOSBox-X FAT12; CP850 uppercase passes on DOSBox-X,
    and lowercase passes on FreeDOS 1.4 FAT12 after loading its codepage tables.
-   Win16 and OS/2-16 now cross-build with Open Watcom; the binary hashes and run
-   conditions are retained at `build/r10-win16-os2-20261030/run.json`. Remaining
-   work is runtime qualification and explicit refusal checks for unmappable text
-   on those targets. DOSBox 0.74-3 host-mount failure
-   remains specific to that emulator path.
+   Win16 and OS/2-16 cross-build with Open Watcom; the binary hashes and run
+   conditions are retained at `build/r10-win16-os2-20261030/run.json`. A Wine 10.0
+   Win16 relative-path create produced a format-6 archive accepted by Linux full
+   and mini readers, with exact payload bytes on mini extraction. Wine did not
+   return a process status after Win16 `main` reached its return statement;
+   runtime lifecycle and diagnostics remain unqualified. See
+   [tracked Wine evidence](evidence/win16-wine-rerun-20261031.json). Remaining work is target runtime qualification, names, and explicit refusal
+   checks for unmappable text. DOSBox 0.74-3 host-mount failure remains specific
+   to that emulator path.
 3. QDOS archive projection now strips the trailing underscore type marker from
    directory `qdirect` names, preserves embedded underscores in names, strips
    recognized WIN/MDV/FLP/RAM/NFA/SFA drive prefixes only, rejects
