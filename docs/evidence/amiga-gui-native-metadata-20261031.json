@@ -1,0 +1,80 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Round-trip Amiga native protection and file comment through GUI create/extract",
+  "date": "2026-10-31",
+  "revision": "a4ea5a2",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf": {
+      "path": "build/amiga-gui-meta-probe/Workbench-gui-meta-test.adf",
+      "sha256": "0e536fb79d7489ef3d5393a3ed505c8ce8b493139389639254f0375ff9b8a7d4"
+    },
+    "startup_sequence_sha256": "59d209aa6230d7872980c50cd5383dafc76b0cd320464c4c0ee491f4acc390dc",
+    "host_directory_volume": "build/amiga-gui-meta-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "executables": {
+    "gui": {
+      "path": "build/amiga-gui-meta-probe/drive/BoltPackLog",
+      "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+      "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+      "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+      "instrumentation_scope": "Logging-only changes around menu dispatch and ASL Open."
+    },
+    "metadata_probe": {
+      "path": "build/amiga-gui-meta-probe/drive/METAPROBE",
+      "source": "test/amiga/metadata_probe.c",
+      "sha256": "7033415f49039e619f69a4c330214d15cc33251a074fbd90af46f2071129ebf4"
+    }
+  },
+  "input": {
+    "path": "DH0:META-SOURCE.TXT",
+    "bytes": 37,
+    "sha256": "1facbb043a6ccebb77a7a399d8987e73b9725413f2653af8ddc8165cc4506aa9",
+    "metadata_probe_set_rc": 0,
+    "metadata_before": "64:BoltPack archive comment",
+    "before_record_sha256": "33c513b4ace05360b09a0249d2910267c0efd513c2c55fd77edb7ff65cc9dff1"
+  },
+  "gui_flow": {
+    "create_archive": "META-GUI.BLTarchive.bolt",
+    "archive_sha256": "7ede2374550d64882ca7aba5cb7d862e79b40b3a400f3bc3ec22959e078de31f",
+    "format_version": 6,
+    "creator_os": "AmigaOS (68k)",
+    "extract_destination": "DH0:META-OUT",
+    "extract_rc": 0,
+    "extracted_path": "build/amiga-gui-meta-probe/drive/META-OUT/META-SOURCE.TXT",
+    "extracted_sha256": "1facbb043a6ccebb77a7a399d8987e73b9725413f2653af8ddc8165cc4506aa9",
+    "payload_matches": true,
+    "metadata_probe_get_rc": 0,
+    "metadata_after": "64:BoltPack archive comment",
+    "after_record_sha256": "33c513b4ace05360b09a0249d2910267c0efd513c2c55fd77edb7ff65cc9dff1",
+    "metadata_exact_match": true
+  },
+  "linux_cross_reader": {
+    "full_reader_test": "2 files OK",
+    "mini_reader_test": "both physical entries OK",
+    "full_reader_extract": "reports partial because Amiga metadata is unsupported; extracted payload matches the source exactly",
+    "linux_extracted_path": "build/amiga-gui-meta-probe/linux-extract/META-SOURCE.TXT",
+    "linux_extracted_sha256": "1facbb043a6ccebb77a7a399d8987e73b9725413f2653af8ddc8165cc4506aa9"
+  },
+  "guest_log": {
+    "path": "build/amiga-gui-meta-probe/drive/boldpack.log",
+    "sha256": "63594cae7031880e8275cfa2037f418b36bd9aa2030aba8314983ca2fdb03576"
+  },
+  "fs_uae_stdout": {
+    "path": "build/amiga-gui-meta-probe/fs-uae-meta-roundtrip.log",
+    "sha256": "768af67a6e414e9d2ded4ebe0d9031dc2f69d585a337f9439174c4596507f6ae"
+  },
+  "screenshot": {
+    "path": "build/amiga-gui-meta-probe/screen-gui-meta-extract-complete.png",
+    "sha256": "fd8a87a7ee4ff94793254bfbf82069ce780c2adad2d0d9f7dea5dd98b501365e"
+  },
+  "scope_limit": "This verifies one 37-byte file's FIBF_SCRIPT protection bit and AmigaDOS comment round-trip through GUI creation and extraction on an FS-UAE host-directory volume. It does not qualify dates, directory metadata, metadata failure handling, native OFS/FFS GUI behavior, other protection bits, or concurrent changes."
+}
