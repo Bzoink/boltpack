@@ -85,23 +85,28 @@ def main():
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     run_id = uuid.uuid4().hex[:10]
+    directory = manifest["directory_prefix"] + run_id
     member = (manifest["member_prefix"] + run_id +
               manifest["member_suffix"])
     out = Path(tempfile.mkdtemp(prefix="r08-win64-fltk-wine-",
                                 dir=args.output_root.resolve()))
     source_dir = out / "source"
     source_dir.mkdir()
-    source = source_dir / member
+    source_tree = source_dir / directory
+    source_tree.mkdir()
+    source = source_tree / member
     archive = out / "linux-created.blt"
     source.write_text(manifest["payload_utf8"], encoding="utf-8", newline="")
     expected_mtime = manifest["mtime_epoch_seconds"]
     os.utime(source, (expected_mtime, expected_mtime))
+    expected_directory_mtime = manifest["directory_mtime_epoch_seconds"]
+    os.utime(source_tree, (expected_directory_mtime, expected_directory_mtime))
     expected = source.read_bytes()
     if sha256(source) != manifest["payload_sha256"]:
         raise RuntimeError("fixture payload differs from its independent manifest")
 
     create = subprocess.run(
-        [str(linux), "c", "--store", str(archive), member],
+        [str(linux), "c", "--store", str(archive), directory],
         cwd=source_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, check=False)
     (out / "linux-create.log").write_text(create.stdout, encoding="utf-8")
@@ -115,9 +120,26 @@ def main():
     (out / "linux-integrity.log").write_text(verify.stdout, encoding="utf-8")
     if verify.returncode != 0:
         raise RuntimeError("Linux rejected the input archive: " + str(out))
+    linux_control = out / "linux-control"
+    linux_control.mkdir()
+    control = subprocess.run(
+        [str(linux), "x", "-o", str(linux_control), str(archive)], cwd=out,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        check=False)
+    (out / "linux-control-extract.log").write_text(control.stdout,
+                                                    encoding="utf-8")
+    control_tree = linux_control / directory
+    control_file = control_tree / member
+    if (control.returncode not in (0, 1) or not control_file.is_file() or
+        control_file.read_bytes() != expected or
+        int(control_file.stat().st_mtime) != expected_mtime or
+        int(control_tree.stat().st_mtime) != expected_directory_mtime):
+        raise RuntimeError("Linux control extraction did not preserve fixture data/times: " +
+                           str(out))
 
-    destination = (prefix / "drive_c" / "users" / args.wine_user / "Desktop" /
-                   member)
+    destination_tree = (prefix / "drive_c" / "users" / args.wine_user /
+                        "Desktop" / directory)
+    destination = destination_tree / member
     if destination.exists():
         raise RuntimeError("unique Wine Desktop destination already exists")
     env = os.environ.copy()
@@ -148,6 +170,10 @@ def main():
         if actual_mtime != expected_mtime:
             raise RuntimeError("Win64 FLTK output mtime differs from the archive: " +
                                str(actual_mtime))
+        actual_directory_mtime = int(destination_tree.stat().st_mtime)
+        if actual_directory_mtime != expected_directory_mtime:
+            raise RuntimeError("Win64 FLTK output directory mtime differs from "
+                               "the archive: " + str(actual_directory_mtime))
         result = "passed_under_wine"
     except Exception as exc:  # retain a failure record with runtime state
         error = str(exc)
@@ -189,22 +215,30 @@ def main():
         "archive": str(archive.relative_to(ROOT)),
         "archive_sha256": sha256(archive),
         "member": member,
+        "member_directory": directory,
         "source_sha256": sha256(source),
         "expected_mtime_epoch_seconds": expected_mtime,
+        "expected_directory_mtime_epoch_seconds": expected_directory_mtime,
+        "linux_control_file_mtime_epoch_seconds": int(control_file.stat().st_mtime),
+        "linux_control_directory_mtime_epoch_seconds": int(control_tree.stat().st_mtime),
         "destination": str(destination),
         "destination_sha256": sha256(destination) if destination.is_file() else None,
         "destination_mtime_epoch_seconds": (int(destination.stat().st_mtime)
                                              if destination.is_file() else None),
+        "destination_directory_mtime_epoch_seconds": (
+            int(destination_tree.stat().st_mtime) if destination_tree.is_dir()
+            else None),
         "payload_byte_identical": destination.is_file() and
                                   destination.read_bytes() == expected,
         "wine_exit_status": process.returncode,
-        "artifacts": {path.name: sha256(path) for path in out.iterdir()
-                      if path.is_file()},
+        "artifacts": {str(path.relative_to(out)): sha256(path)
+                      for path in sorted(out.rglob("*")) if path.is_file()},
     }
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
                                    encoding="utf-8")
     if result == "passed_under_wine":
         destination.unlink()
+        destination_tree.rmdir()
     print(json.dumps(record, indent=2))
     if result != "passed_under_wine" or process.returncode != 0:
         raise SystemExit("Win64 FLTK Wine extraction failed; evidence: " + str(out))
