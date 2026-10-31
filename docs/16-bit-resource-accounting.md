@@ -123,12 +123,11 @@ in the `WRITMAX` writer workload; the earlier 35-frame rejected-tree run was
 instrumented project wrappers and excludes allocator metadata and runtime
 allocations. Cumulative requested and usable byte columns sum calls (including
 every `realloc` request) for a command and are not concurrent memory totals.
-The 2026-10-30 rerun of
-`make CC=gcc dos16-interoperability-test` and
+The 2026-10-31 rerun of
 `make CC=gcc dos16-stack-interoperability-test` passed the DOS16 allocation,
 resource-bound, stack, replacement, and Linux-transfer checks; its per-command
 measurements are retained in `build/dos16-stack/resource-low-water.txt`. The
-instrumented depth-bound run reports a 360,144-byte DOS-manager largest-block
+instrumented depth-bound run reports a 358,784-byte DOS-manager largest-block
 low-water; use this as the latest observed value, not as a general capacity
 guarantee. This measures the DOS manager's largest available block in this
 DOSBox setup, not guaranteed Watcom `malloc` capacity. Allocator headers,
@@ -170,18 +169,22 @@ prove a general minimum-memory guarantee; the DOS manager's free-block low-water
 from the other workloads remains a separate measurement.
 
 The test-only DOS16 CLI samples `stackavail()` at mini-core, shared-frontend,
-and CLI function entries. An earlier 2 KiB-stack corpus observed 172 bytes
+and CLI function entries. The resource probe now also samples BoltLite search
+(once per process), BoltLite compression/decompression, BoltLZ decompression,
+and DOS16 extraction callbacks. An earlier 2 KiB-stack corpus observed 172 bytes
 available before moving the projected-name scratch strings to the heap, then
 627 bytes afterward. With the DOS16 linker stack reservation set to 8 KiB, the
 accepted source-tree fixture reaches 34 nested directory frames (the `DEEP`
-root plus 33 single-component descendants) and observes 3,706 bytes available
-at `src/core/mini/compress.c:42`. DOS16 now caps recursive source traversal at
+root plus 33 single-component descendants) and observes 3,600 bytes available
+at the BoltLite compression probe. DOS16 now caps recursive source traversal at
 34 directory frames. The same fixture with 35 directory frames is refused
 before entering the next recursive frame; its staged archive is removed and no
-final archive is published. The rejected case observes 3,700 bytes at the
-compression probe while recording the refusal. This is a workload-derived
-supported bound with at least 3,700 bytes sampled remaining in the deepest
-tested call path, not a static proof of worst-case stack consumption. The
+final archive is published. The rejected case observes 3,596 bytes at the
+compression probe while recording the refusal. Across the corpus the new
+lowest sample is 3,594 bytes in `DEEPBAD.TXT` at the BoltLite compression
+probe. This is a workload-derived supported bound with at least 3,594 bytes
+sampled remaining in the deepest tested call paths, not a static proof of
+worst-case stack consumption. The
 runner records each command's minimum and source line. Short-lived stack use
 between probes, other command paths, compiler/runtime variations, and
 Win16/OS/2-16 are not covered. The instrumented probe itself consumes some
@@ -208,7 +211,7 @@ and Watcom allocation usable-block observations in
 The maximum writer archive and its run record are retained as
 `build/dos16-stack/WRITMAX.BLT` and
 `build/dos16-stack/writer-resource-run.json`.
-The latest report has a 3,700-byte sampled minimum stack, a 360,144-byte
+The latest report has a 3,594-byte sampled minimum stack, a 358,784-byte
 DOS-manager largest-block minimum, a 163,286-byte instrumented live-usable
 allocation high-water, and a largest observed allocation rounding difference
 of 5 bytes. The high-water includes the maximum writer table plus BoltLite

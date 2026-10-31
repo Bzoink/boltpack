@@ -402,10 +402,12 @@ manifest. Validate BeOS separately only if it returns to scope.
 including 20 DOS16 core cases, all 26 allocation-failure injections, the table,
 projected-index, and queue bounds, and DOS16-to-Linux transfer. The instrumented
 `make CC=gcc dos16-stack-interoperability-test` passed after adding a source
-recursion cap: 34 directory frames succeed, the first deeper tree is refused,
-and no final archive or stage remains. At the deepest accepted workload the
-lowest sampled stack availability is 3,706 bytes; the refused workload records
-3,700 bytes. The DOS manager's largest-block low-water is 360,144 bytes. The
+recursion cap and deeper stack probes in BoltLite search/compression, BoltLZ
+decode, and DOS16 extraction callbacks: 34 directory frames succeed, the first
+deeper tree is refused, and no final archive or stage remains. The accepted
+deep-tree run observes 3,600 bytes available; the refused workload records
+3,596 bytes, and the lowest sample across the corpus is 3,594 bytes. The DOS
+manager's largest-block low-water is 358,784 bytes. The
 instrumented Watcom `_msize()` observations report a largest requested block
 of 65,502 bytes and a 163,286-byte peak of tracked live-usable allocations in
 the maximum writer workload. The tracker follows alloc/free/realloc without a heap table, but
