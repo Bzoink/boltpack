@@ -761,6 +761,16 @@ Standard `<stdio.h>` wrappers provided by mintlib, which is **statically linked*
 
 Uses POSIX `opendir()` / `readdir()` / `stat()` from mintlib. Depth-first walk; directory entry emitted before its contents. Symlinks (available only under MiNT) are silently skipped.
 
+### Atari: Source Change Checks
+
+For each regular source file, the CLI computes a CRC-32 before opening the file
+for archiving, compares that value with the archive writer's checksum, then
+checks the current pathname's CRC-32 again after the source stream closes. This
+detects content substitutions that preserve TOS size and timestamp fields. It
+adds two full reads of each source in addition to the archive read. CRC
+collisions, changes between the initial metadata check and baseline hash, and
+changes after the final hash remain possible.
+
 ### Atari: Platform Metadata
 
 After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_OS_ATARI` is written. Its payload is exactly **1 byte**: the TOS attribute flags.
