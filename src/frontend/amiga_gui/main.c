@@ -183,6 +183,74 @@ static char **gather_files;
 static bp_uint8 gather_types[MAX_ENTRIES];
 static int gather_capacity;
 
+/* Format Unix seconds without libc localtime/strftime: those pull in
+ * locale.library on this target, which AmigaOS 2.04 does not provide. */
+static int format_utc_timestamp(long seconds, char *buf, size_t buf_size)
+{
+    long days;
+    long day_seconds;
+    long z;
+    long era;
+    long day_of_era;
+    long year_of_era;
+    long year;
+    long day_of_year;
+    long month_prime;
+    long month;
+    long day;
+    long hour;
+    long minute;
+    long value;
+
+    if (buf == NULL || buf_size < 18)
+        return 0;
+
+    days = seconds / 86400L;
+    day_seconds = seconds % 86400L;
+    if (day_seconds < 0) {
+        days--;
+        day_seconds += 86400L;
+    }
+
+    /* Gregorian civil date from days since 1970-01-01. */
+    z = days + 719468L;
+    era = (z >= 0 ? z : z - 146096L) / 146097L;
+    day_of_era = z - era * 146097L;
+    year_of_era = (day_of_era - day_of_era / 1460L +
+                   day_of_era / 36524L - day_of_era / 146096L) / 365L;
+    year = year_of_era + era * 400L;
+    day_of_year = day_of_era -
+                  (365L * year_of_era + year_of_era / 4L -
+                   year_of_era / 100L);
+    month_prime = (5L * day_of_year + 2L) / 153L;
+    day = day_of_year - (153L * month_prime + 2L) / 5L + 1L;
+    month = month_prime + (month_prime < 10L ? 3L : -9L);
+    year += month <= 2L ? 1L : 0L;
+
+    hour = day_seconds / 3600L;
+    minute = (day_seconds % 3600L) / 60L;
+    value = year;
+    buf[3] = (char)('0' + value % 10L); value /= 10L;
+    buf[2] = (char)('0' + value % 10L); value /= 10L;
+    buf[1] = (char)('0' + value % 10L); value /= 10L;
+    buf[0] = (char)('0' + value % 10L);
+    buf[4] = '-';
+    buf[5] = (char)('0' + month / 10L);
+    buf[6] = (char)('0' + month % 10L);
+    buf[7] = '-';
+    buf[8] = (char)('0' + day / 10L);
+    buf[9] = (char)('0' + day % 10L);
+    buf[10] = ' ';
+    buf[11] = (char)('0' + hour / 10L);
+    buf[12] = (char)('0' + hour % 10L);
+    buf[13] = ':';
+    buf[14] = (char)('0' + minute / 10L);
+    buf[15] = (char)('0' + minute % 10L);
+    buf[16] = 'Z';
+    buf[17] = '\0';
+    return 1;
+}
+
 static void show_requester(const char *title, const char *msg);
 static void refresh_window_title(void);
 static void refresh_idle_status(void);
@@ -265,23 +333,9 @@ static void log_message(const char *fmt, ...)
 {
 #if BP_GUI_DEV_LOGGING
     va_list ap;
-    time_t now;
-    struct tm *tm_info;
-    char ts[32];
 
     if (log_fp == NULL)
         return;
-
-    ts[0] = '\0';
-    now = time(NULL);
-    if (now != (time_t)-1) {
-        tm_info = localtime(&now);
-        if (tm_info != NULL)
-            strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", tm_info);
-    }
-
-    if (ts[0] != '\0')
-        fprintf(log_fp, "[%s] ", ts);
 
     va_start(ap, fmt);
     vfprintf(log_fp, fmt, ap);
@@ -1315,19 +1369,11 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     else
         strcpy(ratio_s, "-");
 
-    {
-        double secs = u64_to_dbl(entry->mtime);
-        if (secs > 0) {
-            time_t t = (time_t)secs;
-            struct tm *tm = localtime(&t);
-            if (tm)
-                strftime(date_s, sizeof(date_s), "%Y-%m-%d %H:%M", tm);
-            else
-                strcpy(date_s, "-");
-        } else {
-            strcpy(date_s, "-");
-        }
-    }
+    if (entry->mtime.hi != 0 || entry->mtime.lo == 0 ||
+        entry->mtime.lo > (bp_uint32)LONG_MAX ||
+        !format_utc_timestamp((long)entry->mtime.lo,
+                              date_s, sizeof(date_s)))
+        strcpy(date_s, "-");
 
     sprintf(en->display, "%-28.28s %8s %8s %5s %-8s %s",
             entry->name ? entry->name : "(unknown)",
