@@ -48,8 +48,8 @@ Reopen native Plan 9 qualification when a working environment is available.**
    changes needed in the platform tasks; give each concrete defect its own
    regression and change.
 3. Continue R06 only with a new diagnostic or newly available GUI/filesystem
-   input. R07's qdirect investigation is now recorded; recursive source
-   qualification requires a backend that returns actual directory records.
+   input. R07 recursive source enumeration now passes on sQLux hostFS using
+   `Q_DIR`/`IO_FSTRG`; its remaining cases require a physical QDOS filesystem.
 4. Prepare environment prerequisites for active target tasks R08–R11, R13, and
    R15 while local work proceeds. Skip deferred R12 and the unavailable native
    portion of R14; an unavailable environment for another task must not prevent
@@ -67,7 +67,7 @@ race-safety work without attempting guest setup.
 | --- | --- |
 | Ready for local work | R01–R05; R14 host-shim checks |
 | Local investigation with a bounded new approach | R06 GUI input and parent-path cases |
-| Depends on a target environment or additional filesystem | R07 recursive QDOS source enumeration/recovery; R08–R11; R13, R15 |
+| Depends on a target environment or additional filesystem | R07 physical QDOS metadata/recovery; R08–R11; R13, R15 |
 | Deferred by environment availability | R14 — native Plan 9 rerun and other CPUs; host-shim checks remain active |
 | Deferred by user scope decision | R12 — Haiku/BeOS native qualification |
 | Depends on preceding results | R16 and R17 |
