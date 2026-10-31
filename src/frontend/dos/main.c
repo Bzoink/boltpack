@@ -20,6 +20,7 @@
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
 #include "../../core/bp_metadata.h"
+#include "dos_rename.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1157,9 +1158,12 @@ static int extract_backup_name(const char *target, char *backup,
     return -1;
 }
 
+static int dos_archive_same_renamed_stat(const struct stat *a,
+                                         const struct stat *b);
+
 static int extract_publish(extract_ctx_t *ctx)
 {
-    struct stat st;
+    struct stat st, backup_stat;
     char backup[BP_MAX_PATH];
     int have_target = stat(ctx->target_path, &st) == 0;
 
@@ -1167,9 +1171,18 @@ static int extract_publish(extract_ctx_t *ctx)
         if (!ctx->force || !S_ISREG(st.st_mode)) return BP_ERR_IO;
         if (extract_backup_name(ctx->target_path, backup, sizeof(backup)) != 0)
             return BP_ERR_IO;
-        if (rename(ctx->target_path, backup) != 0) return BP_ERR_IO;
-        if (rename(ctx->stage_path, ctx->target_path) != 0) {
-            int restore_rc = rename(backup, ctx->target_path);
+        if (dos_rename_no_replace(ctx->target_path, backup) != 0)
+            return BP_ERR_IO;
+        if (lstat(backup, &backup_stat) != 0 ||
+            !dos_archive_same_renamed_stat(&backup_stat, &st)) {
+            if (dos_rename_no_replace(backup, ctx->target_path) != 0)
+                fprintf(stderr,
+                        "boltpack: existing file remains at recovery path: %s\n",
+                        backup);
+            return BP_ERR_IO;
+        }
+        if (dos_rename_no_replace(ctx->stage_path, ctx->target_path) != 0) {
+            int restore_rc = dos_rename_no_replace(backup, ctx->target_path);
             if (restore_rc != 0)
                 fprintf(stderr,
                         "boltpack: existing file remains at recovery path: %s\n",
@@ -1180,7 +1193,8 @@ static int extract_publish(extract_ctx_t *ctx)
         return BP_OK;
     }
     if (errno != ENOENT) return BP_ERR_IO;
-    return rename(ctx->stage_path, ctx->target_path) == 0 ? BP_OK : BP_ERR_IO;
+    return dos_rename_no_replace(ctx->stage_path, ctx->target_path) == 0 ?
+           BP_OK : BP_ERR_IO;
 }
 
 static int dos_archive_stat(const char *path, int *exists,
@@ -1285,21 +1299,21 @@ static int dos_archive_publish(const char *target, const char *stage,
         return BP_ERR_IO;
 
     if (!exists)
-        return rename(stage, target) == 0 ? BP_OK : BP_ERR_IO;
+        return dos_rename_no_replace(stage, target) == 0 ? BP_OK : BP_ERR_IO;
 
     if (extract_backup_name(target, backup, sizeof(backup)) != 0 ||
-        rename(target, backup) != 0)
+        dos_rename_no_replace(target, backup) != 0)
         return BP_ERR_IO;
     if (lstat(backup, &backup_stat) != 0 ||
         !dos_archive_same_renamed_stat(&backup_stat, expected_stat)) {
-        if (rename(backup, target) != 0)
+        if (dos_rename_no_replace(backup, target) != 0)
             fprintf(stderr,
                     "boltpack: original archive remains at recovery path: %s\n",
                     backup);
         return BP_ERR_IO;
     }
-    if (rename(stage, target) != 0) {
-        if (rename(backup, target) != 0)
+    if (dos_rename_no_replace(stage, target) != 0) {
+        if (dos_rename_no_replace(backup, target) != 0)
             fprintf(stderr,
                     "boltpack: original archive remains at recovery path: %s\n",
                     backup);
