@@ -2547,6 +2547,37 @@ static int queue_directory_restore(ExtractCtx *ctx, const std::string &path,
     return BP_OK;
 }
 
+static int win_set_path_mtime_utf8(const std::string &path, bp_uint64 mtime)
+{
+    const ULONGLONG ticks_per_second = 10000000ULL;
+    const ULONGLONG unix_epoch_filetime = 11644473600ULL * ticks_per_second;
+    bp_off_t seconds = bp_u64_to_off(mtime);
+    time_t converted = (time_t)seconds;
+    ULONGLONG ticks;
+    FILETIME file_time;
+    HANDLE handle;
+    int result = BP_ERR_PARTIAL;
+
+    if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), mtime) != 0 ||
+        (bp_off_t)converted != seconds ||
+        (ULONGLONG)seconds >
+            ((ULONGLONG)~(ULONGLONG)0 - unix_epoch_filetime) /
+                ticks_per_second)
+        return BP_ERR_PARTIAL;
+    ticks = unix_epoch_filetime + (ULONGLONG)seconds * ticks_per_second;
+    file_time.dwLowDateTime = (DWORD)ticks;
+    file_time.dwHighDateTime = (DWORD)(ticks >> 32);
+    handle = win_CreateFileA_utf8(path.c_str(), FILE_WRITE_ATTRIBUTES,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                      FILE_SHARE_DELETE,
+                                  NULL, OPEN_EXISTING,
+                                  FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return BP_ERR_PARTIAL;
+    if (SetFileTime(handle, NULL, NULL, &file_time)) result = BP_OK;
+    if (!CloseHandle(handle)) result = BP_ERR_PARTIAL;
+    return result;
+}
+
 static int finish_directory_restores(ExtractCtx *ctx)
 {
     int result = BP_OK;
@@ -2557,20 +2588,9 @@ static int finish_directory_restores(ExtractCtx *ctx)
               });
     for (size_t i = 0; i < ctx->directories.size(); ++i) {
         const ExtractCtx::DirectoryRestore &node = ctx->directories[i];
-        if (node.mtime_valid) {
-            bp_off_t seconds = bp_u64_to_off(node.mtime);
-            time_t t = (time_t)seconds;
-            struct _stat64 st;
-            struct utimbuf ut;
-            if (seconds < 0 || bp_u64_cmp(bp_off_to_u64(seconds), node.mtime) != 0 ||
-                (bp_off_t)t != seconds || _stat64(node.path.c_str(), &st) != 0) {
-                result = BP_ERR_PARTIAL;
-            } else {
-                ut.actime = (time_t)st.st_atime;
-                ut.modtime = t;
-                if (utime(node.path.c_str(), &ut) != 0) result = BP_ERR_PARTIAL;
-            }
-        }
+        if (node.mtime_valid &&
+            win_set_path_mtime_utf8(node.path, node.mtime) != BP_OK)
+            result = BP_ERR_PARTIAL;
         if (node.fat_valid && apply_windows_fat(node.path, node.fat_valid,
                                                 node.fat_value) != BP_OK)
             result = BP_ERR_PARTIAL;
