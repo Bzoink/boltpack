@@ -640,6 +640,15 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   existing-destination preservation, dry-run, create/add, and reader
   interoperability. Native Plan 9 reruns remain deferred. Haiku native
   validation remains deferred under R12 by user decision.
+- The Win64 FLTK creator now refuses a selected source root or enumerated child
+  carrying `FILE_ATTRIBUTE_REPARSE_POINT`, preventing detected junction/symlink
+  traversal and cycles. The target compiles, and its existing Unicode create
+  case still passes under Wine; evidence is
+  [`win64-fltk-reparse-source-20261031.json`](evidence/win64-fltk-reparse-source-20261031.json).
+  No reparse-point runtime fixture has exercised the refusal yet, and a
+  reparse-point substitution between attribute check and file open remains a
+  Windows source check/use race. Keep that regression and race qualification
+  open in R08.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.
