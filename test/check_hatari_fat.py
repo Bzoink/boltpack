@@ -18,6 +18,8 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_PATH = ROOT / "test/reference/interoperability/atari-amiga-fsuae.json"
 ATARI_AMIGA = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
+UNICODE_EXPECTED_PATH = ROOT / "test/reference/interoperability/atari-cli-unicode-refusal.json"
+UNICODE_EXPECTED = json.loads(UNICODE_EXPECTED_PATH.read_text(encoding="utf-8"))
 
 
 def sha256(path):
@@ -108,6 +110,19 @@ def main():
             if result.returncode not in expected:
                 raise RuntimeError("command failed; evidence: " + str(out))
             return result.stdout
+        unicode_source = out / "unicode-source"
+        unicode_source.mkdir()
+        unicode_payloads = {}
+        for item in UNICODE_EXPECTED["entries"]:
+            payload = item["content"].encode("utf-8")
+            if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+                raise RuntimeError("independent Unicode manifest hash mismatch for " + item["name"])
+            (unicode_source / item["name"]).write_bytes(payload)
+            unicode_payloads[item["name"]] = payload
+        unicode_archive = out / UNICODE_EXPECTED["archive"]
+        run([str(linux), "c", str(unicode_archive)] +
+            [item["name"] for item in UNICODE_EXPECTED["entries"]], unicode_source)
+        run([str(linux), "t", str(unicode_archive)])
         run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
              "-Isrc/core",
              str(ROOT / "test/atari/wrong_type_metadata_fixture.c"),
@@ -141,6 +156,9 @@ def main():
         run([args.cc, "-O2", str(ROOT / "test/atari/guest_runner.c"), "-o", str(host / "RUN.TOS")])
         run([str(linux), "c", "--interchange-profile-1", "-1", "LINUX.BLT", "SRC.TXT"], host)
         run(["mformat", "-i", str(image), "-C", "-f", "720", "::"])
+        run(["mcopy", "-i", str(image), str(unicode_archive),
+             "::/" + UNICODE_EXPECTED["archive"]])
+        run(["mmd", "-i", str(image), "::/" + UNICODE_EXPECTED["output_directory"]])
         for name in ("SRC.TXT", "NEW.TXT", "LINUX.BLT"):
             run(["mcopy", "-m", "-i", str(image), str(host / name), "::/" + name])
         run(["mcopy", "-i", str(image), str(host / "LINUX.BLT"), "::/EDIT.BLT"])
@@ -178,6 +196,7 @@ def main():
             r"a A:\READONLY.BLT A:\NEW.TXT",
             r"d A:\READONLY.BLT SRC.TXT",
             r"c A:\READONLY.BLT A:\NEW.TXT",
+            r"x -o A:\UNIOUT A:\UNICODE.BLT",
         ]
         if args.amiga_archive:
             commands.append(r"x -o A:\AMIOUT A:\AMIGA.BLT")
@@ -193,11 +212,21 @@ def main():
              "--auto", r"C:\RUN.TOS"], ROOT, env, timeout=80)
         statuses = (host / "RESULT.TXT").read_text().splitlines()
         expected_statuses = ["0", "0", "0", "1", "0", "0", "1", "0", "0",
-                             "0", "0", "1", "1", "1"]
+                             "0", "0", "1", "1", "1", "1"]
         if args.amiga_archive:
             expected_statuses.append("1")
         if statuses != expected_statuses:
             raise RuntimeError("guest command statuses %r; evidence: %s" % (statuses, out))
+        unicode_log = (host / "LOG14.TXT").read_text(errors="replace")
+        if "unsafe or unrepresentable Atari name: payload-🧪.txt" not in unicode_log:
+            raise RuntimeError("Atari CLI did not explicitly refuse the UTF-8 name; evidence: " + str(out))
+        unicode_listing = run(["mdir", "-b", "-i", str(image),
+                               "::/" + UNICODE_EXPECTED["output_directory"]]).decode("ascii")
+        (out / "unicode-output-listing.txt").write_text(unicode_listing, encoding="ascii")
+        unicode_names = [line.strip() for line in unicode_listing.splitlines() if line.strip()]
+        if unicode_names:
+            raise RuntimeError("Atari CLI partially published entries despite name preflight: " +
+                               repr(unicode_names) + "; evidence: " + str(out))
         extract_log = (host / "LOG03.TXT").read_text(errors="replace")
         if "some attributes were not restored" not in extract_log:
             raise RuntimeError("Atari directory metadata limitation was not reported; evidence: " + str(out))
@@ -354,6 +383,7 @@ def main():
         locale_name = "unknown"
     source_paths = (
         ROOT / "Makefile", Path(__file__).resolve(), EXPECTED_PATH,
+        UNICODE_EXPECTED_PATH,
         ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver.c",
         ROOT / "src/core/compress.c", ROOT / "src/core/bp_codepage.c",
         ROOT / "test/atari/guest_runner.c",
@@ -381,6 +411,19 @@ def main():
             "path": EXPECTED_PATH.relative_to(ROOT).as_posix(),
             "size": EXPECTED_PATH.stat().st_size,
             "sha256": sha256(EXPECTED_PATH),
+        },
+        "unicode_refusal_manifest": {
+            "path": UNICODE_EXPECTED_PATH.relative_to(ROOT).as_posix(),
+            "size": UNICODE_EXPECTED_PATH.stat().st_size,
+            "sha256": sha256(UNICODE_EXPECTED_PATH),
+            "archive_sha256": sha256(unicode_archive),
+            "entry_payload_sha256": {
+                name: hashlib.sha256(payload).hexdigest()
+                for name, payload in unicode_payloads.items()
+            },
+            "guest_status": statuses[14],
+            "diagnostic_log": "LOG14.TXT",
+            "destination_empty": not unicode_names,
         },
         "inputs": {
             "tos_sha256": sha256(tos),

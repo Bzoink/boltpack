@@ -1,0 +1,23 @@
+{
+  "case": "Atari CLI preflights a Linux-created v6 archive with an unrepresentable UTF-8 filename",
+  "archive": "UNICODE.BLT",
+  "output_directory": "UNIOUT",
+  "entries": [
+    {
+      "name": "plain.txt",
+      "content": "Representable sibling must remain unpublished.\n",
+      "sha256": "f8864618ab1b2cfad68ec5d8ec4d8eda39b4666c074e4e80a49c7abfd17dcf8f"
+    },
+    {
+      "name": "payload-🧪.txt",
+      "content": "UTF-8 name outside Atari ST character set.\n",
+      "sha256": "039a515552e37cdef3e11218284412d831d9ed1f41c0ad4d8ca7338b7b152aea"
+    }
+  ],
+  "expected": {
+    "linux_archive_integrity": "pass",
+    "atari_extraction": "explicit refusal before publishing any entry",
+    "destination": "pre-existing empty output directory remains empty",
+    "diagnostic": "unsafe or unrepresentable Atari name"
+  }
+}
