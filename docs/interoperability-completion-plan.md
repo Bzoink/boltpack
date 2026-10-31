@@ -885,9 +885,10 @@ Commander host and native Windows behavior remain open.
    Win16 and OS/2-16 cross-build with Open Watcom; the binary hashes and run
    conditions are retained at `build/r10-win16-os2-20261030/run.json`. A Wine 10.0
    Win16 relative-path create produced a format-6 archive accepted by Linux full
-   and mini readers, with exact payload bytes on mini extraction. Wine did not
-   return a process status after Win16 `main` reached its return statement;
-   runtime lifecycle and diagnostics remain unqualified. See
+   and mini readers, and Win16 extraction of a Linux-created archive produced
+   exact payload bytes. Both Wine commands timed out without returning a process
+   status; instrumented create flow reached `main`’s return statement. Runtime
+   lifecycle and diagnostics remain unqualified. See
    [tracked Wine evidence](evidence/win16-wine-rerun-20261031.json). Remaining work is target runtime qualification, names, and explicit refusal
    checks for unmappable text. DOSBox 0.74-3 host-mount failure remains specific
    to that emulator path.
