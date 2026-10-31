@@ -3138,6 +3138,15 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                const char *arc_name)
 {
     struct _stat64 st;
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributesA(filepath);
+    /* Do not follow a selected root or a child substituted with a reparse
+       point. The archive source tree is limited to ordinary filesystem
+       entries; junctions and symbolic links need an explicit format policy. */
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return BP_ERR_IO;
+#endif
     if (_stat64(filepath, &st) != 0) return BP_ERR_IO;
 
     if (S_ISDIR(st.st_mode)) {
@@ -3194,6 +3203,12 @@ static int list_directory_names(const char *dirpath,
         if (wcscmp(data.cFileName, L".") == 0 ||
             wcscmp(data.cFileName, L"..") == 0)
             continue;
+        /* Refuse the whole source tree instead of traversing outside it via
+           a junction/symlink or recursing through a reparse-point cycle. */
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            rc = BP_ERR_IO;
+            break;
+        }
         if (!win_wide_to_utf8(data.cFileName, &utf8_name)) {
             rc = BP_ERR_NAME_TOO_LONG;
             break;

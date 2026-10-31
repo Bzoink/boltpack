@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-31",
+  "purpose": "Refuse detected Windows reparse points during Win64 FLTK source archive creation.",
+  "change": "The creator checks the selected root attributes and refuses enumerated children with FILE_ATTRIBUTE_REPARSE_POINT. This prevents detected junction/symlink traversal and cycles.",
+  "build": {
+    "target": "make CC=gcc win64-fltk-gui",
+    "result": "passed"
+  },
+  "regression": {
+    "target": "make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-create-test",
+    "result": "passed_under_wine",
+    "runtime": "Wine 10.0 (Debian 10.0~repack-6), Xvfb",
+    "run_record": "../../build/r08-win64-fltk-wine-create-czd_qgqs/run.json",
+    "run_record_sha256": "efd3dbb79b7061cc4247181bf7a908dbe7d94e4fe6be9a3173b2be468ccf8176",
+    "gui_sha256": "0359538d3e2184d7cbaa7097704eef4674504ae65ce4ce91b32183676cf8cc76",
+    "unicode_payload_byte_identical": true,
+    "linux_full_and_mini_readers_passed": true,
+    "wine_exit_status": 0
+  },
+  "source_revision": "4a1523c08527d97ea2eed24265ebbdd830456032",
+  "scope_limits": [
+    "The Wine regression exercises ordinary Unicode source creation, not reparse-point refusal.",
+    "No runtime reparse-point fixture has verified the refusal yet.",
+    "A reparse-point substitution between the attribute check and file open remains a Windows source check/use race.",
+    "Native Windows behavior remains unqualified."
+  ]
+}
