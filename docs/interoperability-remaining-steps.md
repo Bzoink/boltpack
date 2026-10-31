@@ -640,15 +640,17 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   existing-destination preservation, dry-run, create/add, and reader
   interoperability. Native Plan 9 reruns remain deferred. Haiku native
   validation remains deferred under R12 by user decision.
-- The Win64 FLTK creator now refuses a selected source root or enumerated child
-  carrying `FILE_ATTRIBUTE_REPARSE_POINT`, preventing detected junction/symlink
-  traversal and cycles. The target compiles, and its existing Unicode create
-  case still passes under Wine; evidence is
-  [`win64-fltk-reparse-source-20261031.json`](evidence/win64-fltk-reparse-source-20261031.json).
-  No reparse-point runtime fixture has exercised the refusal yet, and a
-  reparse-point substitution between attribute check and file open remains a
-  Windows source check/use race. Keep that regression and race qualification
-  open in R08.
+- The Win64 FLTK creator refuses a selected source root or enumerated child
+  carrying `FILE_ATTRIBUTE_REPARSE_POINT`. Its build and ordinary Unicode create
+  case pass under Wine, but a targeted Wine probe created a host symlink whose
+  target was outside the selected tree. Wine exposed the link as an ordinary
+  file; the GUI archived the 49-byte outside target, and Linux extracted bytes
+  with the same SHA-256 as the outside sentinel. The retained probe is
+  [`build/r08-win64-fltk-reparse-093hhy7w/run.json`](../build/r08-win64-fltk-reparse-093hhy7w/run.json).
+  This is evidence of Wine's host-filesystem mapping behavior, not a Windows
+  reparse-point result. Run the refusal fixture on native Windows with a real
+  junction/symlink, then cover a substitution between attribute check and file
+  open; both remain open in R08.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.
