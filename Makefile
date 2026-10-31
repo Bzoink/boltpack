@@ -488,6 +488,15 @@ win64-wcx-wine-test: win64-wcx all
 	    --wcx $(WIN64_BUILDDIR)/boltpack.wcx64 \
 	    --linux-boltpack build/linux/boltpack
 
+# Exercise production Win64 FLTK UTF-8 extraction in an interactive Wine session.
+WIN64_FLTK_WINE_PREFIX ?= build/win64/wineprefix-interop64
+.PHONY: win64-fltk-wine-extract-test
+win64-fltk-wine-extract-test: modern win64-fltk-gui
+	xvfb-run -a python3 test/check_win64_fltk_wine.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack
+
 win32-config:
 	mkdir -p $(WIN32_BUILDDIR)
 	i686-w64-mingw32-windres $(WCX_SRCDIR)/boltpack-config.rc \
