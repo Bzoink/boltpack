@@ -67,12 +67,15 @@ def main():
     host = out / "host"
     host.mkdir()
     (host / "OUT").mkdir()
-    payload = host / "PAYLOAD.BIN"
+    tree = host / "TREE"
+    tree.mkdir()
+    payload = tree / "PAYLOAD.BIN"
     payload.write_bytes(PAYLOAD)
     os.utime(payload, (MTIME_2040, MTIME_2040))
+    os.utime(tree, (MTIME_2040, MTIME_2040))
     shutil.copy2(gui, host / "BOLTPACK.PRG")
 
-    created = run([str(linux), "c", "--store", "ARCHIVE.BLT", payload.name],
+    created = run([str(linux), "c", "--store", "ARCHIVE.BLT", tree.name],
                   host, timeout=60)
     (out / "create.log").write_text(created.stdout, encoding="utf-8")
     if created.returncode != 0:
@@ -81,9 +84,11 @@ def main():
     (out / "archive-test.log").write_text(tested.stdout, encoding="utf-8")
     if tested.returncode != 0:
         raise RuntimeError("Linux rejected the timestamp fixture: " + str(out))
-    archived = archived_mtimes(host / "ARCHIVE.BLT").get(payload.name)
-    if archived is None or archived[0] != MTIME_2040 or not (archived[1] & 0x4000):
-        raise RuntimeError("fixture archive does not contain a valid 2040 mtime")
+    archived = archived_mtimes(host / "ARCHIVE.BLT")
+    for name in ("TREE/", "TREE/PAYLOAD.BIN"):
+        item = archived.get(name)
+        if item is None or item[0] != MTIME_2040 or not (item[1] & 0x4000):
+            raise RuntimeError("fixture archive lacks valid 2040 mtime for " + name)
 
     script = out / "HCONSOLE.TXT"
     script.write_text("\n".join((
@@ -113,10 +118,13 @@ def main():
     if not screenshot.is_file():
         raise RuntimeError("Hatari did not capture the extraction result: " + str(out))
 
-    target = host / "OUT" / payload.name
+    extracted_tree = host / "OUT" / tree.name
+    target = extracted_tree / payload.name
     if not target.is_file() or target.read_bytes() != PAYLOAD:
         raise RuntimeError("out-of-range mtime changed or lost verified payload bytes: " + str(out))
-    leftovers = sorted(path.name for path in (host / "OUT").iterdir() if path != target)
+    expected_paths = {host / "OUT", extracted_tree, target}
+    leftovers = sorted(str(path.relative_to(host / "OUT"))
+                       for path in (host / "OUT").rglob("*") if path not in expected_paths)
     if leftovers:
         raise RuntimeError("metadata partial result left transaction files: " + repr(leftovers))
     archive_test = run([str(linux), "t", "ARCHIVE.BLT"], host, timeout=60)
@@ -140,8 +148,9 @@ def main():
         "payload_sha256": sha256(target),
         "payload_bytes": len(PAYLOAD),
         "archive_mtime_utc_seconds": MTIME_2040,
-        "archive_mtime_flag_valid": True,
+        "archive_mtime_flag_valid_for": ["TREE/", "TREE/PAYLOAD.BIN"],
         "expected_gemdos_time_result": "partial; GEMDOS time_t is signed 32-bit",
+        "deferred_directory_mtime_after_extract": int(extracted_tree.stat().st_mtime),
         "partial_alert_screenshot_sha256": sha256(screenshot),
         "partial_alert_screenshot_review": "The production GUI displayed its Partial extraction alert after preserving the file.",
         "target_mtime_after_extract": int(target.stat().st_mtime),
