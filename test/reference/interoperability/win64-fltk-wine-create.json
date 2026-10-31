@@ -15,6 +15,6 @@
     "reader": "Linux mini"
   },
   "directory_race_expected": "refuse substitution before archive publication",
-  "child_race_expected": "refuse substitution before archive publication",
+  "child_race_expected": "refuse same-metadata substitution before archive publication",
   "windows_attribute_roundtrip_expected": ["HIDDEN", "SYSTEM", "ARCHIVE"]
 }

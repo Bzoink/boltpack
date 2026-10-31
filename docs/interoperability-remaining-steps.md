@@ -713,8 +713,16 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   with a different-sized file. The GUI refuses publication, removes the archive
   stage, and preserves the original and counterfeit files. Evidence is
   [`build/r08-win64-fltk-wine-create-fcrl3adv/run.json`](../build/r08-win64-fltk-wine-create-fcrl3adv/run.json).
-  Replacements that preserve all enumerated metadata and native Windows behavior
-  remain unqualified.
+  The follow-up `win64-fltk-wine-child-race-test` clones the original child's
+  attributes, size, creation time, and write time onto a different-file-ID
+  replacement. On Windows 8 and later, handle-based `FileIdBothDirectoryInfo`
+  enumeration detects the mismatch and refuses publication; Wine 10.0 passed
+  this case at [`build/r08-win64-fltk-wine-create-8c5rf8pm/run.json`](../build/r08-win64-fltk-wine-create-8c5rf8pm/run.json).
+  Windows Vista/7 use a `FindFirstFileW` fallback because that information class
+  is unsupported there. The fallback compares attributes, size, creation time,
+  and write time, but cannot detect a replacement preserving all of those
+  values. Native Windows sharing behavior, file-ID reuse, and substitutions
+  restored before a path recheck remain unqualified.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.

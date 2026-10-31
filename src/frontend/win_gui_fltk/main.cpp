@@ -3188,7 +3188,11 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 #endif
                                );
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
-                             const char *prefix);
+                             const char *prefix
+#ifdef _WIN32
+                             , HANDLE directory_handle
+#endif
+                             );
 
 static bp_uint16 win_gui_archive_mtime(time_t source_time, bp_uint64 *mtime)
 {
@@ -3209,6 +3213,7 @@ struct WinChildSnapshot {
     DWORD attributes;
     DWORD size_high;
     DWORD size_low;
+    ULONGLONG file_id;
     FILETIME creation_time;
     FILETIME write_time;
 };
@@ -3243,6 +3248,37 @@ struct WinSourcePathGuard {
             handle = INVALID_HANDLE_VALUE;
             return false;
         }
+        return true;
+    }
+
+    bool open_directory(const char *path)
+    {
+        std::wstring wide;
+        HANDLE directory;
+        BY_HANDLE_FILE_INFORMATION directory_info;
+        if (handle == INVALID_HANDLE_VALUE ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            !win_utf8_to_wide(path, &wide)) return false;
+        directory = CreateFileW(wide.c_str(),
+                                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS |
+                                FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (directory == INVALID_HANDLE_VALUE) return false;
+        if (!GetFileInformationByHandle(directory, &directory_info) ||
+            (directory_info.dwFileAttributes &
+             (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
+                FILE_ATTRIBUTE_DIRECTORY ||
+            directory_info.dwVolumeSerialNumber != info.dwVolumeSerialNumber ||
+            directory_info.nFileIndexHigh != info.nFileIndexHigh ||
+            directory_info.nFileIndexLow != info.nFileIndexLow) {
+            CloseHandle(directory);
+            return false;
+        }
+        CloseHandle(handle);
+        handle = directory;
+        info = directory_info;
         return true;
     }
 
@@ -3361,7 +3397,10 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         return BP_ERR_IO;
     attributes = path_guard.info.dwFileAttributes;
     if (snapshot != NULL &&
-        (snapshot->attributes != path_guard.info.dwFileAttributes ||
+        ((snapshot->file_id != 0 && snapshot->file_id !=
+             (((ULONGLONG)path_guard.info.nFileIndexHigh << 32) |
+              path_guard.info.nFileIndexLow)) ||
+         snapshot->attributes != path_guard.info.dwFileAttributes ||
          CompareFileTime(&snapshot->creation_time,
                          &path_guard.info.ftCreationTime) != 0 ||
          CompareFileTime(&snapshot->write_time,
@@ -3381,6 +3420,7 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 #ifdef _WIN32
         if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
             !path_guard.still_names(filepath)) return BP_ERR_IO;
+        if (!path_guard.open_directory(filepath)) return BP_ERR_IO;
 #endif
         /* add directory entry */
         std::string dname = std::string(arc_name);
@@ -3396,7 +3436,11 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         rc = add_win_fat_metadata(ar, dname.c_str(), BP_TYPE_DIR, attributes);
         if (rc != BP_OK) return rc;
 #endif
-        int child_rc = add_dir_recursive(ar, filepath, dname.c_str());
+        int child_rc = add_dir_recursive(ar, filepath, dname.c_str()
+#ifdef _WIN32
+                                         , path_guard.handle
+#endif
+                                         );
 #ifdef _WIN32
         if (child_rc == BP_OK && !path_guard.still_names(filepath))
             return BP_ERR_IO;
@@ -3436,11 +3480,78 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 static int list_directory_names(const char *dirpath,
                                 std::vector<std::string> &names
 #ifdef _WIN32
-                                , std::vector<WinChildSnapshot> *snapshots = NULL
+                                , std::vector<WinChildSnapshot> *snapshots = NULL,
+                                HANDLE directory_handle = INVALID_HANDLE_VALUE
 #endif
                                 )
 {
 #ifdef _WIN32
+    if (directory_handle != INVALID_HANDLE_VALUE) {
+        ULONGLONG buffer[8192];
+        FILE_INFO_BY_HANDLE_CLASS info_class = FileIdBothDirectoryRestartInfo;
+        bool unsupported = false;
+        for (;;) {
+            FILE_ID_BOTH_DIR_INFO *entry;
+            if (!GetFileInformationByHandleEx(directory_handle, info_class,
+                                              buffer, sizeof(buffer))) {
+                DWORD error = GetLastError();
+                if (error == ERROR_NO_MORE_FILES) break;
+                if (info_class == FileIdBothDirectoryRestartInfo &&
+                    (error == ERROR_INVALID_PARAMETER ||
+                     error == ERROR_NOT_SUPPORTED ||
+                     error == ERROR_INVALID_FUNCTION ||
+                     error == ERROR_CALL_NOT_IMPLEMENTED)) {
+                    unsupported = true;
+                    break;
+                }
+                return BP_ERR_IO;
+            }
+            entry = (FILE_ID_BOTH_DIR_INFO *)buffer;
+            for (;;) {
+                DWORD chars = entry->FileNameLength / sizeof(WCHAR);
+                std::wstring wide_name(entry->FileName, chars);
+                std::string utf8_name;
+                if ((chars == 1 && entry->FileName[0] == L'.') ||
+                    (chars == 2 && entry->FileName[0] == L'.' &&
+                     entry->FileName[1] == L'.')) {
+                    /* skip directory navigation entries */
+                } else if ((entry->FileAttributes &
+                            FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                    return BP_ERR_IO;
+                } else if (!win_wide_to_utf8(wide_name.c_str(), &utf8_name)) {
+                    return BP_ERR_NAME_TOO_LONG;
+                } else {
+                    names.push_back(utf8_name);
+                    if (snapshots != NULL) {
+                        WinChildSnapshot snapshot;
+                        if (entry->FileId.QuadPart == 0) return BP_ERR_IO;
+                        snapshot.attributes = entry->FileAttributes;
+                        snapshot.size_high = (DWORD)
+                            ((ULONGLONG)entry->EndOfFile.QuadPart >> 32);
+                        snapshot.size_low = (DWORD)entry->EndOfFile.QuadPart;
+                        snapshot.file_id = (ULONGLONG)entry->FileId.QuadPart;
+                        snapshot.creation_time.dwLowDateTime = (DWORD)
+                            entry->CreationTime.LowPart;
+                        snapshot.creation_time.dwHighDateTime = (DWORD)
+                            entry->CreationTime.HighPart;
+                        snapshot.write_time.dwLowDateTime = (DWORD)
+                            entry->LastWriteTime.LowPart;
+                        snapshot.write_time.dwHighDateTime = (DWORD)
+                            entry->LastWriteTime.HighPart;
+                        snapshots->push_back(snapshot);
+                    }
+                }
+                if (entry->NextEntryOffset == 0) break;
+                entry = (FILE_ID_BOTH_DIR_INFO *)
+                    ((BYTE *)entry + entry->NextEntryOffset);
+            }
+            info_class = FileIdBothDirectoryInfo;
+        }
+        if (!unsupported) return BP_OK;
+        names.clear();
+        if (snapshots != NULL) snapshots->clear();
+    }
+
     std::wstring wide_path;
     WIN32_FIND_DATAW data;
     HANDLE find_handle;
@@ -3476,6 +3587,7 @@ static int list_directory_names(const char *dirpath,
             snapshot.attributes = data.dwFileAttributes;
             snapshot.size_high = data.nFileSizeHigh;
             snapshot.size_low = data.nFileSizeLow;
+            snapshot.file_id = 0;
             snapshot.creation_time = data.ftCreationTime;
             snapshot.write_time = data.ftLastWriteTime;
             snapshots->push_back(snapshot);
@@ -3505,12 +3617,17 @@ static int list_directory_names(const char *dirpath,
 }
 
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
-                             const char *prefix)
+                             const char *prefix
+#ifdef _WIN32
+                             , HANDLE directory_handle
+#endif
+                             )
 {
     std::vector<std::string> names;
 #ifdef _WIN32
     std::vector<WinChildSnapshot> snapshots;
-    int rc = list_directory_names(dirpath, names, &snapshots);
+    int rc = list_directory_names(dirpath, names, &snapshots,
+                                  directory_handle);
 #else
     int rc = list_directory_names(dirpath, names);
 #endif

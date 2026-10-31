@@ -109,7 +109,10 @@ def main():
     if args.directory_race or args.child_race:
         expected_key = ("directory_race_expected" if args.directory_race
                         else "child_race_expected")
-        if manifest.get(expected_key) != "refuse substitution before archive publication":
+        expected_value = ("refuse substitution before archive publication"
+                          if args.directory_race else
+                          "refuse same-metadata substitution before archive publication")
+        if manifest.get(expected_key) != expected_value:
             parser.error("manifest does not define the expected source-race outcome")
     attrs_probe = (args.attributes_probe.resolve(strict=True)
                    if args.fat_attributes or args.directory_race or args.child_race
@@ -174,6 +177,8 @@ def main():
     save_dialog = None
     attribute_roundtrip = None
     source_race_move = None
+    child_race_metadata_copy = None
+    child_race_metadata_check = None
     try:
         main_window = wait_for_title(process, "BoltPack")
         save_dialog = wait_for_title(process, "Save archive as")
@@ -214,8 +219,31 @@ def main():
                     source.write_bytes(b"substituted source directory\n")
                     source_for_hash = parked / member
                 else:
-                    source.write_bytes(b"substituted child with a different size\n")
+                    replacement_payload = bytes(value ^ 0xff for value in payload)
+                    source.write_bytes(replacement_payload)
                     source_for_hash = parked
+                    copy_times = subprocess.run(
+                        [args.wine, str(attrs_probe), "copytimes",
+                         str(parked), str(source)], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, check=False)
+                    child_race_metadata_copy = {
+                        "status": copy_times.returncode,
+                        "output": copy_times.stdout.strip()}
+                    if copy_times.returncode != 0:
+                        raise RuntimeError("could not clone source metadata for race fixture: " +
+                                           copy_times.stdout.strip())
+                    compared = subprocess.run(
+                        [args.wine, str(attrs_probe), "same-metadata",
+                         str(parked), str(source)], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, check=False)
+                    child_race_metadata_check = {
+                        "status": compared.returncode,
+                        "output": compared.stdout.strip()}
+                    if compared.returncode != 0:
+                        raise RuntimeError("same-metadata child fixture was not exact: " +
+                                           compared.stdout.strip())
             elif move.returncode != 1 or "error=32" not in move.stdout:
                 raise RuntimeError("source rename failed unexpectedly: " +
                                    move.stdout.strip())
@@ -238,8 +266,8 @@ def main():
                                   (parked / member).read_bytes() == payload)
                 else:
                     fixture_ok = (parked.is_file() and source.is_file() and
-                                  source.read_bytes() ==
-                                  b"substituted child with a different size\n" and
+                                  len(source.read_bytes()) == len(payload) and
+                                  source.read_bytes() != payload and
                                   parked.read_bytes() == payload)
                 if not fixture_ok:
                     raise RuntimeError("source-race fixture changed a source artifact")
@@ -389,6 +417,8 @@ def main():
         "directory_race_requested": args.directory_race,
         "child_race_requested": args.child_race,
         "source_race_move": source_race_move,
+        "child_race_metadata_copy": child_race_metadata_copy,
+        "child_race_metadata_check": child_race_metadata_check,
         "directory_race_expected": manifest.get("directory_race_expected"),
         "child_race_expected": manifest.get("child_race_expected"),
         "directory_race_parked_source_sha256": (
