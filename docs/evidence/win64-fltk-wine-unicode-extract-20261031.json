@@ -37,13 +37,14 @@
     "fixture_manifest": "test/reference/interoperability/win64-fltk-wine.json",
     "runner": "test/check_win64_fltk_wine.py",
     "runner_sha256": "f2f8fcc9ba9bb69e2f89ce94ea4e8f3970db0eaa712eccf1623eb45e037da668",
-    "run_record": "../../build/r08-win64-fltk-wine-vdpsxbd6/run.json",
+    "run_record": "../../build/r08-win64-fltk-wine-_5qgz2tg/run.json",
     "run_result": "passed_under_wine",
     "wine_exit_status": 0,
-    "source_revision": "15e396423eeb791c943eb13c589f474c480eee8c",
-    "archive_sha256": "7f536b90aa0fab5d85bf9635569f5bda290f7da0406a364a017111b5622500b7",
-    "member": "payload-🧪-win64-gui-62fc910e57.txt",
-    "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837"
+    "source_revision": "27a292bde76a1ba52f4be88c97bc2729c6f156e2",
+    "archive_sha256": "1da5982ce23fdec79980721d8d8e6bef13de1b4e60ac3c58557dda941b798081",
+    "member": "payload-🧪-win64-gui-38b97307ab.txt",
+    "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837",
+    "gui_sha256": "2a7da08459716ad030886e8184b1c0a0ac0badee0b0e15d440d76d5f3242a2b5"
   },
   "paired_creation_evidence": "win64-fltk-wine-unicode-create-20261031.json"
 }
