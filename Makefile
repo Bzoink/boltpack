@@ -575,6 +575,15 @@ win64-fltk-wine-child-race-test: win64-fltk-wine-race-fixtures
 	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
 	    --child-race --attributes-probe build/win64-fltk-gui/attributes-probe.exe
 
+.PHONY: win64-fltk-wine-nested-directory-race-test
+win64-fltk-wine-nested-directory-race-test: win64-fltk-wine-race-fixtures
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui-directory-race.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
+	    --nested-directory-race \
+	    --attributes-probe build/win64-fltk-gui/attributes-probe.exe
+
 .PHONY: win64-fltk-wine-cancel-test
 win64-fltk-wine-cancel-test: modern win64-fltk-gui
 	xvfb-run -a python3 test/check_win64_fltk_wine_cancel.py --wine "$(WINE)" \
