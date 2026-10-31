@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-31",
+  "purpose": "Diagnose the TOS 1.62 FAT12 write-protection retry/abort alert using direct Hatari keyboard events.",
+  "result": "unqualified_failure",
+  "source_revision": "f32fca2",
+  "source_diff_sha256": "85cc4db8243925be1c9bfc795f2457613c9127067db44a7fd90ea1777547e263",
+  "command": "make CC=gcc HATARI_TOS=/home/tony/images/Atari/tos162se.img ATARI_GUI_MEDIA_ERROR_EVENTS='keydown:42 keypress:15 keyup:42 sleep:2 screenshot keypress:28 sleep:2 screenshot' atari-gui-media-error-test",
+  "environment": {
+    "hatari": "2.5.0",
+    "tos_sha256": "77f9c88cbdf7127a7a6b61b2fa84ddde4d9a02a30f524a6bd87dc7deb250a575",
+    "hconsole_sha256": "90ca9050c10c2bf514b1ee8d6e4161870d1d2aea3449e0650e36fceeebad57c1",
+    "gui_program_sha256": "8e54f2331b4ae6dd63fb84fd1213a2e430e5fef8d8b1971217217ebb29e75c2d"
+  },
+  "artifacts": {
+    "run_directory": "../../build/atari-gui-media-error-t3252wg_",
+    "floppy_image": {
+      "path": "../../build/atari-gui-media-error-t3252wg_/floppy.st",
+      "sha256": "80a77146f135b3cd11d4ea5936e27ddda1b3e0590d0a67286ac0b5db83771088"
+    },
+    "screenshots": [
+      {
+        "path": "../../build/atari-gui-media-error-t3252wg_/grab0001.png",
+        "sha256": "3875df2ccb8b1d36f4231869c8d0cd1642eb71d9fa1d19987f86a8b6c5777840",
+        "observation": "Swedish write-protection alert visible; IGEN is selected."
+      },
+      {
+        "path": "../../build/atari-gui-media-error-t3252wg_/grab0002.png",
+        "sha256": "99d5a312a48ddf07d4dda2d1d8f0cba6ff16bfef62475c90893056f8fc90f31d",
+        "observation": "Captured after Shift+Tab and a two-second delay."
+      },
+      {
+        "path": "../../build/atari-gui-media-error-t3252wg_/grab0003.png",
+        "sha256": "99d5a312a48ddf07d4dda2d1d8f0cba6ff16bfef62475c90893056f8fc90f31d",
+        "observation": "Captured after Return and a two-second delay; byte-identical to the prior frame, so the screenshots do not prove a changed button selection."
+      }
+    ]
+  },
+  "observed_state": {
+    "error_callback_marker": false,
+    "make_target_exit_status": 2,
+    "fat12_target": "old destination remained moved to a short-name backup",
+    "fat12_stage": "replacement stage remained",
+    "recovery_journal": "remained",
+    "interpretation": "The input sequence did not produce the expected commit-error callback or recover/publish the target; this run is not a pass."
+  }
+}

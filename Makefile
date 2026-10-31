@@ -2795,6 +2795,8 @@ atari-gui-interrupt-after-backup-test: modern atari-gui
 	    --final-gui $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
 
 ATARI_GUI_MEDIA_ERROR_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-media-error.prg
+ATARI_GUI_MEDIA_ERROR_KEYS ?= a 28
+ATARI_GUI_MEDIA_ERROR_EVENTS ?=
 atari-gui-media-error-test: modern
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
 	mkdir -p $(ATARI_GUI_BUILDDIR)
@@ -2806,7 +2808,9 @@ atari-gui-media-error-test: modern
 	    -o $(ATARI_GUI_MEDIA_ERROR_BIN)
 	xvfb-run -a python3 test/check_hatari_gui_media_error.py \
 	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
-	    --gui-prg $(ATARI_GUI_MEDIA_ERROR_BIN) --linux-cli $(TARGET)
+	    --gui-prg $(ATARI_GUI_MEDIA_ERROR_BIN) --linux-cli $(TARGET) \
+	    --prompt-keys $(ATARI_GUI_MEDIA_ERROR_KEYS) \
+	    $(if $(ATARI_GUI_MEDIA_ERROR_EVENTS),--prompt-events $(ATARI_GUI_MEDIA_ERROR_EVENTS),)
 
 atari-gui-stage-recovery-test: modern atari-gui
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }

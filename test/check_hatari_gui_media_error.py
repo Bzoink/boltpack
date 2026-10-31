@@ -40,6 +40,10 @@ def main():
     parser.add_argument("--linux-cli", type=Path,
                         default=ROOT / "build/linux/boltpack")
     parser.add_argument("--output-root", type=Path, default=ROOT / "build")
+    parser.add_argument("--prompt-keys", nargs="+", default=("a", "28"),
+                        help="hconsole key arguments for the TOS retry/abort alert")
+    parser.add_argument("--prompt-events", nargs="+",
+                        help="Hatari events; use screenshot and sleep:SECONDS tokens in sequences")
     args = parser.parse_args()
     if not os.environ.get("DISPLAY"):
         parser.error("run under Xvfb or a desktop display")
@@ -138,12 +142,23 @@ def main():
             time.sleep(0.5)
             (host / "RELEASE.TST").write_text("continue into protected rename\n")
             # GEMDOS displays a write-protect retry/abort prompt. EmuTOS accepts
-            # its Abort mnemonic followed by Return.
+            # its Abort mnemonic followed by Return. Other TOS sequences can be
+            # explored with --prompt-events.
             time.sleep(0.5)
             send("screenshot")
             time.sleep(0.5)
-            send("keypress a")
-            send("keypress 28")
+            if args.prompt_events:
+                for event in args.prompt_events:
+                    if event == "screenshot":
+                        send("screenshot")
+                    elif event.startswith("sleep:"):
+                        time.sleep(float(event.split(":", 1)[1]))
+                    else:
+                        send(event.replace(":", " "))
+                        time.sleep(0.25)
+            else:
+                for key in args.prompt_keys:
+                    send("keypress " + key)
             error_marker = host / "ERROR.TST"
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline and process.poll() is None and not error_marker.exists():
@@ -255,6 +270,8 @@ def main():
         "source_revision": revision,
         "source_status": status,
         "source_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "prompt_keys": args.prompt_keys,
+        "prompt_events": args.prompt_events,
         "archive_sha256": sha256(archive),
         "floppy_final_sha256": sha256(image),
         "failure_state_image_sha256": sha256(out / "write-protected-failure-state.st"),
