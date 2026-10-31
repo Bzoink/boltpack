@@ -82,6 +82,8 @@ def main():
     parser.add_argument("--output-root", type=Path, default=ROOT / "build")
     parser.add_argument("--parent-race", action="store_true",
                         help="refuse extraction after the selected output root is replaced")
+    parser.add_argument("--stage-race", action="store_true",
+                        help="refuse publication after the verified stage pathname is replaced")
     parser.add_argument("--attributes-probe", type=Path,
                         default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
@@ -95,9 +97,14 @@ def main():
     linux = args.linux_cli.resolve(strict=True)
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if args.parent_race and args.stage_race:
+        parser.error("select only one extraction race case")
     if args.parent_race and manifest.get("parent_race_expected") != (
             "refuse extraction before writing through a substituted output root"):
         parser.error("manifest does not define the output-root race expectation")
+    if args.stage_race and manifest.get("stage_race_expected") != (
+            "preserve the existing target and refuse a replaced stage"):
+        parser.error("manifest does not define the stage race expectation")
     run_id = uuid.uuid4().hex[:10]
     directory = manifest["directory_prefix"] + run_id
     member = (manifest["member_prefix"] + run_id +
@@ -160,22 +167,31 @@ def main():
     original_sentinel = selected_output / "original-sentinel.txt"
     race_sentinel = selected_output / "parent-race-sentinel.txt"
     attrs_probe = None
-    if args.parent_race:
+    if args.parent_race or args.stage_race:
         attrs_probe = args.attributes_probe.resolve(strict=True)
         selected_output.mkdir()
-        original_sentinel.write_bytes(b"original output root sentinel\n")
+        if args.parent_race:
+            original_sentinel.write_bytes(b"original output root sentinel\n")
         destination_root = selected_output
         if parked_output.exists():
             raise RuntimeError("unique parked output path already exists")
-        desktop_snapshot_before = tree_snapshot(selected_output)
-        env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "extract-root"
+        if args.parent_race:
+            desktop_snapshot_before = tree_snapshot(selected_output)
+            env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "extract-root"
+        else:
+            destination_tree = selected_output / directory
+            destination_tree.mkdir()
+            destination = destination_tree / member
+            destination.write_bytes(b"preexisting extraction target sentinel\n")
+            desktop_snapshot_before = None
+            env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "extract-stage"
         env["BP_TEST_WIN_FLTK_EXTRACT_DEST"] = str(selected_output)
     else:
         destination_root = desktop
         desktop_snapshot_before = None
     destination_tree = destination_root / directory
     destination = destination_tree / member
-    if destination.exists():
+    if destination.exists() and not args.stage_race:
         raise RuntimeError("unique extraction destination already exists")
     command = [args.wine, str(gui), "--shell-extract", str(archive)]
     process = subprocess.Popen(command, cwd=out, env=env, stdin=subprocess.DEVNULL,
@@ -185,12 +201,16 @@ def main():
     error = None
     parent_race_move = None
     parent_race_host_substitution = None
+    stage_race_move = None
+    stage_race_host_substitution = None
+    stage_race_parked = None
+    stage_race_counterfeit = None
     counterfeit_output = None
     try:
         main_window = wait_for_title(process, "BoltPack")
         if not main_window:
             raise RuntimeError("GUI main window did not appear")
-        if not args.parent_race:
+        if not (args.parent_race or args.stage_race):
             chooser = wait_for_title(process, "Browse for Folder")
             if not chooser:
                 raise RuntimeError("GUI folder chooser did not appear")
@@ -235,6 +255,52 @@ def main():
             if tree_snapshot(parked_output) != desktop_snapshot_before:
                 raise RuntimeError("GUI changed the moved original output root")
             result = "passed_under_wine_refused_parent_substitution"
+        elif args.stage_race:
+            ready = out / "extract-stage.ready"
+            release = out / "extract-stage.release"
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and process.poll() is None and not ready.exists():
+                time.sleep(0.05)
+            if not ready.exists():
+                raise RuntimeError("production stage-close checkpoint was not reached")
+            stages = list(selected_output.rglob(".boltpack-*.tmp"))
+            if len(stages) != 1:
+                raise RuntimeError("expected exactly one open production stage")
+            stage_path = stages[0]
+            stage_race_parked = out / "parked-stage.tmp"
+            stage_race_counterfeit = b"counterfeit staged output\n"
+            probe_move = subprocess.run(
+                [args.wine, str(attrs_probe), "move", str(stage_path),
+                 str(stage_race_parked)], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False)
+            stage_race_move = {"status": probe_move.returncode,
+                               "output": probe_move.stdout.strip()}
+            if probe_move.returncode == 0:
+                pass
+            elif probe_move.returncode == 1 and "error=32" in probe_move.stdout:
+                stage_path.rename(stage_race_parked)
+                stage_race_host_substitution = {
+                    "method": "host rename bypassing Win32 sharing",
+                    "status": "succeeded"}
+            else:
+                raise RuntimeError("could not move staged file: " +
+                                   probe_move.stdout.strip())
+            stage_path.write_bytes(stage_race_counterfeit)
+            release.write_text("continue\n", encoding="ascii")
+            deadline = time.monotonic() + 20
+            while (time.monotonic() < deadline and process.poll() is None and
+                   any("Extracting..." in title
+                       for _, title in visible_windows())):
+                time.sleep(0.1)
+            if destination.read_bytes() != b"preexisting extraction target sentinel\n":
+                raise RuntimeError("replaced stage overwrote the existing destination")
+            if not stage_path.is_file() or stage_path.read_bytes() != stage_race_counterfeit:
+                raise RuntimeError("production cleanup changed the counterfeit stage")
+            if (stage_race_parked.exists() and
+                    stage_race_parked.read_bytes() != expected):
+                raise RuntimeError("production changed the original stage moved behind Win32 sharing")
+            result = "passed_under_wine_refused_stage_substitution"
         else:
             deadline = time.monotonic() + 20
             while (time.monotonic() < deadline and process.poll() is None and
@@ -257,8 +323,9 @@ def main():
         error = str(exc)
     finally:
         if args.parent_race:
-            (out / "extract-root.release").write_text("continue\n",
-                                                       encoding="ascii")
+            (out / "extract-root.release").write_text("continue\n", encoding="ascii")
+        if args.stage_race:
+            (out / "extract-stage.release").write_text("continue\n", encoding="ascii")
         if process.poll() is None:
             # Dismiss the completion/error dialog if present, then close via menu.
             deadline = time.monotonic() + 15
@@ -308,8 +375,16 @@ def main():
         "runner_sha256": sha256(Path(__file__)),
         "command": command,
         "parent_race_requested": args.parent_race,
+        "stage_race_requested": args.stage_race,
         "parent_race_move": parent_race_move,
         "parent_race_host_substitution": parent_race_host_substitution,
+        "stage_race_move": stage_race_move,
+        "stage_race_host_substitution": stage_race_host_substitution,
+        "stage_race_parked_path": (
+            str(stage_race_parked.relative_to(out)) if stage_race_parked else None),
+        "stage_race_counterfeit_sha256": (
+            hashlib.sha256(stage_race_counterfeit).hexdigest()
+            if stage_race_counterfeit is not None else None),
         "parent_race_original_root_snapshot": desktop_snapshot_before,
         "parent_race_sentinel_sha256": (
             sha256(counterfeit_output / race_sentinel.name)
@@ -350,7 +425,8 @@ def main():
         destination_tree.rmdir()
     print(json.dumps(record, indent=2))
     if result not in ("passed_under_wine",
-                      "passed_under_wine_refused_parent_substitution") or process.returncode != 0:
+                      "passed_under_wine_refused_parent_substitution",
+                      "passed_under_wine_refused_stage_substitution") or process.returncode != 0:
         raise SystemExit("Win64 FLTK Wine extraction failed; evidence: " + str(out))
 
 

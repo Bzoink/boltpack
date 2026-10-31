@@ -8,6 +8,7 @@
   "directory_mtime_epoch_seconds": 1600000000,
   "mtime_epoch_seconds": 1700000000,
   "parent_race_expected": "refuse extraction before writing through a substituted output root",
+  "stage_race_expected": "preserve the existing target and refuse a replaced stage",
   "archive_method": "stored",
   "expected_result": "byte-identical extraction"
 }
