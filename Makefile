@@ -497,6 +497,13 @@ win64-fltk-wine-extract-test: modern win64-fltk-gui
 	    --gui build/win64-fltk-gui/boltpack-gui.exe \
 	    --linux-cli build/linux/boltpack
 
+.PHONY: win64-fltk-wine-create-test
+win64-fltk-wine-create-test: modern linuxmini win64-fltk-gui
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini
+
 win32-config:
 	mkdir -p $(WIN32_BUILDDIR)
 	i686-w64-mingw32-windres $(WCX_SRCDIR)/boltpack-config.rc \

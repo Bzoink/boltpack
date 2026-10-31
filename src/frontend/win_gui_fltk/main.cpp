@@ -3169,24 +3169,74 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     return rc;
 }
 
+/* Directory names stay UTF-8 in the GUI. MinGW's dirent implementation uses
+   the process ANSI codepage, so use wide Win32 enumeration on Windows. */
+static int list_directory_names(const char *dirpath,
+                                std::vector<std::string> &names)
+{
+#ifdef _WIN32
+    std::wstring wide_path;
+    WIN32_FIND_DATAW data;
+    HANDLE find_handle;
+    DWORD error;
+    int rc = BP_OK;
+
+    if (!win_utf8_to_wide(dirpath, &wide_path)) return BP_ERR_NAME_TOO_LONG;
+    while (wide_path.size() > 3 &&
+           (wide_path[wide_path.size() - 1] == L'\\' ||
+            wide_path[wide_path.size() - 1] == L'/'))
+        wide_path.erase(wide_path.size() - 1);
+    wide_path += L"\\*";
+    find_handle = FindFirstFileW(wide_path.c_str(), &data);
+    if (find_handle == INVALID_HANDLE_VALUE) return BP_ERR_IO;
+    do {
+        std::string utf8_name;
+        if (wcscmp(data.cFileName, L".") == 0 ||
+            wcscmp(data.cFileName, L"..") == 0)
+            continue;
+        if (!win_wide_to_utf8(data.cFileName, &utf8_name)) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
+        names.push_back(utf8_name);
+    } while (FindNextFileW(find_handle, &data));
+    error = GetLastError();
+    FindClose(find_handle);
+    if (rc == BP_OK && error != ERROR_NO_MORE_FILES) rc = BP_ERR_IO;
+    return rc;
+#else
+    DIR *directory = opendir(dirpath);
+    struct dirent *entry;
+    int rc = BP_OK;
+
+    if (directory == NULL) return BP_ERR_IO;
+    errno = 0;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0)
+            continue;
+        names.push_back(entry->d_name);
+    }
+    if (errno != 0) rc = BP_ERR_IO;
+    if (closedir(directory) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+    return rc;
+#endif
+}
+
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                              const char *prefix)
 {
-    DIR *d = opendir(dirpath);
-    if (!d) return BP_ERR_IO;
+    std::vector<std::string> names;
+    int rc = list_directory_names(dirpath, names);
+    if (rc != BP_OK) return rc;
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
+    for (size_t i = 0; i < names.size(); ++i) {
+        std::string full = std::string(dirpath) + "/" + names[i];
+        std::string arc  = std::string(prefix) + names[i];
 
-        std::string full = std::string(dirpath) + "/" + ent->d_name;
-        std::string arc  = std::string(prefix) + ent->d_name;
-
-        int rc = add_file_to_archive(ar, full.c_str(), arc.c_str());
-        if (rc != BP_OK) { closedir(d); return rc; }
+        rc = add_file_to_archive(ar, full.c_str(), arc.c_str());
+        if (rc != BP_OK) return rc;
     }
-    closedir(d);
     return BP_OK;
 }
 
@@ -3197,16 +3247,12 @@ static void count_input_recursive(const char *path, double &bytes, unsigned long
     if (_stat64(path, &st) != 0) return;
     if (S_ISDIR(st.st_mode)) {
         count++;
-        DIR *d = opendir(path);
-        if (!d) return;
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-                continue;
-            std::string full = std::string(path) + "/" + ent->d_name;
+        std::vector<std::string> names;
+        if (list_directory_names(path, names) != BP_OK) return;
+        for (size_t i = 0; i < names.size(); ++i) {
+            std::string full = std::string(path) + "/" + names[i];
             count_input_recursive(full.c_str(), bytes, count);
         }
-        closedir(d);
     } else {
         bytes += (double)st.st_size;
         count++;

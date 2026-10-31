@@ -44,5 +44,6 @@
     "archive_sha256": "7f536b90aa0fab5d85bf9635569f5bda290f7da0406a364a017111b5622500b7",
     "member": "payload-🧪-win64-gui-62fc910e57.txt",
     "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837"
-  }
+  },
+  "paired_creation_evidence": "win64-fltk-wine-unicode-create-20261031.json"
 }
