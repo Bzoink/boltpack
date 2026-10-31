@@ -1,0 +1,76 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Create a format-6 archive in the AmigaOS 2.04 GadTools GUI and verify it with Linux readers",
+  "date": "2026-10-31",
+  "revision": "00a842f",
+  "related_evidence": [
+    "amiga-gui-open-validate-20261031.json",
+    "amiga-gui-extract-20261031.json"
+  ],
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf": {
+      "path": "build/amiga-gui-runtime-probe/Workbench-gui-test.adf",
+      "sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275"
+    },
+    "host_directory_volume": "build/amiga-gui-runtime-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "warp_mode": 1,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-runtime-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Logging-only additions around menu dispatch and ASL Open; archive creation behavior matches src/frontend/amiga_gui/main.c."
+  },
+  "input": {
+    "source_file": "DH0:PAYLOAD.TXT",
+    "source_bytes": 37,
+    "source_sha256": "415dcc60e0d2cf99f9819a710292f50014537559eafb06f9671e8e90c1e094aa",
+    "menu_action": "Compression -> Create New...",
+    "save_dialog_entry": "GUI-CREATED.BLTarchive.bolt",
+    "note": "The ASL save field began with archive.bolt; typed text was inserted before that default, so the application created the full logged name shown here."
+  },
+  "created_archive": {
+    "path": "build/amiga-gui-runtime-probe/drive/GUI-CREATED.BLTarchive.bolt",
+    "sha256": "306eaba2c1eb27d651b94b1d00542afd9418848fc6f973e0f7a0ab8bed163461",
+    "bytes": 351,
+    "format_version": 6,
+    "creator_os": "AmigaOS (68k)",
+    "creator_cpu": "Motorola 68k",
+    "methods": ["Stored", "boltlz"],
+    "contents": "One primary PAYLOAD.TXT file plus one Amiga native metadata record"
+  },
+  "cross_reader_verification": {
+    "linux_full_test": "Both physical entries passed; 2 files OK.",
+    "linux_mini_test": "Both physical entries passed.",
+    "linux_full_extract": {
+      "status": "Partial because Amiga native metadata is unsupported on Linux",
+      "output": "build/amiga-gui-runtime-probe/linux-created-extract2/PAYLOAD.TXT",
+      "bytes": 37,
+      "sha256": "415dcc60e0d2cf99f9819a710292f50014537559eafb06f9671e8e90c1e094aa",
+      "matches_input": true
+    }
+  },
+  "guest_log": {
+    "path": "build/amiga-gui-runtime-probe/drive/boldpack.log",
+    "sha256": "7445548a1ac60790ee5878ab62c7757ef7e6fabb298872650f59957bc0831581"
+  },
+  "fs_uae_stdout": {
+    "path": "build/amiga-gui-runtime-probe/fs-uae-gui-create.log",
+    "sha256": "91dbbbabeda76b84d1698c3b97d54480a34dd47322749a1bf8535a29ecfeda69"
+  },
+  "screenshot": {
+    "path": "build/amiga-gui-runtime-probe/screen-gui-create-complete.png",
+    "sha256": "038a6095096c8785f16fe08859a4ca77e2cdbb5a8f4fc7c8516234da2f0734df"
+  },
+  "scope_limit": "This verifies one GUI-created format-6 archive and Linux full/mini reader interoperability through an FS-UAE host-directory volume. Linux reports expected partial status for Amiga native metadata and preserves exact file bytes. It does not qualify profile-limit creation, overwrite/replacement, cancellation, metadata round-trip on Amiga, OFS/FFS GUI use, other codecs, or broader names."
+}
