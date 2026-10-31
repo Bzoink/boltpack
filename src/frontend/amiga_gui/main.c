@@ -75,6 +75,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
+#include "../amiga/amiga_time.h"
 
 /* ====================================================================== */
 /*  Constants                                                             */
@@ -1686,8 +1687,8 @@ static int gui_restore_dir_time(const char *path, bp_uint64 mtime,
                                 void *user_data)
 {
     (void)user_data;
-    if (bp_restore_mtime(path, mtime) == BP_OK) return 0;
-    log_message("Cannot restore directory time: %s", path);
+    if (bp_amiga_restore_mtime(path, mtime) == BP_OK) return 0;
+    log_message("Cannot restore directory time; check BP_TZ_OFFSET: %s", path);
     return -1;
 }
 
@@ -1869,8 +1870,11 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
     }
     if (gui_set_default_mode(stage->temporary) != 0) ctx->partial = 1;
     if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
-        if (bp_restore_mtime(stage->temporary, entry->mtime) != BP_OK)
+        if (bp_amiga_restore_mtime(stage->temporary, entry->mtime) != BP_OK) {
+            log_message("Cannot restore file time; check BP_TZ_OFFSET: %s",
+                        stage->target);
             ctx->partial = 1;
+        }
     }
     rc = gui_commit_stage(stage);
     if (rc != BP_OK) {
@@ -2068,13 +2072,7 @@ static bp_off_t gui_meta_tell(void *handle)
 
 static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
 {
-    unsigned long seconds;
-    *mtime = bp_u64_from_u32(0);
-    if (source < (time_t)0) return 0;
-    seconds = (unsigned long)source;
-    if ((time_t)seconds != source) return 0;
-    *mtime = bp_u64_from_ulong(seconds);
-    return 1;
+    return bp_amiga_time_to_utc(source, mtime);
 }
 
 /* Append Amiga protection bits and comment after a successfully added subject. */
@@ -2408,8 +2406,8 @@ static void do_create_from_paths(const char **paths, int path_count)
         fsize = type == BP_TYPE_DIR ? bp_u64_from_u32(0) : bp_off_to_u64((bp_off_t)st.st_size);
         mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
                     ? BP_ENTRY_FLAG_MTIME_VALID : 0;
-        if (mtime_flags == 0 && st.st_mtime != (time_t)0) {
-            log_message("Source time not representable; storing unknown: %s",
+        if (mtime_flags == 0) {
+                log_message("Source time unavailable; set BP_TZ_OFFSET to minutes east of UTC, storing unknown: %s",
                         gather_files[i]);
             preservation_partial = 1;
         }

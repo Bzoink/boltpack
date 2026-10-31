@@ -1858,12 +1858,19 @@ fsuae-native-interoperability-test: modern amiga68k
 	    --xdftool "$(XDFTOOL)" --filesystem ffs --skip-codecs \
 	    --depth "$(AMIGA_NATIVE_DEPTH)" --stack 0
 
-.PHONY: amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
+.PHONY: amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test
 amiga-meta-host-test:
 	mkdir -p build/amiga-meta-test
 	$(CC) -std=c89 -pedantic -Wall -Wextra -Wno-unused-function \
 	    test/unit/test_amiga_meta.c -o build/amiga-meta-test/test
 	build/amiga-meta-test/test
+
+amiga-time-host-test:
+	mkdir -p build/amiga-time-test
+	$(CC) -std=c89 -D_POSIX_C_SOURCE=200809L -pedantic -Wall -Wextra \
+	    -Wno-unused-function \
+	    test/unit/test_amiga_time.c -o build/amiga-time-test/test
+	build/amiga-time-test/test
 
 amiga-gui-dirs-host-test:
 	mkdir -p build/amiga-gui-dirs-test
@@ -1906,7 +1913,7 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="

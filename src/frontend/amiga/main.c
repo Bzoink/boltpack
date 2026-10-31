@@ -66,6 +66,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <utime.h>
+#include "amiga_time.h"
 
 /* AmigaDOS does not grow a process stack on demand.  The cookie is honored by
  * newer shells; libnix also gets an explicit startup stack expansion below so
@@ -555,13 +556,8 @@ static int amiga_apply_meta(const char *fs_path, unsigned long prot,
 /* Preserve epoch zero; mark negative or host-unrepresentable times unknown. */
 static bp_uint16 amiga_entry_mtime(time_t source, bp_uint64 *mtime)
 {
-    unsigned long seconds;
-    *mtime = bp_u64_from_u32(0);
-    if (source < (time_t)0) return 0;
-    seconds = (unsigned long)source;
-    if ((time_t)seconds != source) return 0;
-    *mtime = bp_u64_from_ulong(seconds);
-    return BP_ENTRY_FLAG_MTIME_VALID;
+    return bp_amiga_time_to_utc(source, mtime)
+         ? BP_ENTRY_FLAG_MTIME_VALID : 0;
 }
 
 /*
@@ -685,9 +681,9 @@ static int add_directory_record(bp_archive_t *ar, const char *path,
         return BP_ERR_INVALID_ARG;
     }
     mtime_flags = amiga_entry_mtime(st->st_mtime, &mtime);
-    if (mtime_flags == 0 && st->st_mtime != (time_t)0)
+    if (mtime_flags == 0)
         fprintf(stderr,
-                "boltpack: source timestamp is out of range; storing unknown: %s\n",
+                "boltpack: source timestamp unavailable; set BP_TZ_OFFSET to minutes east of UTC; storing unknown: %s\n",
                 path);
     rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
                                  BP_CREATOR_OS, NULL, bp_u64_from_u32(0),
@@ -901,9 +897,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 
         mtime_flags = amiga_entry_mtime(st.st_mtime, &mtime);
-        if (mtime_flags == 0 && st.st_mtime != (time_t)0)
+        if (mtime_flags == 0)
             fprintf(stderr,
-                    "boltpack: source timestamp is out of range; storing unknown: %s\n",
+                    "boltpack: source timestamp unavailable; set BP_TZ_OFFSET to minutes east of UTC; storing unknown: %s\n",
                     path);
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_CREATOR_OS, &fio, file_size,
@@ -1701,8 +1697,8 @@ static void amiga_finalize_directories(extract_ctx_t *ctx)
                     node->path);
             ctx->partial = 1;
         } else if (node->mtime_valid &&
-            bp_restore_mtime(node->path, node->mtime) != BP_OK) {
-            fprintf(stderr, "boltpack: cannot restore directory timestamp: %s\n",
+            bp_amiga_restore_mtime(node->path, node->mtime) != BP_OK) {
+            fprintf(stderr, "boltpack: cannot restore directory timestamp; check BP_TZ_OFFSET: %s\n",
                     node->path);
             ctx->partial = 1;
         }
@@ -2069,8 +2065,8 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         }
         if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
             if (!amiga_stage_temporary_unchanged(stage) ||
-                bp_restore_mtime(stage->temporary, entry->mtime) != BP_OK) {
-                fprintf(stderr, "boltpack: cannot restore timestamp: %s\n",
+                bp_amiga_restore_mtime(stage->temporary, entry->mtime) != BP_OK) {
+                fprintf(stderr, "boltpack: cannot restore timestamp; check BP_TZ_OFFSET: %s\n",
                         stage->target);
                 ctx->partial = 1;
             }
