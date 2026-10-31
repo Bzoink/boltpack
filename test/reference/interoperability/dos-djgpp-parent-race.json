@@ -1,0 +1,16 @@
+{
+  "case": "djgpp-fat12-extraction-parent-substitution",
+  "filesystem": "FAT12",
+  "archive_member": "SRC.TXT",
+  "archive_payload_utf8": "DJGPP DOS FAT12 interoperability probe\r\n",
+  "original_target_utf8": "original-target-sentinel\r\n",
+  "replacement_root_sentinel_utf8": "new-root-sentinel\r\n",
+  "counterfeit_stage_utf8": "counterfeit-stage\r\n",
+  "expected": {
+    "replacement_target_published": false,
+    "original_target_preserved_in_parked_parent": true,
+    "replacement_root_sentinel_preserved": true,
+    "verified_stage_preserved_in_parked_parent": true,
+    "counterfeit_stage_not_published": true
+  }
+}

@@ -258,6 +258,14 @@ dos-djgpp:
 	    CFLAGS='$(CFLAGS) -U__STRICT_ANSI__' \
 	    BUILDDIR=build/dos-djgpp TARGET=build/dos-djgpp/boltpack.exe all
 
+.PHONY: dos-djgpp-parent-race
+dos-djgpp-parent-race:
+	$(call check_cc,$(DOS_CC),full DOS DJGPP parent-race probe)
+	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	    CFLAGS='$(CFLAGS) -U__STRICT_ANSI__ -DBP_TEST_DOS_PARENT_SUBSTITUTION' \
+	    BUILDDIR=build/dos-djgpp-parent-race \
+	    TARGET=build/dos-djgpp-parent-race/boltpack-race.exe all
+
 # 32-bit Linux CLI. Keep its artifacts separate from the native Linux build so
 # aggregate builds cannot overwrite build/linux/boltpack with a 32-bit binary.
 linux-i386:
@@ -1553,7 +1561,7 @@ asan: $(ASAN_TARGET)
 # QEMU-i386, Open Watcom, and DOSBox. The mini target runs directly by default;
 # set LINUXMINI_RUNNER=qemu-i386 where native 32-bit execution is unavailable.
 LINUXMINI_RUNNER ?=
-.PHONY: linuxmini-interoperability-test dos16-interoperability-test dos16-stack-interoperability-test dosboxx-fat12-interoperability-test dosboxx-fat12-cp850-interoperability-test freedos-cp850-interoperability-test dos-djgpp-dosboxx-fat12-test
+.PHONY: linuxmini-interoperability-test dos16-interoperability-test dos16-stack-interoperability-test dosboxx-fat12-interoperability-test dosboxx-fat12-cp850-interoperability-test freedos-cp850-interoperability-test dos-djgpp-dosboxx-fat12-test dos-djgpp-parent-race-test
 linuxmini-interoperability-test: modern linuxmini
 	BP_TEST_LINUXMINI_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_linuxmini_interop.py
 	python3 test/check_extract_race.py --boltpack build/linux/boltpack
@@ -1598,10 +1606,18 @@ freedos-cp850-interoperability-test: modern dos16-cp850 dos16-cp850-crash-hook
 
 # Set CWSDPMI to CWSDPMI.EXE from the DJGPP csdpmi package to qualify the
 # full 32-bit DOS frontend under DOSBox-X, independently from the DOS16 mini.
+DOSBOX_X ?= dosbox-x
 dos-djgpp-dosboxx-fat12-test: modern dos-djgpp
 	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
 	python3 test/check_djgpp_dosboxx.py --cwsdpmi "$(CWSDPMI)" \
 	    --dos-cc "$(DOS_CC)"
+
+.PHONY: dos-djgpp-parent-race-test
+dos-djgpp-parent-race-test: modern dos-djgpp-parent-race
+	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
+	python3 test/check_dos_parent_race.py --dosbox-x "$(DOSBOX_X)" \
+	    --dos-cc "$(DOS_CC)" --cwsdpmi "$(CWSDPMI)" \
+	    --dos-exe build/dos-djgpp-parent-race/boltpack-race.exe
 
 AMIGA_ROM ?= $(HOME)/images/Amiga/kickstart-2.04-a500plus.rom
 AMIGA_WORKBENCH ?= $(HOME)/images/Amiga/Workbench-2.04/1-Workbench.adf
