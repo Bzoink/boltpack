@@ -2,16 +2,35 @@
 """Exercise Linux FLTK GUI archive open and nested extraction under Xvfb."""
 
 import argparse
+import datetime
 import hashlib
 import json
+import locale
 import mmap
 import os
 import pathlib
+import platform
 import shlex
+import shutil
 import stat
 import struct
 import subprocess
 import tempfile
+import time
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def command_version(command):
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unavailable: " + str(exc)
+    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else "unknown"
+    return first if result.returncode == 0 else "%s (exit %d)" % (first, result.returncode)
 
 
 SCRIPT = r'''set -eu
@@ -336,6 +355,8 @@ def main() -> int:
     parser.add_argument("--mini-runner", default="",
                         help="optional command prefix, such as qemu-i386")
     parser.add_argument("--prefix-fixture", required=True, type=pathlib.Path)
+    parser.add_argument("--output-root", type=pathlib.Path,
+                        default=pathlib.Path(__file__).resolve().parent.parent / "build")
     args = parser.parse_args()
     gui = args.gui.resolve()
     cli = args.cli.resolve()
@@ -345,12 +366,17 @@ def main() -> int:
     manifest_path = (pathlib.Path(__file__).resolve().parent /
                      "reference/interoperability/linux-fltk-gui.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    output_root = args.output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    evidence = pathlib.Path(tempfile.mkdtemp(prefix="r02-linux-gui-",
+                                              dir=output_root))
     for executable in ("xvfb-run", "xdotool"):
         if subprocess.run(["sh", "-c", f"command -v {executable}"],
                           capture_output=True).returncode != 0:
             raise SystemExit(f"required GUI test tool is missing: {executable}")
 
-    with tempfile.TemporaryDirectory(prefix="boltpack-linux-gui-") as temp:
+    with tempfile.TemporaryDirectory(prefix="boltpack-linux-gui-",
+                                     dir=output_root) as temp:
         root = pathlib.Path(temp)
         source_root = root / "source"
         profile_source_root = root / "profile-source"
@@ -728,6 +754,75 @@ def main() -> int:
             raise SystemExit("GUI unsafe-name preflight changed the destination "
                              "or wrote outside it")
         print("Linux FLTK GUI Profile 1 creation, mini-reader extraction, unsafe-name and path-conflict preflight, open/extract/metadata/flatten/cancel/write/flush/close/corruption interoperability passed")
+        shutil.copytree(root, evidence / "fixture")
+
+    try:
+        locale_name = locale.setlocale(locale.LC_ALL, None)
+    except locale.Error:
+        locale_name = "unknown"
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+    (evidence / "git-status.txt").write_bytes(status)
+    (evidence / "git-diff.patch").write_bytes(diff)
+    source_paths = {
+        "runner": pathlib.Path(__file__).resolve(),
+        "manifest": manifest_path,
+        "makefile": ROOT / "Makefile",
+        "gui": gui,
+        "cli": cli,
+        "mini": mini,
+        "prefix_fixture": prefix_fixture,
+    }
+    source_hashes = {}
+    for label, path in source_paths.items():
+        if path.is_file():
+            source_hashes[label] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for index, part in enumerate(mini_runner):
+        executable = shutil.which(part)
+        if executable and pathlib.Path(executable).is_file():
+            source_hashes["mini_runner_%d" % index] = hashlib.sha256(
+                pathlib.Path(executable).read_bytes()).hexdigest()
+    try:
+        invocation = [sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]]
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                           cwd=ROOT, text=True).strip()
+    except subprocess.CalledProcessError:
+        invocation, revision = sys.argv, "unknown"
+    record = {
+        "case": manifest["case"],
+        "result": "PASS: production Linux FLTK GUI create/extract, Profile 1, mini cross-read, metadata, flatten, cancellation, corruption, injected IO failures, and unsafe/path-conflict preflight",
+        "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "revision": revision,
+        "worktree_status": status.decode("utf-8", "replace").splitlines(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "locale": locale_name,
+            "timezone": list(time.tzname),
+            "xvfb_run": command_version(["xvfb-run", "--help"]),
+            "xdotool": command_version(["xdotool", "--version"]),
+        },
+        "filesystem": "temporary Linux filesystem under Xvfb; full evidence copied before cleanup",
+        "command": invocation,
+        "expected_manifest": {
+            "path": manifest_path.relative_to(ROOT).as_posix(),
+            "size": manifest_path.stat().st_size,
+            "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        },
+        "inputs": source_hashes,
+        "artifacts": {
+            path.relative_to(evidence).as_posix(): {
+                "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in sorted(evidence.rglob("*"))
+            if path.is_file() and path != evidence / "run.json"
+        },
+    }
+    (evidence / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                        encoding="utf-8")
+    print("Retained Linux FLTK GUI run record:", evidence / "run.json")
     return 0
 
 
