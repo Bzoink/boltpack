@@ -652,7 +652,7 @@ HATARI_TOS ?=
 EMUTOS_ROM ?=
 FREEMINT_ROOT ?= build/freemint-probe/diskroot
 
-.PHONY: atari atari-cli atari-gui-create-test atari-gui-create-fat12-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
+.PHONY: atari atari-cli atari-gui-create-test atari-gui-create-fat12-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -2750,6 +2750,20 @@ atari-gui-interrupt-after-backup-test: modern atari-gui
 	    --gui-prg $(ATARI_GUI_INTERRUPT_BIN) \
 	    --recovery-gui $(ATARI_GUI_RECOVER_RECORD_BIN) \
 	    --final-gui $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
+ATARI_GUI_MEDIA_ERROR_BIN = $(ATARI_GUI_BUILDDIR)/boltpack-media-error.prg
+atari-gui-media-error-test: modern
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	mkdir -p $(ATARI_GUI_BUILDDIR)
+	$(ATARI_CC) -Wall -Wextra -Wno-unused-function -O2 \
+	    -DBP_ATARI_GUI_TEST_PAUSE_AFTER_BACKUP \
+	    -DBP_ATARI_GUI_TEST_WAIT_FOR_RELEASE \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
+	    $(GUI_CORE_SRCS) src/frontend/atari_gui/main.c -lgem \
+	    -o $(ATARI_GUI_MEDIA_ERROR_BIN)
+	xvfb-run -a python3 test/check_hatari_gui_media_error.py \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_MEDIA_ERROR_BIN) --linux-cli $(TARGET)
 
 atari-gui-stage-recovery-test: modern atari-gui
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
