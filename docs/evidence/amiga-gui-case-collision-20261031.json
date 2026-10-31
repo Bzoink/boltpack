@@ -1,0 +1,63 @@
+{
+  "result": "PASS",
+  "purpose": "Verify Amiga GUI extraction refuses Linux archive names that collide under Amiga case-folding",
+  "date": "2026-10-31",
+  "revision": "83bafde",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf": {
+      "path": "build/amiga-gui-collision-probe/Workbench-gui-collision-test.adf",
+      "sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275"
+    },
+    "host_directory_volume": "build/amiga-gui-collision-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui": {
+    "binary": "build/amiga-gui-collision-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Logging-only additions around menu dispatch and ASL Open."
+  },
+  "linux_fixture": {
+    "archive": "build/amiga-gui-collision-probe/drive/CASE-COLLISION.BLT",
+    "archive_sha256": "12e0cb2e8c58bd6001436d86a1031dc6cacc62af0c2c7290faa8a60094574adf",
+    "bytes": 332,
+    "format_version": 6,
+    "creator_os": "Linux x86-64",
+    "method": "Stored",
+    "entries": ["A.TXT", "a.txt"],
+    "linux_integrity_result": "2 files OK"
+  },
+  "destination": {
+    "path": "DH0:OUT_SENTINEL",
+    "preexisting_file": "KEEP.TXT",
+    "sentinel_sha256_before": "852cf0ccbac015f3ba43e5e1ad983fdd3fad89ea561c3708be37c794f6a06cc3",
+    "sentinel_sha256_after": "852cf0ccbac015f3ba43e5e1ad983fdd3fad89ea561c3708be37c794f6a06cc3",
+    "directory_entries_after": ["KEEP.TXT"]
+  },
+  "observed": {
+    "visible_error": "Archive names collide on this Amiga destination",
+    "guest_log": "Extract requested: CASE-COLLISION.BLT; no Extract destination or Extract complete message followed, so extraction did not begin.",
+    "guest_log_artifact": {
+      "path": "build/amiga-gui-collision-probe/drive/boldpack.log",
+      "sha256": "233397178b18b49fe0a229f27fc026caab724de402cec56ea21263eb94adc063"
+    },
+    "fs_uae_stdout": {
+      "path": "build/amiga-gui-collision-probe/fs-uae-gui-collision-sentinel.log",
+      "sha256": "5509ee10548367da5ddb183a4cbde4806753bfac4c8589f8e24e3a6c45b40a44"
+    },
+    "screenshot": {
+      "path": "build/amiga-gui-collision-probe/screen-gui-collision-sentinel-refusal.png",
+      "sha256": "ddd8c8658ce6fdcf167735f684583715af7f36f89b29dbfb239061a003058729"
+    }
+  },
+  "scope_limit": "This verifies refusal of one case-folded name collision and preservation of one existing sentinel on the FS-UAE host-directory volume. Other collision classes, native OFS/FFS behavior, and all other GUI flow cases remain separate."
+}
