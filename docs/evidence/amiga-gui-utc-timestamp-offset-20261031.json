@@ -1,0 +1,91 @@
+{
+  "result": "FAIL",
+  "purpose": "Check UTC format-6 timestamps across AmigaOS GUI and Linux in both transfer directions",
+  "date": "2026-10-31",
+  "revision": "9995d2b",
+  "timezone_under_test": "Europe/Stockholm; fixture dates are in standard time (UTC+01:00)",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf_sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275",
+    "host_directory_volume": "FS-UAE host-directory volume mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-timezone-create-probe/drive/BoltPackLog",
+    "sha256": "324ba7dcd45e46ce524d06c5b4f9440d26dc4f93a68dff791b3e49a0ad25f838",
+    "instrumentation_scope": "Development logging enabled; archive behavior is the production Amiga GUI source."
+  },
+  "fixture": {
+    "payload_path": "TREE/NESTED/PAYLOAD.TXT",
+    "payload_bytes": 28,
+    "payload_sha256": "cd0a882424a6b66d27759d1f443e3b3a3355e60a54c9162ce4a24c66c5ad86ee",
+    "utc_mtime_seconds": {
+      "TREE/": 1700000100,
+      "TREE/EMPTY/": 1700000200,
+      "TREE/NESTED/": 1700000300,
+      "TREE/NESTED/PAYLOAD.TXT": 1700000400
+    }
+  },
+  "amiga_gui_created_archive": {
+    "path": "build/amiga-gui-timezone-create-probe/drive/archive.bolt",
+    "sha256": "70af06d2577cb66f27e42fc798408c4f9be74bffe80fd5b68c7e7dd115ee7322",
+    "bytes": 1072,
+    "guest_log": {
+      "path": "build/amiga-gui-timezone-create-probe/drive/boldpack.log",
+      "sha256": "95f6dccad9c41868e9577bc1671c2cfe4578656a6b7218ce55e54b6b760dddbd"
+    },
+    "fs_uae_log": {
+      "path": "build/amiga-gui-timezone-create-probe/home/FS-UAE/Cache/Logs/fs-uae.log.txt",
+      "sha256": "4795e0714ae9eefbd0216682ebf71a5cc7998019928d97802da6018697b97fc3"
+    },
+    "completion_screenshot": {
+      "path": "build/amiga-gui-timezone-create-probe/screen-gui-timezone-created.png",
+      "sha256": "9ece676e947bb8285cf261996226040525c2234f9e9d332eb4ea8d143658c665"
+    },
+    "linux_full_and_mini_integrity": "Both readers verify all 8 physical entries.",
+    "linux_extraction": {
+      "full_reader_result": "All primary payload bytes match; Amiga native metadata reports partial.",
+      "mini_reader_result": "All primary payload bytes match; Amiga native metadata reports partial.",
+      "observed_mtime_seconds": {
+        "TREE/": 1700003700,
+        "TREE/EMPTY/": 1700003800,
+        "TREE/NESTED/": 1700003900,
+        "TREE/NESTED/PAYLOAD.TXT": 1700004000
+      },
+      "delta_from_fixture_seconds": 3600,
+      "full_payload_sha256": "cd0a882424a6b66d27759d1f443e3b3a3355e60a54c9162ce4a24c66c5ad86ee",
+      "mini_payload_sha256": "cd0a882424a6b66d27759d1f443e3b3a3355e60a54c9162ce4a24c66c5ad86ee"
+    }
+  },
+  "linux_created_archive": {
+    "path": "build/amiga-gui-dir-time-probe/drive/LINUX-TIME.BLT",
+    "sha256": "db39a20b776690c31544e665ab39551a55b5bb699b12e016b03aebb77010c2e3",
+    "linux_full_and_mini_integrity": "Both readers verify all 4 entries.",
+    "linux_full_and_mini_control_extracts": "Both restore all four fixture mtimes exactly and preserve the payload hash.",
+    "amiga_gui_extract": {
+      "destination": "DH0:OUT",
+      "guest_log_path": "build/amiga-gui-dir-time-probe/drive/boldpack.log",
+      "guest_log_sha256": "dd8f6a58518d425a6fbdb04c9de051e4075319d71774316439c890462097f627",
+      "fs_uae_log_path": "build/amiga-gui-dir-time-probe/home/FS-UAE/Cache/Logs/fs-uae.log.txt",
+      "fs_uae_log_sha256": "402db638175f5a9f7403347e7be9c79e74fd0254affa530aafbca0c63cb01369",
+      "result": "GUI logged Extract complete rc=0; payload hash matches the fixture.",
+      "observed_mtime_seconds": {
+        "TREE/": 1699996500,
+        "TREE/EMPTY/": 1699996600,
+        "TREE/NESTED/": 1699996700,
+        "TREE/NESTED/PAYLOAD.TXT": 1699996800
+      },
+      "delta_from_fixture_seconds": -3600,
+      "payload_sha256": "cd0a882424a6b66d27759d1f443e3b3a3355e60a54c9162ce4a24c66c5ad86ee"
+    }
+  },
+  "finding": "In this Europe/Stockholm FS-UAE host-directory setup, the Amiga GUI writes format-6 times one hour ahead of the Linux fixture and applies Linux-created UTC times one hour behind on extraction. A same-Amiga GUI create/extract round trip can hide this offset because the two errors cancel.",
+  "scope_limit": "This establishes the offset for one FS-UAE host-directory setup and one set of November timestamps. Native OFS/FFS behavior, other timezone offsets, daylight-saving transitions, and a portable Amiga timezone source are not yet qualified."
+}
