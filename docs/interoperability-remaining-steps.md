@@ -726,7 +726,18 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   is unsupported there. The fallback compares attributes, size, creation time,
   and write time, but cannot detect a replacement preserving all of those
   values. Native Windows sharing behavior, file-ID reuse, and substitutions
-  restored before a path recheck remain unqualified.
+  restored before a path recheck remain unqualified. Win64 extraction now opens
+  the selected output root and every directory it uses with handles that deny
+  delete sharing, retains those handles through file publication and deferred
+  metadata restoration, and rechecks each pathname against its held identity.
+  The focused `win64-fltk-wine-extract-parent-race-test` first confirms Win32
+  rename is blocked with sharing error 32, then uses a host rename to bypass
+  Wine sharing and replace the selected root while extraction is paused. The
+  production GUI detects the new root identity before creating output; the
+  moved original and replacement-root sentinel remain unchanged. Evidence is
+  [`build/r08-win64-fltk-wine-ychg8v6p/run.json`](../build/r08-win64-fltk-wine-ychg8v6p/run.json).
+  This is Wine host-filesystem race evidence; native Windows extraction and
+  filesystem behavior still require target qualification.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.
