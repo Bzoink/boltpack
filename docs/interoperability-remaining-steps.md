@@ -573,9 +573,19 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   between stat/open and a pathname replacement while the original handle is
   open. The CLI refuses both before publication and leaves no stage; the
   ordinary Atari FAT12 transfer/edit suite still passes. Same-size substitutions
-  preserving all compared fields and destination-parent substitution remain
-  open in R06/R13. Human68k
-  pathname-based races remain in R13.
+  preserving all compared source fields remain open. For extraction, the Atari
+  CLI snapshots the output root using pathname metadata and refuses detected
+  changes before staging or publication. Hatari/TOS 1.62 replaces the root with
+  a redirected directory in both windows; both sentinels survive and nothing is
+  published there. After a stage is opened, refusal leaves the verified stage
+  in the moved original directory because TOS has no safe path to unlink it
+  after the parent rename. Evidence is
+  [`build/atari-parent-race-5xluqips/run.json`](../build/atari-parent-race-5xluqips/run.json).
+  TOS synthesizes a new inode value for every path stat, so the check compares
+  device, size, and timestamps. Nested member-parent substitution, same-metadata
+  replacement, and a swap between validation and use remain possible; this is
+  not handle-pinned traversal.
+  Human68k pathname-based races remain in R13.
   The Amiga CLI now snapshots the output root, each staged file's parent, and
   the staged-file inode. It refuses publication and deferred file/directory
   metadata changes when those identities differ. `fsuae-parent-substitution-test`
