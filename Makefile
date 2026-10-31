@@ -652,7 +652,7 @@ HATARI_TOS ?=
 EMUTOS_ROM ?=
 FREEMINT_ROOT ?= build/freemint-probe/diskroot
 
-.PHONY: atari atari-cli atari-gui-create-test atari-gui-create-fat12-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
+.PHONY: atari atari-cli atari-gui-create-test atari-gui-create-fat12-test atari-gui-unicode-refusal-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -2632,6 +2632,12 @@ atari-gui-create-fat12-test: modern linuxmini atari-gui
 	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
 	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg \
 	    --linux-cli $(TARGET) --mini-cli build/linux32mini/bpmini
+
+atari-gui-unicode-refusal-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	python3 test/check_hatari_gui_unicode_refusal.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
 
 atari-gui-menu-pointer-test: modern atari-gui
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }

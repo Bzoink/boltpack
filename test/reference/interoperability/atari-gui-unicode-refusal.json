@@ -1,0 +1,22 @@
+{
+  "case": "Atari GEM refuses a Linux-created archive with an unrepresentable UTF-8 name before extraction output",
+  "archive": "UNREP.BLT",
+  "entries": [
+    {
+      "name": "plain.txt",
+      "content": "Representable sibling must not be partially published.\n",
+      "sha256": "d7722dc67aefc6ec6131ec2ded3aaef7b67ff00edd7ec72cbc7d9a883d7f6ce8"
+    },
+    {
+      "name": "payload-🧪.txt",
+      "content": "UTF-8 name outside Atari ST character set.\n",
+      "sha256": "039a515552e37cdef3e11218284412d831d9ed1f41c0ad4d8ca7338b7b152aea"
+    }
+  ],
+  "expected": {
+    "linux_archive_integrity": "pass",
+    "atari_extraction": "refuse before publishing any entry",
+    "destination": "pre-existing empty OUT remains empty",
+    "partial_result": true
+  }
+}
