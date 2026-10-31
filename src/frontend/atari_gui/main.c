@@ -2491,6 +2491,12 @@ static int commit_staged_output(atari_gui_staged_output_t *stage)
         }
 #ifdef BP_ATARI_GUI_TEST_PAUSE_AFTER_BACKUP
         if (stage->verify_content) {
+#ifdef BP_ATARI_GUI_TEST_WAIT_FOR_RELEASE
+            FILE *ready = fopen("C:\\READY.TST", "wb");
+            if (ready == NULL) return BP_ERR_IO;
+            (void)fclose(ready);
+            while (access("C:\\RELEASE.TST", F_OK) != 0) { }
+#else
             char pause_path[BP_MAX_PATH];
             int pause_fd;
             if (atari_gui_sibling_name(stage->target, "HOLD.TST", pause_path,
@@ -2502,6 +2508,7 @@ static int commit_staged_output(atari_gui_staged_output_t *stage)
             /* The dedicated test runner kills Hatari after observing this
                marker and the absent target. Never present in release builds. */
             for (;;) { }
+#endif
         }
 #endif
     }
@@ -2867,6 +2874,16 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
         }
         if (entry->flags & BP_ENTRY_FLAG_MODE_VALID) ctx->partial = 1;
         rc = commit_staged_output(stage);
+#ifdef BP_ATARI_GUI_TEST_WAIT_FOR_RELEASE
+        if (rc != BP_OK) {
+            FILE *error_marker = fopen("C:\\ERROR.TST", "wb");
+            if (error_marker != NULL) {
+                fprintf(error_marker, "commit_rc=%d committed=%d\r\n",
+                        rc, stage->committed);
+                (void)fclose(error_marker);
+            }
+        }
+#endif
         if (rc == BP_OK && (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
             bp_restore_mtime(stage->target, entry->mtime) != BP_OK)
             ctx->partial = 1;
