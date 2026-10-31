@@ -3182,7 +3182,11 @@ static void do_extract_selected()
 /* ---- create archive ---------------------------------------------------- */
 
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
-                               const char *arc_name);
+                               const char *arc_name
+#ifdef _WIN32
+                               , const struct WinChildSnapshot *snapshot = NULL
+#endif
+                               );
 static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                              const char *prefix);
 
@@ -3201,6 +3205,14 @@ static bp_uint16 win_gui_archive_mtime(time_t source_time, bp_uint64 *mtime)
 }
 
 #ifdef _WIN32
+struct WinChildSnapshot {
+    DWORD attributes;
+    DWORD size_high;
+    DWORD size_low;
+    FILETIME creation_time;
+    FILETIME write_time;
+};
+
 struct WinSourcePathGuard {
     HANDLE handle;
     BY_HANDLE_FILE_INFORMATION info;
@@ -3258,18 +3270,37 @@ struct WinSourcePathGuard {
     }
 };
 
-#ifdef BP_TEST_WIN_FLTK_DIR_GUARD_PAUSE
-static void win_test_pause_after_directory_guard(DWORD attributes)
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+static void win_test_pause_for_phase(const wchar_t *phase)
 {
-    static bool paused = false;
+    static bool directory_paused = false;
+    static bool child_paused = false;
+    wchar_t requested[32];
+    bool *paused = NULL;
+    const wchar_t *ready_name;
+    const wchar_t *release_name;
     HANDLE marker;
-    if (paused || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
-    paused = true;
-    marker = CreateFileW(L"source-guard.ready", GENERIC_WRITE, 0, NULL,
-                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD length = GetEnvironmentVariableW(L"BP_TEST_WIN_FLTK_RACE_PHASE",
+                                           requested,
+                                           (DWORD)(sizeof(requested) /
+                                                   sizeof(requested[0])));
+    if (length == 0 || length >= sizeof(requested) / sizeof(requested[0]) ||
+        wcscmp(requested, phase) != 0) return;
+    if (wcscmp(phase, L"directory") == 0) {
+        paused = &directory_paused;
+        ready_name = L"source-guard.ready";
+        release_name = L"source-guard.release";
+    } else {
+        paused = &child_paused;
+        ready_name = L"child-enumerated.ready";
+        release_name = L"child-enumerated.release";
+    }
+    if (*paused) return;
+    *paused = true;
+    marker = CreateFileW(ready_name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, NULL);
     if (marker != INVALID_HANDLE_VALUE) CloseHandle(marker);
-    while (GetFileAttributesW(L"source-guard.release") ==
-           INVALID_FILE_ATTRIBUTES)
+    while (GetFileAttributesW(release_name) == INVALID_FILE_ATTRIBUTES)
         Sleep(10);
 }
 #endif
@@ -3313,7 +3344,11 @@ static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
 #endif
 
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
-                               const char *arc_name)
+                               const char *arc_name
+#ifdef _WIN32
+                               , const WinChildSnapshot *snapshot
+#endif
+                               )
 {
     struct _stat64 st;
 #ifdef _WIN32
@@ -3325,8 +3360,19 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     if (!path_guard.open(filepath))
         return BP_ERR_IO;
     attributes = path_guard.info.dwFileAttributes;
-#ifdef BP_TEST_WIN_FLTK_DIR_GUARD_PAUSE
-    win_test_pause_after_directory_guard(attributes);
+    if (snapshot != NULL &&
+        (snapshot->attributes != path_guard.info.dwFileAttributes ||
+         CompareFileTime(&snapshot->creation_time,
+                         &path_guard.info.ftCreationTime) != 0 ||
+         CompareFileTime(&snapshot->write_time,
+                         &path_guard.info.ftLastWriteTime) != 0 ||
+         ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+          (snapshot->size_high != path_guard.info.nFileSizeHigh ||
+           snapshot->size_low != path_guard.info.nFileSizeLow))))
+        return BP_ERR_IO;
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        win_test_pause_for_phase(L"directory");
 #endif
 #endif
     if (_stat64(filepath, &st) != 0) return BP_ERR_IO;
@@ -3388,7 +3434,11 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 /* Directory names stay UTF-8 in the GUI. MinGW's dirent implementation uses
    the process ANSI codepage, so use wide Win32 enumeration on Windows. */
 static int list_directory_names(const char *dirpath,
-                                std::vector<std::string> &names)
+                                std::vector<std::string> &names
+#ifdef _WIN32
+                                , std::vector<WinChildSnapshot> *snapshots = NULL
+#endif
+                                )
 {
 #ifdef _WIN32
     std::wstring wide_path;
@@ -3421,6 +3471,15 @@ static int list_directory_names(const char *dirpath,
             break;
         }
         names.push_back(utf8_name);
+        if (snapshots != NULL) {
+            WinChildSnapshot snapshot;
+            snapshot.attributes = data.dwFileAttributes;
+            snapshot.size_high = data.nFileSizeHigh;
+            snapshot.size_low = data.nFileSizeLow;
+            snapshot.creation_time = data.ftCreationTime;
+            snapshot.write_time = data.ftLastWriteTime;
+            snapshots->push_back(snapshot);
+        }
     } while (FindNextFileW(find_handle, &data));
     error = GetLastError();
     FindClose(find_handle);
@@ -3449,14 +3508,27 @@ static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
                              const char *prefix)
 {
     std::vector<std::string> names;
+#ifdef _WIN32
+    std::vector<WinChildSnapshot> snapshots;
+    int rc = list_directory_names(dirpath, names, &snapshots);
+#else
     int rc = list_directory_names(dirpath, names);
+#endif
     if (rc != BP_OK) return rc;
+
+#ifdef BP_TEST_WIN_FLTK_RACE_PAUSE
+    win_test_pause_for_phase(L"child");
+#endif
 
     for (size_t i = 0; i < names.size(); ++i) {
         std::string full = std::string(dirpath) + "/" + names[i];
         std::string arc  = std::string(prefix) + names[i];
 
-        rc = add_file_to_archive(ar, full.c_str(), arc.c_str());
+        rc = add_file_to_archive(ar, full.c_str(), arc.c_str()
+#ifdef _WIN32
+                                 , &snapshots[i]
+#endif
+                                 );
         if (rc != BP_OK) return rc;
     }
     return BP_OK;

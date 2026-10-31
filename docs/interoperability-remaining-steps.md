@@ -705,8 +705,16 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   directory. The hash-indexed run is
   [`build/r08-win64-fltk-wine-create-zzbgj2p4/run.json`](../build/r08-win64-fltk-wine-create-zzbgj2p4/run.json).
   This closes that observable root-substitution window under Wine. Native
-  Windows sharing behavior, child replacement races, and substitutions restored
-  before a path recheck remain unqualified.
+  Windows sharing behavior and substitutions restored before a path recheck
+  remain unqualified. Directory enumeration now snapshots each child's
+  attributes, size, creation time, and write time and compares them with the
+  opened object before archiving. `make CC=gcc WINE=/usr/lib/wine/wine64
+  win64-fltk-wine-child-race-test` replaces the Unicode child after enumeration
+  with a different-sized file. The GUI refuses publication, removes the archive
+  stage, and preserves the original and counterfeit files. Evidence is
+  [`build/r08-win64-fltk-wine-create-fcrl3adv/run.json`](../build/r08-win64-fltk-wine-create-fcrl3adv/run.json).
+  Replacements that preserve all enumerated metadata and native Windows behavior
+  remain unqualified.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.
