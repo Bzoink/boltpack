@@ -7,9 +7,17 @@ int wmain(int argc, wchar_t **argv)
     DWORD attributes;
     DWORD required;
 
+    if (argc == 4 && wcscmp(argv[1], L"move") == 0) {
+        if (MoveFileExW(argv[2], argv[3], MOVEFILE_WRITE_THROUGH)) {
+            wprintf(L"move=succeeded\n");
+            return 0;
+        }
+        wprintf(L"move=refused error=%lu\n", GetLastError());
+        return 1;
+    }
     if (argc != 3 ||
         (wcscmp(argv[1], L"set") != 0 && wcscmp(argv[1], L"check") != 0)) {
-        fwprintf(stderr, L"usage: attributes-probe.exe set|check PATH\n");
+        fwprintf(stderr, L"usage: attributes-probe.exe set|check PATH | move PATH DEST\n");
         return 2;
     }
     attributes = GetFileAttributesW(argv[2]);

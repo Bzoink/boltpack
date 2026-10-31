@@ -2407,7 +2407,9 @@ static FILE *open_utf8_file(const std::string &path, const wchar_t *mode)
 /* Open source bytes from the checked Windows file object itself. Opening with
    FILE_FLAG_OPEN_REPARSE_POINT and checking the handle closes the pathname
    attribute-check/open gap for file symlinks and other reparse files. */
-static FILE *open_windows_source_file(const char *path, struct _stat64 *st)
+static FILE *open_windows_source_file(
+    const char *path, struct _stat64 *st,
+    const BY_HANDLE_FILE_INFORMATION *expected)
 {
     std::wstring wide;
     HANDLE handle;
@@ -2422,9 +2424,15 @@ static FILE *open_windows_source_file(const char *path, struct _stat64 *st)
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                          NULL);
     if (handle == INVALID_HANDLE_VALUE) return NULL;
-    if (!GetFileInformationByHandle(handle, &info) ||
+    if (!GetFileInformationByHandle(handle, &info) || expected == NULL ||
         (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT |
                                   FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    if (info.dwVolumeSerialNumber != expected->dwVolumeSerialNumber ||
+        info.nFileIndexHigh != expected->nFileIndexHigh ||
+        info.nFileIndexLow != expected->nFileIndexLow) {
         CloseHandle(handle);
         return NULL;
     }
@@ -3193,6 +3201,79 @@ static bp_uint16 win_gui_archive_mtime(time_t source_time, bp_uint64 *mtime)
 }
 
 #ifdef _WIN32
+struct WinSourcePathGuard {
+    HANDLE handle;
+    BY_HANDLE_FILE_INFORMATION info;
+
+    WinSourcePathGuard() : handle(INVALID_HANDLE_VALUE)
+    {
+        memset(&info, 0, sizeof(info));
+    }
+
+    ~WinSourcePathGuard()
+    {
+        if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    }
+
+    bool open(const char *path)
+    {
+        std::wstring wide;
+        if (!win_utf8_to_wide(path, &wide)) return false;
+        handle = CreateFileW(wide.c_str(), FILE_READ_ATTRIBUTES,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                             OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS |
+                             FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (handle == INVALID_HANDLE_VALUE) return false;
+        if (!GetFileInformationByHandle(handle, &info) ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(handle);
+            handle = INVALID_HANDLE_VALUE;
+            return false;
+        }
+        return true;
+    }
+
+    bool still_names(const char *path) const
+    {
+        std::wstring wide;
+        HANDLE current;
+        BY_HANDLE_FILE_INFORMATION now;
+        bool same;
+        if (handle == INVALID_HANDLE_VALUE ||
+            !win_utf8_to_wide(path, &wide)) return false;
+        current = CreateFileW(wide.c_str(), FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE |
+                               FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS |
+                               FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (current == INVALID_HANDLE_VALUE) return false;
+        same = GetFileInformationByHandle(current, &now) &&
+               (now.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+               info.dwVolumeSerialNumber == now.dwVolumeSerialNumber &&
+               info.nFileIndexHigh == now.nFileIndexHigh &&
+               info.nFileIndexLow == now.nFileIndexLow;
+        CloseHandle(current);
+        return same;
+    }
+};
+
+#ifdef BP_TEST_WIN_FLTK_DIR_GUARD_PAUSE
+static void win_test_pause_after_directory_guard(DWORD attributes)
+{
+    static bool paused = false;
+    HANDLE marker;
+    if (paused || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
+    paused = true;
+    marker = CreateFileW(L"source-guard.ready", GENERIC_WRITE, 0, NULL,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (marker != INVALID_HANDLE_VALUE) CloseHandle(marker);
+    while (GetFileAttributesW(L"source-guard.release") ==
+           INVALID_FILE_ATTRIBUTES)
+        Sleep(10);
+}
+#endif
+
 struct WinFatMetadataSource {
     bp_uint8 data[BP_META_FAT_SIZE];
     unsigned pos;
@@ -3236,17 +3317,25 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
 {
     struct _stat64 st;
 #ifdef _WIN32
-    DWORD attributes = GetFileAttributesA(filepath);
-    /* Do not follow a selected root or a child substituted with a reparse
-       point. The archive source tree is limited to ordinary filesystem
-       entries; junctions and symbolic links need an explicit format policy. */
-    if (attributes == INVALID_FILE_ATTRIBUTES ||
-        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    WinSourcePathGuard path_guard;
+    DWORD attributes;
+    /* Hold each source object without FILE_SHARE_DELETE while it is used.
+       Filesystems honoring Win32 sharing then block rename; identity checks
+       also catch host mappings that permit a pathname replacement anyway. */
+    if (!path_guard.open(filepath))
         return BP_ERR_IO;
+    attributes = path_guard.info.dwFileAttributes;
+#ifdef BP_TEST_WIN_FLTK_DIR_GUARD_PAUSE
+    win_test_pause_after_directory_guard(attributes);
+#endif
 #endif
     if (_stat64(filepath, &st) != 0) return BP_ERR_IO;
 
     if (S_ISDIR(st.st_mode)) {
+#ifdef _WIN32
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            !path_guard.still_names(filepath)) return BP_ERR_IO;
+#endif
         /* add directory entry */
         std::string dname = std::string(arc_name);
         if (dname.empty() || dname[dname.size()-1] != '/')
@@ -3261,11 +3350,18 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
         rc = add_win_fat_metadata(ar, dname.c_str(), BP_TYPE_DIR, attributes);
         if (rc != BP_OK) return rc;
 #endif
-        return add_dir_recursive(ar, filepath, dname.c_str());
+        int child_rc = add_dir_recursive(ar, filepath, dname.c_str());
+#ifdef _WIN32
+        if (child_rc == BP_OK && !path_guard.still_names(filepath))
+            return BP_ERR_IO;
+#endif
+        return child_rc;
     }
 
 #ifdef _WIN32
-    FILE *fp = open_windows_source_file(filepath, &st);
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+        !path_guard.still_names(filepath)) return BP_ERR_IO;
+    FILE *fp = open_windows_source_file(filepath, &st, &path_guard.info);
 #else
     FILE *fp = fopen(filepath, "rb");
 #endif
@@ -3279,9 +3375,10 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     bp_uint16 flags = win_gui_archive_mtime(st.st_mtime, &mtime);
     int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
                                      BP_OS_WINDOWS, &fio, fsize, mtime, flags);
-    fclose(fp);
+    if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
     if (rc != BP_OK) return rc;
 #ifdef _WIN32
+    if (!path_guard.still_names(filepath)) return BP_ERR_IO;
     return add_win_fat_metadata(ar, arc_name, BP_TYPE_DATA, attributes);
 #else
     return BP_OK;

@@ -14,5 +14,6 @@
     "max_block_size": 16384,
     "reader": "Linux mini"
   },
+  "directory_race_expected": "refuse substitution before archive publication",
   "windows_attribute_roundtrip_expected": ["HIDDEN", "SYSTEM", "ARCHIVE"]
 }
