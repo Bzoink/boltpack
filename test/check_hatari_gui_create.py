@@ -419,6 +419,14 @@ def main():
             raise RuntimeError("Atari GUI extraction payload mismatch for " + item["name"] +
                                "; evidence: " + str(out))
     if args.fat12:
+        output_root_listing = run(["mdir", "-a", "-i", str(floppy), "::OUT"], out)
+        (out / "fat12-output-root.log").write_text(
+            output_root_listing.stdout, encoding="utf-8")
+        if (output_root_listing.returncode != 0 or
+                any(name in output_root_listing.stdout.upper()
+                    for name in ("BPRECOVR", "BP", "BR"))):
+            raise RuntimeError("FAT12 extraction left a journal or staging name in OUT; "
+                               "evidence: " + str(out))
         for directory in expected["directories"]:
             listing = run(["mdir", "-a", "-i", str(floppy), "::OUT/" + directory], out)
             if listing.returncode != 0 or any(
