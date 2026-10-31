@@ -269,6 +269,18 @@ independent `dos16-fat12.json` manifest, environment, commands, worktree
 snapshot, and 25 artifact hashes:
 [`build/r02-dosboxx-cp437-jgv9qfjp/run.json`](../build/r02-dosboxx-cp437-jgv9qfjp/run.json).
 
+The Linux FLTK GUI integration runner now copies its complete generated fixture
+tree from a disk-backed temporary directory into a retained `build/r02-*`
+directory and emits a machine-readable record. Its 2026-10-31 full run passed
+the production Profile 1 create flow, mini cross-reader, nested and flattened
+extraction, cancellation, corruption, injected I/O/metadata failures, and
+unsafe-name/path-conflict preflight. The record pins the independent
+`linux-fltk-gui.json` manifest, frontend binaries, source state and 39 artifact
+hashes; retained artifacts total about 537 MB:
+[`build/r02-linux-gui-49ru776e/run.json`](../build/r02-linux-gui-49ru776e/run.json).
+The 256 MiB cancellation fixture now uses the configured build filesystem
+instead of `/tmp`, which was nearly full tmpfs on this machine.
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,
