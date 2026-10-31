@@ -747,6 +747,16 @@ cause is not isolated, so this is not GUI qualification. The boot image,
 XaAES log screen, exact assets and hashes are retained in
 [`build/freemint-prod-gui-xaaes000/run.json`](../build/freemint-prod-gui-xaaes000/run.json).
 
+A separate replay of the retained FreeMiNT/EmuTOS ROM-AES image used the
+production PRG, archive, `Ctrl+O`/`Ctrl+E` input sequence, and the same Hatari
+configuration. Hatari returned to the EmuTOS desktop; the GUI did not open and
+`OUT` remained empty. The hash-indexed failure record and screenshot are in
+[`build/freemint-recheck/run.json`](../build/freemint-recheck/run.json). This
+does not replace or qualify the FreeMiNT cleanup-helper test. Do not count the
+ROM-AES route as an interactive GEM pass until the application visibly opens
+and the extracted payload is independently verified. No further retry is
+planned without a new boot or application-launch diagnostic.
+
 The same production GUI FAT12 create/extract flow passes on TOS 1.06; the
 original run is `build/atari-gui-create-6nw6brzd/run.json`. Fresh complete
 reruns on TOS 1.06 and 2.05 now also pass the same corpus and restore directory
