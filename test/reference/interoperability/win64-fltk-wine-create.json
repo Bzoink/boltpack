@@ -13,5 +13,6 @@
     "method": "BoltLite",
     "max_block_size": 16384,
     "reader": "Linux mini"
-  }
+  },
+  "windows_attribute_roundtrip_expected": ["HIDDEN", "SYSTEM", "ARCHIVE"]
 }

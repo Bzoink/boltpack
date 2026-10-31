@@ -87,6 +87,10 @@ def main():
     parser.add_argument("--output-root", type=Path, default=ROOT / "build")
     parser.add_argument("--profile1", action="store_true",
                         help="enable Interchange Profile 1 in the FLTK preferences")
+    parser.add_argument("--fat-attributes", action="store_true",
+                        help="round-trip HIDDEN/SYSTEM/ARCHIVE through the production GUI")
+    parser.add_argument("--attributes-probe", type=Path,
+                        default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
     if not os.environ.get("DISPLAY"):
         parser.error("run under Xvfb or a desktop display")
@@ -96,6 +100,7 @@ def main():
     mini = args.mini_cli.resolve(strict=True)
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    attrs_probe = args.attributes_probe.resolve(strict=True) if args.fat_attributes else None
     run_id = uuid.uuid4().hex[:10]
     member = manifest["member_prefix"] + run_id + manifest["member_suffix"]
     out = Path(tempfile.mkdtemp(prefix="r08-win64-fltk-wine-create-",
@@ -111,6 +116,20 @@ def main():
     if (len(payload) != manifest["payload_size"] or
             hashlib.sha256(payload).hexdigest() != manifest["payload_sha256"]):
         raise RuntimeError("source payload differs from the independent manifest")
+
+    attr_set_results = []
+    if args.fat_attributes:
+        for subject in (source_dir, source):
+            attr_set = subprocess.run(
+                [args.wine, str(attrs_probe), "set", str(subject)],
+                env={**os.environ, "WINEPREFIX": str(prefix), "WINEDEBUG": "-all"},
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False)
+            attr_set_results.append({"path": str(subject), "status": attr_set.returncode,
+                                     "output": attr_set.stdout.strip()})
+            if attr_set.returncode != 0:
+                raise RuntimeError("could not set source Windows attributes: " +
+                                   attr_set.stdout)
 
     env = os.environ.copy()
     env["WINEPREFIX"] = str(prefix)
@@ -135,6 +154,7 @@ def main():
     error = None
     main_window = None
     save_dialog = None
+    attribute_roundtrip = None
     try:
         main_window = wait_for_title(process, "BoltPack")
         save_dialog = wait_for_title(process, "Save archive as")
@@ -197,12 +217,68 @@ def main():
                       (manifest.get("profile1_expected", {}).get("method") ==
                        "BoltLite" and "Method:         BoltLite (1)" in archive_info and
                        mini_test_status == 0))
+        extraction_status_ok = (extract_status in (0, 1)
+                                if args.fat_attributes else extract_status == 0)
         if (linux_test_status == 0 and mini_test_status == 0 and
-                extract_status == 0 and output.is_file() and
+                extraction_status_ok and output.is_file() and
                 output.read_bytes() == payload and profile_ok):
             result = "passed_under_wine"
         else:
             error = "Linux full/mini/profile check or exact-byte extraction failed"
+
+    extraction_command = None
+    extraction_exit_status = None
+    if result == "passed_under_wine" and args.fat_attributes:
+        destination = (prefix / "drive_c" / "users" / args.wine_user /
+                       "Desktop" / manifest["source_directory"] / member)
+        destination_dir = destination.parent
+        extraction_command = [args.wine, str(gui), "--shell-extract", str(archive)]
+        extract_process = subprocess.Popen(
+            extraction_command, cwd=out, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            start_new_session=True)
+        try:
+            chooser = wait_for_title(extract_process, "Browse for Folder")
+            if not chooser:
+                raise RuntimeError("GUI extraction folder chooser did not appear")
+            subprocess.run(["xdotool", "key", "Return"], check=True)
+            deadline = time.monotonic() + 30
+            while (time.monotonic() < deadline and
+                   extract_process.poll() is None and not destination.is_file()):
+                time.sleep(0.05)
+            if not destination.is_file() or destination.read_bytes() != payload:
+                raise RuntimeError("GUI did not extract the exact attributed payload")
+            attr_results = []
+            for subject in (destination_dir, destination):
+                checked = subprocess.run(
+                    [args.wine, str(attrs_probe), "check", str(subject)],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False)
+                attr_results.append({"path": str(subject),
+                                     "status": checked.returncode,
+                                     "output": checked.stdout.strip()})
+            if any(item["status"] != 0 for item in attr_results):
+                raise RuntimeError("GUI did not restore all FAT attributes: " +
+                                   repr(attr_results))
+            attribute_roundtrip = attr_results
+        except Exception as exc:
+            result = "failed"
+            error = str(exc)
+        finally:
+            if extract_process.poll() is None:
+                subprocess.run(["xdotool", "key", "Return"], check=False)
+                time.sleep(0.1)
+                subprocess.run(["xdotool", "key", "ctrl+q"], check=False)
+                try:
+                    extract_process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    extract_process.terminate()
+                    try:
+                        extract_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        extract_process.kill()
+                        extract_process.wait()
+        extraction_exit_status = extract_process.returncode
 
     version = subprocess.run(
         [args.wine, "--version"], env=env, stdout=subprocess.PIPE,
@@ -211,6 +287,11 @@ def main():
     record = {
         "purpose": manifest["case"],
         "profile1_requested": args.profile1,
+        "fat_attributes_requested": args.fat_attributes,
+        "fat_attribute_source_set": attr_set_results,
+        "fat_attribute_roundtrip": attribute_roundtrip if args.fat_attributes else None,
+        "gui_extraction_command": extraction_command,
+        "gui_extraction_exit_status": extraction_exit_status,
         "profile1_method_observed": ("BoltLite" if
                                      "Method:         BoltLite (1)" in archive_info
                                      else None),

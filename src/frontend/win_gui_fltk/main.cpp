@@ -3192,6 +3192,45 @@ static bp_uint16 win_gui_archive_mtime(time_t source_time, bp_uint64 *mtime)
     return BP_ENTRY_FLAG_MTIME_VALID;
 }
 
+#ifdef _WIN32
+struct WinFatMetadataSource {
+    bp_uint8 data[BP_META_FAT_SIZE];
+    unsigned pos;
+};
+
+static long win_fat_metadata_read(void *handle, void *buffer, bp_uint32 count)
+{
+    WinFatMetadataSource *source = (WinFatMetadataSource *)handle;
+    unsigned remaining = BP_META_FAT_SIZE - source->pos;
+    if (count > remaining) count = remaining;
+    memcpy(buffer, source->data + source->pos, count);
+    source->pos += count;
+    return (long)count;
+}
+
+static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
+                                bp_uint8 subject_type, DWORD attributes)
+{
+    WinFatMetadataSource source;
+    bp_io_t io;
+    int rc;
+    if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
+    rc = bp_metadata_fat_encode(source.data, sizeof(source.data), subject_type,
+                                BP_META_FAT_MASK,
+                                (bp_uint8)(attributes & BP_META_FAT_MASK));
+    if (rc != BP_OK) return rc;
+    source.pos = 0;
+    io.read = win_fat_metadata_read;
+    io.write = NULL;
+    io.seek = NULL;
+    io.tell = NULL;
+    io.handle = &source;
+    return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_META_PORTABLE,
+                                  &io, bp_u64_from_u32(BP_META_FAT_SIZE),
+                                  bp_u64_from_u32(0), 0);
+}
+#endif
+
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                const char *arc_name)
 {
@@ -3218,6 +3257,10 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                          BP_OS_WINDOWS, NULL,
                                          bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
+#ifdef _WIN32
+        rc = add_win_fat_metadata(ar, dname.c_str(), BP_TYPE_DIR, attributes);
+        if (rc != BP_OK) return rc;
+#endif
         return add_dir_recursive(ar, filepath, dname.c_str());
     }
 
@@ -3237,7 +3280,12 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
                                      BP_OS_WINDOWS, &fio, fsize, mtime, flags);
     fclose(fp);
-    return rc;
+    if (rc != BP_OK) return rc;
+#ifdef _WIN32
+    return add_win_fat_metadata(ar, arc_name, BP_TYPE_DATA, attributes);
+#else
+    return BP_OK;
+#endif
 }
 
 /* Directory names stay UTF-8 in the GUI. MinGW's dirent implementation uses
