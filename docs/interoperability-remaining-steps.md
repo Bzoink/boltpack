@@ -567,8 +567,14 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   confirms the GUI refuses a substituted parent and warns that cleanup may
   leave the stage/journal because TOS reports `opendir()` as `ENOSYS`. Native
   FreeMiNT GUI qualification remains in R06. CRC collisions and a substitution
-  after final content validation remain open. Atari CLI/GEM race cases remain
-  in R06/R13. Human68k
+  after final content validation remain open. The Atari CLI now compares
+  `fstat()` on each opened source file with its earlier pathname snapshot. A
+  deterministic TOS 1.62/Hatari fixture exercises both a different-sized swap
+  between stat/open and a pathname replacement while the original handle is
+  open. The CLI refuses both before publication and leaves no stage; the
+  ordinary Atari FAT12 transfer/edit suite still passes. Same-size substitutions
+  preserving all compared fields and destination-parent substitution remain
+  open in R06/R13. Human68k
   pathname-based races remain in R13.
   The Amiga CLI now snapshots the output root, each staged file's parent, and
   the staged-file inode. It refuses publication and deferred file/directory
