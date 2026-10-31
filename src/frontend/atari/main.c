@@ -635,6 +635,42 @@ static int add_portable_meta_entry(bp_archive_t *ar, const char *arcname,
 }
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
+static int atari_archive_stat_matches(const struct stat *expected,
+                                     const struct stat *current);
+
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_STAT
+static void atari_test_pause_after_source_stat(void)
+{
+    FILE *fp = fopen("C:\\STATDONE.TXT", "wb");
+    if (fp == NULL) return;
+    (void)fputs("source stat captured\n", fp);
+    (void)fclose(fp);
+    for (;;) {
+        fp = fopen("C:\\CONTINUE.TXT", "rb");
+        if (fp != NULL) {
+            (void)fclose(fp);
+            break;
+        }
+    }
+}
+#endif
+
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_OPEN
+static void atari_test_pause_after_source_open(void)
+{
+    FILE *fp = fopen("C:\\OPENED.TXT", "wb");
+    if (fp == NULL) return;
+    (void)fputs("source opened\n", fp);
+    (void)fclose(fp);
+    for (;;) {
+        fp = fopen("C:\\CONT2.TXT", "rb");
+        if (fp != NULL) {
+            (void)fclose(fp);
+            break;
+        }
+    }
+}
+#endif
 
 static int add_directory(bp_archive_t *ar, const char *dir_path,
                          const char *arc_prefix)
@@ -717,6 +753,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     } else if (S_ISREG(st.st_mode)) {
         FILE      *fp;
         bp_io_t    fio;
+        struct stat opened_st, final_st, path_st;
         bp_uint64  file_size;
         bp_uint64  mtime;
         bp_uint16  flags;
@@ -730,11 +767,24 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
         atari_stat_mtime(&st, &mtime, &flags);
 
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_STAT
+        atari_test_pause_after_source_stat();
+#endif
         fp = fopen(path, "rb");
         if (fp == NULL) {
             fprintf(stderr, "boltpack: cannot open: %s\n", path);
             return BP_ERR_IO;
         }
+        if (fstat(fileno(fp), &opened_st) != 0 ||
+            !atari_archive_stat_matches(&st, &opened_st)) {
+            (void)fclose(fp);
+            fprintf(stderr, "boltpack: source changed while opening: %s\n",
+                    path);
+            return BP_ERR_IO;
+        }
+#ifdef BP_TEST_PAUSE_AFTER_SOURCE_OPEN
+        atari_test_pause_after_source_open();
+#endif
         bp_io_from_file(&fio, fp);
 
         if (g_verbosity == VERB_DEFAULT) {
@@ -750,6 +800,16 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_OS_ATARI, &fio, file_size, mtime, flags);
+        if (fstat(fileno(fp), &final_st) != 0 ||
+            !atari_archive_stat_matches(&opened_st, &final_st) ||
+            stat(path, &path_st) != 0 ||
+            !atari_archive_stat_matches(&opened_st, &path_st)) {
+            if (rc == BP_OK) {
+                fprintf(stderr, "boltpack: source changed while reading: %s\n",
+                        path);
+                rc = BP_ERR_IO;
+            }
+        }
         fclose(fp);
         if (rc != BP_OK) return rc;
 
