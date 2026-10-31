@@ -31,5 +31,18 @@
     "payload_byte_identical": true,
     "wine_exit_status": 0
   },
-  "scope_limit": "This is an interactive Win64 FLTK extraction under Wine, not native Windows qualification. It does not cover archive creation, metadata restoration, cancellation, replacement preservation, or native NTFS/FAT behavior."
+  "scope_limit": "This is an interactive Win64 FLTK extraction under Wine, not native Windows qualification. It does not cover archive creation, metadata restoration, cancellation, replacement preservation, or native NTFS/FAT behavior.",
+  "automated_reproduction": {
+    "target": "make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-extract-test",
+    "fixture_manifest": "test/reference/interoperability/win64-fltk-wine.json",
+    "runner": "test/check_win64_fltk_wine.py",
+    "runner_sha256": "f2f8fcc9ba9bb69e2f89ce94ea4e8f3970db0eaa712eccf1623eb45e037da668",
+    "run_record": "../../build/r08-win64-fltk-wine-vdpsxbd6/run.json",
+    "run_result": "passed_under_wine",
+    "wine_exit_status": 0,
+    "source_revision": "15e396423eeb791c943eb13c589f474c480eee8c",
+    "archive_sha256": "7f536b90aa0fab5d85bf9635569f5bda290f7da0406a364a017111b5622500b7",
+    "member": "payload-🧪-win64-gui-62fc910e57.txt",
+    "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837"
+  }
 }

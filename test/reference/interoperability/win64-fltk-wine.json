@@ -1,0 +1,9 @@
+{
+  "case": "win64-fltk-wine-unicode-extract",
+  "member_prefix": "payload-🧪-win64-gui-",
+  "member_suffix": ".txt",
+  "payload_utf8": "Win64 FLTK Unicode extraction under Wine.\n",
+  "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837",
+  "archive_method": "stored",
+  "expected_result": "byte-identical extraction"
+}
