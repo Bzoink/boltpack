@@ -295,6 +295,17 @@ native Windows behavior remains open. The same independent 128 MiB fixture now t
 
 The Win64 FLTK create runner also selects the production Interchange Profile 1 preference and verifies the resulting format-6 archive reports BoltLite, passes the Linux mini reader, and extracts byte-identical Unicode payload bytes with the full reader. The test restores the prior GUI preference after the run. Its retained record is [`build/r08-win64-fltk-wine-create-8q97f12_/run.json`](../build/r08-win64-fltk-wine-create-8q97f12_/run.json); reproduce with `make CC=gcc WINE=/usr/lib/wine/wine64 win64-fltk-wine-profile1-create-test`.
 
+The Win64 FLTK creator now records portable FAT attributes on both files and
+directories. `make CC=gcc WINE=/usr/lib/wine/wine64
+win64-fltk-wine-attributes-test` sets HIDDEN and SYSTEM on the source
+directory, and HIDDEN, SYSTEM, and ARCHIVE on its file; the GUI creates the
+archive, Linux full and mini readers verify it, and a separate production GUI
+extraction restores all requested attributes and exact payload bytes on the
+Wine Desktop. Linux extraction returns the expected partial-metadata status
+for foreign Windows attributes while retaining exact payload bytes. Evidence
+is [`build/r08-win64-fltk-wine-create-orjcm65r/run.json`](../build/r08-win64-fltk-wine-create-orjcm65r/run.json).
+This extends Wine coverage only; native Windows behavior remains open.
+
 The Amiga/Linux FS-UAE host-directory runner now emits a machine-readable run
 record and defaults to retained output under `build/`. The 2026-10-31 run
 passed Stored and BoltLite profile exchange, staged edits, archive protection

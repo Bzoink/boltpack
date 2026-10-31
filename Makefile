@@ -520,6 +520,17 @@ win64-fltk-wine-profile1-create-test: modern linuxmini win64-fltk-gui
 	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
 	    --profile1
 
+.PHONY: win64-fltk-wine-attributes-test
+win64-fltk-wine-attributes-test: modern linuxmini win64-fltk-gui
+	x86_64-w64-mingw32-gcc -Wall -Wextra -municode \
+	    test/win64_fltk_attributes_probe.c \
+	    -o build/win64-fltk-gui/attributes-probe.exe
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
+	    --fat-attributes --attributes-probe build/win64-fltk-gui/attributes-probe.exe
+
 .PHONY: win64-fltk-wine-cancel-test
 win64-fltk-wine-cancel-test: modern win64-fltk-gui
 	xvfb-run -a python3 test/check_win64_fltk_wine_cancel.py --wine "$(WINE)" \
