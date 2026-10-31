@@ -94,6 +94,8 @@ def main():
     source = source_dir / member
     archive = out / "linux-created.blt"
     source.write_text(manifest["payload_utf8"], encoding="utf-8", newline="")
+    expected_mtime = manifest["mtime_epoch_seconds"]
+    os.utime(source, (expected_mtime, expected_mtime))
     expected = source.read_bytes()
     if sha256(source) != manifest["payload_sha256"]:
         raise RuntimeError("fixture payload differs from its independent manifest")
@@ -142,6 +144,10 @@ def main():
             raise RuntimeError("GUI did not extract into the selected Desktop")
         if destination.read_bytes() != expected:
             raise RuntimeError("Win64 FLTK output differs from the source bytes")
+        actual_mtime = int(destination.stat().st_mtime)
+        if actual_mtime != expected_mtime:
+            raise RuntimeError("Win64 FLTK output mtime differs from the archive: " +
+                               str(actual_mtime))
         result = "passed_under_wine"
     except Exception as exc:  # retain a failure record with runtime state
         error = str(exc)
@@ -184,8 +190,11 @@ def main():
         "archive_sha256": sha256(archive),
         "member": member,
         "source_sha256": sha256(source),
+        "expected_mtime_epoch_seconds": expected_mtime,
         "destination": str(destination),
         "destination_sha256": sha256(destination) if destination.is_file() else None,
+        "destination_mtime_epoch_seconds": (int(destination.stat().st_mtime)
+                                             if destination.is_file() else None),
         "payload_byte_identical": destination.is_file() and
                                   destination.read_bytes() == expected,
         "wine_exit_status": process.returncode,
@@ -194,6 +203,8 @@ def main():
     }
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
                                    encoding="utf-8")
+    if result == "passed_under_wine":
+        destination.unlink()
     print(json.dumps(record, indent=2))
     if result != "passed_under_wine" or process.returncode != 0:
         raise SystemExit("Win64 FLTK Wine extraction failed; evidence: " + str(out))
