@@ -1242,7 +1242,7 @@ ql-sqlux-interoperability-test: ql all linuxmini
 	    --linux-binary build/linux/boltpack \
 	    --mini-binary build/linux32mini/bpmini
 
-ql-sqlux-qdirect-diagnostic: ql all
+ql-sqlux-qdirect-diagnostic: ql all linuxmini
 	@test -n "$(QL_CC_EXEC)" || { echo "Set QL_CC to the working qcc compiler" >&2; exit 2; }
 	mkdir -p $(QL_BUILDDIR)
 	PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) -o $(QL_BUILDDIR)/qdirect-probe \
@@ -1250,6 +1250,7 @@ ql-sqlux-qdirect-diagnostic: ql all
 	python3 test/check_sqlux_qdirect.py --sqlux "$(QL_SQLUX)" \
 	    --rom "$(QL_ROM)" --probe $(QL_BUILDDIR)/qdirect-probe \
 	    --boltpack $(QL_BUILDDIR)/boltpack --linux-boltpack $(TARGET) \
+	    --mini-boltpack build/linux32mini/bpmini \
 	    --output "$(QL_QDIRECT_OUTPUT)"
 
 ql-path-test:

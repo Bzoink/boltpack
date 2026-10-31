@@ -881,28 +881,25 @@ is qualified on TOS 1.62.
 
 ### R07 — Qualify QDOS source enumeration and recovery (I02/I03/I06)
 
-- **Local probe result:** `make CC=gcc ql-sqlux-qdirect-diagnostic
-  QL_CC="$PWD/build/ql-sdk/meson/qcc"` reads a populated hostFS directory whose
-  nested file is also opened directly through QDOS. Direct-file access returns
-  the expected bytes; stdio reads a 64-byte all-zero record with name length
-  zero, and raw `io_fstrg` returns 65535 on its first read. The production CLI consequently emits a verified
-  directory-only archive and cannot transfer the two files. The durable probe,
-  production archive, listing, hashes, and emulator logs are in
-  [`build/r07-ql-qdirect-20261030-final2`](../build/r07-ql-qdirect-20261030-final2/).
-  The frontend now treats a zero-length qdirect name as end-of-directory instead
-  of skipping it forever, and rejects out-of-range name lengths as corrupt.
-  This removes the nonterminating loop but does not qualify recursive hostFS
-  creation; the emulator's directory channel provides no entries to recover.
-- Run the same independent file/directory manifest on a QDOS filesystem backend
-  that returns actual qdirect entries. Keep sQLux hostFS evidence as a separate
-  limitation result; do not count its directory-only archive as a transfer pass.
-- Verify recursive creation captures real file/directory dates and projected
-  names; cross-read with Linux full/mini. Add native publication-failure rollback,
-  recovery retention, and protection-field tests on a suitable QDOS backend.
+- **Completed sQLux hostFS slice:** `make CC=gcc ql-sqlux-qdirect-diagnostic`
+  now opens directory channels with `Q_DIR == 4` and reads actual qdirect
+  records through `IO_FSTRG`. The independent fixture contains two files and
+  two directories; the QDOS-created archive retains both nested paths, and
+  Linux full and mini readers test and extract the exact payload bytes. The
+  hash-indexed evidence is
+  [`build/r07-ql-qdirect-final-20261031/run.json`](../build/r07-ql-qdirect-final-20261031/run.json).
+  The earlier all-zero record came from opening the directory as a regular
+  file, not from a hostFS inability to enumerate it. The frontend accepts both
+  zero-name and `ERR_EF` end-of-directory forms, normalizes hostFS parent-prefixed
+  names, and recognizes the hostFS directory type marker.
+- **Remaining:** run the same independent file/directory manifest on a physical
+  QDOS filing system. Verify native timestamp/protection behavior, publication
+  failure rollback, and recovery retention there; host fault injection covers
+  only the host implementation.
 - Preserve the passing sQLux hostFS transfer and -300/+60/+330 offset evidence.
   Physical filing-system/timezone claims require their own runtime evidence.
-- **Done when:** recursive source metadata and recovery have native evidence;
-  any required physical-system cases remain visibly dependent on that system.
+- **Done when:** physical filesystem recovery and metadata behavior have target
+  evidence; the recursive sQLux hostFS transfer slice is complete.
 
 ## Target qualification and environment dependencies
 

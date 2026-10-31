@@ -5,7 +5,8 @@
  * Compiler: m68k-qdos-gcc (GCC port for QDOS/SMSQ).
  *
  * File I/O uses the standard ANSI C runtime (fopen/fread/fwrite).
- * Directory traversal reads QDOS channel data as raw qdirect entries.
+ * Directory traversal uses QDOS IO_OPEN with Q_DIR and reads qdirect records
+ * through IO_FSTRG; standard fopen opens the path as a regular file instead.
  *
  * QDOS conventions used here:
  *   - Directory paths end with '_':  "win1_mydir_"
@@ -49,6 +50,7 @@
 extern long _io_open(const char *, long);
 extern int _fs_date(long, short, char, long *);
 extern int _io_close(long);
+extern int _io_fstrg(long, short, void *, short);
 #endif
 
 /* QDOS unistd.h maps these names to OS calls; keep bp_io_t member names
@@ -73,6 +75,8 @@ extern FILE *fdopen(int, const char *);
  *   3287 × 86400 = 283,996,800 seconds
  */
 #define QDOS_EPOCH_OFFSET   BP_QL_EPOCH_OFFSET
+#define QL_OPEN_DIR         4L
+#define QL_EOF              (-10)
 
 /* Maximum QDOS filename length */
 #define QDOS_NAME_MAX   QL_QDOS_PATH_MAX
@@ -80,8 +84,7 @@ extern FILE *fdopen(int, const char *);
 /* ---- qdirect: QDOS directory entry (64 bytes, big-endian) ------------- */
 
 /*
- * Read from a directory channel (fopen on a QDOS device path ending
- * with '_') using fread.  All multi-byte fields are big-endian
+ * Read from a Q_DIR channel. All multi-byte fields are big-endian
  * (M68000 native) -- no byte-swap needed when compiled for M68k QDOS.
  */
 #pragma pack(1)
@@ -337,13 +340,26 @@ static int ql_to_arcname(const char *qdos_rel, int is_directory, char *out,
  * d_szname is big-endian but on M68k host it's already correct.
  * Space-pad is stripped; a NUL is appended.
  */
-static int qdirect_get_name(const qdirect_t *e, char *buf, int bufsz)
+static int qdirect_get_name(const qdirect_t *e, const char *qdos_dir,
+                            char *buf, int bufsz)
 {
     int n = (int)(unsigned short)e->d_szname;  /* big-endian on M68k */
+    const char *parent;
+    size_t parent_length;
     if (n == 0) return 0; /* QDOS directory-stream end marker */
     if (n > QDOS_NAME_MAX || n >= bufsz) return -1;
     strncpy(buf, e->d_name, (size_t)n);
     buf[n] = '\0';
+    /* Some qdirect providers return a device-relative full path, while
+     * others return only the child component. Normalize both forms. */
+    parent = ql_strip_device(qdos_dir);
+    parent_length = strlen(parent);
+    if (parent_length != 0 && (size_t)n >= parent_length &&
+        ql_ascii_equal_prefix(buf, parent, parent_length)) {
+        memmove(buf, buf + parent_length, (size_t)n - parent_length + 1U);
+        n -= (int)parent_length;
+    }
+    if (n == 0) return -1;
     return n;
 }
 
@@ -351,10 +367,13 @@ static int qdirect_get_name(const qdirect_t *e, char *buf, int bufsz)
  * True if the qdirect entry represents a sub-directory.
  * QDOS identifies directories by the trailing '_' in their name.
  */
-static int qdirect_is_dir(const qdirect_t *e)
+static int qdirect_is_dir(const qdirect_t *e, const char *qdos_dir)
 {
     char name[QDOS_NAME_MAX + 1]; int n;
-    n = qdirect_get_name(e, name, sizeof(name));
+    n = (int)(unsigned short)e->d_szname;
+    if (n <= 0 || n > QDOS_NAME_MAX) return 0;
+    if (e->d_type == 255U) return 1; /* QF_DIR_TYPE */
+    n = qdirect_get_name(e, qdos_dir, name, sizeof(name));
     return n > 0 && name[n - 1] == '_';
 }
 
@@ -427,44 +446,79 @@ static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
 static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
                                   const char *arc_prefix)
 {
+#ifdef BP_QL_HOST_TEST
     FILE      *dp;
+#else
+    long        dp;
+    int         io_result;
+#endif
     qdirect_t  ent;
     char       ent_name[QDOS_NAME_MAX + 1];
+    char       child_component[QDOS_NAME_MAX + 2];
     char       child_qdos[BP_MAX_PATH];
     char       child_arc[BP_MAX_PATH];
     int        rc = BP_OK;
     int        is_directory;
     int        name_length;
+#ifdef BP_QL_HOST_TEST
     size_t     record_bytes;
+#endif
 
+#ifdef BP_QL_HOST_TEST
     dp = fopen(qdos_dir, "r");
     if (!dp) {
         fprintf(stderr, "boltpack: cannot open directory: %s\n", qdos_dir);
         return BP_ERR_IO;
     }
+#else
+    dp = _io_open(qdos_dir, QL_OPEN_DIR);
+    if (dp < 0) {
+        fprintf(stderr, "boltpack: cannot open directory: %s\n", qdos_dir);
+        return BP_ERR_IO;
+    }
+#endif
 
     while (rc == BP_OK) {
+#ifdef BP_QL_HOST_TEST
         record_bytes = fread(&ent, 1, sizeof(ent), dp);
         if (record_bytes == 0) break;
         if (record_bytes != sizeof(ent)) {
             rc = BP_ERR_CORRUPT;
             break;
         }
-        name_length = qdirect_get_name(&ent, ent_name, sizeof(ent_name));
+#else
+        io_result = _io_fstrg(dp, (short)-1, &ent, (short)sizeof(ent));
+        if (io_result == QL_EOF) break;
+        if (io_result < 0) {
+            rc = BP_ERR_IO;
+            break;
+        }
+        if (io_result != (int)sizeof(ent)) {
+            rc = BP_ERR_CORRUPT;
+            break;
+        }
+#endif
+        name_length = qdirect_get_name(&ent, qdos_dir, ent_name,
+                                       sizeof(ent_name));
         if (name_length == 0) break;
         if (name_length < 0) {
             rc = BP_ERR_CORRUPT;
             break;
         }
 
+        is_directory = qdirect_is_dir(&ent, qdos_dir);
+        strcpy(child_component, ent_name);
+        if (is_directory && child_component[name_length - 1] != '_') {
+            child_component[name_length] = '_';
+            child_component[name_length + 1] = '\0';
+        }
         /* Build full QDOS path: device path ends with '_', so just append */
         if (ql_path_join2(child_qdos, sizeof(child_qdos), qdos_dir,
-                          ent_name) != 0) {
+                          child_component) != 0) {
             rc = BP_ERR_NAME_TOO_LONG;
             break;
         }
 
-        is_directory = qdirect_is_dir(&ent);
         /* Use the qdirect parent relation, rather than guessing that an
          * embedded underscore is a path separator. */
         rc = ql_to_arcname(ent_name, is_directory, child_arc,
@@ -496,7 +550,11 @@ static int add_directory_contents(bp_archive_t *ar, const char *qdos_dir,
         }
     }
 
+#ifdef BP_QL_HOST_TEST
     fclose(dp);
+#else
+    if (_io_close(dp) < 0 && rc == BP_OK) rc = BP_ERR_IO;
+#endif
     return rc;
 }
 

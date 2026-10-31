@@ -4,6 +4,7 @@
 #define QDIRECT_SIZE 64
 #define NAME_MAXIMUM 36
 #define RECORD_LIMIT 16
+#define QL_OPEN_DIR 4L
 
 static unsigned int be16(const unsigned char *p)
 {
@@ -65,13 +66,13 @@ int main(void)
         fclose(directory);
     }
 
-    channel = io_open("win1_QDTEST_", 0);
+    channel = io_open("win1_QDTEST_", QL_OPEN_DIR);
     fprintf(out, "raw_open=%ld\n", (long)channel);
     if (channel >= 0) {
         for (i = 0; i < RECORD_LIMIT; i++) {
             rc = io_fstrg(channel, -1, record, QDIRECT_SIZE);
             fprintf(out, "raw_read=%d\n", rc);
-            if (rc != 0) break;
+            if (rc != QDIRECT_SIZE) break;
             describe(out, i + 1, record);
             if (be16(record + 14) == 0) break;
         }
