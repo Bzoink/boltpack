@@ -1,0 +1,78 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Create AmigaOS/68k format-6 archives with Stored, BoltLite, and BoltLZ through the GadTools GUI and cross-read them on Linux",
+  "date": "2026-10-31",
+  "revision": "c4b1dda",
+  "related_evidence": [
+    "amiga-gui-create-20261031.json",
+    "amiga-gui-profile1-create-20261031.json",
+    "amiga-gui-fluff-create-20261031.json"
+  ],
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf_sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275",
+    "host_directory_volume": "build/amiga-gui-runtime-probe/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-runtime-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Logging-only additions around menu dispatch and ASL Open."
+  },
+  "input": {
+    "path": "DH0:FLUFF-PATTERN.TXT",
+    "bytes": 65536,
+    "sha256": "156c38442089c1323d3e3ba549a6ac24341c47e8b6367bec4740c9b8c865826e",
+    "contents": "65,536 repeated ASCII A bytes"
+  },
+  "archives": [
+    {
+      "selected_method": "Stored",
+      "path": "build/amiga-gui-runtime-probe/drive/GUI-STORED.BLTarchive.bolt",
+      "sha256": "fc69125a9780f69c0f84840bb8b2ec97d97586daf1d41070e2787ec5e03b72a3",
+      "bytes": 65887,
+      "reported_primary_method": "Stored",
+      "linux_full_test": "2 files OK",
+      "linux_mini_test": "both physical entries OK",
+      "linux_extract": "exact 65,536-byte payload; cmp succeeded"
+    },
+    {
+      "selected_method": "BoltLite",
+      "path": "build/amiga-gui-runtime-probe/drive/GUI-BOLTLITE.BLTarchive.bolt",
+      "sha256": "e124225f3b70118e84c7adc2b7d60e97dca8442f299bc67a0249521e28bf1f02",
+      "bytes": 1473,
+      "reported_primary_method": "BoltLite",
+      "linux_full_test": "2 files OK",
+      "linux_mini_test": "both physical entries OK",
+      "linux_extract": "exact 65,536-byte payload; cmp succeeded"
+    },
+    {
+      "selected_method": "BoltLZ",
+      "path": "build/amiga-gui-runtime-probe/drive/GUI-BOLTLZ.BLTarchive.bolt",
+      "sha256": "5261fafe2c71791e8cebf06099e8fb26f1e73fda33660680fc7e341e1e0c4009",
+      "bytes": 364,
+      "reported_primary_method": "BoltLZ",
+      "linux_full_test": "2 files OK",
+      "linux_mini_test": "both physical entries OK",
+      "linux_extract": "exact 65,536-byte payload; cmp succeeded"
+    }
+  ],
+  "boltlz_guest_log": {
+    "path": "build/amiga-gui-runtime-probe/gui-boltlz-guest.log",
+    "sha256": "98c6131ce22ba2580c6443d7e6ee910f58462ced8efa2e82ac6c662fd9f683d3"
+  },
+  "boltlz_fs_uae_stdout": {
+    "path": "build/amiga-gui-runtime-probe/fs-uae-gui-boltlz-create.log",
+    "sha256": "a73c9525cf7a34effe9c2b80dcbb8c19d13faa0be3f287f6f3d055b216a9b902"
+  },
+  "scope_limit": "This qualifies one GUI-created large, highly compressible payload with Stored, BoltLite, and BoltLZ on a host-directory volume, plus Linux full/mini integrity checks and exact Linux extraction. Fluff has a separate full-reader-only record because the mini reader does not support it. This does not qualify codec edge cases, memory thresholds, Profile 1 boundaries, metadata restoration, editing, cancellation, replacement, or native OFS/FFS GUI behavior."
+}
