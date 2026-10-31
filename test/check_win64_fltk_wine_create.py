@@ -91,6 +91,8 @@ def main():
                         help="round-trip HIDDEN/SYSTEM/ARCHIVE through the production GUI")
     parser.add_argument("--directory-race", action="store_true",
                         help="prove a guarded source directory cannot be renamed while enumerated")
+    parser.add_argument("--child-race", action="store_true",
+                        help="refuse a source child replaced after enumeration")
     parser.add_argument("--attributes-probe", type=Path,
                         default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
@@ -102,12 +104,16 @@ def main():
     mini = args.mini_cli.resolve(strict=True)
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if (args.directory_race and
-            manifest.get("directory_race_expected") !=
-            "refuse substitution before archive publication"):
-        parser.error("manifest does not define the expected directory-race outcome")
+    if args.directory_race and args.child_race:
+        parser.error("select only one source race case")
+    if args.directory_race or args.child_race:
+        expected_key = ("directory_race_expected" if args.directory_race
+                        else "child_race_expected")
+        if manifest.get(expected_key) != "refuse substitution before archive publication":
+            parser.error("manifest does not define the expected source-race outcome")
     attrs_probe = (args.attributes_probe.resolve(strict=True)
-                   if args.fat_attributes or args.directory_race else None)
+                   if args.fat_attributes or args.directory_race or args.child_race
+                   else None)
     run_id = uuid.uuid4().hex[:10]
     member = manifest["member_prefix"] + run_id + manifest["member_suffix"]
     out = Path(tempfile.mkdtemp(prefix="r08-win64-fltk-wine-create-",
@@ -142,6 +148,10 @@ def main():
     env = os.environ.copy()
     env["WINEPREFIX"] = str(prefix)
     env["WINEDEBUG"] = "-all"
+    if args.directory_race:
+        env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "directory"
+    elif args.child_race:
+        env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "child"
     prefs_path = (prefix / "drive_c" / "users" / args.wine_user /
                   "AppData" / "Roaming" / "BoltPack" / "gui.conf")
     previous_prefs = None
@@ -163,7 +173,7 @@ def main():
     main_window = None
     save_dialog = None
     attribute_roundtrip = None
-    directory_race_move = None
+    source_race_move = None
     try:
         main_window = wait_for_title(process, "BoltPack")
         save_dialog = wait_for_title(process, "Save archive as")
@@ -172,37 +182,48 @@ def main():
         # The source directory path is ASCII; its Unicode child name is read
         # by the production recursive enumeration path.
         subprocess.run(["xdotool", "key", "alt+s"], check=True)
-        if args.directory_race:
-            ready = out / "source-guard.ready"
-            release = out / "source-guard.release"
-            parked = out / "source-parked"
+        if args.directory_race or args.child_race:
+            if args.directory_race:
+                ready = out / "source-guard.ready"
+                release = out / "source-guard.release"
+                parked = out / "source-parked"
+                move_source = source_dir
+            else:
+                ready = out / "child-enumerated.ready"
+                release = out / "child-enumerated.release"
+                parked = out / "child-parked.txt"
+                move_source = source
             deadline = time.monotonic() + 15
             while (time.monotonic() < deadline and process.poll() is None and
                    not ready.exists()):
                 time.sleep(0.02)
             if not ready.exists():
-                raise RuntimeError("production source-directory guard was not reached")
+                raise RuntimeError("production source-race checkpoint was not reached")
             move = subprocess.run(
-                [args.wine, str(attrs_probe), "move", str(source_dir), str(parked)],
+                [args.wine, str(attrs_probe), "move", str(move_source), str(parked)],
                 env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, check=False)
-            directory_race_move = {"status": move.returncode,
-                                   "output": move.stdout.strip()}
+            source_race_move = {"status": move.returncode,
+                                "output": move.stdout.strip()}
             if move.returncode == 0:
                 # Wine's hostfs mapping may permit a host-visible rename even
-                # while the Win32 handle is open. Leave a counterfeit at the
-                # selected name so the production identity check must refuse.
-                source_dir.mkdir()
-                source.write_bytes(b"substituted source directory\n")
-                source_for_hash = parked / member
+                # while a Win32 handle is open. Leave a counterfeit at the
+                # selected pathname so the production identity check must refuse.
+                if args.directory_race:
+                    source_dir.mkdir()
+                    source.write_bytes(b"substituted source directory\n")
+                    source_for_hash = parked / member
+                else:
+                    source.write_bytes(b"substituted child with a different size\n")
+                    source_for_hash = parked
             elif move.returncode != 1 or "error=32" not in move.stdout:
-                raise RuntimeError("source directory rename failed unexpectedly: " +
+                raise RuntimeError("source rename failed unexpectedly: " +
                                    move.stdout.strip())
             release.write_text("continue\n", encoding="ascii")
             if move.returncode == 0:
                 time.sleep(0.5)
                 if archive.exists():
-                    raise RuntimeError("GUI published an archive after source-directory substitution")
+                    raise RuntimeError("GUI published an archive after source substitution")
                 stages = list(out.glob(".boltpack-create-*.tmp"))
                 if stages:
                     raise RuntimeError("GUI left archive stages after refusing source substitution")
@@ -210,10 +231,18 @@ def main():
                 time.sleep(0.2)
                 subprocess.run(["xdotool", "key", "ctrl+q"], check=False)
                 process.wait(timeout=8)
-                if (not parked.is_dir() or not source.is_file() or
-                        source.read_bytes() != b"substituted source directory\n" or
-                        (parked / member).read_bytes() != payload):
-                    raise RuntimeError("directory-race fixture changed a source artifact")
+                if args.directory_race:
+                    fixture_ok = (parked.is_dir() and source.is_file() and
+                                  source.read_bytes() ==
+                                  b"substituted source directory\n" and
+                                  (parked / member).read_bytes() == payload)
+                else:
+                    fixture_ok = (parked.is_file() and source.is_file() and
+                                  source.read_bytes() ==
+                                  b"substituted child with a different size\n" and
+                                  parked.read_bytes() == payload)
+                if not fixture_ok:
+                    raise RuntimeError("source-race fixture changed a source artifact")
                 result = "passed_under_wine_refused_substitution"
             else:
                 deadline = time.monotonic() + 30
@@ -234,9 +263,10 @@ def main():
     except Exception as exc:
         error = str(exc)
     finally:
-        if args.directory_race:
-            (out / "source-guard.release").write_text("continue\n",
-                                                        encoding="ascii")
+        if args.directory_race or args.child_race:
+            release_name = ("source-guard.release" if args.directory_race
+                            else "child-enumerated.release")
+            (out / release_name).write_text("continue\n", encoding="ascii")
         if process.poll() is None:
             # Dismiss the completion/error dialog and exit through the GUI menu.
             subprocess.run(["xdotool", "key", "Return"], check=False)
@@ -357,14 +387,21 @@ def main():
         "profile1_requested": args.profile1,
         "fat_attributes_requested": args.fat_attributes,
         "directory_race_requested": args.directory_race,
-        "directory_race_move": directory_race_move,
+        "child_race_requested": args.child_race,
+        "source_race_move": source_race_move,
         "directory_race_expected": manifest.get("directory_race_expected"),
+        "child_race_expected": manifest.get("child_race_expected"),
         "directory_race_parked_source_sha256": (
             sha256(out / "source-parked" / member)
             if args.directory_race and (out / "source-parked" / member).is_file()
             else None),
+        "child_race_parked_source_sha256": (
+            sha256(out / "child-parked.txt")
+            if args.child_race and (out / "child-parked.txt").is_file()
+            else None),
         "directory_race_counterfeit_sha256": (
-            sha256(source) if args.directory_race and source.is_file() else None),
+            sha256(source) if (args.directory_race or args.child_race) and
+            source.is_file() else None),
         "fat_attribute_source_set": attr_set_results,
         "attributes_probe": str(attrs_probe) if attrs_probe else None,
         "attributes_probe_sha256": sha256(attrs_probe) if attrs_probe else None,
