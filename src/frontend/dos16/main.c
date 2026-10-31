@@ -233,6 +233,7 @@ static int on_extract_directory(const bp_mini_entry_t *e, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     char path[BP_MAX_PATH], local_name[BP_MAX_PATH], *p;
+    BP_STACK_PROBE();
     /* Validate archive UTF-8 before conversion. Local CP437 bytes may not be
      * valid UTF-8 and must not be passed back to the archive-name validator. */
     if (!bp_mini_name_is_safe(e->name) ||
@@ -287,6 +288,7 @@ static bp_io_t *on_extract_open(const bp_mini_entry_t *e, void *user_data)
     char path[BP_MAX_PATH];
     char local_name[BP_MAX_PATH];
     static bp_io_t io;
+    BP_STACK_PROBE();
 
     /* Validate archive UTF-8 before conversion; local CP437 bytes are opaque. */
     if (!bp_mini_name_is_safe(e->name) ||
@@ -370,6 +372,7 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
     unsigned actual_time;
     long tz_offset;
     int time_result;
+    BP_STACK_PROBE();
     if (out == NULL) return BP_ERR_INVALID_ARG;
     fd = (int)(long)out->handle;
     if (close(fd) != 0) {
@@ -408,6 +411,7 @@ static int on_extract_done(const bp_mini_entry_t *e, bp_io_t *out,
         }
     }
 #else
+    BP_STACK_PROBE();
     if (out == NULL) return BP_ERR_INVALID_ARG;
     if (fclose((FILE *)out->handle) != 0) {
         (void)remove(ctx->current_path);
@@ -434,6 +438,7 @@ static int on_extract_metadata(const bp_mini_entry_t *entry,
                                const bp_portable_metadata_t *metadata, void *user_data)
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
+    BP_STACK_PROBE();
     (void)entry;
     if (!metadata->has_fat) return metadata->has_unknown ? BP_ERR_PARTIAL : BP_OK;
     if (metadata->subject_type == BP_TYPE_DIR) {
@@ -466,6 +471,7 @@ static int finish_directory(const bp_mini_directory_t *directory, void *user_dat
 {
     int result = BP_OK;
     (void)user_data;
+    BP_STACK_PROBE();
     if (directory->flags & BP_ENTRY_FLAG_MODE_VALID) {
         fprintf(stderr, PROG_NAME ": POSIX directory mode not restored: %s\n", directory->path);
         result = BP_ERR_PARTIAL;

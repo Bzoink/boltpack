@@ -16,6 +16,7 @@
 
 #include "boltlz.h"
 #include "boltlz_config.h"
+#include "mini/stack_probe.h"
 #if !defined(__PLAN9__)
 #include <string.h>
 #endif
@@ -883,6 +884,7 @@ int boltlz_decompress(const bp_uint8 *src, bp_uint32 src_len,
 #endif
 #endif
     int rc;
+    BP_STACK_PROBE();
     if (src == NULL || (dst == NULL && dst_len != 0) ||
         dst_len > BOLTLZ_MAX_BLOCK ||
         (bp_uint32)(size_t)src_len != src_len ||

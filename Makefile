@@ -1958,9 +1958,9 @@ dos16-stack-probe:
 	    -fo=$(DOS16_STACK_BDIR)/archiver.obj $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/compress.obj $(MINI_COREDIR)/compress.c
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) -DBP_TEST_STACK_HIGHWATER $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) -DBP_TEST_STACK_HIGHWATER $(DOS16_STACK_ALLOC_FLAGS) $(MINI_INCS) \
 	    -fo=$(DOS16_STACK_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
