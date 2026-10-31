@@ -29,6 +29,7 @@ def main():
         if not limit_fixture.is_file():
             raise RuntimeError("DOS16 resource test requires unit-test-dos16 LIMIT.BLT")
         shutil.copy2(limit_fixture, root / "LIMIT.BLT")
+        limit_bytes = (root / "LIMIT.BLT").read_bytes()
         (root / "INPUT.TXT").write_bytes(b"DOS format six\n")
         os.utime(root / "INPUT.TXT", (951786000, 951786000))
         (root / "OTHER.TXT").write_bytes(b"replacement archive\n")
@@ -104,6 +105,13 @@ def main():
             "if errorlevel 1 echo FAIL > DEEPBAD.BAD",
             "bpmini t LIMIT.BLT > LIMTEST.TXT",
             "if errorlevel 1 echo FAIL > LIMTEST.BAD",
+            "bpmini l LIMIT.BLT > LIMLIST.TXT",
+            "if errorlevel 1 echo FAIL > LIMLIST.BAD",
+            "bpmini i LIMIT.BLT > LIMINFO.TXT",
+            "if errorlevel 1 echo FAIL > LIMINFO.BAD",
+            "ren LIMIT.BLT BK0001.BAK",
+            "bpmini r LIMIT.BLT BK0001.BAK > RECOVER.TXT",
+            "if errorlevel 1 echo FAIL > RECOVER.BAD",
             "if exist WRITMAX.EXE WRITMAX.EXE > WRITMAX.TXT",
             "if errorlevel 1 echo FAIL > WRITMAX.BAD",
             "bpmini c TOO-DEEP.BLT DEEP > TOO-DEEP.TXT",
@@ -145,6 +153,18 @@ def main():
         assert marked("UNKNOWN.BAD"), "missing timezone was not reported"
         assert not marked("LIMTEST.BAD"), \
             (root / "LIMTEST.TXT").read_text(errors="replace")
+        assert not marked("LIMLIST.BAD"), \
+            (root / "LIMLIST.TXT").read_text(errors="replace")
+        assert "D1211" in (root / "LIMLIST.TXT").read_text(errors="replace"), \
+            "DOS16 maximum-entry listing omitted the last directory"
+        assert not marked("LIMINFO.BAD"), \
+            (root / "LIMINFO.TXT").read_text(errors="replace")
+        assert not marked("RECOVER.BAD"), \
+            (root / "RECOVER.TXT").read_text(errors="replace")
+        assert (root / "LIMIT.BLT").read_bytes() == limit_bytes, \
+            "DOS16 recovery changed the maximum-entry archive"
+        assert not (root / "BK0001.BAK").exists(), \
+            "DOS16 recovery did not consume the verified backup"
         writer_probe_values = None
         writer_record = None
         if writer_probe_path:

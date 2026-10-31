@@ -484,6 +484,14 @@ hash/worktree run record are retained at
 `build/dos16-stack/writer-resource-run.json`. The target depends on
 `unit-test-dos16` for the entry-bound fixture.
 
+On 2026-10-31, the instrumented run added maximum-entry `list`, `info`, and
+verified-backup recovery workloads. Listing/info sampled 7,510/7,394 bytes of
+stack availability; recovery sampled 6,911 bytes, integrity-tested and
+restored the 1,213-entry archive byte-for-byte, and consumed the backup. The
+overall sampled minimum remains 3,594 bytes. Results are in
+[`build/dos16-stack/resource-low-water.txt`](../build/dos16-stack/resource-low-water.txt)
+and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
+
 - Maximum writer-table and codec-buffer peak measurement is now covered by
   `WRITMAX.TXT`. Keep measurements workload-specific; do not treat them as a
   worst-case heap or call-chain proof. `_msize()` reports usable user blocks,
@@ -492,10 +500,10 @@ hash/worktree run record are retained at
   baseline still pass.
 - Derive checked limits from the memory model and simultaneous live allocations.
   The DOS16 source walker now caps at the measured 34-frame boundary; its 35th
-  frame is refused before recursion. Continue instrumenting peak call-chain use
-  between probes and characterize other command paths before calling this a
-  worst-case proof. Label measurements by workload rather than treating them
-  as worst-case proofs.
+  frame is refused before recursion. Maximum-entry create, extract, test, list,
+  info, and recovery paths now have workload samples; stack use between probes
+  and other compiler/runtime configurations remain unqualified. Label
+  measurements by workload rather than treating them as worst-case proofs.
 - Update [resource accounting](16-bit-resource-accounting.md) with the derivation,
   measured headroom, enforced limits, and failure outcomes. Carry Win16/OS2-16
   runtime measurements into R10; DOS results do not qualify their runtimes.

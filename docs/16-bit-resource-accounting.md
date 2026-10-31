@@ -155,6 +155,19 @@ request of 256 bytes, and a 495,392-byte DOS-manager largest-block low-water;
 the lowest sampled stack availability is 7,462 bytes. This command streams the
 archive records and does not allocate the writer table.
 
+The 2026-10-31 resource run also measures the maximum-entry `list` and `info`
+commands, plus recovery of the same archive after it is renamed to
+`BK0001.BAK`. Listing and info each made 1,213 successful allocations, peaked
+at 8 tracked live-usable bytes, and sampled 7,510 and 7,394 stack bytes
+available, respectively. Recovery ran the integrity test before restoring the
+archive byte-for-byte and consuming the backup; it made 3,640 successful
+allocations, peaked at 24,520 live-usable bytes, and sampled 6,911 stack bytes
+available. The overall measured minimum remains 3,594 bytes in the rejected
+35-frame create workload. The runner asserts the final listed directory is
+present, recovery consumes the backup, and restored bytes match the original
+maximum-entry archive. These extend workload coverage to the remaining DOS16
+read-only and recovery commands; they do not prove worst-case memory use.
+
 The instrumented DOS16 run now builds `WRITMAX.BLT` with 1,212 directory rows
 and one 32 KiB BoltLite-compressed data entry, reaching the 1,213-entry table
 bound while the input/output blocks and lazy BoltLite workspace are live.
@@ -215,5 +228,6 @@ The latest report has a 3,594-byte sampled minimum stack, a 358,784-byte
 DOS-manager largest-block minimum, a 163,286-byte instrumented live-usable
 allocation high-water, and a largest observed allocation rounding difference
 of 5 bytes. The high-water includes the maximum writer table plus BoltLite
-buffers. The report does not measure allocator headers, guarantee heap
-capacity, certify all workloads, or qualify Win16 or OS/2-16 runtimes.
+buffers. The report also measures maximum-entry list, info, and recovery
+workloads. It does not measure allocator headers, guarantee heap capacity,
+certify every call chain, or qualify Win16 or OS/2-16 runtimes.
