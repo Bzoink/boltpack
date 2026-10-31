@@ -63,15 +63,18 @@ rollback and preservation of both recovery artifacts if rollback also fails.
 Native rollback, crash durability, QDOS protection bits, and custom device
 names remain unqualified.
 
-A separate recursive-source probe on this same hostFS backend remains
-unqualified: opening a host directory through QDOS and reading the expected
-64-byte qdirect record returned a record with `d_szname == 0`, and the archive
-writer left an incomplete archive after emitting the directory entry. This
-backend therefore cannot currently provide independent target evidence for
-recursive QDOS source enumeration or qdirect file timestamp capture. The probe
-does not establish whether the limitation is in sQLux hostFS or the frontend;
-use a QDOS image/filer with working directory channels before making that
-claim.
+On 2026-10-31, the recursive-source probe passed on this same sQLux hostFS
+backend after correcting the QDOS directory-channel open. QDOS directory
+enumeration requires `io_open(path, Q_DIR)` (`Q_DIR == 4`); opening the path as a
+regular file had produced the misleading all-zero record. The native QDOS
+probe now reads the 64-byte `QDTEST_ONEFILE` and `QDTEST_SUBDIR` entries through
+`IO_FSTRG`, and the production frontend creates an archive with both nested
+files and both directories. Linux full and mini readers test and extract the
+archive with exact path and byte comparisons. The hash-indexed run record is
+[`build/r07-ql-qdirect-final-20261031/run.json`](../build/r07-ql-qdirect-final-20261031/run.json).
+This qualifies recursive source enumeration on sQLux qdos-like hostFS. Native
+rollback after publication failure, crash durability, QDOS protection bits,
+and physical QDOS filing systems remain unqualified.
 
 ## Haiku R1/beta6 x86_64 live image under QEMU
 

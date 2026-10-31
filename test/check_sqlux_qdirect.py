@@ -25,6 +25,15 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def run(command, cwd):
+    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                            timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError("command failed: " + repr(command) + "\n" +
+                           result.stdout + result.stderr)
+    return result
+
+
 def run_emulator(command, env, log_path, completion, timeout):
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
@@ -62,6 +71,7 @@ def main():
     parser.add_argument("--probe", type=Path, required=True)
     parser.add_argument("--boltpack", type=Path, required=True)
     parser.add_argument("--linux-boltpack", type=Path, required=True)
+    parser.add_argument("--mini-boltpack", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -70,6 +80,7 @@ def main():
     probe = args.probe.resolve(strict=True)
     boltpack = args.boltpack.resolve(strict=True)
     linux_boltpack = args.linux_boltpack.resolve(strict=True)
+    mini_boltpack = args.mini_boltpack.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     shared = output / "shared"
@@ -98,10 +109,9 @@ def main():
     (output / "qdirect.txt").write_text(result, encoding="ascii")
     if "nested_file_read=3 first_byte=111" not in result:
         raise RuntimeError("hostFS direct nested-file access did not work")
-    if "stdio_read=64" not in result or "name_length=0 name=" not in result:
-        raise RuntimeError("the stdio qdirect empty-name record was not observed")
-    if "raw_read=65535" not in result:
-        raise RuntimeError("the raw QDOS qdirect EOF result changed; inspect qdirect.txt")
+    if "raw_read=64" not in result or "name=QDTEST_ONEFILE" not in result or \
+            "name=QDTEST_SUBDIR" not in result or "type=255" not in result:
+        raise RuntimeError("the Q_DIR channel did not return the independent file/directory records")
 
     guest_boltpack = shared / "BOLTPACK"
     shutil.copyfile(boltpack, guest_boltpack)
@@ -117,15 +127,40 @@ def main():
                  30)
     tested = subprocess.run([str(linux_boltpack), "t", str(source_archive)],
                             capture_output=True, text=True, timeout=60)
+    mini_tested = subprocess.run([str(mini_boltpack), "t", str(source_archive)],
+                                 capture_output=True, text=True, timeout=60)
     listed = subprocess.run([str(linux_boltpack), "l", str(source_archive)],
                             capture_output=True, text=True, timeout=60)
     (output / "archive-test.txt").write_text(
         tested.stdout + tested.stderr, encoding="utf-8")
     (output / "archive-list.txt").write_text(
         listed.stdout + listed.stderr, encoding="utf-8")
-    if tested.returncode != 0 or listed.returncode != 0 or \
-            "0 files, 1 directory" not in listed.stdout:
-        raise RuntimeError("QDOS create did not terminate with the observed incomplete directory-only archive")
+    (output / "archive-mini-test.txt").write_text(
+        mini_tested.stdout + mini_tested.stderr, encoding="utf-8")
+    if (tested.returncode != 0 or mini_tested.returncode != 0 or
+            listed.returncode != 0 or "QDTEST/ONEFILE" not in listed.stdout or
+            "QDTEST/SUBDIR/TWOF" not in listed.stdout or
+            "2 files, 2 directories, 6 bytes" not in listed.stdout):
+        raise RuntimeError("QDOS-created archive did not preserve the independent nested-tree manifest")
+
+    linux_out = output / "linux-extracted"
+    mini_out = output / "mini-extracted"
+    linux_out.mkdir()
+    mini_out.mkdir()
+    linux_extract = run([str(linux_boltpack), "x", "-o", str(linux_out),
+                         str(source_archive)], output)
+    mini_extract = run([str(mini_boltpack), "x", str(source_archive),
+                        str(mini_out)], output)
+    (output / "linux-extract.txt").write_text(linux_extract.stdout, encoding="utf-8")
+    (output / "mini-extract.txt").write_text(mini_extract.stdout, encoding="utf-8")
+    expected = {"QDTEST/ONEFILE": b"one", "QDTEST/SUBDIR/TWOF": b"two"}
+    for root in (linux_out, mini_out):
+        actual = {path.relative_to(root).as_posix(): path.read_bytes()
+                  for path in root.rglob("*") if path.is_file()}
+        if actual != expected:
+            raise RuntimeError("Linux/mini cross-extraction differs from independent nested-tree payloads")
+        if not (root / "QDTEST/SUBDIR").is_dir():
+            raise RuntimeError("Linux/mini cross-extraction omitted the nested directory")
 
     revision = subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -135,8 +170,8 @@ def main():
     (output / "git-diff.patch").write_bytes(diff)
 
     manifest = {
-        "result": "LIMITATION_REPRODUCED_FRONTEND_TERMINATES",
-        "claim": "sQLux hostFS opens nested files but returns an empty qdirect record; QDOS create therefore cannot enumerate this populated directory",
+        "result": "PASS",
+        "claim": "QDOS Q_DIR/IO_FSTRG enumeration creates the independent nested tree; Linux full and mini readers validate and extract exact paths and bytes",
         "filesystem": "sQLux qdos-like hostFS",
         "source_revision": revision,
         "worktree_status_sha256": sha256_bytes(status),
@@ -147,6 +182,7 @@ def main():
         "probe_sha256": sha256(probe),
         "ql_boltpack_sha256": sha256(boltpack),
         "linux_boltpack_sha256": sha256(linux_boltpack),
+        "mini_boltpack_sha256": sha256(mini_boltpack),
         "sqlux_sha256": sha256(sqlux),
         "rom_sha256": sha256(rom),
         "host_file_sha256": sha256(directory / "ONEFILE"),
@@ -154,12 +190,29 @@ def main():
         "qdirect_output_sha256": sha256(output / "qdirect.txt"),
         "archive_sha256": sha256(source_archive),
         "archive_list_sha256": sha256(output / "archive-list.txt"),
+        "archive_mini_test_sha256": sha256(output / "archive-mini-test.txt"),
+        "linux_extract_sha256": sha256(output / "linux-extract.txt"),
+        "mini_extract_sha256": sha256(output / "mini-extract.txt"),
         "probe_emulator_log_sha256": sha256(output / "probe-emulator.log"),
         "create_emulator_log_sha256": sha256(output / "create-emulator.log"),
     }
+    manifest["payloads"] = {
+        "QDTEST/ONEFILE": {"size": len(expected["QDTEST/ONEFILE"]),
+                           "sha256": sha256_bytes(expected["QDTEST/ONEFILE"])},
+        "QDTEST/SUBDIR/TWOF": {"size": len(expected["QDTEST/SUBDIR/TWOF"]),
+                               "sha256": sha256_bytes(expected["QDTEST/SUBDIR/TWOF"])},
+    }
+    manifest["artifacts"] = {
+        str(path.relative_to(output)): {"size": path.stat().st_size, "sha256": sha256(path)}
+        for path in sorted(output.rglob("*")) if path.is_file()
+    }
     (output / "run.json").write_text(json.dumps(manifest, indent=2) + "\n",
                                       encoding="utf-8")
-    print("PASS: qdirect terminator no longer loops; reproduced sQLux hostFS directory omission, so recursive source qualification remains open:", output)
+    for name, item in manifest["artifacts"].items():
+        path = output / name
+        if path.stat().st_size != item["size"] or sha256(path) != item["sha256"]:
+            raise RuntimeError("artifact hash mismatch: " + name)
+    print("PASS: QDOS Q_DIR source enumeration and Linux/mini nested-tree transfer:", output)
 
 
 if __name__ == "__main__":
