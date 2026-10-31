@@ -543,6 +543,27 @@ win64-fltk-wine-profile1-attributes-test: modern linuxmini win64-fltk-gui
 	    --profile1 --fat-attributes \
 	    --attributes-probe build/win64-fltk-gui/attributes-probe.exe
 
+.PHONY: win64-fltk-wine-directory-race-test
+win64-fltk-wine-directory-race-test: modern linuxmini win64-fltk-gui
+	x86_64-w64-mingw32-g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) \
+	    -DBOLTPACK_ZSTD -DBOLTPACK_NET -DBP_TEST_WIN_FLTK_DIR_GUARD_PAUSE \
+	    -I$(ZSTDDIR) -mwindows -I$(FLTK_WIN64_DIR)/include \
+	    $(WIN64_FLTK_GUI_CORE_OBJS) $(WIN64_FLTK_GUI_BUILDDIR)/resource.o \
+	    src/frontend/win_gui_fltk/main.cpp -L$(FLTK_WIN64_DIR)/lib \
+	    $(GUI_FAST_FLUFF_LDFLAGS) \
+	    -lfltk_images -lfltk_png -lfltk_jpeg -lfltk_z -lfltk \
+	    -lgdi32 -lole32 -luuid -lcomctl32 -lcomdlg32 -lshell32 \
+	    -lgdiplus -lwinmm -lwinspool -lws2_32 -liphlpapi -static \
+	    -o build/win64-fltk-gui/boltpack-gui-directory-race.exe
+	x86_64-w64-mingw32-gcc -Wall -Wextra -municode \
+	    test/win64_fltk_attributes_probe.c \
+	    -o build/win64-fltk-gui/attributes-probe.exe
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui-directory-race.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
+	    --directory-race --attributes-probe build/win64-fltk-gui/attributes-probe.exe
+
 .PHONY: win64-fltk-wine-cancel-test
 win64-fltk-wine-cancel-test: modern win64-fltk-gui
 	xvfb-run -a python3 test/check_win64_fltk_wine_cancel.py --wine "$(WINE)" \

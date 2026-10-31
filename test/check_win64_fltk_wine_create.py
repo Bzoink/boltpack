@@ -89,6 +89,8 @@ def main():
                         help="enable Interchange Profile 1 in the FLTK preferences")
     parser.add_argument("--fat-attributes", action="store_true",
                         help="round-trip HIDDEN/SYSTEM/ARCHIVE through the production GUI")
+    parser.add_argument("--directory-race", action="store_true",
+                        help="prove a guarded source directory cannot be renamed while enumerated")
     parser.add_argument("--attributes-probe", type=Path,
                         default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
@@ -100,7 +102,12 @@ def main():
     mini = args.mini_cli.resolve(strict=True)
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    attrs_probe = args.attributes_probe.resolve(strict=True) if args.fat_attributes else None
+    if (args.directory_race and
+            manifest.get("directory_race_expected") !=
+            "refuse substitution before archive publication"):
+        parser.error("manifest does not define the expected directory-race outcome")
+    attrs_probe = (args.attributes_probe.resolve(strict=True)
+                   if args.fat_attributes or args.directory_race else None)
     run_id = uuid.uuid4().hex[:10]
     member = manifest["member_prefix"] + run_id + manifest["member_suffix"]
     out = Path(tempfile.mkdtemp(prefix="r08-win64-fltk-wine-create-",
@@ -108,6 +115,7 @@ def main():
     source_dir = out / manifest["source_directory"]
     source_dir.mkdir()
     source = source_dir / member
+    source_for_hash = source
     archive = out / (manifest["source_directory"] + ".blt")
     extracted = out / "linux-extracted"
     payload = (manifest["payload_line_utf8"].encode("utf-8") *
@@ -155,6 +163,7 @@ def main():
     main_window = None
     save_dialog = None
     attribute_roundtrip = None
+    directory_race_move = None
     try:
         main_window = wait_for_title(process, "BoltPack")
         save_dialog = wait_for_title(process, "Save archive as")
@@ -163,16 +172,71 @@ def main():
         # The source directory path is ASCII; its Unicode child name is read
         # by the production recursive enumeration path.
         subprocess.run(["xdotool", "key", "alt+s"], check=True)
-        deadline = time.monotonic() + 30
-        while (time.monotonic() < deadline and process.poll() is None and
-               not archive.is_file()):
-            time.sleep(0.1)
-        if not archive.is_file():
-            raise RuntimeError("GUI did not publish the suggested source.blt archive")
-        result = "created"
+        if args.directory_race:
+            ready = out / "source-guard.ready"
+            release = out / "source-guard.release"
+            parked = out / "source-parked"
+            deadline = time.monotonic() + 15
+            while (time.monotonic() < deadline and process.poll() is None and
+                   not ready.exists()):
+                time.sleep(0.02)
+            if not ready.exists():
+                raise RuntimeError("production source-directory guard was not reached")
+            move = subprocess.run(
+                [args.wine, str(attrs_probe), "move", str(source_dir), str(parked)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False)
+            directory_race_move = {"status": move.returncode,
+                                   "output": move.stdout.strip()}
+            if move.returncode == 0:
+                # Wine's hostfs mapping may permit a host-visible rename even
+                # while the Win32 handle is open. Leave a counterfeit at the
+                # selected name so the production identity check must refuse.
+                source_dir.mkdir()
+                source.write_bytes(b"substituted source directory\n")
+                source_for_hash = parked / member
+            elif move.returncode != 1 or "error=32" not in move.stdout:
+                raise RuntimeError("source directory rename failed unexpectedly: " +
+                                   move.stdout.strip())
+            release.write_text("continue\n", encoding="ascii")
+            if move.returncode == 0:
+                time.sleep(0.5)
+                if archive.exists():
+                    raise RuntimeError("GUI published an archive after source-directory substitution")
+                stages = list(out.glob(".boltpack-create-*.tmp"))
+                if stages:
+                    raise RuntimeError("GUI left archive stages after refusing source substitution")
+                subprocess.run(["xdotool", "key", "Return"], check=False)
+                time.sleep(0.2)
+                subprocess.run(["xdotool", "key", "ctrl+q"], check=False)
+                process.wait(timeout=8)
+                if (not parked.is_dir() or not source.is_file() or
+                        source.read_bytes() != b"substituted source directory\n" or
+                        (parked / member).read_bytes() != payload):
+                    raise RuntimeError("directory-race fixture changed a source artifact")
+                result = "passed_under_wine_refused_substitution"
+            else:
+                deadline = time.monotonic() + 30
+                while (time.monotonic() < deadline and process.poll() is None and
+                       not archive.is_file()):
+                    time.sleep(0.1)
+                if not archive.is_file():
+                    raise RuntimeError("GUI did not publish after Win32 rename refusal")
+                result = "created"
+        else:
+            deadline = time.monotonic() + 30
+            while (time.monotonic() < deadline and process.poll() is None and
+                   not archive.is_file()):
+                time.sleep(0.1)
+            if not archive.is_file():
+                raise RuntimeError("GUI did not publish the suggested source.blt archive")
+            result = "created"
     except Exception as exc:
         error = str(exc)
     finally:
+        if args.directory_race:
+            (out / "source-guard.release").write_text("continue\n",
+                                                        encoding="ascii")
         if process.poll() is None:
             # Dismiss the completion/error dialog and exit through the GUI menu.
             subprocess.run(["xdotool", "key", "Return"], check=False)
@@ -197,6 +261,7 @@ def main():
     mini_test_status = None
     extract_status = None
     archive_info = ""
+    method_line = ""
     extracted.mkdir()
     output = extracted / manifest["source_directory"] / member
     if archive.is_file():
@@ -291,7 +356,18 @@ def main():
         "purpose": manifest["case"],
         "profile1_requested": args.profile1,
         "fat_attributes_requested": args.fat_attributes,
+        "directory_race_requested": args.directory_race,
+        "directory_race_move": directory_race_move,
+        "directory_race_expected": manifest.get("directory_race_expected"),
+        "directory_race_parked_source_sha256": (
+            sha256(out / "source-parked" / member)
+            if args.directory_race and (out / "source-parked" / member).is_file()
+            else None),
+        "directory_race_counterfeit_sha256": (
+            sha256(source) if args.directory_race and source.is_file() else None),
         "fat_attribute_source_set": attr_set_results,
+        "attributes_probe": str(attrs_probe) if attrs_probe else None,
+        "attributes_probe_sha256": sha256(attrs_probe) if attrs_probe else None,
         "fat_attribute_roundtrip": attribute_roundtrip if args.fat_attributes else None,
         "gui_extraction_command": extraction_command,
         "gui_extraction_exit_status": extraction_exit_status,
@@ -319,13 +395,14 @@ def main():
         "archive_sha256": sha256(archive) if archive.is_file() else None,
         "member": "source/" + member,
         "source_size": len(payload),
-        "source_sha256": sha256(source),
+        "source_sha256": sha256(source_for_hash),
         "linux_test_status": linux_test_status,
         "mini_test_status": mini_test_status,
         "linux_extract_status": extract_status,
         "extracted_sha256": sha256(output) if output.is_file() else None,
-        "payload_byte_identical": output.is_file() and
-                                  output.read_bytes() == payload,
+        "payload_byte_identical": (output.is_file() and
+                                   output.read_bytes() == payload
+                                   if archive.is_file() else None),
         "wine_exit_status": process.returncode,
         "artifacts": {path.name: sha256(path) for path in out.iterdir()
                       if path.is_file()},
@@ -333,7 +410,7 @@ def main():
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
                                    encoding="utf-8")
     print(json.dumps(record, indent=2))
-    if result != "passed_under_wine" or process.returncode != 0:
+    if result not in ("passed_under_wine", "passed_under_wine_refused_substitution") or process.returncode != 0:
         raise SystemExit("Win64 FLTK Wine create failed; evidence: " + str(out))
 
 

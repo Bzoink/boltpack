@@ -671,8 +671,9 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   FAT12 run is [`build/boltpack-dos-parent-race-6kqe7rjp/run.json`](../build/boltpack-dos-parent-race-6kqe7rjp/run.json).
   This qualifies the tested DJGPP/DOSBox-X FAT12 substitution at stage close;
   a later race between path validation and rename remains unclosed. Other
-  remaining DOS runtimes/filesystems and OS/2 races remain in R10. Windows reparse/path races remain
-  in R08 and native Amiga GUI
+  remaining DOS runtimes/filesystems and OS/2 races remain in R10. Native
+  Windows reparse qualification and child/parent path races remain in R08;
+  native Amiga GUI
   replacement behavior in R11. Plan 9 real
   extraction now refuses before output creation because its frontend only has
   pathname-based operations; `make CC=gcc plan9-host-test` verifies refusal,
@@ -692,8 +693,20 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   [`build/r08-win64-fltk-reparse-093hhy7w/run.json`](../build/r08-win64-fltk-reparse-093hhy7w/run.json).
   This is evidence of Wine's host-filesystem mapping behavior, not a Windows
   reparse-point result. A real Windows reparse refusal still needs target
-  qualification. Directory substitution between the attribute check and
-  enumeration also remains open in R08.
+  qualification. The production Win64 FLTK creator now holds each inspected
+  source object without `FILE_SHARE_DELETE` and compares its file identity to
+  the selected pathname around recursive enumeration and reads. The focused
+  `make CC=gcc WINE=/usr/lib/wine/wine64
+  win64-fltk-wine-directory-race-test` pauses after opening the selected
+  directory, moves it with a second Win32 process, and leaves a counterfeit at
+  its original pathname. Wine permits that move despite the open handle; the
+  GUI detects the identity change, publishes no archive, and removes its
+  archive stage. The original 17,600-byte source remains intact in the parked
+  directory. The hash-indexed run is
+  [`build/r08-win64-fltk-wine-create-zzbgj2p4/run.json`](../build/r08-win64-fltk-wine-create-zzbgj2p4/run.json).
+  This closes that observable root-substitution window under Wine. Native
+  Windows sharing behavior, child replacement races, and substitutions restored
+  before a path recheck remain unqualified.
 - Preserve the Linux CRC re-read regression and its stated limits: CRC collisions
   and mutations after final validation are not eliminated. Do not claim an atomic
   filesystem snapshot from these checks.
