@@ -1,0 +1,95 @@
+{
+  "result": "PASS_WITH_LIMITATION",
+  "purpose": "Verify AmigaOS 2.04 GUI create replaces an existing archive on an FS-UAE host-directory volume",
+  "date": "2026-10-31",
+  "revision": "8b47897",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart_sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79",
+    "workbench_adf": {
+      "path": "build/amiga-gui-replace-open-probe4/Workbench-gui-replace-open-test.adf",
+      "sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275"
+    },
+    "host_directory_volume": "build/amiga-gui-replace-open-probe4/drive mounted as DH0:",
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1
+  },
+  "gui": {
+    "binary": "build/amiga-gui-replace-open-probe4/drive/BoltPackLog",
+    "sha256": "324ba7dcd45e46ce524d06c5b4f9440d26dc4f93a68dff791b3e49a0ad25f838",
+    "instrumentation_scope": "Logging-only GUI trace build; archive behavior matches src/frontend/amiga_gui/main.c."
+  },
+  "fixture": {
+    "target": "DH0:archive.bolt",
+    "existing_archive_sha256_before": "0f977c16c6935dda91b305e9452ab2f8091285af383799894742400266ee42d3",
+    "existing_archive_creator": "Linux x86-64",
+    "existing_archive_payload": "OLD.TXT",
+    "source": "DH0:SOURCE.TXT",
+    "source_bytes": 28,
+    "source_sha256": "d44cb71a1c3184bec1a019f23069a1c2d77c88d9220ae62dded4a9408800eb42"
+  },
+  "interaction": [
+    "Boot Workbench and answer the PickMap prompt with 0 and Return.",
+    "Select Archive -> Open and open archive.bolt so the GUI holds the target archive open.",
+    "Select Compression -> Create New... using the GUI menu.",
+    "Enter SOURCE.TXT in the source requester and confirm.",
+    "Accept the default archive filename archive.bolt, which already exists."
+  ],
+  "replacement": {
+    "result": "GUI logged Create complete for archive.bolt.",
+    "archive_sha256_after": "bbbce937435aa36520ed700fee8f00fcdbb10251a2d06899b4c27c9f1cb8c7d1",
+    "archive_bytes_after": 338,
+    "directory_entries_after": [
+      "BoltPackLog",
+      "OLD.TXT",
+      "SOURCE.TXT",
+      "archive.bolt",
+      "archive.bolt.uaem",
+      "boldpack.log",
+      "boldpack.log.uaem"
+    ],
+    "backup_or_stage_residue": false,
+    "guest_log": {
+      "path": "build/amiga-gui-replace-open-probe4/drive/boldpack.log",
+      "sha256": "ca8d278080f72719bcf594e4680e0a1ece00ab476e62101bceb0dfb651550651"
+    },
+    "fs_uae_log": {
+      "path": "build/amiga-gui-replace-open-probe4/home/FS-UAE/Cache/Logs/fs-uae.log.txt",
+      "sha256": "12eccf946bc7cc4f4479063ece6b19ce2848a0479a9504cfe6d5c5f74b5aed92"
+    }
+  },
+  "cross_reader_verification": {
+    "linux_full_test": "Both physical entries passed; 2 files OK.",
+    "linux_mini_test": "Both physical entries passed.",
+    "linux_full_extract": {
+      "status": "Partial because Amiga native metadata is unsupported on Linux",
+      "path": "build/amiga-gui-replace-open-probe4/linux-extract/SOURCE.TXT",
+      "sha256": "d44cb71a1c3184bec1a019f23069a1c2d77c88d9220ae62dded4a9408800eb42",
+      "matches_source": true
+    },
+    "linux_mini_extract": {
+      "status": "Partial because Amiga metadata is unsupported by the mini extractor",
+      "path": "build/amiga-gui-replace-open-probe4/mini-extract/SOURCE.TXT",
+      "sha256": "d44cb71a1c3184bec1a019f23069a1c2d77c88d9220ae62dded4a9408800eb42",
+      "matches_source": true
+    }
+  },
+  "additional_observation": {
+    "scenario": "Pre-fix create over an archive that the GUI had just opened",
+    "result": "The new archive was published and Linux verified it, but the old open archive remained at recovery name BRA71936. The 8b47897 fix closes the matching open archive before publication; the primary run above verifies this case no longer leaves a backup.",
+    "guest_log_message": "Cannot remove replaced-file backup: BRA71936",
+    "recovery_archive_sha256": "a29629d09a3243f0517227763bab0c7c28e793a47e087ff531ebd6c2d732a6fb",
+    "new_archive_sha256": "a29629d09a3243f0517227763bab0c7c28e793a47e087ff531ebd6c2d732a6fb",
+    "guest_log": {
+      "path": "build/amiga-gui-replace-probe/drive/boldpack.log",
+      "sha256": "aeecc365ce28c24a43df24da6ae31ca6a3b38aa94ff5b99b30dc568c8f42e7d9"
+    },
+    "scope_note": "This confirms backup retention on the FS-UAE host-directory backend when replacing the currently open archive. The old archive remains available, but successful cleanup of an open target is not qualified."
+  },
+  "scope_limit": "An existing archive that was open in the GUI was replaced and cross-verified on one FS-UAE host-directory volume, with no stage or backup left behind. Failure after closing the old archive, native OFS/FFS replacement, GUI cancellation, and metadata preservation for a replaced archive remain unqualified."
+}
