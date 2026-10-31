@@ -86,6 +86,8 @@ def main():
     parser.add_argument("--linux-cli", type=Path,
                         default=ROOT / "build/linux/boltpack")
     parser.add_argument("--output-root", type=Path, default=ROOT / "build")
+    parser.add_argument("--scenario", choices=("cancel", "publish-failure"),
+                        default="cancel")
     args = parser.parse_args()
     if not os.environ.get("DISPLAY"):
         parser.error("run under Xvfb or a desktop display")
@@ -116,7 +118,13 @@ def main():
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise RuntimeError("unique Wine Desktop destination already exists")
-    destination.write_bytes(sentinel)
+    if args.scenario == "cancel":
+        sentinel_path = destination
+        sentinel_path.write_bytes(sentinel)
+    else:
+        destination.mkdir()
+        sentinel_path = destination / manifest["directory_sentinel_name"]
+        sentinel_path.write_bytes(sentinel)
 
     create = subprocess.run(
         [str(linux), "c", "--store", "linux-created.blt", member],
@@ -174,9 +182,10 @@ def main():
         if not stage_observed or stage_peak_bytes <= 0:
             raise RuntimeError("no partially written extraction stage was observed")
 
-        subprocess.run(["xdotool", "mousemove", "--window", progress[0],
-                        "200", "137", "click", "1"], check=True)
-        deadline = time.monotonic() + 10
+        if args.scenario == "cancel":
+            subprocess.run(["xdotool", "mousemove", "--window", progress[0],
+                            "200", "137", "click", "1"], check=True)
+        deadline = time.monotonic() + (60 if args.scenario == "publish-failure" else 10)
         progress_closed = False
         remaining_stages = []
         while time.monotonic() < deadline and process.poll() is None:
@@ -188,16 +197,19 @@ def main():
                 break
             time.sleep(0.05)
         if not progress_closed or remaining_stages:
-            raise RuntimeError("cancel did not close progress and remove the stage")
+            raise RuntimeError("operation did not close progress and remove the stage")
         remaining_stages = list(destination.parent.glob(".boltpack-*.tmp"))
-        if destination.read_bytes() != sentinel:
-            raise RuntimeError("cancellation replaced the preexisting destination")
+        if sentinel_path.read_bytes() != sentinel:
+            raise RuntimeError("operation changed the pre-existing sentinel")
+        if args.scenario == "publish-failure" and not destination.is_dir():
+            raise RuntimeError("failed publication replaced the existing directory")
         if remaining_stages:
             raise RuntimeError("cancellation left an extraction stage: " +
                                ", ".join(path.name for path in remaining_stages))
         if process.poll() is not None:
             raise RuntimeError("GUI exited before cancellation could be acknowledged")
-        result = "passed_cancel_preserved_destination"
+        result = ("passed_cancel_preserved_destination" if args.scenario == "cancel"
+                  else "passed_publish_failure_preserved_destination")
     except Exception as exc:
         error = str(exc)
     finally:
@@ -222,7 +234,8 @@ def main():
     artifacts = {str(path.relative_to(out)): sha256(path)
                  for path in sorted(out.rglob("*")) if path.is_file()}
     record = {
-        "purpose": manifest["case"], "result": result, "error": error,
+        "purpose": manifest["case"], "scenario": args.scenario,
+        "result": result, "error": error,
         "source_revision": revision, "source_status": status,
         "source_diff_sha256": diff_sha,
         "runtime": {"wine": wine_version, "display": os.environ["DISPLAY"]},
@@ -236,9 +249,14 @@ def main():
         "member": member, "source_sha256": sha256(source),
         "source_size": source.stat().st_size,
         "destination": str(destination),
+        "destination_kind": "directory" if destination.is_dir() else "file",
         "destination_sha256": sha256(destination) if destination.is_file() else None,
-        "destination_preserved": destination.is_file() and
-                                 destination.read_bytes() == sentinel,
+        "sentinel_path": str(sentinel_path),
+        "sentinel_sha256": sha256(sentinel_path) if sentinel_path.is_file() else None,
+        "destination_preserved": sentinel_path.is_file() and
+                                 sentinel_path.read_bytes() == sentinel and
+                                 (args.scenario != "publish-failure" or
+                                  destination.is_dir()),
         "stage_observed": stage_observed, "stage_peak_bytes": stage_peak_bytes,
         "progress_window_title": progress_title,
         "windows_after_cancel": windows_after_cancel,
@@ -250,8 +268,14 @@ def main():
                                    encoding="utf-8")
     if result == "passed_cancel_preserved_destination":
         destination.unlink()
+    elif result == "passed_publish_failure_preserved_destination":
+        sentinel_path.unlink()
+        destination.rmdir()
     print(json.dumps(record, indent=2))
-    if result != "passed_cancel_preserved_destination" or process.returncode != 0:
+    expected_result = ("passed_cancel_preserved_destination"
+                       if args.scenario == "cancel" else
+                       "passed_publish_failure_preserved_destination")
+    if result != expected_result or process.returncode != 0:
         raise SystemExit("Win64 FLTK Wine cancellation failed; evidence: " + str(out))
 
 

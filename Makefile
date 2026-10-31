@@ -519,6 +519,13 @@ win64-fltk-wine-cancel-test: modern win64-fltk-gui
 	    --gui build/win64-fltk-gui/boltpack-gui.exe \
 	    --linux-cli build/linux/boltpack
 
+.PHONY: win64-fltk-wine-publish-failure-test
+win64-fltk-wine-publish-failure-test: modern win64-fltk-gui
+	xvfb-run -a python3 test/check_win64_fltk_wine_cancel.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack --scenario publish-failure
+
 .PHONY: win64-fltk-wine-reparse-test
 win64-fltk-wine-reparse-test: modern win64-fltk-gui
 	xvfb-run -a python3 test/check_win64_fltk_wine_reparse.py --wine "$(WINE)" \
