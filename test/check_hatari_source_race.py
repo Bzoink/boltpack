@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Atari CLI refuses a source path replaced between stat and open."""
+"""Verify Atari CLI refuses source replacement before open and after open."""
 import argparse
 import hashlib
 import json
@@ -14,6 +14,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 ORIGINAL = b"original source captured before the path swap\r\n"
 REPLACEMENT = b"replacement has a different length and must not be archived\r\n"
+SAME_SIZE_REPLACEMENT = b"R" * len(ORIGINAL)
 
 
 def sha256(path):
@@ -101,9 +102,14 @@ def main():
     source.write_bytes(ORIGINAL)
     replacement.write_bytes(REPLACEMENT)
     source_open.write_bytes(ORIGINAL)
-    replacement_open.write_bytes(REPLACEMENT)
+    replacement_open.write_bytes(SAME_SIZE_REPLACEMENT)
+    os.utime(replacement_open,
+             ns=(source_open.stat().st_atime_ns,
+                 source_open.stat().st_mtime_ns))
     replacement_fixture = output / "replacement-input.bin"
     replacement_fixture.write_bytes(REPLACEMENT)
+    same_size_fixture = output / "same-size-replacement-input.bin"
+    same_size_fixture.write_bytes(SAME_SIZE_REPLACEMENT)
     (drive / "COMMANDS.TXT").write_text(
         "c RACE1.BLT SOURCE1.TXT\nc RACE2.BLT SOURCE2.TXT\n",
                                        encoding="ascii")
@@ -139,15 +145,18 @@ def main():
             os.replace(source_open, parked_after_open)
             os.replace(replacement_open, source_open)
             after_open_swap = source_open.stat()
+            if (before_open_swap.st_size != after_open_swap.st_size or
+                    before_open_swap.st_mtime_ns != after_open_swap.st_mtime_ns):
+                raise RuntimeError("same-size source substitution changed its mtime")
             (drive / "CONT2.TXT").write_text("continue\n", encoding="ascii")
             wait_for_lines(drive / "RESULT.TXT", process, 90, 2)
             result = (drive / "RESULT.TXT").read_text(encoding="ascii").splitlines()
             if result != ["1", "1"]:
                 raise RuntimeError("Atari create did not reject both source substitutions: " +
                                    repr(result))
-            if "source changed while reading" not in \
+            if "source content changed while reading" not in \
                     (drive / "LOG01.TXT").read_text(errors="replace"):
-                raise RuntimeError("open/path substitution was not rejected; see LOG01.TXT")
+                raise RuntimeError("same-size content substitution was not rejected by CRC; see LOG01.TXT")
             if (drive / "RACE1.BLT").exists() or (drive / "RACE2.BLT").exists():
                 raise RuntimeError("failed source-race create published an archive")
             leftovers = [path.name for path in drive.iterdir()
@@ -183,7 +192,7 @@ def main():
                           stdout=subprocess.PIPE, check=True).stdout
     manifest = {
         "result": "PASS",
-        "purpose": "Atari CLI rejects a changed source between pathname stat and open",
+        "purpose": "Atari CLI rejects source substitutions before open and same-size content replacement after open",
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"],
                                              cwd=ROOT, text=True).strip(),
         "worktree_status_sha256": hashlib.sha256(status).hexdigest(),
@@ -202,9 +211,13 @@ def main():
                         before_open_swap.st_size != after_open_swap.st_size,
                     "open_read_swap_changed_mtime":
                         before_open_swap.st_mtime != after_open_swap.st_mtime,
+                    "open_read_swap_same_size_and_mtime":
+                        before_open_swap.st_size == after_open_swap.st_size and
+                        before_open_swap.st_mtime_ns == after_open_swap.st_mtime_ns,
+                    "same_size_replacement_sha256": sha256(same_size_fixture),
                     "guest_statuses": result,
                     "expected_diagnostics": ["source changed while opening",
-                                             "source changed while reading"],
+                                             "source content changed while reading"],
                     "archive_published": False,
                     "stage_files_left": leftovers,
                     "hatari_exit": process.returncode},

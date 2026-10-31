@@ -779,6 +779,15 @@ when the filesystem reports coarse timestamps, including a change immediately
 after the source stream closes. The extra read has an I/O cost; CRC collisions
 and changes after the final snapshot check remain outside this check.
 
+The Atari CLI now hashes each source path before opening, compares the archive
+entry checksum against that baseline, and hashes the current pathname after the
+source stream closes. Hatari/TOS 1.62 replaces an already-open source with a
+same-size, same-mtime file; the content-specific CRC refusal leaves no archive
+or stage. The normal FAT12 transfer/edit fixture passes after the change. This
+adds two full pathname reads per source. CRC collisions, substitution between
+the initial stat and baseline hash, and changes after the final hash remain open.
+The tracked run record is [`atari-source-race-20261031.json`](evidence/atari-source-race-20261031.json).
+
 The X68000 Shift-JIS conversion and path-scanning portion is now covered at
 unit and host-shim level. `scripts/generate_sjis_table.py` produces the strict
 JIS X 0208 map; the codepage unit test verifies all 6,879 pairs in both

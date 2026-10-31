@@ -638,6 +638,39 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 static int atari_archive_stat_matches(const struct stat *expected,
                                      const struct stat *current);
 
+/* Hash a pathname with the same CRC-32 used for archive payloads.  The
+ * expected length comes from the initial stat so a concurrent size change
+ * cannot be hidden by a matching CRC over a shorter/longer stream. */
+static int atari_path_crc32(const char *path, unsigned long expected_size,
+                            bp_uint32 *out_crc)
+{
+    FILE *fp;
+    unsigned char buffer[1024];
+    unsigned long total;
+    size_t count;
+    bp_uint32 crc;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL) return -1;
+    total = 0;
+    crc = 0;
+    while ((count = fread(buffer, 1, sizeof(buffer), fp)) != 0) {
+        if ((unsigned long)count > expected_size - total) {
+            (void)fclose(fp);
+            return -1;
+        }
+        total += (unsigned long)count;
+        crc = bp_crc32(crc, buffer, (bp_uint32)count);
+    }
+    {
+        int failed = ferror(fp) || total != expected_size;
+        if (fclose(fp) != 0) failed = 1;
+        if (failed) return -1;
+    }
+    *out_crc = crc;
+    return 0;
+}
+
 #ifdef BP_TEST_PAUSE_AFTER_SOURCE_STAT
 static void atari_test_pause_after_source_stat(void)
 {
@@ -796,6 +829,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         struct stat opened_st, final_st, path_st;
         bp_uint64  file_size;
         bp_uint64  mtime;
+        bp_uint32  source_crc, after_crc;
         bp_uint16  flags;
         char       arcname_utf8[BP_MAX_PATH * 2];
 
@@ -806,6 +840,12 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             return BP_ERR_IO;
         }
         atari_stat_mtime(&st, &mtime, &flags);
+
+        if (atari_path_crc32(path, (unsigned long)st.st_size,
+                             &source_crc) != 0) {
+            fprintf(stderr, "boltpack: cannot checksum source: %s\n", path);
+            return BP_ERR_IO;
+        }
 
 #ifdef BP_TEST_PAUSE_AFTER_SOURCE_STAT
         atari_test_pause_after_source_stat();
@@ -840,6 +880,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_OS_ATARI, &fio, file_size, mtime, flags);
+        if (rc == BP_OK &&
+            (ar->entry_list[ar->entries_written - 1].checksum_type !=
+                 BP_CKSUM_CRC32 ||
+             ar->entry_list[ar->entries_written - 1].checksum != source_crc)) {
+            fprintf(stderr, "boltpack: source content changed while reading: %s\n",
+                    path);
+            rc = BP_ERR_IO;
+        }
         if (fstat(fileno(fp), &final_st) != 0 ||
             !atari_archive_stat_matches(&opened_st, &final_st) ||
             stat(path, &path_st) != 0 ||
@@ -852,6 +900,12 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
         fclose(fp);
         if (rc != BP_OK) return rc;
+        if (atari_path_crc32(path, (unsigned long)st.st_size,
+                             &after_crc) != 0 || after_crc != source_crc) {
+            fprintf(stderr, "boltpack: source content changed while reading: %s\n",
+                    path);
+            return BP_ERR_IO;
+        }
 
         if (g_verbosity == VERB_DEFAULT) {
             bp_entry_t *e    = &ar->entry_list[ar->entries_written - 1];

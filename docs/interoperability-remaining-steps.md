@@ -572,9 +572,16 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   deterministic TOS 1.62/Hatari fixture exercises both a different-sized swap
   between stat/open and a pathname replacement while the original handle is
   open. The CLI refuses both before publication and leaves no stage; the
-  ordinary Atari FAT12 transfer/edit suite still passes. Same-size substitutions
-  preserving all compared source fields remain open. For extraction, the Atari
-  CLI snapshots the output root using pathname metadata and refuses detected
+  ordinary Atari FAT12 transfer/edit suite still passes. A 2026-10-31 same-size, same-mtime path replacement after open
+  is also rejected. The CLI hashes the path before opening, compares the archive entry CRC with that
+  baseline, then hashes the path again after the source stream closes. The fixture
+  confirms the source size and mtime stayed unchanged, requires the content-specific
+  refusal, and verifies no archive or stage was published; tracked evidence is
+  [the Atari source-race record](evidence/atari-source-race-20261031.json). The
+  normal TOS 1.62 FAT12 transfer/edit suite also passes after this change. This
+  adds two full pathname reads per source. CRC collisions, a substitution between
+  the initial stat and baseline hash, and changes after the final hash remain
+  open. For extraction, the Atari CLI snapshots the output root using pathname metadata and refuses detected
   changes before staging or publication. Hatari/TOS 1.62 replaces the root with
   a redirected directory in both windows; both sentinels survive and nothing is
   published there. After a stage is opened, refusal leaves the verified stage
