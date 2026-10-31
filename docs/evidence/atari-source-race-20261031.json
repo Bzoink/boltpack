@@ -1,0 +1,111 @@
+{
+  "result": "PASS",
+  "purpose": "Atari CLI rejects source substitutions before open and same-size content replacement after open",
+  "revision": "28a0d7f4c325ce974435134ab6611a7451283bb5",
+  "worktree_status_sha256": "b16665a54cb65de9f1cbee7f812880fa4a66899d28ca571233d417146e78b763",
+  "tracked_diff_sha256": "5825d8ea2cd6bf38b19a1095a259d8f5a7ec7a481363050a408240e95af95648",
+  "host": {
+    "platform": "Linux-6.12.113+deb13-amd64-x86_64-with-glibc2.41",
+    "python": "3.13.5"
+  },
+  "tools": {
+    "hatari": [
+      "Hatari v2.5.0 - the Atari ST, STE, TT and Falcon emulator.",
+      "",
+      "Hatari is free software licensed under the GNU General Public License."
+    ],
+    "atari_compiler": [
+      "m68k-atari-mint-gcc (GCC) 4.6.4 (MiNT 20200504)",
+      "Copyright (C) 2011 Free Software Foundation, Inc.",
+      "This is free software; see the source for copying conditions.  There is NO"
+    ]
+  },
+  "runtime": {
+    "tos_sha256": "77f9c88cbdf7127a7a6b61b2fa84ddde4d9a02a30f524a6bd87dc7deb250a575",
+    "atari_cli_sha256": "48c91af22a16f6d955991dd9505efddc0d84efb1f87d9a4694438d45fe0186de",
+    "guest_runner_source_sha256": "0c5384f6b88855ad64e7935db08b8793bf51acc9ff66c7d541076aca8a705504",
+    "stat_open_swap_changed_size": true,
+    "stat_open_swap_changed_mtime": false,
+    "open_read_swap_changed_size": false,
+    "open_read_swap_changed_mtime": false,
+    "open_read_swap_same_size_and_mtime": true,
+    "same_size_replacement_sha256": "15dbda7df193fc9881800c8d1933c13a7f56e940f193d9d9276b4cdd85c00eb9",
+    "guest_statuses": [
+      "1",
+      "1"
+    ],
+    "expected_diagnostics": [
+      "source changed while opening",
+      "source content changed while reading"
+    ],
+    "archive_published": false,
+    "stage_files_left": [],
+    "hatari_exit": 0
+  },
+  "artifacts": {
+    "compile.log": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "drive/BOLTPACK.TOS": {
+      "size": 334656,
+      "sha256": "48c91af22a16f6d955991dd9505efddc0d84efb1f87d9a4694438d45fe0186de"
+    },
+    "drive/COMMANDS.TXT": {
+      "size": 48,
+      "sha256": "585547c91cb25586cce0005beec67bc1b6b6d38bfd5e0d61a043e409ac104f40"
+    },
+    "drive/CONT2.TXT": {
+      "size": 9,
+      "sha256": "7134fe6667b4b2287cb806d21d2f2488b9b2077f52c6b8e06b16a4aa27c1cc13"
+    },
+    "drive/CONTINUE.TXT": {
+      "size": 9,
+      "sha256": "7134fe6667b4b2287cb806d21d2f2488b9b2077f52c6b8e06b16a4aa27c1cc13"
+    },
+    "drive/LOG00.TXT": {
+      "size": 125,
+      "sha256": "2c7ea4947d0f32ba07ba450aafdbe2bd67a5b889fd665c784f7a84e9dc02da6a"
+    },
+    "drive/LOG01.TXT": {
+      "size": 157,
+      "sha256": "5dc0410cce7b43b447f31491a229b1fcd438dd1c1c5573a15082c19fba919f73"
+    },
+    "drive/OPENED.TXT": {
+      "size": 14,
+      "sha256": "a15ca5c08e75a27c7fe3dea9b3c40f59af56034659b20d92cc6e0ebf4992f208"
+    },
+    "drive/RESULT.TXT": {
+      "size": 6,
+      "sha256": "2a93ef399846526811d56221542f541f9397cd39f0b6718c7fbb44c08d2735fc"
+    },
+    "drive/RUN.TOS": {
+      "size": 132807,
+      "sha256": "463a19929d69de99551baa39d31ec98c987d0c082468391b7b1471b162e32cd4"
+    },
+    "drive/SOURCE1.TXT": {
+      "size": 47,
+      "sha256": "7dcb75863b2676a5a16e85bfd5d7c1d2357038f8d19732f3cc06bd46797f75d7"
+    },
+    "drive/SOURCE2.TXT": {
+      "size": 47,
+      "sha256": "7dcb75863b2676a5a16e85bfd5d7c1d2357038f8d19732f3cc06bd46797f75d7"
+    },
+    "drive/STATDONE.TXT": {
+      "size": 21,
+      "sha256": "7569a4f690f6494f96d3c0eaaae543375ed903127c7b2aa2d457067047ca1047"
+    },
+    "hatari.log": {
+      "size": 483,
+      "sha256": "b1a8fa0919d83b9af5ae5ecea20d889112d7db5e5a942d0fff3b741ae940addd"
+    },
+    "replacement-input.bin": {
+      "size": 61,
+      "sha256": "752ef2ae8d6e545f9a28d436bd97c8553153adbd5c0a92be6ae0b7645147e6e2"
+    },
+    "same-size-replacement-input.bin": {
+      "size": 47,
+      "sha256": "15dbda7df193fc9881800c8d1933c13a7f56e940f193d9d9276b4cdd85c00eb9"
+    }
+  }
+}
