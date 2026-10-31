@@ -137,8 +137,8 @@ def main():
                 raise RuntimeError("Hatari did not accept runtime floppy protection: " + str(out))
             time.sleep(0.5)
             (host / "RELEASE.TST").write_text("continue into protected rename\n")
-            # GEMDOS displays a write-protect retry/abort prompt. Try the
-            # Swedish Abort mnemonic, then confirm it if TOS selects it.
+            # GEMDOS displays a write-protect retry/abort prompt. EmuTOS accepts
+            # its Abort mnemonic followed by Return.
             time.sleep(0.5)
             send("screenshot")
             time.sleep(0.5)
