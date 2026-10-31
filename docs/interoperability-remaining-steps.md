@@ -502,8 +502,10 @@ hash/worktree run record are retained at
   (`build/atari-gui-cancel-9faa1pzs`). A prior attempt ended before extraction
   completed and is explicitly marked invalid at
   `build/atari-gui-cancel-m7b5nnof/run.json`. The GEM GUI now pins stage-parent
-  and destination-root directory handles where `opendir()` is available, then
-  removes the stage and journal relative to those held handles. A FreeMiNT
+  and destination-root directory handles when `dirfd()` returns a descriptor,
+  then removes the stage and journal relative to those held handles. When no
+  descriptor is available, it uses the existing checked pathname cleanup path.
+  A FreeMiNT
   runtime probe confirms `fchdir(dirfd(...))` and relative unlink work, and
   that rename of an open parent is refused; the Hatari/TOS host-drive fixture
   confirms the GUI refuses a substituted parent and warns that cleanup may
@@ -678,6 +680,12 @@ Evidence is retained at
 [`build/atari-gui-create-emutos-fixed/atari-gui-create-17o5weao/run.json`](../build/atari-gui-create-emutos-fixed/atari-gui-create-17o5weao/run.json).
 The strengthened output-root journal check also passed on TOS 1.62 at
 [`build/atari-gui-create-tos162-fixed/atari-gui-create-5434qcwl/run.json`](../build/atari-gui-create-tos162-fixed/atari-gui-create-5434qcwl/run.json).
+The directory-attribute limitation is now isolated with a focused GEMDOS probe
+on TOS 1.06, 1.62, 2.05, and EmuTOS 1.4: `Fsfirst` and `Fattrib` read report
+directory, Hidden, and System bits (`0x16`), while `Fattrib` set returns `-36`
+and leaves the bits unchanged. These targets refuse setting the directory
+flags; the GUI therefore reports their loss as partial. Probe ROM/result hashes are retained
+in [`build/atari-attr-probe/run.json`](../build/atari-attr-probe/run.json).
 The FreeMiNT held-directory cleanup probe passed again after this change at
 [`build/freemint-probe/production-cleanup-y6rc5iil/run.json`](../build/freemint-probe/production-cleanup-y6rc5iil/run.json), preserving descriptor-relative cleanup where supported.
 
