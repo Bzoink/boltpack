@@ -281,6 +281,15 @@ hashes; retained artifacts total about 537 MB:
 The 256 MiB cancellation fixture now uses the configured build filesystem
 instead of `/tmp`, which was nearly full tmpfs on this machine.
 
+The Amiga/Linux FS-UAE host-directory runner now emits a machine-readable run
+record and defaults to retained output under `build/`. The 2026-10-31 run
+passed Stored and BoltLite profile exchange, staged edits, archive protection
+and comment preservation, corruption refusal, nested metadata, and all four
+codec round trips at 256 KiB blocks. Its run record pins both independent
+manifests, ROM/Workbench/toolchain inputs, the worktree snapshot, guest command
+status files, and 331 artifact hashes:
+[`build/r02-fsuae-host-20261031-1032/run.json`](../build/r02-fsuae-host-20261031-1032/run.json).
+
 - Apply the same independent-manifest and durable-run-record standard to the
   remaining adapted runners whose evidence is temporary, transcript-only, or
   missing expected values. Include source revision and dirty diff,

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a basic Amiga/Linux Stored exchange on a disposable FS-UAE host mount."""
 import argparse
+import datetime
 import hashlib
 import json
 import locale
@@ -10,12 +11,34 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED = json.loads((ROOT / "test/reference/interoperability/amiga-host-directory.json").read_text(encoding="utf-8"))
-ATARI_AMIGA = json.loads((ROOT / "test/reference/interoperability/atari-amiga-fsuae.json").read_text(encoding="utf-8"))
+EXPECTED_PATH = ROOT / "test/reference/interoperability/amiga-host-directory.json"
+ATARI_AMIGA_PATH = ROOT / "test/reference/interoperability/atari-amiga-fsuae.json"
+EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
+ATARI_AMIGA = json.loads(ATARI_AMIGA_PATH.read_text(encoding="utf-8"))
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def artifact_index(root):
+    return {
+        path.relative_to(root).as_posix(): {
+            "size": path.stat().st_size,
+            "sha256": sha256(path),
+        }
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path != root / "run.json"
+    }
 
 
 def check_manifest_file(path, key):
@@ -33,11 +56,13 @@ def check_manifest_file(path, key):
 
 def command_version(command):
     try:
-        output = subprocess.check_output(command, stderr=subprocess.STDOUT,
-                                         text=True, timeout=10)
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=10, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable: " + str(exc)
-    return output.strip().splitlines()[0] if output.strip() else "unknown"
+    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else "unknown"
+    return first if result.returncode == 0 else "%s (exit %d)" % (first, result.returncode)
 
 
 def main():
@@ -75,7 +100,10 @@ def main():
                                       args.fast_memory != 0 or
                                       args.codec_block != "16k"):
         p.error("--expect-fluff-refusal requires 512 KiB chip, 0 KiB fast, and 16k blocks")
-    out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-fsuae-"))
+    build = ROOT / "build"
+    build.mkdir(exist_ok=True)
+    out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(
+        prefix="r02-fsuae-host-", dir=build))
     if args.output:
         out.mkdir(parents=True, exist_ok=False)
     drive = out / "drive"
@@ -412,6 +440,10 @@ def main():
         current_locale = locale.setlocale(locale.LC_ALL, None)
     except locale.Error:
         current_locale = "unknown"
+    if args.expect_fluff_refusal:
+        summary = "profile exchange, staged edits, three codec round trips, and clean Fluff refusal"
+    else:
+        summary = "profile exchange, staged edits, and four codec round trips"
     manifest = [
         "result=PASS",
         "backend=FS-UAE host directory",
@@ -439,12 +471,71 @@ def main():
         "payload_sha256=" + hashlib.sha256(data).hexdigest(),
     ]
     (out / "manifest.txt").write_text("\n".join(manifest) + "\n")
-    if args.expect_fluff_refusal:
-        summary = "profile exchange, staged edits, three codec round trips, and clean Fluff refusal"
-    else:
-        summary = "profile exchange, staged edits, and four codec round trips"
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+    (out / "git-status.txt").write_bytes(status)
+    (out / "git-diff.patch").write_bytes(diff)
+    xdf_path = Path(args.xdftool).expanduser().resolve(strict=True)
+    source_paths = {
+        "runner": Path(__file__).resolve(),
+        "expected_manifest": EXPECTED_PATH,
+        "cross_system_manifest": ATARI_AMIGA_PATH,
+        "makefile": ROOT / "Makefile",
+        "amiga_cli": args.amiga_cli.resolve(strict=True),
+        "linux_cli": linux,
+        "metadata_probe": ROOT / "test/amiga/metadata_probe.c",
+        "xdftool": xdf_path,
+        "rom": rom,
+        "workbench": wb,
+    }
+    source_hashes = {
+        label: sha256(path) for label, path in source_paths.items()
+        if path.is_file()
+    }
+    record = {
+        "case": "Amiga/Linux host-directory interchange and codec interoperability",
+        "result": "PASS: " + summary,
+        "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "revision": commit,
+        "worktree_status": status.decode("utf-8", "replace").splitlines(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "environment": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "locale": current_locale,
+            "timezone": list(time.tzname),
+            "fs_uae": command_version([args.fs_uae, "--version"]),
+            "xdftool": command_version([args.xdftool, "--version"]),
+            "amiga_compiler": command_version([args.amiga_cc, "--version"]),
+            "host_compiler": command_version([os.environ.get("CC", "cc"), "--version"]),
+        },
+        "filesystem": "FS-UAE AmigaDOS host-directory drive",
+        "configuration": {
+            "stack_bytes": args.stack,
+            "depth": args.depth,
+            "chip_memory_kib": args.chip_memory,
+            "fast_memory_kib": args.fast_memory,
+            "codec_block": args.codec_block,
+            "expect_fluff_refusal": args.expect_fluff_refusal,
+        },
+        "invocation": [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+        "independent_manifests": {
+            "host_directory": {
+                "path": EXPECTED_PATH.relative_to(ROOT).as_posix(),
+                "sha256": sha256(EXPECTED_PATH),
+            },
+            "atari_amiga": {
+                "path": ATARI_AMIGA_PATH.relative_to(ROOT).as_posix(),
+                "sha256": sha256(ATARI_AMIGA_PATH),
+            },
+        },
+        "source_sha256": source_hashes,
+        "artifacts": artifact_index(out),
+    }
+    (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                   encoding="utf-8")
     print("PASS: Amiga/Linux %s (%s blocks, %d KiB chip, %d KiB fast); evidence: %s" %
-          (summary, args.codec_block, args.chip_memory, args.fast_memory, out))
+          (summary, args.codec_block, args.chip_memory, args.fast_memory, out / "run.json"))
 
 
 if __name__ == "__main__":
