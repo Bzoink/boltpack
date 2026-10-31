@@ -7,6 +7,7 @@
   "payload_sha256": "99c101e2494556f9c78a3ac5e30f5f0a58755c11b30ee38bb8f4ebe6699b4837",
   "directory_mtime_epoch_seconds": 1600000000,
   "mtime_epoch_seconds": 1700000000,
+  "parent_race_expected": "refuse extraction before writing through a substituted output root",
   "archive_method": "stored",
   "expected_result": "byte-identical extraction"
 }

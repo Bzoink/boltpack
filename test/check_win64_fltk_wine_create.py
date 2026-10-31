@@ -409,9 +409,10 @@ def main():
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             start_new_session=True)
         try:
+            extract_main_window = wait_for_title(extract_process, "BoltPack")
             chooser = wait_for_title(extract_process, "Browse for Folder")
-            if not chooser:
-                raise RuntimeError("GUI extraction folder chooser did not appear")
+            if not extract_main_window or not chooser:
+                raise RuntimeError("GUI extraction window or folder chooser did not appear")
             subprocess.run(["xdotool", "key", "Return"], check=True)
             deadline = time.monotonic() + 30
             while (time.monotonic() < deadline and
@@ -419,6 +420,12 @@ def main():
                 time.sleep(0.05)
             if not destination.is_file() or destination.read_bytes() != payload:
                 raise RuntimeError("GUI did not extract the exact attributed payload")
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and extract_process.poll() is None:
+                if not any("Extracting..." in title
+                           for _, title in visible_windows()):
+                    break
+                time.sleep(0.1)
             attr_results = []
             for subject in (destination_dir, destination):
                 checked = subprocess.run(
@@ -438,7 +445,10 @@ def main():
         finally:
             if extract_process.poll() is None:
                 subprocess.run(["xdotool", "key", "Return"], check=False)
-                time.sleep(0.1)
+                time.sleep(0.2)
+                if extract_main_window:
+                    subprocess.run(["xdotool", "windowfocus", "--sync",
+                                    extract_main_window[0]], check=False)
                 subprocess.run(["xdotool", "key", "ctrl+q"], check=False)
                 try:
                     extract_process.wait(timeout=8)
@@ -450,6 +460,9 @@ def main():
                         extract_process.kill()
                         extract_process.wait()
         extraction_exit_status = extract_process.returncode
+        if extraction_exit_status != 0 and result != "failed":
+            result = "failed"
+            error = "GUI extraction did not exit cleanly: " + str(extraction_exit_status)
 
     version = subprocess.run(
         [args.wine, "--version"], env=env, stdout=subprocess.PIPE,
