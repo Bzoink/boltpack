@@ -93,6 +93,8 @@ def main():
                         help="prove a guarded source directory cannot be renamed while enumerated")
     parser.add_argument("--child-race", action="store_true",
                         help="refuse a source child replaced after enumeration")
+    parser.add_argument("--nested-directory-race", action="store_true",
+                        help="refuse a nested directory replaced after enumeration")
     parser.add_argument("--attributes-probe", type=Path,
                         default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
@@ -104,18 +106,21 @@ def main():
     mini = args.mini_cli.resolve(strict=True)
     prefix = args.wine_prefix.expanduser().resolve(strict=True)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if args.directory_race and args.child_race:
+    race_cases = [args.directory_race, args.child_race,
+                  args.nested_directory_race]
+    if sum(race_cases) > 1:
         parser.error("select only one source race case")
-    if args.directory_race or args.child_race:
-        expected_key = ("directory_race_expected" if args.directory_race
-                        else "child_race_expected")
+    if any(race_cases):
+        expected_key = ("directory_race_expected" if args.directory_race else
+                        "child_race_expected" if args.child_race else
+                        "nested_directory_race_expected")
         expected_value = ("refuse substitution before archive publication"
                           if args.directory_race else
                           "refuse same-metadata substitution before archive publication")
         if manifest.get(expected_key) != expected_value:
             parser.error("manifest does not define the expected source-race outcome")
     attrs_probe = (args.attributes_probe.resolve(strict=True)
-                   if args.fat_attributes or args.directory_race or args.child_race
+                   if args.fat_attributes or any(race_cases)
                    else None)
     run_id = uuid.uuid4().hex[:10]
     member = manifest["member_prefix"] + run_id + manifest["member_suffix"]
@@ -130,6 +135,9 @@ def main():
     payload = (manifest["payload_line_utf8"].encode("utf-8") *
                int(manifest["payload_repetitions"]))
     source.write_bytes(payload)
+    nested_directory = source_dir / "nested-directory"
+    if args.nested_directory_race:
+        nested_directory.mkdir()
     if (len(payload) != manifest["payload_size"] or
             hashlib.sha256(payload).hexdigest() != manifest["payload_sha256"]):
         raise RuntimeError("source payload differs from the independent manifest")
@@ -154,6 +162,8 @@ def main():
     if args.directory_race:
         env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "directory"
     elif args.child_race:
+        env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "child"
+    elif args.nested_directory_race:
         env["BP_TEST_WIN_FLTK_RACE_PHASE"] = "child"
     prefs_path = (prefix / "drive_c" / "users" / args.wine_user /
                   "AppData" / "Roaming" / "BoltPack" / "gui.conf")
@@ -187,17 +197,22 @@ def main():
         # The source directory path is ASCII; its Unicode child name is read
         # by the production recursive enumeration path.
         subprocess.run(["xdotool", "key", "alt+s"], check=True)
-        if args.directory_race or args.child_race:
+        if any(race_cases):
             if args.directory_race:
                 ready = out / "source-guard.ready"
                 release = out / "source-guard.release"
                 parked = out / "source-parked"
                 move_source = source_dir
-            else:
+            elif args.child_race:
                 ready = out / "child-enumerated.ready"
                 release = out / "child-enumerated.release"
                 parked = out / "child-parked.txt"
                 move_source = source
+            else:
+                ready = out / "child-enumerated.ready"
+                release = out / "child-enumerated.release"
+                parked = out / "nested-directory-parked"
+                move_source = nested_directory
             deadline = time.monotonic() + 15
             while (time.monotonic() < deadline and process.poll() is None and
                    not ready.exists()):
@@ -218,7 +233,7 @@ def main():
                     source_dir.mkdir()
                     source.write_bytes(b"substituted source directory\n")
                     source_for_hash = parked / member
-                else:
+                elif args.child_race:
                     replacement_payload = bytes(value ^ 0xff for value in payload)
                     source.write_bytes(replacement_payload)
                     source_for_hash = parked
@@ -244,6 +259,30 @@ def main():
                     if compared.returncode != 0:
                         raise RuntimeError("same-metadata child fixture was not exact: " +
                                            compared.stdout.strip())
+                else:
+                    nested_directory.mkdir()
+                    copy_times = subprocess.run(
+                        [args.wine, str(attrs_probe), "copytimes",
+                         str(parked), str(nested_directory)], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, check=False)
+                    child_race_metadata_copy = {
+                        "status": copy_times.returncode,
+                        "output": copy_times.stdout.strip()}
+                    if copy_times.returncode != 0:
+                        raise RuntimeError("could not clone nested-directory metadata: " +
+                                           copy_times.stdout.strip())
+                    compared = subprocess.run(
+                        [args.wine, str(attrs_probe), "same-metadata",
+                         str(parked), str(nested_directory)], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, check=False)
+                    child_race_metadata_check = {
+                        "status": compared.returncode,
+                        "output": compared.stdout.strip()}
+                    if compared.returncode != 0:
+                        raise RuntimeError("same-metadata directory fixture was not exact: " +
+                                           compared.stdout.strip())
             elif move.returncode != 1 or "error=32" not in move.stdout:
                 raise RuntimeError("source rename failed unexpectedly: " +
                                    move.stdout.strip())
@@ -264,11 +303,17 @@ def main():
                                   source.read_bytes() ==
                                   b"substituted source directory\n" and
                                   (parked / member).read_bytes() == payload)
-                else:
+                elif args.child_race:
                     fixture_ok = (parked.is_file() and source.is_file() and
                                   len(source.read_bytes()) == len(payload) and
                                   source.read_bytes() != payload and
                                   parked.read_bytes() == payload)
+                else:
+                    fixture_ok = (parked.is_dir() and
+                                  nested_directory.is_dir() and
+                                  not any(parked.iterdir()) and
+                                  not any(nested_directory.iterdir()) and
+                                  source.read_bytes() == payload)
                 if not fixture_ok:
                     raise RuntimeError("source-race fixture changed a source artifact")
                 result = "passed_under_wine_refused_substitution"
@@ -291,7 +336,7 @@ def main():
     except Exception as exc:
         error = str(exc)
     finally:
-        if args.directory_race or args.child_race:
+        if any(race_cases):
             release_name = ("source-guard.release" if args.directory_race
                             else "child-enumerated.release")
             (out / release_name).write_text("continue\n", encoding="ascii")
@@ -416,11 +461,14 @@ def main():
         "fat_attributes_requested": args.fat_attributes,
         "directory_race_requested": args.directory_race,
         "child_race_requested": args.child_race,
+        "nested_directory_race_requested": args.nested_directory_race,
         "source_race_move": source_race_move,
         "child_race_metadata_copy": child_race_metadata_copy,
         "child_race_metadata_check": child_race_metadata_check,
         "directory_race_expected": manifest.get("directory_race_expected"),
         "child_race_expected": manifest.get("child_race_expected"),
+        "nested_directory_race_expected": manifest.get(
+            "nested_directory_race_expected"),
         "directory_race_parked_source_sha256": (
             sha256(out / "source-parked" / member)
             if args.directory_race and (out / "source-parked" / member).is_file()
@@ -430,8 +478,13 @@ def main():
             if args.child_race and (out / "child-parked.txt").is_file()
             else None),
         "directory_race_counterfeit_sha256": (
-            sha256(source) if (args.directory_race or args.child_race) and
+            sha256(source) if any(race_cases) and
             source.is_file() else None),
+        "nested_directory_race_parked": (
+            str(out / "nested-directory-parked")
+            if args.nested_directory_race else None),
+        "nested_directory_race_replacement": (
+            str(nested_directory) if args.nested_directory_race else None),
         "fat_attribute_source_set": attr_set_results,
         "attributes_probe": str(attrs_probe) if attrs_probe else None,
         "attributes_probe_sha256": sha256(attrs_probe) if attrs_probe else None,

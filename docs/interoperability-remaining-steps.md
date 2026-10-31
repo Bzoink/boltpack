@@ -718,6 +718,10 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   replacement. On Windows 8 and later, handle-based `FileIdBothDirectoryInfo`
   enumeration detects the mismatch and refuses publication; Wine 10.0 passed
   this case at [`build/r08-win64-fltk-wine-create-8c5rf8pm/run.json`](../build/r08-win64-fltk-wine-create-8c5rf8pm/run.json).
+  A nested-directory variant also replaces an enumerated empty child directory
+  with a new directory carrying identical attributes, size, creation time, and
+  write time; Wine confirms its file ID differs and the GUI refuses publication.
+  Evidence: [`build/r08-win64-fltk-wine-create-tar61nmi/run.json`](../build/r08-win64-fltk-wine-create-tar61nmi/run.json).
   Windows Vista/7 use a `FindFirstFileW` fallback because that information class
   is unsupported there. The fallback compares attributes, size, creation time,
   and write time, but cannot detect a replacement preserving all of those
