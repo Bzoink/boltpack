@@ -45,7 +45,21 @@
   "payload_sha256": "15fe91613ac8a906037fa4b224f429801568c59adfaa36685994ae4727483baa",
   "archive_sha256": "155f5fc2de1e5c70217d12c44fd9dbef4519d2694ba3d6d3fe3e50dee24ec5c5",
   "remaining": [
+    "Verify Win16 command completion and exit status in a real Windows 3.x runtime or a Wine configuration that terminates Win16 tasks.",
     "Run the lifecycle and diagnostics in a real Windows 3.x environment or a Wine configuration that terminates Win16 tasks and provides their expected console handles.",
     "Run Win16 names, metadata, Profile 1, and resource-bound cases; OS/2-16 remains untested at runtime."
-  ]
+  ],
+  "linux_to_win16_extract": {
+    "linux_archive_create_command": "../linux/boltpack c SOURCE.BLT INPUT.TXT",
+    "linux_archive_integrity_exit_status": 0,
+    "win16_extract_command": "timeout -k 2s 20s wine ../win16/bpmini.exe x SOURCE.BLT -q OUT",
+    "wine_timeout_exit_status": 124,
+    "output_file": "OUT/INPUT.TXT",
+    "output_size": 67,
+    "payload_byte_identical": true,
+    "source_sha256": "7f0dd5a540675a49592328fcc79ef62a437bfef749c0698bdedb1804bcabf8a1",
+    "linux_archive_sha256": "b2b4083c1da22d1cdca7f7edebb438db6ee2bcfafcf82825e523cad3b9c58b73",
+    "extracted_sha256": "7f0dd5a540675a49592328fcc79ef62a437bfef749c0698bdedb1804bcabf8a1",
+    "classification": "Wine Win16 extraction produced exact archived payload bytes, but process exit and completion status were not observed before timeout."
+  }
 }
