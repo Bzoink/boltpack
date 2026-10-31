@@ -680,6 +680,8 @@ typedef struct {
     int         subject_type;
     int         subject_ok;
     int         subject_native_seen;
+    struct stat stage_open_stat;
+    int         stage_open_stat_valid;
     dos_dir_restore_t *directories;
     dos_dir_restore_t *subject_directory;
     unsigned int directory_count;
@@ -1160,13 +1162,14 @@ static int extract_backup_name(const char *target, char *backup,
 
 static int dos_archive_same_renamed_stat(const struct stat *a,
                                          const struct stat *b);
+static int dos_stage_path_matches(const char *path,
+                                  const struct stat *opened);
 
 static int extract_publish(extract_ctx_t *ctx)
 {
     struct stat st, backup_stat;
     char backup[BP_MAX_PATH];
     int have_target = stat(ctx->target_path, &st) == 0;
-
     if (have_target) {
         if (!ctx->force || !S_ISREG(st.st_mode)) return BP_ERR_IO;
         if (extract_backup_name(ctx->target_path, backup, sizeof(backup)) != 0)
@@ -1222,6 +1225,79 @@ static int dos_archive_same_stat(const struct stat *a, const struct stat *b)
            a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
            a->st_ctime == b->st_ctime;
 }
+
+/* The staged extraction object must still be reachable at its original path
+   after the output handle closes. Compare identity and length only: DOS FAT
+   wrappers can report mode and timestamps differently across open/path stats. */
+static int dos_stage_same_object(const struct stat *opened,
+                                 const struct stat *named)
+{
+    return S_ISREG(opened->st_mode) && S_ISREG(named->st_mode) &&
+           opened->st_dev == named->st_dev &&
+           opened->st_ino == named->st_ino &&
+           opened->st_size == named->st_size;
+}
+
+static int dos_stage_path_matches(const char *path,
+                                  const struct stat *opened)
+{
+    struct stat named;
+    return path != NULL && opened != NULL && lstat(path, &named) == 0 &&
+           dos_stage_same_object(opened, &named);
+}
+
+static void dos_remove_stage_if_same(const char *path,
+                                     const struct stat *opened)
+{
+    if (dos_stage_path_matches(path, opened)) remove(path);
+}
+
+#ifdef BP_TEST_DOS_PARENT_SUBSTITUTION
+static int g_dos_test_parent_substituted;
+
+static void dos_test_write_marker(const char *name, const char *value)
+{
+    FILE *fp = fopen(name, "wb");
+    if (fp == NULL) return;
+    fputs(value, fp);
+    fclose(fp);
+}
+
+static void dos_test_substitute_stage_parent(extract_ctx_t *ctx)
+{
+    char parent[BP_MAX_PATH], sentinel[BP_MAX_PATH];
+    char *slash, *backslash;
+    FILE *fp;
+
+    if (g_dos_test_parent_substituted) return;
+    strcpy(parent, ctx->target_path);
+    slash = strrchr(parent, '/');
+    backslash = strrchr(parent, '\\');
+    if (backslash != NULL && (slash == NULL || backslash > slash))
+        slash = backslash;
+    if (slash == NULL) return;
+    *slash = '\0';
+    if (rename(parent, "RACEPARK") != 0 || mkdir(parent, 0755) != 0) {
+        fprintf(stderr, "DOS test hook could not substitute extraction parent\n");
+        return;
+    }
+    strcpy(sentinel, parent);
+    strcat(sentinel, "\\KEEP.TXT");
+    fp = fopen(sentinel, "wb");
+    if (fp == NULL) return;
+    fputs("new-root-sentinel\r\n", fp);
+    fclose(fp);
+    /* Put a different file at the stale stage pathname. A path-only publisher
+       would mistake it for the verified object still held by the closed stage. */
+    fp = fopen(ctx->stage_path, "wb");
+    if (fp == NULL) return;
+    fputs("counterfeit-stage\r\n", fp);
+    fclose(fp);
+    g_dos_test_parent_substituted = 1;
+    dos_test_write_marker("RACEHOOK.TXT", "parent substituted after stage close\r\n");
+    fprintf(stderr, "DOS test hook substituted output parent after stage close\n");
+}
+#endif
 
 /* FAT implementations may assign a new inode number when rename moves a
    directory entry. Verify the archived object fields after the recovery rename
@@ -1450,8 +1526,11 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     output = (dos_stage_output_t *)malloc(sizeof(*output));
     if (output == NULL) {
+        struct stat opened_stage;
+        int have_snapshot = fstat(fd, &opened_stage) == 0;
         close(fd);
-        remove(ctx->stage_path);
+        if (have_snapshot)
+            dos_remove_stage_if_same(ctx->stage_path, &opened_stage);
         ctx->skip_errors++;
         return NULL;
     }
@@ -1515,16 +1594,43 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
 
     output = (dos_stage_output_t *)out->handle;
 
+    ctx->stage_open_stat_valid =
+        fstat(output->fd, &ctx->stage_open_stat) == 0;
     if (close(output->fd) != 0) {
-        remove(ctx->stage_path);
+        if (ctx->stage_open_stat_valid)
+            dos_remove_stage_if_same(ctx->stage_path, &ctx->stage_open_stat);
         free(out);
         ctx->skip_errors++;
         return BP_ERR_IO;
     }
     if (status != BP_OK) {
-        remove(ctx->stage_path);
+        if (ctx->stage_open_stat_valid)
+            dos_remove_stage_if_same(ctx->stage_path, &ctx->stage_open_stat);
         free(out);
         return BP_OK;
+    }
+
+#ifdef BP_TEST_DOS_PARENT_SUBSTITUTION
+    dos_test_substitute_stage_parent(ctx);
+#endif
+    {
+        struct stat named_stage;
+        if (!ctx->stage_open_stat_valid ||
+            lstat(ctx->stage_path, &named_stage) != 0 ||
+            !dos_stage_same_object(&ctx->stage_open_stat, &named_stage)) {
+#ifdef BP_TEST_DOS_PARENT_SUBSTITUTION
+            dos_test_write_marker("RACEREF.TXT",
+                                  "staged path identity changed; publication refused\r\n");
+#endif
+            fprintf(stderr,
+                    "boltpack: staged output path changed; refusing publication: %s\n",
+                    ctx->target_path);
+            /* Do not remove a different object now occupying the old path.
+               The verified stage can remain in the moved original directory. */
+            ctx->skip_errors++;
+            free(out);
+            return BP_ERR_IO;
+        }
     }
 
     if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) &&
@@ -1538,7 +1644,9 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     {
         int publish_rc = extract_publish(ctx);
         if (publish_rc != BP_OK) {
-            remove(ctx->stage_path);
+            if (ctx->stage_open_stat_valid)
+                dos_remove_stage_if_same(ctx->stage_path,
+                                         &ctx->stage_open_stat);
             if (publish_rc == BP_ERR_PARTIAL) {
                 ctx->skip_errors++;
                 rc = BP_ERR_PARTIAL;

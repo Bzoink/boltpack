@@ -631,8 +631,17 @@ and the reproduction is `make CC=gcc dos16-stack-interoperability-test`.
   is not overwritten. DOSBox-X FAT12 verifies refusal and preservation of both
   source and destination; the full DJGPP CLI transfer/edit suite passes with
   this helper (`build/r10-djgpp-dosboxx-noreplace-20261031-verified/manifest.json`).
-  This closes the tested target-overwrite case only; DOS parent substitution,
-  other DOS runtimes/filesystems, and OS/2 races remain in R10. Windows reparse/path races remain
+  The new `dos-djgpp-parent-race-test` moves the selected output parent after
+  stage close and creates a counterfeit at the old stage pathname. The
+  frontend compares the closed stage's identity with the pathname before
+  metadata and publication, and removes it only while that pathname still
+  identifies the stage. It refuses the injected replacement; the
+  old target and new-root sentinel remain byte-identical, the verified stage
+  remains in the moved directory, and the counterfeit is not published. Its retained DOSBox-X
+  FAT12 run is [`build/boltpack-dos-parent-race-6kqe7rjp/run.json`](../build/boltpack-dos-parent-race-6kqe7rjp/run.json).
+  This qualifies the tested DJGPP/DOSBox-X FAT12 substitution at stage close;
+  a later race between path validation and rename remains unclosed. Other
+  remaining DOS runtimes/filesystems and OS/2 races remain in R10. Windows reparse/path races remain
   in R08 and native Amiga GUI
   replacement behavior in R11. Plan 9 real
   extraction now refuses before output creation because its frontend only has
