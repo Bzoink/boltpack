@@ -1,0 +1,74 @@
+{
+  "result": "PARTIAL",
+  "purpose": "Open and validate a Linux-created format-6 archive through the AmigaOS 2.04 GadTools GUI",
+  "date": "2026-10-31",
+  "revision": "1227611",
+  "emulator": {
+    "name": "FS-UAE",
+    "version": "3.1.66",
+    "machine": "A500+",
+    "kickstart": {
+      "path": "/home/tony/images/Amiga/kickstart-2.04-a500plus.rom",
+      "sha256": "d0b70e8a1772614b897f92c33cb299bed3fc8e3de488fc12f67f97fc2486eb79"
+    },
+    "chip_memory_kib": 2048,
+    "fast_memory_kib": 8192,
+    "warp_mode": 1,
+    "xvfb_screen": [1280, 1024, 24],
+    "automatic_input_grab": 0,
+    "mouse_integration": 1,
+    "workbench_adf": {
+      "path": "build/amiga-gui-runtime-probe/Workbench-gui-test.adf",
+      "sha256": "e8c9748d55f9261bf2d13318b66d32a5db6a11d14cdabc1d96bdbabe25ea6275"
+    },
+    "hard_drive": "build/amiga-gui-runtime-probe/drive (FS-UAE host-directory volume DH0:)"
+  },
+  "gui_build": {
+    "path": "build/amiga-gui-runtime-probe/drive/BoltPackLog",
+    "sha256": "fada7c9a4068e37acb211a8cf431c86c6fd4c85a3699ebcb454bbb2aaa415da1",
+    "base_source": "src/frontend/amiga_gui/main.c",
+    "instrumented_source": "build/amiga-gui-runtime-probe/main-open-trace.c",
+    "instrumented_source_sha256": "94672d319b74e2a5e6b0a7ecc19c75cc1561c69d1ba40ba86e960e16a7faad04",
+    "instrumentation_scope": "Adds diagnostic logging around the existing Open dialog and menu dispatch; no archive, path, ASL, or validation behavior was changed."
+  },
+  "fixture": {
+    "archive": "build/amiga-gui-runtime-probe/drive/GUI-TEST.BLT",
+    "archive_sha256": "5ce437a9ef62ae1e9d614bd728d06ea23bcd304572736a6f502f0802c5b823bc",
+    "archive_bytes": 286,
+    "format_version": 6,
+    "creator": "Linux x86-64",
+    "method": "Stored",
+    "entry": "PAYLOAD.TXT",
+    "payload": "build/amiga-gui-runtime-probe/PAYLOAD.TXT",
+    "payload_bytes": 37,
+    "payload_sha256": "415dcc60e0d2cf99f9819a710292f50014537559eafb06f9671e8e90c1e094aa",
+    "linux_integrity_check": "build/linux/boltpack t .../GUI-TEST.BLT: 1 file OK"
+  },
+  "input_sequence": [
+    "Boot Workbench 2.04 and launch BoltPackLog from DH0:.",
+    "Use the right-button Archive menu gesture with FS-UAE mouse integration to open the Open requester.",
+    "Type GUI-TEST.BLT into the ASL File field and press Return.",
+    "Select Archive -> Validate."
+  ],
+  "observed": {
+    "menu_callback": "Open selected",
+    "asl_returned": true,
+    "archive_path_opened": "GUI-TEST.BLT",
+    "archive_open_log": "Archive opened: entries=1 dirs=0 methods=Stored (1)",
+    "validation_log": "Validate complete: ok=1 fail=0 rc=0",
+    "visible_validation_result": "Validate Archive requester displayed All 1 file OK",
+    "guest_log": {
+      "path": "build/amiga-gui-runtime-probe/drive/boldpack.log",
+      "sha256": "2b203ecb1d94b87169605960b4133e45c60f61c38f89dc2d312dacb644b4ed0a"
+    },
+    "fs_uae_stdout": {
+      "path": "build/amiga-gui-runtime-probe/fs-uae-gui-validate.log",
+      "sha256": "32320e8e7f632508af21aa392fe81790d53141c4cba1909a395a24dd969efebd"
+    },
+    "screenshot": {
+      "path": "build/amiga-gui-runtime-probe/screen-gui-validate-success.png",
+      "sha256": "d7115e1cb61b1ac8dec1468778970cfb25350fdfce9df8e4dc568da359596a61"
+    }
+  },
+  "scope_limit": "This qualifies GUI Open and Validate for this Linux-created format-6 Stored fixture on AmigaOS 2.04. It does not qualify ASL mouse list selection, extraction, creation, metadata restoration, cancellation, or replacement behavior. Extraction destination selection remains unresolved."
+}
