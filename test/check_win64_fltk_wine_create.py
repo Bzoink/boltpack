@@ -209,13 +209,16 @@ def main():
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, check=False)
         archive_info = info.stdout
+        method_line = next((line for line in archive_info.splitlines()
+                            if line.startswith("Method:")), "")
         (out / "linux-info.log").write_text(archive_info, encoding="utf-8")
         extract_status = run_command(
             [linux, "x", "-o", extracted, archive], out,
             out / "linux-extract.log")
         profile_ok = (not args.profile1 or
                       (manifest.get("profile1_expected", {}).get("method") ==
-                       "BoltLite" and "Method:         BoltLite (1)" in archive_info and
+                       "BoltLite" and "BoltLite" in method_line and
+                       "boltlz" not in method_line.lower() and
                        mini_test_status == 0))
         extraction_status_ok = (extract_status in (0, 1)
                                 if args.fat_attributes else extract_status == 0)
@@ -293,7 +296,8 @@ def main():
         "gui_extraction_command": extraction_command,
         "gui_extraction_exit_status": extraction_exit_status,
         "profile1_method_observed": ("BoltLite" if
-                                     "Method:         BoltLite (1)" in archive_info
+                                     args.profile1 and "BoltLite" in method_line and
+                                     "boltlz" not in method_line.lower()
                                      else None),
         "archive_info": archive_info,
         "result": result,
