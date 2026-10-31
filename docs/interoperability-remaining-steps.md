@@ -709,6 +709,19 @@ This verifies the unsupported-time outcome; incomplete pre-publication stage
 cleanup remains unresolved where the filesystem cannot prove stage identity
 after restart.
 
+The new `atari-gui-unicode-refusal-test` covers the filename limit. Linux
+creates and integrity-tests a v6 archive containing an ordinary sibling and
+the U+1F9EA name `payload-🧪.txt` from the independent
+[`atari-gui-unicode-refusal.json`](../test/reference/interoperability/atari-gui-unicode-refusal.json)
+manifest. Hatari 2.5.0/TOS 1.62 opens it, displays the production
+“Archive name cannot be represented” alert, and leaves the pre-existing empty
+`OUT` directory empty, so the representable sibling is not partially
+published. The retained host-directory run records ROM, GUI, Linux CLI,
+runner, manifest, archive, screenshot and log hashes at
+[`build/atari-gui-unicode-mbzl1p5v/run.json`](../build/atari-gui-unicode-mbzl1p5v/run.json).
+This qualifies Hatari GEMDOS host storage on TOS 1.62; FAT12 and other TOS
+versions are not inferred from this run.
+
 The parent-path probe `make CC=gcc
 HATARI_TOS=/home/tony/images/Atari/tos162se.img
 atari-gui-parent-substitution-test` redirects `OUT` to a separate directory while
