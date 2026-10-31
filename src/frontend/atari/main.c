@@ -672,6 +672,46 @@ static void atari_test_pause_after_source_open(void)
 }
 #endif
 
+#ifdef BP_ATARI_TEST_PAUSE_BEFORE_ROOT_CHECK
+static void atari_test_pause_before_root_check(void)
+{
+    static int used = 0;
+    FILE *fp;
+    if (used) return;
+    used = 1;
+    fp = fopen("C:\\ROOTCHK.TXT", "wb");
+    if (fp == NULL) return;
+    (void)fclose(fp);
+    for (;;) {
+        fp = fopen("C:\\CNTROOT.TXT", "rb");
+        if (fp != NULL) {
+            (void)fclose(fp);
+            break;
+        }
+    }
+}
+#endif
+
+#ifdef BP_ATARI_TEST_PAUSE_AFTER_EXTRACT_STAGE
+static void atari_test_pause_after_extract_stage(void)
+{
+    static int used = 0;
+    FILE *fp;
+    if (used) return;
+    used = 1;
+    fp = fopen("C:\\STAGEOK.TXT", "wb");
+    if (fp == NULL) return;
+    (void)fclose(fp);
+    for (;;) {
+        fp = fopen("C:\\CNTSTG.TXT", "rb");
+        if (fp != NULL) {
+            (void)fclose(fp);
+            break;
+        }
+    }
+}
+#endif
+
 static int add_directory(bp_archive_t *ar, const char *dir_path,
                          const char *arc_prefix)
 {
@@ -884,6 +924,8 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 typedef struct {
     const char *out_dir;
+    struct stat out_root_stat;
+    int         out_root_stat_valid;
     int         force;
     int         dry_run;
     bp_uint32   file_count;
@@ -916,6 +958,7 @@ static int atari_archive_stat_matches(const struct stat *expected,
 static int atari_archive_target_unchanged(const char *path,
                                           const struct stat *snapshot,
                                           int existed);
+static int atari_output_root_unchanged(const extract_ctx_t *ctx);
 
 static long staged_file_write(void *handle, const void *buf, bp_uint32 count)
 {
@@ -1100,6 +1143,29 @@ static int atari_archive_stat_matches(const struct stat *expected,
            current->st_ctime == expected->st_ctime;
 }
 
+static int atari_output_root_unchanged(const extract_ctx_t *ctx)
+{
+    struct stat current;
+    if (ctx->out_dir == NULL || !ctx->out_root_stat_valid) return 1;
+    if (lstat(ctx->out_dir, &current) != 0 || !S_ISDIR(current.st_mode))
+        return 0;
+    /* GEMDOS synthesizes a new inode value on every pathname query. */
+    return current.st_dev == ctx->out_root_stat.st_dev &&
+           current.st_size == ctx->out_root_stat.st_size &&
+           current.st_mtime == ctx->out_root_stat.st_mtime &&
+           current.st_ctime == ctx->out_root_stat.st_ctime;
+}
+
+static int atari_output_root_refresh(extract_ctx_t *ctx)
+{
+    struct stat current;
+    if (ctx->out_dir == NULL || !ctx->out_root_stat_valid) return 1;
+    if (lstat(ctx->out_dir, &current) != 0 || !S_ISDIR(current.st_mode))
+        return 0;
+    ctx->out_root_stat = current;
+    return 1;
+}
+
 static int atari_archive_target_unchanged(const char *path,
                                           const struct stat *snapshot,
                                           int existed)
@@ -1240,6 +1306,15 @@ static void finish_directory_restores(extract_ctx_t *ctx)
         }
         node = *best_link;
         *best_link = node->next;
+        if (!atari_output_root_unchanged(ctx)) {
+            fprintf(stderr,
+                    "boltpack: output root changed; directory metadata was not restored: %s\n",
+                    node->path);
+            ctx->metadata_errors++;
+            free(node->path);
+            free(node);
+            continue;
+        }
         if (node->flags & BP_ENTRY_FLAG_MTIME_VALID) {
             char native_path[BP_MAX_PATH];
             if (atari_gemdos_path(node->path, native_path, sizeof(native_path)) != 0 ||
@@ -1283,6 +1358,15 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     bp_uint32       meta_sz;
     unsigned int    projected_length;
     int             project_rc;
+
+#ifdef BP_ATARI_TEST_PAUSE_BEFORE_ROOT_CHECK
+    atari_test_pause_before_root_check();
+#endif
+    if (!ctx->dry_run && !atari_output_root_unchanged(ctx)) {
+        fprintf(stderr, "boltpack: output root changed during extraction\n");
+        ctx->skip_errors++;
+        return NULL;
+    }
 
     if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
         entry->entry_type == BP_TYPE_SYMLINK) {
@@ -1366,6 +1450,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             return NULL;
         }
         if (!ctx->dry_run && mkdirs(path) == 0 &&
+            atari_output_root_refresh(ctx) &&
             strlen(entry->name) < sizeof(ctx->subject)) {
             atari_dir_restore_t *directory =
                 queue_directory_restore(ctx, path, entry);
@@ -1498,6 +1583,10 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->skip_errors++;
         return NULL;
     }
+    (void)atari_output_root_refresh(ctx);
+#ifdef BP_ATARI_TEST_PAUSE_AFTER_EXTRACT_STAGE
+    atari_test_pause_after_extract_stage();
+#endif
     staged->io.read = NULL;
     staged->io.write = staged_file_write;
     staged->io.seek = NULL;
@@ -1624,6 +1713,14 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
             free(staged);
             return BP_OK;
         }
+        if (!atari_output_root_unchanged(ctx)) {
+            fprintf(stderr,
+                    "boltpack: output root changed; staged file left in its original directory: %s\n",
+                    staged->target);
+            ctx->skip_errors++;
+            free(staged);
+            return BP_ERR_PARTIAL;
+        }
         if (entry->flags & BP_ENTRY_FLAG_MTIME_VALID) {
             if (bp_restore_mtime(staged->temporary, entry->mtime) != BP_OK) {
                 fprintf(stderr, "boltpack: cannot restore timestamp for: %s\n",
@@ -1639,6 +1736,11 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
             atari_discard_staged(staged);
             free(staged);
             return commit_rc;
+        }
+        if (!atari_output_root_refresh(ctx)) {
+            ctx->skip_errors++;
+            free(staged);
+            return BP_ERR_PARTIAL;
         }
         if (strlen(entry->name) < sizeof(ctx->subject)) {
             strcpy(ctx->subject, entry->name);
@@ -2039,8 +2141,17 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         fclose(fp);
         return 1;
     }
-    if (out_dir && !dry_run) mkdirs(out_dir);
     memset(&ctx, 0, sizeof(ctx));
+    if (out_dir && !dry_run) {
+        if (mkdirs(out_dir) != 0 || lstat(out_dir, &ctx.out_root_stat) != 0 ||
+            !S_ISDIR(ctx.out_root_stat.st_mode)) {
+            fprintf(stderr, "boltpack: cannot safely inspect output root: %s\n",
+                    out_dir);
+            fclose(fp);
+            return 1;
+        }
+        ctx.out_root_stat_valid = 1;
+    }
     ctx.out_dir = out_dir;
     ctx.force   = force;
     ctx.dry_run = dry_run;

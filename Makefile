@@ -652,7 +652,7 @@ HATARI_TOS ?=
 EMUTOS_ROM ?=
 FREEMINT_ROOT ?= build/freemint-probe/diskroot
 
-.PHONY: atari atari-cli atari-cli-source-race-test atari-gui-create-test atari-gui-create-fat12-test atari-gui-unicode-refusal-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
+.PHONY: atari atari-cli atari-cli-source-race-test atari-cli-parent-race-test atari-gui-create-test atari-gui-create-fat12-test atari-gui-unicode-refusal-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -690,6 +690,21 @@ atari-cli-source-race-test:
 	python3 test/check_hatari_source_race.py --tos "$(HATARI_TOS)" \
 	    --hatari "$(HATARI)" --cc "$(ATARI_CC)" \
 	    --atari-cli $(ATARI_SOURCE_RACE_BIN)
+
+ATARI_PARENT_RACE_BIN = $(ATARI_BUILDDIR)/boltpack-parent-race.tos
+atari-cli-parent-race-test: modern
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	mkdir -p $(ATARI_BUILDDIR)
+	$(ATARI_CC) $(ATARI_CFLAGS) -DBP_ATARI_TEST_PAUSE_BEFORE_ROOT_CHECK \
+	    -DBP_ATARI_TEST_PAUSE_AFTER_EXTRACT_STAGE \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c \
+	    src/frontend/atari/main.c $(BOLTLZDIR)/boltlz.c \
+	    -o $(ATARI_PARENT_RACE_BIN)
+	python3 test/check_hatari_parent_race.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --cc "$(ATARI_CC)" \
+	    --linux-cli $(TARGET) --atari-cli $(ATARI_PARENT_RACE_BIN)
 
 # Run the Atari/Linux FAT12 guest transfer fixture. Supply the TOS ROM path,
 # for example: make atari-hatari-fat-test HATARI_TOS=~/images/Atari/tos162se.img

@@ -94,14 +94,18 @@ def main():
         raise RuntimeError("could not compile Hatari guest runner; see " +
                            str(output / "compile.log"))
 
-    source = drive / "SOURCE.TXT"
-    replacement = drive / "REPLACE.TXT"
+    source = drive / "SOURCE1.TXT"
+    replacement = drive / "REPL1.TXT"
+    source_open = drive / "SOURCE2.TXT"
+    replacement_open = drive / "REPL2.TXT"
     source.write_bytes(ORIGINAL)
     replacement.write_bytes(REPLACEMENT)
+    source_open.write_bytes(ORIGINAL)
+    replacement_open.write_bytes(REPLACEMENT)
     replacement_fixture = output / "replacement-input.bin"
     replacement_fixture.write_bytes(REPLACEMENT)
     (drive / "COMMANDS.TXT").write_text(
-        "c RACE1.BLT SOURCE.TXT\nc RACE2.BLT SOURCE.TXT\n",
+        "c RACE1.BLT SOURCE1.TXT\nc RACE2.BLT SOURCE2.TXT\n",
                                        encoding="ascii")
     log_path = output / "hatari.log"
     env = os.environ.copy()
@@ -128,15 +132,13 @@ def main():
                     (drive / "LOG00.TXT").read_text(errors="replace"):
                 raise RuntimeError("stat/open substitution was not rejected; see LOG00.TXT")
 
-            os.replace(source, replacement)
-            os.replace(parked, source)
             wait_for(drive / "OPENED.TXT", process, 90,
                      "the source-open pause marker")
-            before_open_swap = source.stat()
+            before_open_swap = source_open.stat()
             parked_after_open = drive / "ORIG2.TXT"
-            os.replace(source, parked_after_open)
-            shutil.copyfile(replacement_fixture, source)
-            after_open_swap = source.stat()
+            os.replace(source_open, parked_after_open)
+            os.replace(replacement_open, source_open)
+            after_open_swap = source_open.stat()
             (drive / "CONT2.TXT").write_text("continue\n", encoding="ascii")
             wait_for_lines(drive / "RESULT.TXT", process, 90, 2)
             result = (drive / "RESULT.TXT").read_text(encoding="ascii").splitlines()
@@ -163,11 +165,15 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+    parked = drive / "ORIGINAL.TXT"
+    if parked.read_bytes() != ORIGINAL:
+        raise RuntimeError("stat/open fixture did not preserve the original input")
+    os.replace(parked, source)
     parked_after_open = drive / "ORIG2.TXT"
     if parked_after_open.read_bytes() != ORIGINAL:
         raise RuntimeError("source swap fixture did not preserve the original input")
-    os.replace(parked_after_open, source)
-    if source.read_bytes() != ORIGINAL:
+    os.replace(parked_after_open, source_open)
+    if source.read_bytes() != ORIGINAL or source_open.read_bytes() != ORIGINAL:
         raise RuntimeError("original source was not restored after the fixture")
 
     status = subprocess.run(["git", "status", "--porcelain=v1",
