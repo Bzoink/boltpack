@@ -19,8 +19,9 @@ qualified. Win32/Win64 and macOS use the shared auto-rename and report logic
 for all profile families, including Linux full, Linux mini, generic POSIX,
 Plan 9, and Haiku BFS. Win64 was checked under Wine, macOS with a POSIX host
 shim, and Win32 was cross-built; these do not qualify native Win32 or macOS
-behavior. Standalone 32-bit legacy CLIs and Linux mini have
-not yet gained creator-side target profiles or automatic renaming.
+behavior. The Linux FLTK GUI exposes the same profile picker, automatic
+aliases, and name report on create. Standalone 32-bit legacy CLIs and Linux
+mini have not yet gained creator-side target profiles or automatic renaming.
 The Plan 9 client now extracts into a new private `-o` root; native runtime
 qualification remains open. Linux-created AmigaOS 68k profile archives now pass extraction
 and exact Latin-1 name/payload readback on FS-UAE OFS and FFS. Remaining
@@ -46,7 +47,9 @@ recorded in the archive format.
 
 A POSIX, Windows, or macOS creator can run `boltpack --help-targets` (or
 `boltpack help targets`) to list available profiles, their filename rules,
-compression restrictions, and usage examples.
+compression restrictions, and usage examples. The Linux FLTK GUI offers the
+same profiles in its Create Archive dialog together with an automatic-alias
+option.
 
 A target compatibility profile lets a capable archive creator prepare an archive
 for a named reader and destination filesystem. For example, a Linux x86-64
@@ -62,6 +65,19 @@ not recorded in the archive. Its codec and size bounds are a useful base, but
 they do not establish that a target filesystem can represent every path.
 Profiles should compose these format limits with the target reader and
 filesystem limits.
+
+## Linux FLTK GUI
+
+The Create Archive dialog exposes a Target Profile menu with `None` plus the
+shared profile set and an automatic-alias checkbox. Selecting a legacy profile
+forces BoltLite with 16 KiB blocks (Interchange Profile 1); CP/M-86 forces
+BoltLite with 32 KiB blocks; Linux mini and Plan 9 retain the selected codec
+within their own ceilings. Create collects the complete source tree before
+publishing, runs the same preflight as the CLI, writes Plan 9 mode records
+where required, and adds `BPNAMES.TXT` when automatic aliases are selected.
+The selection is persisted in the GUI preferences. `make
+linux-gui-target-profile-test` drives the dialog under Xvfb and verifies an
+Atari ST alias/report archive and a Plan 9 archive through the Linux CLI.
 
 ## Implemented Linux POSIX and mini profiles
 
