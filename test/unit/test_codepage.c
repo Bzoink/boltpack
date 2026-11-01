@@ -375,6 +375,23 @@ static void test_buffer_too_small(void)
                "tiny buffer returns the distinct no-space result");
 }
 
+/* --- ISO-8859-1 filesystem case fold ------------------------------------ */
+
+static void test_iso8859_1_casefold(void)
+{
+    const char source[] = { 'a', (char)0xE4, (char)0xF6,
+                            (char)0xF8, (char)0xFF, '\0' };
+    const char expected[] = { 'A', (char)0xC4, (char)0xD6,
+                              (char)0xD8, (char)0xFF, '\0' };
+    char folded[16];
+    int rc;
+
+    UNIT_SECTION("Codepage: ISO-8859-1 case folding");
+    rc = bp_local_casefold(source, folded, sizeof(folded), BP_CP_8859_1);
+    UNIT_CHECK(rc == 0 && memcmp(folded, expected, sizeof(expected)) == 0,
+               "ASCII and Latin-1 lowercase letters fold to uppercase bytes");
+}
+
 /* --- Empty string ------------------------------------------------------- */
 
 static void test_empty_string(void)
@@ -430,6 +447,7 @@ int main(void)
     test_sjis();
     test_out_of_range_substitution();
     test_buffer_too_small();
+    test_iso8859_1_casefold();
     test_empty_string();
     test_utf8_passthrough();
 

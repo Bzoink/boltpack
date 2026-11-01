@@ -159,6 +159,32 @@ def main():
             check_manifest_file(extracted / "first.bin", "first.bin")
             check_manifest_file(extracted / "second.bin", "second.bin")
 
+        ql_target = root / "ql-target-source"
+        (ql_target / "sub").mkdir(parents=True)
+        (ql_target / "caf\u00e9.txt").write_bytes(b"QL Latin-1 target name\n")
+        (ql_target / "sub" / "Gr\u00fc\u00dfe.dat").write_bytes(
+            b"QL nested target name\n"
+        )
+        result = run(
+            full, "c", "--target-profile=sinclair-ql-latin1-v1",
+            "ql-target.blt", ql_target.name, cwd=root,
+        )
+        require_ok(result, "Linux QL target-profile create")
+        ql_target_out = "ql-target-out"
+        result = run(ql, "x", "-o", ql_target_out, "ql-target.blt", cwd=root)
+        require_ok(result, "QL target-profile archive extraction")
+        output_bytes = os.fsencode(root / ql_target_out)
+        expected_ql_names = {
+            b"ql-target-source/caf\xe9.txt": b"QL Latin-1 target name\n",
+            b"ql-target-source/sub/Gr\xfc\xdfe.dat": b"QL nested target name\n",
+        }
+        for native_name, payload in expected_ql_names.items():
+            native_path = pathlib.Path(
+                os.fsdecode(output_bytes + b"/" + native_name)
+            )
+            if native_path.read_bytes() != payload:
+                raise AssertionError("QL target-profile extraction changed name or payload")
+
         result = run(ql, "c", "--interchange-profile-1", "-0",
                      "stored.blt", "first.bin", cwd=root)
         require_ok(result, "QL Stored profile create")
@@ -295,7 +321,7 @@ def main():
         assert not (root / long_output).is_dir()
 
         # QDOS filenames are generally case-insensitive. Reject aliases,
-        # file/child conflicts, unmappable Latin-1 names and paths beyond the
+        # separator collisions, unmappable Latin-1 names and paths beyond the
         # native 36-byte bound before creating either the output root or the
         # QDOS directory marker used by the host build.
         expected_refusals = {

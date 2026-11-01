@@ -17,5 +17,7 @@
   "directory_race_expected": "refuse substitution before archive publication",
   "child_race_expected": "refuse same-metadata substitution before archive publication",
   "nested_directory_race_expected": "refuse same-metadata substitution before archive publication",
+  "source_case_collision_expected": "refuse before save dialog or archive publication",
+  "source_nfc_collision_expected": "refuse before save dialog or archive publication",
   "windows_attribute_roundtrip_expected": ["HIDDEN", "SYSTEM", "ARCHIVE"]
 }

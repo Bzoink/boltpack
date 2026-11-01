@@ -812,9 +812,11 @@ source now offers Interchange Profile 1 and its checked-in core copies match
 the shared format-6 core; `make macos9-core-sync-test` enforces the copied-file
 and shared-core inventories. `make CC=gcc macos9-68k` builds from `src/core`,
 and `make CC=gcc macos9-68k-kit` builds from the copied source kit; both produce
-the application and merged resource-fork artifacts. The Retro68 smoke link uses
-a temporary output so the linker can create its companion debug file. Mac OS 9 runtime
-qualification remains outstanding.
+a packaged MacBinary application and HFS disk image through Retro68's `Rez`
+step, alongside merged resource-fork artifacts. The kit includes the mini
+stack-probe header required by the copied core, and the sync check verifies it.
+The Retro68 smoke link uses a temporary output so the linker can create its
+companion debug file. Mac OS 9 runtime qualification remains outstanding.
 The PowerPC Mac
 OS 9 GUI source now offers a create-time choice for the profile; its legacy
 CodeWarrior/MPW build and Mac OS 9 runtime remain unqualified. GUI target

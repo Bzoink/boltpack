@@ -1981,6 +1981,114 @@ static unsigned long win_gui_create_name_hash(const WCHAR *key)
     return hash;
 }
 
+typedef int (WINAPI *WinGuiNormalizeStringFn)(int form, LPCWSTR source,
+                                             int source_length,
+                                             LPWSTR destination,
+                                             int destination_capacity);
+
+static int win_gui_nfc(WCHAR *name, int *length)
+{
+    static HMODULE normaliz_module;
+    static WinGuiNormalizeStringFn normalize_string;
+    static int looked_up;
+    union {
+        FARPROC generic;
+        WinGuiNormalizeStringFn typed;
+    } resolved;
+    WCHAR normalized[MAX_PATH];
+    int normalized_length;
+    int i;
+
+    if (!looked_up) {
+        normaliz_module = LoadLibraryA("normaliz.dll");
+        if (normaliz_module != NULL) {
+            resolved.generic = GetProcAddress(normaliz_module, "NormalizeString");
+            normalize_string = resolved.typed;
+        }
+        looked_up = 1;
+    }
+    if (normalize_string == NULL) {
+        /* Older Windows releases lack NormalizeString. Keep their create
+         * behavior for ASCII names; refuse non-ASCII names rather than
+         * silently miss canonical-equivalence collisions. */
+        for (i = 0; i < *length; i++)
+            if ((unsigned short)name[i] > 0x7f) return BP_ERR_INVALID_ARG;
+        return BP_OK;
+    }
+    normalized_length = normalize_string(1, name, *length, normalized,
+                                         MAX_PATH - 1);
+    if (normalized_length <= 0 || normalized_length >= MAX_PATH)
+        return BP_ERR_INVALID_ARG;
+    memcpy(name, normalized, (size_t)normalized_length * sizeof(WCHAR));
+    name[normalized_length] = L'\0';
+    *length = normalized_length;
+    return BP_OK;
+}
+
+static int win_gui_ascii_equal(const WCHAR *name, size_t length,
+                               const char *ascii)
+{
+    size_t i;
+    if (strlen(ascii) != length) return 0;
+    for (i = 0; i < length; i++) {
+        WCHAR ch = name[i];
+        if (ch >= L'a' && ch <= L'z') ch -= L'a' - L'A';
+        if (ch != (WCHAR)(unsigned char)ascii[i]) return 0;
+    }
+    return 1;
+}
+
+static int win_gui_reserved_component(const WCHAR *name, size_t length)
+{
+    static const char *const devices[] = {
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"
+    };
+    size_t base = 0, i;
+    while (base < length && name[base] != L'.') base++;
+    while (base > 0 && (name[base - 1] == L' ' || name[base - 1] == L'.'))
+        base--;
+    for (i = 0; i < sizeof(devices) / sizeof(devices[0]); i++)
+        if (win_gui_ascii_equal(name, base, devices[i])) return 1;
+    if (base == 4 &&
+        (win_gui_ascii_equal(name, 3, "COM") ||
+         win_gui_ascii_equal(name, 3, "LPT")) &&
+        ((name[3] >= L'1' && name[3] <= L'9') || name[3] == 0x00B9 ||
+         name[3] == 0x00B2 || name[3] == 0x00B3)) return 1;
+    return 0;
+}
+
+static int win_gui_validate_windows_name(WCHAR *name, int *length)
+{
+    int i, start = 0;
+    int rc = win_gui_nfc(name, length);
+    if (rc != BP_OK) return rc;
+    if (*length <= 0 || *length > 259) return BP_ERR_INVALID_ARG;
+    for (i = 0; i < *length; i++) {
+        WCHAR ch = name[i];
+        if (ch == L'/') name[i] = L'\\';
+        else if (ch == L':' || ch == L'<' || ch == L'>' || ch == L'"' ||
+                 ch == L'|' || ch == L'?' || ch == L'*' || ch < 32)
+            return BP_ERR_INVALID_ARG;
+    }
+    if (name[0] == L'\\') return BP_ERR_INVALID_ARG;
+    for (i = 0; i <= *length; i++) {
+        if (i == *length || name[i] == L'\\') {
+            int component_length = i - start;
+            if (component_length <= 0 || component_length > 255 ||
+                name[i - 1] == L'.' || name[i - 1] == L' ' ||
+                (component_length == 1 && name[start] == L'.') ||
+                (component_length == 2 && name[start] == L'.' &&
+                 name[start + 1] == L'.') ||
+                win_gui_reserved_component(name + start,
+                                           (size_t)component_length))
+                return BP_ERR_INVALID_ARG;
+            start = i + 1;
+        }
+    }
+    name[*length] = L'\0';
+    return BP_OK;
+}
+
 static int win_gui_create_name_node(CreateNameIndex *index,
                                     const WCHAR *key, size_t length,
                                     int kind, int primary)
@@ -2022,19 +2130,32 @@ static int win_gui_create_name_add(CreateNameIndex *index,
 {
     WCHAR wide[MAX_PATH];
     WCHAR prefix[MAX_PATH];
+    WCHAR folded[MAX_PATH];
     int wide_length;
+    int folded_length;
     size_t length, start, end, prefix_length;
     int rc;
 
     wide_length = win_gui_utf8_to_wide(local_name, wide, MAX_PATH);
-    if (wide_length <= 1 || wide_length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    /* The conversion count includes the trailing NUL. A 259-unit relative
+     * path therefore occupies all MAX_PATH (260) WCHAR slots and is valid. */
+    if (wide_length <= 1 || wide_length > MAX_PATH) return BP_ERR_NAME_TOO_LONG;
     length = (size_t)wide_length - 1;
     while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
         length--;
     if (length == 0) return BP_ERR_INVALID_ARG;
-    for (start = 0; start < length; start++)
-        if (wide[start] == L'/') wide[start] = L'\\';
-    CharLowerBuffW(wide, (DWORD)length);
+    wide[length] = L'\0';
+    wide_length = (int)length;
+    rc = win_gui_validate_windows_name(wide, &wide_length);
+    if (rc != BP_OK) return rc;
+    length = (size_t)wide_length;
+    folded_length = LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE, wide,
+                                 (int)length, folded, MAX_PATH - 1);
+    if (folded_length <= 0 || folded_length >= MAX_PATH)
+        return BP_ERR_INVALID_ARG;
+    memcpy(wide, folded, (size_t)folded_length * sizeof(WCHAR));
+    wide[folded_length] = L'\0';
+    length = (size_t)folded_length;
 
     index->primary_count++;
     if (index->primary_count > CREATE_NAME_MAX_NODES)

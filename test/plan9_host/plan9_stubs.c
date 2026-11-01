@@ -7,13 +7,15 @@ int create(const char *path, int mode, unsigned int perm)
 {
     int flags;
     if (perm & DMDIR) {
-        if (mkdir(path, perm & 0777) != 0 && errno != EEXIST) return -1;
+        if (mkdir(path, perm & 0777) != 0) return -1;
         return open(path, O_RDONLY | O_DIRECTORY);
     }
-    if (mode == OREAD) flags = O_RDONLY;
-    else if (mode == OWRITE) flags = O_WRONLY;
+    if ((mode & 3) == OREAD) flags = O_RDONLY;
+    else if ((mode & 3) == OWRITE) flags = O_WRONLY;
     else flags = O_RDWR;
-    return open(path, flags | O_CREAT | O_TRUNC, perm & 0777);
+    flags |= O_CREAT | O_TRUNC;
+    if (mode & OEXCL) flags |= O_EXCL;
+    return open(path, flags, perm & 0777);
 }
 
 vlong seek(int fd, vlong offset, int origin)

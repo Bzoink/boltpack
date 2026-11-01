@@ -81,9 +81,10 @@ int bp_utf8_to_local(const char *src, char *dst, int dst_size, int codepage);
 
 /* Convert a native single-byte path to a case-folded key for filesystems
  * whose configured legacy codepage defines case-insensitive names. ASCII is
- * supported for every codepage; CP437 and CP850 also fold their mapped Latin
- * letter pairs. Other non-ASCII codepages return BP_CP_UNREPRESENTABLE rather
- * than claiming collision-safe comparison without a target case map. */
+ * supported for every codepage; CP437, CP850, MacRoman, and ISO-8859-1 fold
+ * their mapped Latin letter pairs. Other non-ASCII codepages return
+ * BP_CP_UNREPRESENTABLE rather than claiming collision-safe comparison
+ * without a target case map. */
 int bp_local_casefold(const char *src, char *dst, int dst_size, int codepage);
 
 #endif /* BP_CODEPAGE_H */

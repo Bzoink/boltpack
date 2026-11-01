@@ -17,6 +17,7 @@
 #define OREAD O_RDONLY
 #define OWRITE O_WRONLY
 #define ORDWR O_RDWR
+#define OEXCL 0x1000
 #define DMDIR 0x80000000u
 
 typedef struct Dir {

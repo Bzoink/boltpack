@@ -2364,11 +2364,48 @@ struct StagedExtractFile {
 
 static LONG g_extract_temp_counter = 0;
 
+typedef int (WINAPI *WinFltkNormalizeStringFn)(int form, LPCWSTR source,
+                                              int source_length,
+                                              LPWSTR destination,
+                                              int destination_capacity);
+
+static bool win_normalize_nfc(std::wstring *value)
+{
+    static HMODULE module;
+    static WinFltkNormalizeStringFn normalize;
+    static bool looked_up = false;
+    union {
+        FARPROC generic;
+        WinFltkNormalizeStringFn typed;
+    } resolved;
+    std::vector<WCHAR> normalized;
+    int length;
+    if (!looked_up) {
+        module = LoadLibraryW(L"normaliz.dll");
+        if (module != NULL) {
+            resolved.generic = GetProcAddress(module, "NormalizeString");
+            normalize = resolved.typed;
+        }
+        looked_up = true;
+    }
+    if (normalize == NULL) {
+        for (size_t i = 0; i < value->size(); ++i)
+            if ((unsigned short)(*value)[i] > 0x7f) return false;
+        return true;
+    }
+    normalized.resize(value->size() + 2);
+    length = normalize(1, value->data(), (int)value->size(),
+                       &normalized[0], (int)normalized.size());
+    if (length <= 0 || (size_t)length >= normalized.size()) return false;
+    value->assign(&normalized[0], &normalized[0] + length);
+    return true;
+}
+
 static bool win_component_is_safe(const WCHAR *component, size_t length)
 {
     size_t i, base_length = length;
     WCHAR base[16];
-    if (length == 0 || component[length - 1] == L'.' ||
+    if (length == 0 || length > 255 || component[length - 1] == L'.' ||
         component[length - 1] == L' ') return false;
     for (i = 0; i < length; ++i) {
         WCHAR c = component[i];
@@ -2376,14 +2413,21 @@ static bool win_component_is_safe(const WCHAR *component, size_t length)
             c == L'|' || c == L'?' || c == L'*' || c == L'\\') return false;
         if (c == L'.' && base_length == length) base_length = i;
     }
+    while (base_length > 0 &&
+           (component[base_length - 1] == L' ' ||
+            component[base_length - 1] == L'.'))
+        base_length--;
     if (base_length == 0 || base_length >= sizeof(base) / sizeof(base[0])) return true;
     memcpy(base, component, base_length * sizeof(WCHAR));
     base[base_length] = L'\0';
     if (_wcsicmp(base, L"CON") == 0 || _wcsicmp(base, L"PRN") == 0 ||
-        _wcsicmp(base, L"AUX") == 0 || _wcsicmp(base, L"NUL") == 0) return false;
+        _wcsicmp(base, L"AUX") == 0 || _wcsicmp(base, L"NUL") == 0 ||
+        _wcsicmp(base, L"CONIN$") == 0 || _wcsicmp(base, L"CONOUT$") == 0)
+        return false;
     if (base_length == 4 &&
         (_wcsnicmp(base, L"COM", 3) == 0 || _wcsnicmp(base, L"LPT", 3) == 0) &&
-        base[3] >= L'1' && base[3] <= L'9') return false;
+        ((base[3] >= L'1' && base[3] <= L'9') || base[3] == 0x00B9 ||
+         base[3] == 0x00B2 || base[3] == 0x00B3)) return false;
     return true;
 }
 
@@ -2396,7 +2440,7 @@ static int project_windows_name(const char *utf8, char *local, size_t capacity)
         return BP_ERR_PARTIAL;
     if (!win_utf8_to_wide(utf8, &wide)) return BP_ERR_PARTIAL;
     length = wide.size();
-    if (length == 0 || length >= MAX_PATH) return BP_ERR_NAME_TOO_LONG;
+    if (length == 0 || length > 259) return BP_ERR_NAME_TOO_LONG;
     start = 0;
     for (i = 0; i <= length; ++i) {
         size_t component_length;
@@ -3023,10 +3067,20 @@ static std::wstring windows_case_key(const std::string &local)
 {
     std::wstring wide;
     std::wstring key;
+    std::wstring folded;
+    int folded_length;
     if (!win_utf8_to_wide(local.c_str(), &wide)) return key;
     key.assign(wide);
     while (!key.empty() && key[key.size() - 1] == L'\\') key.resize(key.size() - 1);
-    if (!key.empty()) CharLowerBuffW(&key[0], (DWORD)key.size());
+    if (!win_normalize_nfc(&key)) return std::wstring();
+    if (key.empty() || key.size() >= MAX_PATH) return std::wstring();
+    folded.resize(MAX_PATH);
+    folded_length = LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE,
+                                 key.data(), (int)key.size(), &folded[0],
+                                 MAX_PATH - 1);
+    if (folded_length <= 0 || folded_length >= MAX_PATH) return std::wstring();
+    folded.resize((size_t)folded_length);
+    key.swap(folded);
     return key;
 }
 
@@ -3998,6 +4052,90 @@ static void count_input_recursive(const char *path, double &bytes, unsigned long
     }
 }
 
+#ifdef _WIN32
+struct WindowsCreatePreflight {
+    std::set<std::wstring> primaries;
+    std::map<std::wstring, int> nodes; /* 1 = directory, 2 = regular file */
+    unsigned int primary_count;
+    WindowsCreatePreflight() : primary_count(0) {}
+};
+
+static int windows_create_preflight_name(WindowsCreatePreflight *index,
+                                         const std::string &archive_name,
+                                         bool directory)
+{
+    std::string source_name = archive_name;
+    char projected[MAX_PATH * 4];
+    std::wstring key;
+    size_t pos = 0;
+    int rc;
+    if (directory) source_name += "/";
+    rc = project_windows_name(source_name.c_str(), projected,
+                              sizeof(projected));
+    if (rc != BP_OK) return rc;
+    key = windows_case_key(projected);
+    if (key.empty()) return BP_ERR_INVALID_ARG;
+    if (++index->primary_count > 65535U) return BP_ERR_OVERFLOW;
+    if (!index->primaries.insert(key).second) return BP_ERR_PARTIAL;
+    for (;;) {
+        size_t slash = key.find(L'\\', pos);
+        bool final = slash == std::wstring::npos;
+        std::wstring prefix = final ? key : key.substr(0, slash);
+        int kind = final ? (directory ? 1 : 2) : 1;
+        std::map<std::wstring, int>::iterator found =
+            index->nodes.find(prefix);
+        if (found != index->nodes.end() && found->second != kind)
+            return BP_ERR_PARTIAL;
+        if (found == index->nodes.end() && index->nodes.size() >= 65535U)
+            return BP_ERR_OVERFLOW;
+        index->nodes[prefix] = kind;
+        if (final) break;
+        pos = slash + 1;
+    }
+    return BP_OK;
+}
+
+static int windows_create_preflight_path(WindowsCreatePreflight *index,
+                                         const std::string &path,
+                                         const std::string &archive_name)
+{
+    WinSourcePathGuard guard;
+    int rc;
+    if (!guard.open(path.c_str())) return BP_ERR_IO;
+    bool directory =
+        (guard.info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (directory) {
+        std::vector<std::string> names;
+        if (!guard.open_directory(path.c_str())) return BP_ERR_IO;
+        rc = windows_create_preflight_name(index, archive_name, true);
+        if (rc != BP_OK) return rc;
+        rc = list_directory_names(path.c_str(), names, NULL, guard.handle);
+        if (rc != BP_OK) return rc;
+        for (size_t i = 0; i < names.size(); ++i) {
+            std::string child_path = path + "/" + names[i];
+            std::string child_name = archive_name + "/" + names[i];
+            rc = windows_create_preflight_path(index, child_path, child_name);
+            if (rc != BP_OK) return rc;
+        }
+        return BP_OK;
+    }
+    if ((guard.info.dwFileAttributes & FILE_ATTRIBUTE_DEVICE) != 0)
+        return BP_ERR_INVALID_ARG;
+    return windows_create_preflight_name(index, archive_name, false);
+}
+
+static int windows_create_preflight(const std::vector<std::string> &inputs)
+{
+    WindowsCreatePreflight index;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        std::string archive_name = leaf_name(inputs[i]);
+        int rc = windows_create_preflight_path(&index, inputs[i], archive_name);
+        if (rc != BP_OK) return rc;
+    }
+    return BP_OK;
+}
+#endif
+
 static void init_create_progress(ProgressCtx *ctx)
 {
     std::lock_guard<std::mutex> lk(ctx->mtx);
@@ -4294,6 +4432,17 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
 
     if (input_files.empty())
         return;
+
+#ifdef _WIN32
+    {
+        int preflight_rc = windows_create_preflight(input_files);
+        if (preflight_rc != BP_OK) {
+            fl_alert("Cannot create an archive with the selected Windows names, paths, or entry types. (Error %d)",
+                     preflight_rc);
+            return;
+        }
+    }
+#endif
 
     if (!choose_output_archive_path(input_files, out_path, &target_snapshot))
         return;

@@ -84,7 +84,9 @@ def main():
     (source / NAME).write_bytes(PAYLOAD)
     check_payload(source / NAME)
     linux = ROOT / "build/linux/boltpack"
-    run([str(linux), "c", "--store", "OEM.BLT", NAME], cwd=source)
+    run([str(linux), "c", "--target-profile=dos-cp850-83", "-0",
+         "OEM.BLT", NAME], cwd=source)
+    run([str(linux), "t", "OEM.BLT"], cwd=source)
 
     image = out / "dos16-cp850-fat12.img"
     shutil.copyfile(ROOT / "build/dos16-cp850/bpmini.exe", out / "BPMINI.EXE")
@@ -141,7 +143,7 @@ def main():
     short_name = bytes.fromhex(CASE["fat_short_name_hex"])
     if short_name not in fat_bytes:
         raise RuntimeError("FAT12 did not store CP850 Ø as byte 0x9D; evidence: " + str(out))
-    result_text = "PASS: CP850 Ø.TXT archive creation, Linux extraction, and Linux-to-DOS16 extraction verified on DOSBox-X FAT12\n"
+    result_text = "PASS: Linux DOS CP850 8.3 profile archive creation and integrity, Linux-to-DOS16 extraction, and DOS16-to-Linux transfer verified on DOSBox-X FAT12\n"
     (out / "result.txt").write_text(result_text, encoding="utf-8")
     try:
         locale_name = locale.setlocale(locale.LC_ALL, None)
@@ -173,7 +175,8 @@ def main():
         },
         "filesystem": "720 KiB FAT12 floppy image under DOSBox-X",
         "commands": {
-            "linux_create": [str(linux), "c", "--store", "OEM.BLT", NAME],
+            "linux_create": [str(linux), "c", "--target-profile=dos-cp850-83", "-0",
+                             "OEM.BLT", NAME],
             "guest_batch": commands,
             "emulator": emulator,
             "linux_list": [str(linux), "l", str(dos_archive)],
@@ -196,7 +199,7 @@ def main():
     }
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
                                    encoding="utf-8")
-    print("PASS: DOS16 CP850 Ø.TXT transfer under DOSBox-X FAT12; evidence:", out / "run.json")
+    print("PASS: DOS CP850 8.3 profile transfer under DOSBox-X FAT12; evidence:", out / "run.json")
 
 
 if __name__ == "__main__":

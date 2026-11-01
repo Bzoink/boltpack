@@ -1504,14 +1504,35 @@ static int MacStageNameReserved(extract_user_t *eu, const char *archiveName,
     long len;
     unsigned short i;
 
-    if (parentLen + stageLen >= (long)sizeof(projected)) return 1;
+    if (parentLen + stageLen >= (long)sizeof(projected)) {
+#ifdef BP_GUI_DEV_LOGGING
+        LogWrite("Mac stage parent path too long");
+#endif
+        return 1;
+    }
     memcpy(projected, archiveName, parentLen);
     memcpy(projected + parentLen, stageName, stageLen + 1);
-    if (!ArchivePathToMac(projected, key)) return 1;
+    if (!ArchivePathToMac(projected, key)) {
+#ifdef BP_GUI_DEV_LOGGING
+        if (strcmp(stageName, "BP0000.TMP") == 0) {
+            LogWrite("Mac stage path cannot be represented");
+            LogWrite(projected);
+        }
+#endif
+        return 1;
+    }
     UpperString(key, true);
     name = (const char *)(key + 1);
     len = key[0];
-    if (eu->nameIndex == nil) return 1;
+    if (eu->nameIndex == nil) {
+#ifdef BP_GUI_DEV_LOGGING
+        if (strcmp(stageName, "BP0000.TMP") == 0) {
+            LogWrite("Mac stage name index missing");
+            LogWrite(archiveName);
+        }
+#endif
+        return 1;
+    }
     for (i = 0; i < eu->nameIndex->count; i++) {
         const char *other = eu->nameIndex->names +
                             eu->nameIndex->offsets[i];
@@ -1520,7 +1541,17 @@ static int MacStageNameReserved(extract_user_t *eu, const char *archiveName,
             (len < otherLen && memcmp(name, other, len) == 0 &&
              other[len] == ':') ||
             (otherLen < len && memcmp(other, name, otherLen) == 0 &&
-             name[otherLen] == ':')) return 1;
+             name[otherLen] == ':' &&
+             eu->nameIndex->types[i] != BP_TYPE_DIR)) {
+#ifdef BP_GUI_DEV_LOGGING
+            if (strcmp(stageName, "BP0000.TMP") == 0) {
+                LogWrite("Mac stage name conflicts with archive path");
+                LogWrite(projected);
+                LogWrite(other);
+            }
+#endif
+            return 1;
+        }
     }
     return 0;
 }
@@ -1531,6 +1562,7 @@ static OSErr MacCreateStagingFile(extract_user_t *eu,
                                   const char *archiveName)
 {
     unsigned long attempt;
+    unsigned long reservedCount = 0;
 
     for (attempt = 0; attempt < 10000; attempt++) {
         char nameBuf[11];
@@ -1546,17 +1578,55 @@ static OSErr MacCreateStagingFile(extract_user_t *eu,
         nameBuf[5] = (char)('0' + number % 10UL);
         nameBuf[6] = '.'; nameBuf[7] = 'T'; nameBuf[8] = 'M';
         nameBuf[9] = 'P'; nameBuf[10] = '\0';
-        if (MacStageNameReserved(eu, archiveName, nameBuf)) continue;
+        if (MacStageNameReserved(eu, archiveName, nameBuf)) {
+            reservedCount++;
+            continue;
+        }
         stageName[0] = (unsigned char)nameLen;
         memcpy(stageName + 1, nameBuf, nameLen);
         err = FSMakeFSSpec(finalSpec->vRefNum, finalSpec->parID,
                            stageName, stageSpec);
         if (err == noErr) continue;
-        if (err != fnfErr) return err;
+        if (err != fnfErr) {
+#ifdef BP_GUI_DEV_LOGGING
+            char logBuf[96];
+            long logPos = 0;
+            StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                         "Mac stage lookup OSErr=");
+            StrAppendLongDec(logBuf, &logPos, (long)sizeof(logBuf),
+                             (long)err);
+            LogWrite(logBuf);
+            LogWrite(archiveName);
+#endif
+            return err;
+        }
         err = FSpCreate(stageSpec, kCreatorCode, '????', 0);
         if (err == dupFNErr) continue;
+#ifdef BP_GUI_DEV_LOGGING
+        if (err != noErr) {
+            char logBuf[96];
+            long logPos = 0;
+            StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                         "Mac stage create OSErr=");
+            StrAppendLongDec(logBuf, &logPos, (long)sizeof(logBuf),
+                             (long)err);
+            LogWrite(logBuf);
+            LogWrite(archiveName);
+        }
+#endif
         return err;
     }
+#ifdef BP_GUI_DEV_LOGGING
+    {
+        char logBuf[96];
+        long logPos = 0;
+        StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                     "Mac stage candidates exhausted; reserved=");
+        StrAppendU32Dec(logBuf, &logPos, (long)sizeof(logBuf), reservedCount);
+        LogWrite(logBuf);
+        LogWrite(archiveName);
+    }
+#endif
     return dupFNErr;
 }
 
@@ -1564,28 +1634,109 @@ static int MacFinalizePendingFile(extract_user_t *eu)
 {
     int result = BP_OK;
     FSSpec existing;
+    FSSpec published;
+    FSSpec stage;
     OSErr err;
 
-    if (!eu->lastDataVerified || eu->lastDataFinalized) return BP_OK;
+    if (!eu->lastDataVerified || eu->lastDataFinalized) {
+#ifdef BP_GUI_DEV_LOGGING
+        LogWrite("Extract: pending file skipped");
+        LogWrite(eu->lastDataName);
+#endif
+        return BP_OK;
+    }
+#ifdef BP_GUI_DEV_LOGGING
+    LogWrite("Extract: finalizing verified file");
+    LogWrite(eu->lastDataName);
+#endif
     if (MacRestoreFileDate(&eu->lastDataSpec, eu->lastDataMTime,
-                           eu->lastDataFlags) != BP_OK)
+                           eu->lastDataFlags) != BP_OK) {
+#ifdef BP_GUI_DEV_LOGGING
+        LogWrite("Extract: file date restoration partial");
+#endif
         result = BP_ERR_PARTIAL;
+    }
+#ifdef BP_GUI_DEV_LOGGING
+    {
+        char logBuf[96];
+        long logPos = 0;
+        StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                     "Extract: final lookup name length=");
+        StrAppendU32Dec(logBuf, &logPos, (long)sizeof(logBuf),
+                        (unsigned long)eu->lastDataFinalSpec.name[0]);
+        LogWrite(logBuf);
+        LogWrite(eu->lastDataName);
+    }
+#endif
+    LogWrite("Extract: final destination lookup start");
     err = FSMakeFSSpec(eu->lastDataFinalSpec.vRefNum,
                        eu->lastDataFinalSpec.parID,
                        eu->lastDataFinalSpec.name, &existing);
+#ifdef BP_GUI_DEV_LOGGING
+    {
+        char logBuf[96];
+        long logPos = 0;
+        StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                     "Extract: final lookup OSErr=");
+        StrAppendLongDec(logBuf, &logPos, (long)sizeof(logBuf), (long)err);
+        LogWrite(logBuf);
+    }
+#endif
     if (err != fnfErr) {
+#ifdef BP_GUI_DEV_LOGGING
+        LogWrite("Extract: final destination lookup refused");
+        LogWrite(eu->lastDataName);
+#endif
         (void)FSpDelete(&eu->lastDataSpec);
         eu->lastDataCreated = 0;
         eu->partial = 1;
         eu->lastDataFinalized = 1;
         return BP_ERR_PARTIAL;
     }
+    /* Classic HFS may defer catalog changes from the data-fork close and
+     * date update. Flush them before publishing the sibling stage by rename. */
+    err = FlushVol(nil, eu->lastDataFinalSpec.vRefNum);
+    if (err != noErr) result = BP_ERR_PARTIAL;
+    LogWrite("Extract: stage rename start");
     err = FSpRename(&eu->lastDataSpec, eu->lastDataFinalSpec.name);
+#ifdef BP_GUI_DEV_LOGGING
+    {
+        char logBuf[96];
+        long logPos = 0;
+        StrAppendStr(logBuf, &logPos, (long)sizeof(logBuf),
+                     "Extract: stage rename OSErr=");
+        StrAppendLongDec(logBuf, &logPos, (long)sizeof(logBuf), (long)err);
+        LogWrite(logBuf);
+        LogWrite(eu->lastDataName);
+    }
+#endif
     if (err != noErr) {
         (void)FSpDelete(&eu->lastDataSpec);
         eu->lastDataCreated = 0;
         result = BP_ERR_PARTIAL;
     } else {
+        err = FSMakeFSSpec(eu->lastDataFinalSpec.vRefNum,
+                           eu->lastDataFinalSpec.parID,
+                           eu->lastDataFinalSpec.name, &published);
+        if (err != noErr) {
+#ifdef BP_GUI_DEV_LOGGING
+            LogWrite("Extract: published destination verification failed");
+#endif
+            eu->partial = 1;
+            eu->lastDataFinalized = 1;
+            return BP_ERR_PARTIAL;
+        }
+        err = FSMakeFSSpec(eu->lastDataSpec.vRefNum,
+                           eu->lastDataSpec.parID,
+                           eu->lastDataSpec.name, &stage);
+        if (err != fnfErr) {
+#ifdef BP_GUI_DEV_LOGGING
+            LogWrite("Extract: stage still exists after rename");
+#endif
+            eu->partial = 1;
+            eu->lastDataFinalized = 1;
+            return BP_ERR_PARTIAL;
+        }
         eu->lastDataCreated = 0;
     }
     if (result != BP_OK) eu->partial = 1;
@@ -1653,11 +1804,13 @@ static OSErr MacLookupDirectory(short vRefNum, long parentDirID,
 
     err = MacComponentName(utf8Name, utf8Length, macName);
     if (err != noErr) return err;
+    LogWrite("Extract: directory lookup PBGetCatInfo start");
     memset(&cpb, 0, sizeof(cpb));
     cpb.dirInfo.ioNamePtr = macName;
     cpb.dirInfo.ioVRefNum = vRefNum;
     cpb.dirInfo.ioDrDirID = parentDirID;
     err = PBGetCatInfoSync(&cpb);
+    LogWrite("Extract: directory lookup PBGetCatInfo returned");
     if (err != noErr) return err;
     if (!(cpb.dirInfo.ioFlAttrib & 0x10)) return dupFNErr;
     *childDirID = cpb.dirInfo.ioDrDirID;
@@ -1715,10 +1868,14 @@ static int MacExtractPreflight(const bp_entry_t *entry, void *user_data)
         entry->entry_type != BP_TYPE_DIR &&
         entry->entry_type != BP_TYPE_SYMLINK) return 0;
     if (!ArchivePathToMac(entry->name, key)) {
+        LogWrite("Preflight: ArchivePathToMac failed");
+        LogWrite(entry->name);
         index->error = BP_ERR_PARTIAL;
         return 1;
     }
     if (MacCheckExistingPath(index, entry) != BP_OK) {
+        LogWrite("Preflight: existing path refused");
+        LogWrite(entry->name);
         index->error = BP_ERR_PARTIAL;
         return 1;
     }
@@ -1736,12 +1893,16 @@ static int MacExtractPreflight(const bp_entry_t *entry, void *user_data)
             (len < oldLen &&
              memcmp(name, oldName, len) == 0 && oldName[len] == ':' &&
              entry->entry_type != BP_TYPE_DIR)) {
+            LogWrite("Preflight: projected collision");
+            LogWrite(entry->name);
             index->error = BP_ERR_PARTIAL;
             return 1;
         }
     }
     if (index->count >= kMacExtractIndexCount ||
         index->used + (unsigned long)len + 1UL > kMacExtractIndexBytes) {
+        LogWrite("Preflight: path index capacity exceeded");
+        LogWrite(entry->name);
         index->error = BP_ERR_PARTIAL;
         return 1;
     }
@@ -1759,15 +1920,21 @@ static OSErr MacEnsureDirectory(short vRefNum, long parentDirID,
                                 long *childDirID)
 {
     Str255 macName;
+    FSSpec directorySpec;
     OSErr err;
 
+    LogWrite("Extract: ensure directory start");
     err = MacLookupDirectory(vRefNum, parentDirID, utf8Name, utf8Length,
                              childDirID);
     if (err == noErr) return noErr;
     if (err != fnfErr) return err;
     err = MacComponentName(utf8Name, utf8Length, macName);
     if (err != noErr) return err;
-    return DirCreate(vRefNum, parentDirID, macName, childDirID);
+    err = FSMakeFSSpec(vRefNum, parentDirID, macName, &directorySpec);
+    if (err == noErr) return dupFNErr;
+    if (err != fnfErr) return err;
+    LogWrite("Extract: FSpDirCreate start");
+    return FSpDirCreate(&directorySpec, smSystemScript, childDirID);
 }
 
 static OSErr MacCreateArchiveDirectory(extract_user_t *eu,
@@ -1781,6 +1948,7 @@ static OSErr MacCreateArchiveDirectory(extract_user_t *eu,
     Str255 finalName;
     int haveFinal = 0;
 
+    LogWrite("Extract: create archive directory start");
     while (*p != '\0') {
         const char *slash = strchr(p, '/');
         long len = slash != nil ? (long)(slash - p) : (long)strlen(p);
@@ -1795,6 +1963,7 @@ static OSErr MacCreateArchiveDirectory(extract_user_t *eu,
             haveFinal = 1;
         }
         err = MacEnsureDirectory(vRefNum, dirID, p, len, &childDirID);
+        LogWrite("Extract: ensure directory returned");
         if (err != noErr) return err;
         dirID = childDirID;
         if (slash == nil) break;
@@ -1802,7 +1971,13 @@ static OSErr MacCreateArchiveDirectory(extract_user_t *eu,
         if (*p == '\0') break;
     }
     if (!haveFinal) return paramErr;
-    return FSMakeFSSpec(vRefNum, finalParentDirID, finalName, directorySpec);
+    LogWrite("Extract: FSMakeFSSpec directory start");
+    {
+        OSErr err = FSMakeFSSpec(vRefNum, finalParentDirID, finalName,
+                                 directorySpec);
+        LogWrite("Extract: FSMakeFSSpec directory returned");
+        return err;
+    }
 }
 
 static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
@@ -1819,12 +1994,14 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
     long nlen;
 
     if (entry->entry_type == BP_TYPE_DIR) {
+        LogWrite("Extract: directory entry callback start");
         FSSpec directorySpec;
         (void)MacFinalizePendingFile(eu);
         eu->lastDataVerified = 0;
         eu->lastDataCreated = 0;
         eu->lastDataName[0] = '\0';
         err = MacCreateArchiveDirectory(eu, entry->name, &directorySpec);
+        LogWrite("Extract: create archive directory returned");
         if (err != noErr) eu->partial = 1;
         else if (MacQueueDirectoryTime(eu, entry, &directorySpec) != BP_OK)
             eu->partial = 1;
@@ -1832,6 +2009,8 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
     }
 
     if (entry->entry_type == BP_TYPE_DATA) {
+        LogWrite("Extract: data entry");
+        LogWrite(entry->name);
         (void)MacFinalizePendingFile(eu);
         eu->lastDataVerified = 0;
         eu->lastDataCreated = 0;
@@ -1882,11 +2061,18 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
     {
         unsigned char macBuf[256];
         if (!UTF8ToMacRomanStrict(nameOnly, macBuf, 256)) {
+            LogWrite("Extract: filename is not MacRoman");
+            LogWrite(entry->name);
             eu->partial = 1;
             return nil;
         }
         nlen = (long)strlen((char *)macBuf);
-        if (nlen <= 0 || nlen > 31) { eu->partial = 1; return nil; }
+        if (nlen <= 0 || nlen > 31) {
+            LogWrite("Extract: HFS component length refused");
+            LogWrite(entry->name);
+            eu->partial = 1;
+            return nil;
+        }
         macName[0] = (unsigned char)nlen;
         memcpy(macName + 1, macBuf, nlen);
     }
@@ -1910,7 +2096,12 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
             }
             err = MacEnsureDirectory(parentVRef, parentDirID, p, nlen2,
                                      &createdDirID2);
-            if (err != noErr) { eu->partial = 1; return nil; }
+            if (err != noErr) {
+                LogWrite("Extract: file parent directory failed");
+                LogWrite(entry->name);
+                eu->partial = 1;
+                return nil;
+            }
             parentDirID = createdDirID2;
             p = seg + 1;
         }
@@ -1918,16 +2109,28 @@ static bp_io_t *ExtractOpen(const bp_entry_t *entry, void *user_data)
         err = FSMakeFSSpec(parentVRef, parentDirID, macName, &outSpec);
         if (err == noErr) {
             /* Never truncate or replace an existing destination. */
+            LogWrite("Extract: destination already exists");
+            LogWrite(entry->name);
             eu->partial = 1;
             return nil;
         }
-    if (err != fnfErr) { eu->partial = 1; return nil; }
+    if (err != fnfErr) {
+        LogWrite("Extract: destination lookup failed");
+        LogWrite(entry->name);
+        eu->partial = 1;
+        return nil;
+    }
     }
 
     eu->lastDataFinalSpec = outSpec;
     err = MacCreateStagingFile(eu, &eu->lastDataFinalSpec, &outSpec,
                                entry->name);
-    if (err != noErr) { eu->partial = 1; return nil; }
+    if (err != noErr) {
+        LogWrite("Extract: staging file create failed");
+        LogWrite(entry->name);
+        eu->partial = 1;
+        return nil;
+    }
     eu->lastDataSpec = outSpec;
     strcpy(eu->lastDataName, entry->name);
     eu->lastDataCreated = 1;
@@ -1940,6 +2143,8 @@ open_fork:
         err = FSpOpenDF(&outSpec, fsWrPerm, &refNum);
     }
     if (err != noErr) {
+        LogWrite("Extract: output fork open failed");
+        LogWrite(entry->name);
         eu->partial = 1;
         if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
             (void)FSpDelete(&outSpec);
@@ -1947,6 +2152,8 @@ open_fork:
     }
     err = SetEOF(refNum, 0);
     if (err != noErr) {
+        LogWrite("Extract: output fork truncate failed");
+        LogWrite(entry->name);
         (void)FSClose(refNum);
         eu->partial = 1;
         if (entry->entry_type == BP_TYPE_DATA && eu->lastDataCreated)
@@ -1999,10 +2206,17 @@ static int ExtractDoneStatus(const bp_entry_t *entry, bp_io_t *out,
 
     if (entry->entry_type == BP_TYPE_DATA &&
         strcmp(eu->lastDataName, entry->name) == 0) {
+#ifdef BP_GUI_DEV_LOGGING
+        LogWrite("Extract: data callback completed");
+        LogWrite(entry->name);
+#endif
         if (status == BP_OK) {
             eu->lastDataVerified = 1;
             eu->lastDataMTime = entry->mtime;
             eu->lastDataFlags = entry->flags;
+#ifdef BP_GUI_DEV_LOGGING
+            LogWrite("Extract: data checksum and close succeeded");
+#endif
         } else if (eu->lastDataCreated) {
             (void)FSpDelete(&eu->lastDataSpec);
             eu->lastDataCreated = 0;
@@ -2027,11 +2241,14 @@ static int DoUnpack(FSSpec *archives, long count)
     int rc;
     int overall = BP_OK;
 
+    LogWrite("DoUnpack: start");
     rc = bp_compress_init();
     if (rc != BP_OK) {
+        LogWrite("DoUnpack: compress init failed");
         ShowError(rc);
         return rc;
     }
+    LogWrite("DoUnpack: compress init OK");
 
     for (i = 0; i < count; i++) {
         short refNum;
@@ -2043,12 +2260,15 @@ static int DoUnpack(FSSpec *archives, long count)
 
         memset(&eu, 0, sizeof(eu));
 
+        LogWrite("DoUnpack: opening archive");
         err = FSpOpenDF(&archives[i], fsRdPerm, &refNum);
         if (err != noErr) {
+            LogWrite("DoUnpack: archive open failed");
             ShowErrorStr("Cannot open archive file.");
             if (overall == BP_OK) overall = BP_ERR_IO;
             continue;
         }
+        LogWrite("DoUnpack: archive opened");
         MacIOFromRefNum(&aio, &mf, refNum);
 
         /* determine output location */
@@ -2069,8 +2289,10 @@ static int DoUnpack(FSSpec *archives, long count)
         memset(index, 0, sizeof(*index));
         index->rootVRefNum = eu.outVRefNum;
         index->rootDirID = eu.outDirID;
+        LogWrite("DoUnpack: preflight start");
         rc = bp_archive_list(&aio, MacExtractPreflight, index);
         if (rc != BP_OK) {
+            LogWrite("DoUnpack: preflight failed");
             if (index->error != BP_OK) rc = index->error;
             free(index);
             free(eu.directories);
@@ -2082,12 +2304,15 @@ static int DoUnpack(FSSpec *archives, long count)
             if (overall == BP_OK) overall = rc;
             continue;
         }
+        LogWrite("DoUnpack: preflight OK");
         eu.nameIndex = index;
 
         ShowProgressDialog(&eu.prog);
+        LogWrite("DoUnpack: progress dialog shown");
 
         rc = bp_archive_extract_all_ex(&aio, ExtractOpen, ExtractDoneStatus,
                                        ProgressCallback, &eu);
+        LogWrite("DoUnpack: archive extraction returned");
         if (MacFinalizePendingFile(&eu) != BP_OK && rc == BP_OK)
             rc = BP_ERR_PARTIAL;
         if (MacRestoreDirectoryTimes(&eu) != BP_OK && rc == BP_OK)

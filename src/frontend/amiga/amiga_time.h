@@ -8,6 +8,10 @@
 #include <time.h>
 #include <utime.h>
 #include "../../core/bp_time.h"
+#ifdef __AMIGA__
+#include <dos/var.h>
+#include <proto/dos.h>
+#endif
 
 /* Parse an explicit timezone in minutes east of UTC. */
 static int bp_amiga_parse_tz_offset(const char *text, long *offset_seconds)
@@ -38,7 +42,19 @@ static int bp_amiga_parse_tz_offset(const char *text, long *offset_seconds)
 
 static int bp_amiga_get_tz_offset(long *offset_seconds)
 {
-    return bp_amiga_parse_tz_offset(getenv("BP_TZ_OFFSET"), offset_seconds);
+    const char *text = getenv("BP_TZ_OFFSET");
+#ifdef __AMIGA__
+    char native_value[32];
+    if (text == NULL || *text == '\0') {
+        LONG length = GetVar("BP_TZ_OFFSET", native_value,
+                             (LONG)sizeof(native_value), GVF_GLOBAL_ONLY);
+        if (length > 0 && length < (LONG)sizeof(native_value)) {
+            native_value[length] = '\0';
+            text = native_value;
+        }
+    }
+#endif
+    return bp_amiga_parse_tz_offset(text, offset_seconds);
 }
 
 /* AmigaDOS DateStamp has local wall-clock fields, while format 6 is UTC. */

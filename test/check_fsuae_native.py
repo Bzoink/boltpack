@@ -244,6 +244,7 @@ def main():
     (drive / "TREE" / "NEST" / "FILE.TXT").write_bytes(payload)
     deep_payload = b"native Amiga deep tree fixture\n" * 32
     check_payload(deep_payload, "deep")
+    amiga_tz_offset = int(datetime.datetime.now().astimezone().utcoffset().total_seconds() // 60)
     # Keep the cumulative pathname below AmigaDOS's legacy path limit so this
     # exercises traversal depth rather than failing on path length first.
     deep_parts = ["D" for _ in range(args.depth)]
@@ -282,6 +283,9 @@ def main():
              "-o", str(drive / "METAPROBE")])
         run([str(linux), "c", "--interchange-profile-1", "-1", "LINUX.BLT", "SRC.TXT"], drive)
         run([str(linux), "c", "--interchange-profile-1", "-1", "UNICODE.BLT", accent_name], drive)
+        run([str(linux), "c", "--target-profile=amigaos-68k-latin1",
+             "AMIPROF.BLT", accent_name], drive)
+        run([str(linux), "t", "AMIPROF.BLT"], drive)
         link_archive = drive / "LINK.BLT"
         run([str(linux), "c", "--interchange-profile-1",
              link_archive.name, symlink_name], drive)
@@ -300,7 +304,7 @@ def main():
         fmt = [args.xdftool, str(native), "format", "BPNATIVE"]
         if args.filesystem == "ffs": fmt.append("ffs")
         run(fmt)
-        names_to_copy = ["SRC.TXT", "NEW.TXT", "LINUX.BLT", "LINK.BLT",
+        names_to_copy = ["SRC.TXT", "NEW.TXT", "LINUX.BLT", "AMIPROF.BLT", "LINK.BLT",
                          "NATFST.BLT", "PORTFST.BLT", "BADMETA.BLT"]
         if not args.skip_codecs:
             names_to_copy.append("CODEC.DAT")
@@ -311,6 +315,7 @@ def main():
         for name in ("UNREP.BLT", "CASE.BLT"):
             run([args.xdftool, str(native), "write", str(drive / name), name])
         run([args.xdftool, str(native), "makedir", "OUT"])
+        run([args.xdftool, str(native), "makedir", "PROFILE"])
         run([args.xdftool, str(native), "makedir", "RESTORE"])
         run([args.xdftool, str(native), "makedir", "UOUT"])
         run([args.xdftool, str(native), "makedir", "LINKOUT"])
@@ -336,7 +341,11 @@ def main():
             run([args.xdftool, str(native), "makedir", "DEEPOUT"])
         startup = out / "startup"
         startup.write_text("\n".join([
-            "C:SetPatch >NIL: QUIET", "C:Assign T: RAM:"] +
+            "C:SetPatch >NIL: QUIET",
+            "C:MakeDir RAM:ENV >NIL:",
+            "C:Assign ENV: RAM:ENV",
+            "C:SetEnv BP_TZ_OFFSET %d" % amiga_tz_offset,
+            "C:Assign T: RAM:"] +
             (["C:Stack %d" % args.stack] if args.stack else []) + ["C:FailAt 100",
             "DH0:METAPROBE stack >DH0:STACK.TXT",
             "DH0:METAPROBE set DF1:SRC.TXT", "C:Echo $RC >DH0:SET.RC",
@@ -364,6 +373,8 @@ def main():
             "DH0:boltpack x -o DF1:LINKOUT DF1:LINK.BLT >DH0:LINK.LOG",
             "C:Echo $RC >DH0:LINK.RC",
             "DH0:boltpack x -o DF1:OUT DF1:LINUX.BLT >DH0:EXTRACT.LOG", "C:Echo $RC >DH0:EXTRACT.RC",
+            "DH0:boltpack x -o DF1:PROFILE DF1:AMIPROF.BLT >DH0:AMIPROF.LOG",
+            "C:Echo $RC >DH0:AMIPROF.RC",
             "DH0:boltpack x -o DF1:NATIVEFIRST DF1:NATFST.BLT >DH0:NATFST.LOG", "C:Echo $RC >DH0:NATFST.RC",
             "DH0:boltpack x -o DF1:PORTABLEFIRST DF1:PORTFST.BLT >DH0:PORTFST.LOG", "C:Echo $RC >DH0:PORTFST.RC",
             "DH0:METAPROBE get DF1:NATIVEFIRST/CONFLICT.TXT >DH0:NATFST.META.TXT",
@@ -436,7 +447,7 @@ def main():
             except subprocess.TimeoutExpired:
                 os.killpg(guest.pid, signal.SIGKILL); guest.wait()
         for name in ("SET", "DATE", "TREESET", "NESTSET", "EMPTYSET", "TREEFILESET",
-                     "TREECREATE", "TREERESTORE", "EXTRACT", "UNICODE", "ACCENT",
+                     "TREECREATE", "TREERESTORE", "EXTRACT", "AMIPROF", "UNICODE", "ACCENT",
                      "CREATE", "APPEND", "RESTORE", "DELETE") + (
                      () if args.skip_codecs else ("CODECLZCRT", "CODEFLCRT", "CODESTCRT",
                          "CODELICRT", "CODECLZT", "CODEFLT", "CODESTT", "CODELIT")):
@@ -526,6 +537,7 @@ def main():
                 raise RuntimeError("native directory timestamp mismatch for %s: %s -> %s; evidence: %s" %
                                    (name, before_time, after_time, out))
         for source, dest in (("OUT/" + source_name, "linux-to-amiga"),
+                             ("PROFILE/" + accent_name, "amiga-target-profile-extracted"),
                              ("RESTORE/" + source_name, "amiga-restored"),
                              ("RESTORE/" + append_name, "amiga-added"), ("AMIGA.BLT", "amiga.blt"),
                              ("SNAP.BLT", "before-failure.blt"), ("FAILADD.BLT", "after-failure.blt"),
@@ -552,6 +564,7 @@ def main():
             if len(listing.splitlines()) != 1:
                 raise RuntimeError("native refusal modified output directory: " + folder)
     if ((out / "linux-to-amiga").read_bytes() != payload or
+        (out / "amiga-target-profile-extracted").read_bytes() != extra or
         (out / "amiga-restored").read_bytes() != payload or (out / "amiga-added").read_bytes() != extra or
         (out / "unicode-to-amiga").read_bytes() != extra or
         (out / "native-first-conflict").read_bytes() !=
@@ -562,6 +575,7 @@ def main():
     if (out / "badmeta-payload").read_bytes() != b"Amiga metadata precedence fixture\n":
         raise RuntimeError("malformed metadata damaged verified payload; evidence: " + str(out))
     for filename, key in (("linux-to-amiga", "source"), ("amiga-restored", "source"),
+                          ("amiga-target-profile-extracted", "append"),
                           ("amiga-added", "append"), ("unicode-to-amiga", "append"),
                           ("native-first-conflict", "conflict"),
                           ("portable-first-conflict", "conflict"), ("badmeta-payload", "conflict")):
@@ -644,8 +658,11 @@ def main():
         "fast_memory_kib=" + str(args.fast_memory),
         "codec_block=" + ("skipped" if args.skip_codecs else args.codec_block),
         "codec_fixture_bytes=" + str(len(codec_data)),
+        "amiga_timezone_offset_minutes=" + str(amiga_tz_offset),
         "foreign_symlink_extraction=partial; no link object created; input archive preserved",
         "foreign_symlink_archive_sha256=" + link_archive_hash,
+        "linux_amiga_target_profile=café.txt decoded and byte-verified on native " +
+        args.filesystem.upper() + "",
         "directory_mtime_roundtrip=three nested directory timestamps verified",
         "native_portable_metadata_precedence=" + args.filesystem.upper() +
         ": native protection preserved in both record orders; unsupported portable FAT metadata reported partial",
@@ -668,6 +685,8 @@ def main():
         "workbench_sha256=" + hashlib.sha256(wb.read_bytes()).hexdigest(),
         "expected_manifest_sha256=" + hashlib.sha256(EXPECTED_PATH.read_bytes()).hexdigest(),
         "amiga_archive_sha256=" + hashlib.sha256((out / "amiga.blt").read_bytes()).hexdigest(),
+        "linux_amiga_target_archive_sha256=" + hashlib.sha256(
+            (drive / "AMIPROF.BLT").read_bytes()).hexdigest(),
         "tree_archive_sha256=" + hashlib.sha256((out / "tree.blt").read_bytes()).hexdigest(),
     ]
     (out / "manifest.txt").write_text("\n".join(manifest) + "\n")

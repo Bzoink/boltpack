@@ -248,6 +248,31 @@ def main():
             assert b"preflight" in result.stderr.lower()
             assert not (long_source / long_output).exists()
 
+            lfn_source = root / "profile_lfn_source"
+            (lfn_source / "src").mkdir(parents=True)
+            (lfn_source / "src" / "Long Name with spaces.txt").write_bytes(b"long name")
+            (lfn_source / "src" / "Grüße.txt").write_bytes(b"CP850 name")
+            result = run([str(linux_boltpack), "c",
+                          "--target-profile=dos-cp850-lfn-v1",
+                          "dos-lfn-profile.blt", "src"], lfn_source)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            lfn_output = "LFNOUT"
+            result = run([str(boltpack), "x", "-o", lfn_output,
+                          "dos-lfn-profile.blt"], lfn_source)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            output_bytes = os.fsencode(lfn_source / lfn_output / "src")
+            assert (Path(os.fsdecode(output_bytes)) /
+                    os.fsdecode(b"Long Name with spaces.txt")).read_bytes() == b"long name"
+            cp850_path = output_bytes + b"/Gr\x81\xe1e.txt"
+            assert Path(os.fsdecode(cp850_path)).read_bytes() == b"CP850 name"
+
+            no_lfn_output = "NO_LFN"
+            result = run([str(boltpack), "x", "-o", no_lfn_output,
+                          "dos-lfn-profile.blt"], lfn_source, env=no_lfn_env)
+            assert result.returncode != 0
+            assert b"preflight" in result.stderr.lower()
+            assert not (lfn_source / no_lfn_output).exists()
+
             long_root = "LONGOUTPUT"
             result = run([str(boltpack), "x", "-o", long_root,
                           "short.blt"], short_source, env=no_lfn_env)

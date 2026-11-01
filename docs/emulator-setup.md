@@ -1,9 +1,109 @@
-# Sinclair QL, Atari, Amiga, Plan 9, Haiku, and Windows emulator setup
+# Classic Mac, Sinclair QL, Atari, Amiga, Plan 9, Haiku, and Windows emulator setup
 
 This is the working setup observed on Tony's Debian machine on 2026-10-28.
 Paths are local to this machine; other installations should provide their own
 images and use the corresponding paths. Keep ROMs and system disks outside the
 repository and run tests against disposable working copies.
+
+## Classic Macintosh 68k: System 7.5.3 boot smoke test
+
+The user-provided assets in `/home/tony/Disks/mac` boot under QEMU's Quadra
+800 machine. The build verifies that the app's MacBinary creator is `BoPk`,
+matching the frontend's `kCreatorCode`, and checks the required GUI/code
+resources. The corrected 68k application launches under System 7.5.3. On a
+writable HFS test volume, it extracted a Linux-created, stored, root-level
+one-file archive; the extracted 28-byte payload matched the source byte for
+byte. The fixture and extracted file are under
+`build/macos-classic-qemu/root-only/` and
+`build/macos-classic-qemu/resource-package-20261101/`. An earlier nested
+archive run reached HFS directory creation and stalled. The current source
+uses `FSpDirCreate` and compiles, but a later guest attempt rejected the
+fixture during preflight without recording the reason. Nested extraction
+remains unqualified.
+Non-ASCII MacRoman projection, collision behavior, resource forks, Finder
+fields, directory dates, partial failures, and append behavior also remain
+untested in the guest. The boot, media, and package records are
+[here](../build/macos-classic-qemu/boot-smoke-20261101/run.json) and
+[here](../build/macos-classic-qemu/hfs-media-20261101/run.json) and
+[here](../build/macos-classic-qemu/resource-package-20261101/run.json). The
+runtime transfer record is
+[here](../build/macos-classic-qemu/resource-package-20261101/runtime-root-file-transfer.json).
+The hybrid-CD preparation below needs `genisoimage` (`sudo apt install
+genisoimage` on Debian).
+
+Prepare a local ROM copy and boot the read-only installer image in snapshot
+mode:
+
+```bash
+mkdir -p build/macos-classic-qemu
+unzip -p /home/tony/Disks/mac/macqd800.zip f1a6f343.rom \
+  > build/macos-classic-qemu/quadra800-a.rom
+qemu-system-m68k -M q800 -m 256 \
+  -bios build/macos-classic-qemu/quadra800-a.rom \
+  -drive file=/home/tony/Disks/mac/System753.iso,format=raw,if=scsi,media=cdrom,readonly=on \
+  -boot order=d -display gtk -no-reboot -snapshot
+```
+
+QEMU 10.0.13 reached the System 7.5.3 Finder desktop. To expose both app and
+archive as files on one HFS volume, build a hybrid CD from the MacBinary APPL
+and the Linux-created archive:
+
+```bash
+mkdir -p build/macos-classic-qemu/guest-volume
+cp build/macos9-68k-kit/BoltPack.bin build/macos-classic-qemu/guest-volume/
+cp build/macos-classic-qemu/Profile.blt build/macos-classic-qemu/guest-volume/
+genisoimage -hfs --macbin -input-hfs-charset UTF-8 \
+  -output-hfs-charset cp10000 -hfs-volid 'BoltPack Test' \
+  -V BOLTPACKTEST -o build/macos-classic-qemu/BoltPack-Test.iso \
+  build/macos-classic-qemu/guest-volume
+```
+
+The current `macos9-68k-kit` build guard checks the APPL creator and required
+GUI/code resources in the MacBinary before the image is used.
+
+Expose the system CD at SCSI ID 0 and the test CD at ID 3; explicit IDs avoid
+the ROM trying to boot from the test CD:
+
+```bash
+qemu-system-m68k -M q800 -m 256 \
+  -bios build/macos-classic-qemu/quadra800-a.rom \
+  -drive if=none,id=syscd,file=/home/tony/Disks/mac/System753.iso,format=raw,media=cdrom,readonly=on \
+  -device scsi-cd,drive=syscd,bus=scsi.0,scsi-id=0 \
+  -drive if=none,id=testcd,file=build/macos-classic-qemu/BoltPack-Test.iso,format=raw,media=cdrom,readonly=on \
+  -device scsi-cd,drive=testcd,bus=scsi.0,scsi-id=3 \
+  -display gtk -no-reboot -snapshot
+```
+
+This hybrid CD is read-only and is useful for package launch checks. For
+extraction, use the writable HFS test disk at SCSI ID 6. Do not use QEMU's
+global `-snapshot` option for that disk when checking the guest log; writes
+would be discarded on exit. The test disk is scratch media and may be modified
+directly. For the current trace, `boltpack.log` is on that HFS volume.
+
+Boot with both the System 7.5.3 CD and the writable test disk using:
+
+```bash
+qemu-system-m68k -M q800 -m 256 \
+  -bios build/macos-classic-qemu/quadra800-a.rom \
+  -drive if=none,id=syscd,file=/home/tony/Disks/mac/System753.iso,format=raw,media=cdrom,readonly=on \
+  -device scsi-cd,drive=syscd,bus=scsi.0,scsi-id=3 \
+  -drive if=none,id=testdisk,file=build/macos-classic-qemu/resource-package-20261101/QemuApmDisk.dsk,format=raw \
+  -device scsi-hd,drive=testdisk,bus=scsi.0,scsi-id=6 \
+  -display gtk -no-reboot
+```
+
+The disk was initialized with Apple HD SC Setup in the guest. It contains the
+debug application, `Profile.blt`, and `boltpack.log`. Host-side inspection and
+copying use the Retro68 `hmount`, `hls`, `hcopy`, and `humount` utilities; exit
+QEMU before mounting the image on the host. The root-file transfer is
+summarized in the
+[root-file record](../build/macos-classic-qemu/resource-package-20261101/runtime-root-file-transfer.json).
+A later nested-profile run exposed a staging collision check that rejected
+staging files below directory entries; the check now permits directory
+prefixes. The guest created nested directories and root files but left the
+final nested payload under its stage name. See the
+[nested run record](../build/macos-classic-qemu/resource-package-20261101/runtime-nested-stage-fix-20261101.json)
+and [HFS tree listing](../build/macos-classic-qemu/resource-package-20261101/hfs-tree-after-stage-fix.txt).
 
 ## Sinclair QL: XTC68/C68 and sQLux
 
@@ -178,8 +278,10 @@ on it:
 make CC=gcc dosboxx-fat12-interoperability-test
 ```
 
-The test verifies CP437 filename extraction and timestamp restoration, DOS16
-archive creation readable by Linux, and replacement of an existing archive.
+Linux creates `café.txt` with `--target-profile=dos-cp437-83 -0`; the guest
+extracts that archive and the test verifies the CP437 filename and timestamp.
+The guest also creates an archive readable by Linux and replaces an existing
+archive.
 Before replacement it sets the FAT HIDDEN, SYSTEM, and ARCHIVE flags, then
 checks the resulting archive contents with Linux and the flags with `mattrib`.
 The default run deletes its temporary image after completion; pass
@@ -187,6 +289,8 @@ The default run deletes its temporary image after completion; pass
 logs for inspection. Linux reports partial where DOS cannot restore foreign
 metadata. This emulator run qualifies the emulated FAT12 path and DOSBox-X DOS
 API behavior, not every DOS implementation or filesystem.
+The profile-backed run record is
+[`build/r02-dosboxx-cp437-p5c1f2hy/run.json`](../build/r02-dosboxx-cp437-p5c1f2hy/run.json).
 The independent expected-result manifest is
 [`test/reference/interoperability/dos16-fat12.json`](../test/reference/interoperability/dos16-fat12.json).
 It pins the CP437 spelling and bytes, source and replacement payload hashes,
@@ -199,9 +303,13 @@ The CP850 name round-trip has its own DOS16 build and runner:
 make CC=gcc dosboxx-fat12-cp850-interoperability-test
 ```
 
-It uses `Ø.TXT`, a character whose CP850 byte differs from CP437, and checks
-DOS batch arguments, DOS-created archive names, Linux extraction, extraction
-back to DOS FAT12, and the on-disk 8.3 byte (`0x9D`). Pass `--output DIR` to
+It uses `Ø.TXT`, a character whose CP850 byte differs from CP437. Linux creates
+the input archive with `--target-profile=dos-cp850-83 -0`, then the guest
+extracts it from FAT12; Linux also checks and extracts the guest-created
+archive. The fixture verifies the DOS batch arguments, CP850 archive names,
+payload bytes, and on-disk 8.3 byte (`0x9D`). The successful run is retained at
+[`build/r02-dosboxx-cp850-s4b_r8eo/run.json`](../build/r02-dosboxx-cp850-s4b_r8eo/run.json).
+Pass `--output DIR` to
 `test/check_dosboxx_cp850.py` to retain the image and logs. This checks uppercase
 `Ø`. Although the guest reports codepage 850, DOS `DIR ø.TXT` still searches
 byte `0x9B` and fails against the FAT uppercase short-name byte `0x9D`. The
@@ -252,7 +360,8 @@ through its file timestamp API, so the expected outcome is partial.
 
 This machine's FreeDOS 1.4 boot image and package files are in
 `/home/tony/images/FreeDOS`. The repeatable CP850-only record is retained at
-`build/r10-freedos-cp850-20261030-make/`. The expanded interoperability,
+`build/r10-freedos-cp850-20261030-make/`; it was rerun against the current
+worktree at `build/freedos-cp850-profile-audit-20261101/`. The expanded interoperability,
 low-space publication, and recovery run and disposable image are retained at
 `build/r10-freedos-recovery-corrupt-negative-20261030/`; `run.json` records asset, binary,
 manifest, payload, recovery, and floppy hashes plus QEMU/mtools versions.
@@ -280,6 +389,19 @@ and logs. The runner also writes `manifest.json` with the source revision and
 worktree state, tool versions, executable/image hashes, FAT12 geometry, and
 independent input hashes. This qualifies DOSBox-X FAT12 behavior with CWSDPMI;
 native DOS, other filesystems, and crash recovery still need separate checks.
+
+The fixture also creates a Linux archive with
+`--target-profile=dos-cp850-lfn-v1` containing `Long Filename Ø With Spaces.txt`.
+It tests and extracts that archive in a separate DOSBox-X session with the
+emulated LFN API enabled and `KEYB UK 850`, then reads the exact Unicode long
+filename and bytes from FAT12 with mtools. DOSBox-X defaults to DOS 5.0 with
+LFN disabled and code page 437, so the runner enables `lfn=true` and switches
+to code page 850 only for this profile session. The baseline lifecycle and
+rename tests run with their original settings. The successful non-ASCII
+evidence is
+[`build/dosboxx-cp850-lfn-nonascii-20261101/manifest.json`](../build/dosboxx-cp850-lfn-nonascii-20261101/manifest.json).
+The earlier ASCII-only evidence remains at
+[`build/dosboxx-lfn-profile-20261101/manifest.json`](../build/dosboxx-lfn-profile-20261101/manifest.json).
 
 ## Atari: Hatari
 
@@ -484,6 +606,19 @@ shutdown. Evidence is in `build/r02-retained-20261030/boltpack-atari-fat-a066pl8
 `build/r02-retained-20261030/boltpack-atari-fat-6bdokojg` (2.05). These runs extend CLI and FAT12
 coverage across three TOS versions; they do not qualify native hardware or the
 GEM GUI.
+
+The Linux-to-Atari archive in `make atari-hatari-fat-test` is created with
+`--target-profile=atari-st` and extracted by the TOS CLI on the FAT12 floppy.
+This checks a real profile-generated archive against TOS 1.62, while the
+separate host fixture checks strict-name refusal and auto-rename/report behavior.
+The emulator transfer does not establish the profile's conservative path,
+archive-size, or memory ceilings.
+The 2026-11-01 FAT12 rerun passed with both 4 MiB and 1 MiB RAM; evidence is
+at `build/atari-hatari-fat-20261101-135330/run.json` and
+`build/atari-hatari-fat-20261101-135525/run.json`. A 512 KiB attempt could not
+load the 335 KiB full CLI executable (Hatari reported `Program too large`), so
+this current client needs at least 1 MiB in the tested TOS 1.62 setup. Select
+the Hatari memory with `ATARI_HATARI_MEMSIZE=1` (or `0` for 512 KiB). The retained failure record, including the Hatari log, guest statuses, and artifact hashes, is `build/atari-hatari-fat-20261101-135705/run.json`. The same load failure occurred with a 317,438-byte `-Os` build; see `build/atari-hatari-fat-512k-os/run.json`.
 
 For a direct Atari-to-Amiga transfer, run the combined producer/consumer test:
 
@@ -766,6 +901,15 @@ After adding Amiga source identity checks, the native OFS and FFS fixtures were
 rerun with `--skip-codecs --depth 4`; both passed with the current 68k build.
 Evidence is in `build/r02-retained-20261030/boltpack-amiga-ofs-lvaace5z` (OFS) and
 `build/r02-retained-20261030/boltpack-amiga-ffs-ewtnkm4u` (FFS).
+The native runner also creates `AMIPROF.BLT` on Linux with
+`--target-profile=amigaos-68k-latin1`, extracts it under AmigaDOS, then reads
+`PROFILE/café.txt` back from the OFS/FFS floppy image and verifies its exact
+payload. Both runs passed on 2026-11-01:
+[`OFS`](../build/amiga-native-ofs-target-profile-getvar-20261101/manifest.txt)
+and [`FFS`](../build/amiga-native-ffs-target-profile-getvar-20261101/manifest.txt).
+The startup fixture assigns `ENV:` before setting `BP_TZ_OFFSET`; the Amiga
+time helper reads AmigaDOS global variables with `GetVar` when C `getenv` has
+no value, so timestamp restoration is exercised instead of returning partial.
 FS-UAE passed 49-level trees on both OFS and FFS with the default shell stack.
 Both runs used `--skip-codecs --timeout 300` to isolate traversal from the
 slower codec workload. The guest extracted each archive back onto the

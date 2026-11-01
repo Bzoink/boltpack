@@ -43,6 +43,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #ifdef BP_QL_HOST_TEST
+#include <errno.h>
+#include <sys/stat.h>
 #include <utime.h>
 #else
 /* Keep the QDOS calls local: qdos.h also declares qdirect_t, which this
@@ -381,6 +383,13 @@ static int qdirect_is_dir(const qdirect_t *e, const char *qdos_dir)
 
 static int ql_mkdir(const char *path)
 {
+#ifdef BP_QL_HOST_TEST
+    struct stat st;
+    if (mkdir(path, 0777) == 0) return 0;
+    if (errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+        return 0;
+    return -1;
+#else
     /* QDOS directory creation: create an empty file with a trailing '_' */
     FILE *fp;
     char qdos_path[BP_MAX_PATH];
@@ -392,10 +401,26 @@ static int ql_mkdir(const char *path)
     if (!fp) return -1;
     fclose(fp);
     return 0;
+#endif
 }
 
 static int mkdirs(const char *path)
 {
+#ifdef BP_QL_HOST_TEST
+    char tmp[BP_MAX_PATH];
+    char *p;
+    size_t length = strlen(path);
+    if (length == 0 || length >= sizeof(tmp)) return -1;
+    memcpy(tmp, path, length + 1U);
+    for (p = tmp + 1; *p != '\0'; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (ql_mkdir(tmp) != 0) return -1;
+            *p = '/';
+        }
+    }
+    return ql_mkdir(tmp);
+#else
     char tmp[BP_MAX_PATH]; char *p;
     if (strlen(path) >= sizeof(tmp)) return -1;
     strcpy(tmp, path);
@@ -404,6 +429,7 @@ static int mkdirs(const char *path)
     /* Ensure trailing '_' for directory create */
     { int n = (int)strlen(tmp); if (n > 0 && tmp[n-1] != '_') { tmp[n] = '_'; tmp[n+1] = '\0'; } }
     return ql_mkdir(tmp);
+#endif
 }
 
 static int mkdirs_for_file(const char *target, const char *member_path)
@@ -703,7 +729,6 @@ typedef struct {
 
 typedef struct {
     char path[QDOS_NAME_MAX + 1];
-    unsigned char type;
 } ql_extract_name_t;
 
 typedef struct {
@@ -895,11 +920,12 @@ static int ql_extract_index_add(const bp_entry_t *entry, void *user_data)
         index->names = grown;
         index->capacity = capacity;
     }
-    memcpy(index->names[index->count].path, local_name, length + 1U);
-    for (i = 0; i < length; i++)
-        index->names[index->count].path[i] =
-            (char)ql_name_fold((unsigned char)index->names[index->count].path[i]);
-    index->names[index->count].type = entry->entry_type;
+    for (i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)local_name[i];
+        if (ch == '/') ch = '_';
+        index->names[index->count].path[i] = (char)ql_name_fold(ch);
+    }
+    index->names[index->count].path[length] = '\0';
     index->count++;
     return 0;
 }
@@ -921,38 +947,12 @@ static int ql_extract_preflight(bp_io_t *archive, const char *out_dir,
             qsort(index.names, index.count, sizeof(*index.names),
                   ql_extract_name_compare);
         for (i = 0; i < index.count; i++) {
-            size_t length = strlen(index.names[i].path);
             if (i != 0 && strcmp(index.names[i - 1].path,
                                  index.names[i].path) == 0) {
                 fprintf(stderr, "boltpack: destination name collision: %s\n",
                         index.names[i].path);
                 rc = BP_ERR_PARTIAL;
                 break;
-            }
-            if (index.names[i].type == BP_TYPE_DATA && length + 1U <
-                sizeof(index.names[i].path)) {
-                char prefix[QDOS_NAME_MAX + 2];
-                bp_uint32 low = i + 1U, high = index.count;
-                size_t prefix_len;
-                memcpy(prefix, index.names[i].path, length);
-                prefix[length] = '/';
-                prefix[length + 1U] = '\0';
-                prefix_len = length + 1U;
-                while (low < high) {
-                    bp_uint32 middle = low + (high - low) / 2U;
-                    if (strcmp(index.names[middle].path, prefix) < 0)
-                        low = middle + 1U;
-                    else
-                        high = middle;
-                }
-                if (low < index.count &&
-                    strncmp(index.names[low].path, prefix, prefix_len) == 0) {
-                    fprintf(stderr,
-                            "boltpack: file/directory name conflict: %s\n",
-                            index.names[i].path);
-                    rc = BP_ERR_PARTIAL;
-                    break;
-                }
             }
         }
     }

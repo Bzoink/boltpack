@@ -47,8 +47,18 @@ def main():
         pack_source = root / "pack-source" / "nested"
         pack_source.mkdir(parents=True)
         (pack_source / "東京-🙂.txt").write_bytes(payload)
+        hidden_payload = b"A legal dot-prefixed Windows filename\n"
+        (root / "pack-source" / ".hidden.txt").write_bytes(hidden_payload)
         append_payload = b"WCX Unicode append transfer\n" * 7
         (root / "pack-source" / "extra-東京.txt").write_bytes(append_payload)
+        collision_source = root / "collision-source"
+        collision_source.mkdir()
+        (collision_source / "Name.txt").write_bytes(b"first spelling\n")
+        (collision_source / "name.TXT").write_bytes(b"case alias\n")
+        nfc_source = root / "nfc-source"
+        nfc_source.mkdir()
+        (nfc_source / "é.txt").write_bytes(b"composed spelling\n")
+        (nfc_source / "e\u0301.txt").write_bytes(b"decomposed spelling\n")
         archive = root / "archive-💾.blt"
         run([str(linux), "c", "-0", str(archive),
              "nested/東京-🙂.txt"], env=env, cwd=source)
@@ -68,6 +78,8 @@ def main():
         win_plugin = wine_path(plugin, env)
         win_root = wine_path(root, env)
         runner_output = run([args.wine, win_runner, win_plugin, win_root], env=env)
+        if list(root.glob(".boltpack-*.tmp")):
+            raise RuntimeError("WCX left a staging file after preflight refusal")
 
         run([str(linux), "t", str(archive)], env=env)
         deleted_listing = run([str(linux), "l", str(archive)], env=env)
@@ -85,6 +97,9 @@ def main():
         packed_file = packed_output / "extra-東京.txt"
         if not packed_file.is_file() or packed_file.read_bytes() != append_payload:
             raise RuntimeError("Linux could not recover exact bytes after WCX append")
+        hidden_file = packed_output / ".hidden.txt"
+        if not hidden_file.is_file() or hidden_file.read_bytes() != hidden_payload:
+            raise RuntimeError("WCX rejected or changed a legal dot-prefixed filename")
         if (packed_output / "nested" / "東京-🙂.txt").exists():
             raise RuntimeError("DeleteFilesW did not remove the selected Unicode entry")
         extracted_directory = root / "directory-extract" / "nested"
@@ -93,6 +108,7 @@ def main():
         if int(extracted_directory.stat().st_mtime) != directory_mtime:
             raise RuntimeError("WCX did not restore the directory timestamp at close")
         print(runner_output)
+        print("PASS: WCX refused case/NFC collisions before staging and preserved an archive on colliding append")
         print("PASS: Linux verified WCX create/append/delete, directory timestamp finalization, bytes, and final entries")
     finally:
         if args.keep:

@@ -62,9 +62,9 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[2], "prefix") == 0) {
             rc = add_empty(&archive, "node", BP_TYPE_DATA);
             if (rc == BP_OK)
-                rc = add_empty(&archive, "node-file", BP_TYPE_DATA);
-            if (rc == BP_OK)
                 rc = add_empty(&archive, "node/child", BP_TYPE_DATA);
+            if (rc == BP_OK)
+                rc = add_empty(&archive, "node_child", BP_TYPE_DATA);
         } else if (strcmp(argv[2], "dir-alias") == 0) {
             rc = add_empty(&archive, "Node/", BP_TYPE_DIR);
             if (rc == BP_OK)

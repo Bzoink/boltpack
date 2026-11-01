@@ -19,6 +19,13 @@ FAST_FLUFF_CORE_OBJ =
 
 ifeq ($(ENABLE_FAST_FLUFF),1)
 FAST_FLUFF_CPPFLAGS += -DBOLTPACK_FAST_FLUFF
+# Clang's OpenMP 5.1 header declares one helper with C99 `inline` even when
+# the including C89 translation unit is compiled with -ansi. Preserve the
+# project's C89 mode while mapping that header spelling to the compiler's
+# C89-compatible extension.
+ifneq (,$(findstring clang,$(shell $(CC) --version 2>/dev/null | head -1)))
+FAST_FLUFF_CPPFLAGS += -Dinline=__inline__
+endif
 FAST_FLUFF_LDFLAGS  += -fopenmp
 FAST_FLUFF_CORE_OBJ += $(BUILDDIR)/core/fluff_fast.o
 endif
@@ -485,7 +492,8 @@ win64-wcx:
 	@echo "  OK    $(WIN64_BUILDDIR)/boltpack.wcx64"
 
 # Exercise the exported UTF-16 WCX API with a plugin-host-shaped caller under Wine.
-WINE ?= wine64
+WINE ?= $(shell command -v wine64 >/dev/null 2>&1 && echo wine64 || echo wine)
+WINE32 ?= wine
 .PHONY: win64-wcx-wine-test
 win64-wcx-wine-test: win64-wcx all
 	mkdir -p $(WIN64_BUILDDIR)
@@ -511,6 +519,22 @@ win64-fltk-wine-create-test: modern linuxmini win64-fltk-gui
 	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
 	    --gui build/win64-fltk-gui/boltpack-gui.exe \
 	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini
+
+.PHONY: win64-fltk-wine-source-collision-test
+win64-fltk-wine-source-collision-test: modern linuxmini win64-fltk-gui
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
+	    --source-case-collision
+
+.PHONY: win64-fltk-wine-nfc-collision-test
+win64-fltk-wine-nfc-collision-test: modern linuxmini win64-fltk-gui
+	xvfb-run -a python3 test/check_win64_fltk_wine_create.py --wine "$(WINE)" \
+	    --wine-prefix "$(WIN64_FLTK_WINE_PREFIX)" \
+	    --gui build/win64-fltk-gui/boltpack-gui.exe \
+	    --linux-cli build/linux/boltpack --mini-cli build/linux32mini/bpmini \
+	    --source-nfc-collision
 
 .PHONY: win64-fltk-wine-profile1-create-test
 win64-fltk-wine-profile1-create-test: modern linuxmini win64-fltk-gui
@@ -685,6 +709,18 @@ win64-exe:
 	    -o $(WIN64_BUILDDIR)/boltpack.exe
 	@echo "  OK    $(WIN64_BUILDDIR)/boltpack.exe"
 
+.PHONY: win64-target-profile-test
+win64-target-profile-test: win64-exe modern
+	python3 test/check_windows_target_profile.py \
+	    --binary $(WIN64_BUILDDIR)/boltpack.exe \
+	    --linux-cli build/linux/boltpack --wine "$(WINE)"
+
+.PHONY: win32-target-profile-test
+win32-target-profile-test: win32-exe modern
+	python3 test/check_windows_target_profile.py \
+	    --binary $(WIN32_BUILDDIR)/boltpack.exe \
+	    --linux-cli build/linux/boltpack --wine "$(WINE32)"
+
 win32-totalcmd-plugin: win32-wcx win32-config
 	@which zip > /dev/null 2>&1 || { echo "ERROR: zip not found (install zip package)"; exit 1; }
 	rm -rf $(WIN32_BUILDDIR)/totalcmd-plugin
@@ -794,6 +830,24 @@ atari-path-test:
 	    test/unit/test_atari_path.c -o $(ATARI_PATH_TEST_BIN)
 	$(ATARI_PATH_TEST_BIN)
 
+.PHONY: amiga-profile-host-test target-profile-host-test
+amiga-profile-host-test: modern
+	python3 test/check_target_amiga_profile.py --boltpack build/linux/boltpack
+
+target-profile-host-test: modern linuxmini cpm86-host-test riscos-profile-host-test x68k-host-test haiku-host-stage-test macosx-host-test win32-exe win64-target-profile-test win64-gui-profile-test win-gui-net-profile-host-test amiga-profile-host-test
+	python3 test/check_target_auto_rename.py --boltpack $(TARGET)
+	python3 test/check_target_atari_profile.py --boltpack $(TARGET)
+	python3 test/check_target_dos_profiles.py --boltpack $(TARGET)
+	python3 test/check_target_amiga_profile.py --boltpack $(TARGET)
+	python3 test/check_target_macos_classic_profile.py --boltpack $(TARGET)
+	python3 test/check_target_ql_profile.py --boltpack $(TARGET)
+	python3 test/check_target_riscos_profile.py --boltpack $(TARGET) \
+	    --riscos-host build/riscos-profile-test/boltpack-riscos-host
+	python3 test/check_target_x68000_profile.py --boltpack $(TARGET) \
+	    --x68k-host build/x68k-host/boltpack --mini-cli $(LINUXMINI_EXE)
+	python3 test/check_target_linux_profiles.py --boltpack $(TARGET) --mini-cli $(LINUXMINI_EXE)
+	python3 test/check_target_cpm86_profile.py --boltpack $(TARGET) --cpm86-cli $(CPM86_HOST_BIN)
+
 atari-cli:
 	mkdir -p $(ATARI_BUILDDIR)
 	rm -f $(ATARI_BUILDDIR)/boltpack $(ATARI_BUILDDIR)/boltpack.ttp
@@ -843,10 +897,12 @@ atari-cli-parent-race-test: modern
 # for example: make atari-hatari-fat-test HATARI_TOS=~/images/Atari/tos162se.img
 ATARI_HATARI_FAT_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
 ATARI_HATARI_FAT_OUTPUT ?= build/atari-hatari-fat-$(ATARI_HATARI_FAT_RUN_TAG)
+ATARI_HATARI_MEMSIZE ?= 4
 atari-hatari-fat-test: all atari-cli
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
 	python3 test/check_hatari_fat.py --hatari "$(HATARI)" \
 	    --hconsole "$(HCONSOLE)" --tos "$(HATARI_TOS)" \
+	    --memsize "$(ATARI_HATARI_MEMSIZE)" \
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
 	    --output "$(ATARI_HATARI_FAT_OUTPUT)"
 
@@ -881,6 +937,7 @@ MACOS68K_ENV = LD_LIBRARY_PATH=$(MACOS68K_BOOST_LIBDIR)$(if $(LD_LIBRARY_PATH),:
 MACOS68K_REZ      = $(RETRO68_ROOT)/bin/Rez
 MACOS68K_RINCLUDES = $(RETRO68_ROOT)/RIncludes
 MACOS68K_MULTIVERSAL_RINCLUDES = $(RETRO68_ROOT)/multiversal/RIncludes
+MACOS68K_APPL_TEMPLATE = $(MACOS68K_RINCLUDES)/Retro68APPL.r
 
 .PHONY: macos9-core-sync-test macos9-68k
 macos9-core-sync-test:
@@ -913,7 +970,27 @@ macos9-68k: macos9-core-sync-test
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack \
 	    $(MACOS68K_BUILDDIR)/.rsrc/boltpack_gui.rsrc \
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack
-	@echo "  OK    $(MACOS68K_BUILDDIR)/BoltPack"
+	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    $(MACOS68K_FRONTEND)/main.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(MACOS68K_BUILDDIR)/BoltPack.code.bin
+	$(MACOS68K_ENV) $(MACOS68K_REZ) $(MACOS68K_APPL_TEMPLATE) \
+	    -I $(MACOS68K_RINCLUDES) \
+	    -I $(MACOS68K_MULTIVERSAL_RINCLUDES) \
+	    --copy $(MACOS68K_BUILDDIR)/BoltPack.code.bin \
+	    -o $(MACOS68K_BUILDDIR)/BoltPack.bin -t APPL -c BoPk \
+	    --cc $(MACOS68K_BUILDDIR)/BoltPack.dsk \
+	    $(MACOS68K_FRONTEND)/boltpack.r
+	python3 scripts/check_macos9_app_identity.py \
+	    --source $(MACOS68K_FRONTEND)/main.c --makefile Makefile \
+	    --application $(MACOS68K_BUILDDIR)/BoltPack.bin
+	@echo "  OK    $(MACOS68K_BUILDDIR)/BoltPack.bin"
 
 .PHONY: macos9-68k-kit
 macos9-68k-kit:
@@ -1476,6 +1553,7 @@ x68k-host-test:
 # Plan 9 runtime qualification is unavailable on this host.
 PLAN9_HOST_DIR = build/plan9-host
 PLAN9_HOST_BIN = $(PLAN9_HOST_DIR)/boltpack
+PLAN9_META_CHECK = $(PLAN9_HOST_DIR)/check_target_metadata
 .PHONY: plan9-host-test
 plan9-host-test:
 	mkdir -p $(PLAN9_HOST_DIR)
@@ -1495,10 +1573,15 @@ plan9-host-test:
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/plan9/main.c test/plan9_host/plan9_stubs.c src/core/boltlz.c \
 	    -o $(PLAN9_HOST_BIN)
+	$(CC) -ansi -pedantic -Wall -Wextra -O2 -Isrc/core \
+	    test/plan9_host/check_target_metadata.c src/core/archiver.c \
+	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
+	    src/core/bp_codepage.c src/core/boltlz.c \
+	    -o $(PLAN9_META_CHECK)
 	$(MAKE) CC=$(CC) all linuxmini
 	python3 test/check_plan9_profile.py $(PLAN9_HOST_BIN) build/linux/boltpack \
 	    build/linux32mini/bpmini $(PLAN9_HOST_DIR)/create_collision_archive \
-	    test/reference/interoperability/plan9-host.json
+	    test/reference/interoperability/plan9-host.json $(PLAN9_META_CHECK)
 
 .PHONY: haiku-host-stage-test
 haiku-host-stage-test: modern
@@ -2442,6 +2525,33 @@ win64-gui:
 	    -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luser32 -lgdi32 \
 	    -o $(WIN64_GUI_BUILDDIR)/boltpack-gui.exe
 	@echo "  OK    $(WIN64_GUI_BUILDDIR)/boltpack-gui.exe"
+
+# Exercise the production Win32 GUI name/path preflight on a Windows API
+# runtime. The test host calls the same static preflight functions directly
+# and also scans real source trees through FindFirstFileW.
+.PHONY: win64-gui-profile-test
+win64-gui-profile-test:
+	mkdir -p $(WIN64_GUI_BUILDDIR)
+	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
+	    test/win_gui_profile.c $(GUI_CORE_SRCS) \
+	    -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luser32 -lgdi32 \
+	    -o $(WIN64_GUI_BUILDDIR)/win-gui-profile-test.exe
+	python3 test/check_win_gui_profile.py --wine "$(WINE)" \
+	    --binary $(WIN64_GUI_BUILDDIR)/win-gui-profile-test.exe
+
+# Compile the .NET GUI and call its production Windows-name/preflight methods
+# through reflection. Mono is sufficient for this host-side logic test.
+MCS ?= mcs
+MONO ?= mono
+.PHONY: win-gui-net-profile-host-test
+win-gui-net-profile-host-test:
+	mkdir -p build/win-gui-net-profile
+	$(MCS) -target:winexe -r:System.Windows.Forms -r:System.Drawing -r:System.Core \
+	    -out:build/win-gui-net-profile/BoltPack.exe src/frontend/win_gui_net/*.cs
+	$(MCS) -r:System.Core -out:build/win-gui-net-profile/profile-test.exe \
+	    test/win_gui_net_profile.cs
+	$(MONO) build/win-gui-net-profile/profile-test.exe \
+	    build/win-gui-net-profile/BoltPack.exe
 
 # ---- FLTK for Windows cross-compilation ----
 FLTK_VERSION      = 1.4.4

@@ -68,6 +68,9 @@
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
 #include "../posix/extract_paths.h"
+#include "../posix/archive_preflight.h"
+#include "../cpm86/cpm86_path.h"
+#include "../atari/atari_path.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -124,6 +127,25 @@ extern int mkstemp(char *template_path);
 #define VERB_SILENT  2
 
 static int g_verbosity = VERB_DEFAULT;
+static int g_target_classic_hfs;
+static int g_target_amiga_68k;
+static int g_target_dos_family;
+static int g_target_cpm86;
+static int g_target_atari;
+static int g_target_ql;
+static int g_target_riscos;
+static const char *g_target_dos_profile_label;
+
+static const char *mac_legacy_target_label(void)
+{
+    if (g_target_classic_hfs) return "Classic HFS";
+    if (g_target_amiga_68k) return "AmigaOS 68k";
+    if (g_target_atari) return "Atari ST";
+    if (g_target_ql) return "Sinclair QL";
+    if (g_target_riscos) return "RISC OS";
+    if (g_target_dos_profile_label != NULL) return g_target_dos_profile_label;
+    return "legacy target";
+}
 
 /* ---- bp_io_t adapters for FILE * --------------------------------------- */
 
@@ -663,6 +685,36 @@ static int macos_has_meaningful_finder_info(const unsigned char *fi_raw)
     return 0;
 }
 
+#ifdef __APPLE__
+static int macos_legacy_target_check_source_metadata(const char *path,
+                                                     const char *profile)
+{
+    unsigned char fi_raw[APPLE_FINDERINFO_SIZE];
+    ssize_t size;
+    size = getxattr(path, XATTR_RESOURCEFORK_NAME, NULL, 0, 0,
+                    XATTR_NOFOLLOW);
+    if (size > 0) {
+        fprintf(stderr,
+                "boltpack: %s profile cannot preserve a resource fork: %s\n",
+                profile, path);
+        return BP_ERR_PARTIAL;
+    }
+    if (size < 0 && errno != ENOATTR && errno != ENOTSUP) return BP_ERR_IO;
+    size = getxattr(path, APPLE_FINDERINFO_XATTR, fi_raw, sizeof(fi_raw), 0,
+                    XATTR_NOFOLLOW);
+    if (size == APPLE_FINDERINFO_SIZE &&
+        macos_has_meaningful_finder_info(fi_raw)) {
+        fprintf(stderr,
+                "boltpack: %s profile cannot preserve Finder information: %s\n",
+                profile, path);
+        return BP_ERR_PARTIAL;
+    }
+    if (size > 0 && size != APPLE_FINDERINFO_SIZE) return BP_ERR_PARTIAL;
+    if (size < 0 && errno != ENOATTR && errno != ENOTSUP) return BP_ERR_IO;
+    return BP_OK;
+}
+#endif
+
 static bp_uint32 macos_unix_to_mac_time(time_t unix_time)
 {
     unsigned long seconds;
@@ -801,6 +853,19 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
     if (S_ISDIR(st.st_mode)) {
         char dir_arc[4096];
+#ifdef __APPLE__
+        if (g_target_cpm86) {
+            fprintf(stderr, "boltpack: CP/M-86 profile supports regular files only: %s\n", path);
+            return BP_ERR_PARTIAL;
+        }
+        if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari ||
+            g_target_ql || g_target_riscos ||
+            g_target_dos_family) {
+            rc = macos_legacy_target_check_source_metadata(
+                path, mac_legacy_target_label());
+            if (rc != BP_OK) return rc;
+        }
+#endif
         if (!ends_with_slash(arcname))
             snprintf(dir_arc, sizeof(dir_arc), "%s/", arcname);
         else
@@ -815,9 +880,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                                      NULL, bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
 
-        /* Store Unix mode for directories too */
-        rc = add_mode_meta_entry(ar, dir_arc, (bp_uint16)(st.st_mode & 0x1FF));
-        if (rc != BP_OK) return rc;
+        /* These legacy target profiles have no Unix mode field. */
+        if (!g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari &&
+            !g_target_ql && !g_target_riscos &&
+            !g_target_dos_family) {
+            rc = add_mode_meta_entry(ar, dir_arc,
+                                     (bp_uint16)(st.st_mode & 0x1FF));
+            if (rc != BP_OK) return rc;
+        }
 
         return add_directory(ar, path, dir_arc);
 
@@ -825,6 +895,24 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         FILE      *fp;
         bp_io_t    fio;
         bp_uint64  file_size = bp_off_to_u64((bp_off_t)st.st_size);
+        char cpm86_name[BP_CPM86_NAME_SIZE];
+        const char *stored_arcname = arcname;
+        if (g_target_cpm86) {
+            if (!bp_cpm86_project_name(arcname, cpm86_name)) {
+                fprintf(stderr, "boltpack: source name is not a flat CP/M-86 8.3 name: %s\n", path);
+                return BP_ERR_INVALID_ARG;
+            }
+            stored_arcname = cpm86_name;
+        }
+#ifdef __APPLE__
+        if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari ||
+            g_target_ql || g_target_riscos ||
+            g_target_dos_family) {
+            rc = macos_legacy_target_check_source_metadata(
+                path, mac_legacy_target_label());
+            if (rc != BP_OK) return rc;
+        }
+#endif
 
         /* -- Data fork ------------------------------------------------- */
         fp = fopen(path, "rb");
@@ -835,13 +923,15 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         bp_io_from_file(&fio, fp);
 
         if (g_verbosity == VERB_DEFAULT) {
-            printf("compressing: %s", arcname);
+            printf("compressing: %s", stored_arcname);
             fflush(stdout);
         }
 
         flags = 0;
-        mtime = macos_archive_mtime(st.st_mtime, &flags);
-        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA, BP_CREATOR_OS,
+        mtime = g_target_cpm86 ? bp_u64_from_u32(0) :
+                                 macos_archive_mtime(st.st_mtime, &flags);
+        if (g_target_cpm86) flags = 0;
+        rc = bp_archive_add_entry_ex(ar, stored_arcname, BP_TYPE_DATA, BP_CREATOR_OS,
                                      &fio, file_size, mtime, flags);
         if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
         if (rc != BP_OK) {
@@ -873,6 +963,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         {
             ssize_t rsrc_sz = getxattr(path, XATTR_RESOURCEFORK_NAME,
                                        NULL, 0, 0, XATTR_NOFOLLOW);
+            if (rsrc_sz > 0 &&
+                (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_cpm86 ||
+                 g_target_dos_family)) {
+                fprintf(stderr,
+                        "boltpack: %s profile cannot preserve a resource fork: %s\n",
+                        mac_legacy_target_label(), path);
+                return BP_ERR_PARTIAL;
+            }
             if (rsrc_sz > 0 && rsrc_sz <= MACOS_RSRC_MAX) {
                 unsigned char *rsrc_buf = (unsigned char *)malloc((size_t)rsrc_sz);
                 ssize_t got;
@@ -922,9 +1020,12 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 #endif /* __APPLE__ */
 
         /* -- Unix mode meta -------------------------------------------- */
-        rc = add_mode_meta_entry(ar, arcname,
-                                 (bp_uint16)(st.st_mode & 0x1FF));
-        if (rc != BP_OK) return rc;
+        if (!g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari && !g_target_ql && !g_target_riscos && !g_target_cpm86 &&
+            !g_target_dos_family) {
+            rc = add_mode_meta_entry(ar, arcname,
+                                     (bp_uint16)(st.st_mode & 0x1FF));
+            if (rc != BP_OK) return rc;
+        }
 
         /* -- Finder info (Classic Mac meta) ----------------------------- */
 #ifdef __APPLE__
@@ -935,6 +1036,13 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             if (fi_sz == APPLE_FINDERINFO_SIZE
                 && macos_has_meaningful_finder_info(fi_raw)) {
                 bp_uint32 crdate_mac, mdate_mac;
+                if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_cpm86 ||
+                    g_target_dos_family) {
+                    fprintf(stderr,
+                            "boltpack: %s profile cannot preserve Finder information: %s\n",
+                            mac_legacy_target_label(), path);
+                    return BP_ERR_PARTIAL;
+                }
                 crdate_mac = macos_stat_creation_time(&st);
                 mdate_mac  = macos_unix_to_mac_time(st.st_mtime);
                 rc = add_classic_meta_entry(ar, arcname, fi_raw,
@@ -1298,6 +1406,687 @@ static int extract_preflight(bp_io_t *aio, const char *out_dir)
     if (aio->seek(aio->handle, 0, SEEK_SET) != 0 && rc == BP_OK)
         rc = BP_ERR_IO;
     return rc;
+}
+
+/* Writer-side macOS profile check. Reuse the same native case and Unicode
+ * equivalence and path limits as extraction, now against the complete staged
+ * archive after create/add has collected every source entry. */
+static int mac_target_profile_preflight(const bp_archive_t *archive)
+{
+    mac_name_preflight_t pre;
+    bp_uint32 i;
+    int rc = BP_OK;
+    memset(&pre, 0, sizeof(pre));
+    pre.items = (mac_name_key_t *)calloc(MACOS_NAME_PREFLIGHT_MAX,
+                                         sizeof(mac_name_key_t));
+    if (pre.items == NULL) return BP_ERR_NOMEM;
+    for (i = 0; i < archive->entries_written; i++) {
+        if (mac_name_preflight_cb(&archive->entry_list[i], &pre) != 0) {
+            rc = pre.error != BP_OK ? pre.error : BP_ERR_INVALID_ARG;
+            break;
+        }
+    }
+    if (rc == BP_OK) {
+        qsort(pre.items, pre.count, sizeof(mac_name_key_t),
+              mac_name_key_compare);
+        for (i = 1; i < pre.count; i++) {
+            if (strcmp(pre.items[i - 1].key, pre.items[i].key) == 0) {
+                fprintf(stderr,
+                        "boltpack: macOS target profile found a case/Unicode name collision\n");
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+        for (i = 0; rc == BP_OK && i < pre.count; i++) {
+            char prefix[4096];
+            char *slash;
+            size_t n = strlen(pre.items[i].key);
+            if (n >= sizeof(prefix)) { rc = BP_ERR_NAME_TOO_LONG; break; }
+            strcpy(prefix, pre.items[i].key);
+            for (slash = strchr(prefix, '/'); slash != NULL;
+                 slash = strchr(slash + 1, '/')) {
+                int parent;
+                *slash = '\0';
+                parent = mac_name_key_find(pre.items, pre.count, prefix);
+                *slash = '/';
+                if (parent >= 0 && pre.items[parent].type != BP_TYPE_DIR) {
+                    fprintf(stderr,
+                            "boltpack: macOS target profile found a file/directory path conflict\n");
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+            }
+        }
+    }
+    for (i = 0; i < pre.count; i++) free(pre.items[i].key);
+    free(pre.items);
+    return rc;
+}
+
+/* Legacy targets project UTF-8 paths to a single-byte namespace, apply that
+ * filesystem's case map, and enforce smaller component/path limits. */
+static int mac_dos_component_83(const char *component, size_t length)
+{
+    size_t stem = 0, extension = 0, i;
+    char reserved[9];
+    if (length == 0 || component[length - 1U] == ' ' ||
+        component[length - 1U] == '.') return 0;
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem == 0 || stem > 8U) return 0;
+    if (stem < length) {
+        if (stem + 1U == length) return 0;
+        extension = length - stem - 1U;
+        if (extension > 3U ||
+            memchr(component + stem + 1U, '.', extension) != NULL) return 0;
+    }
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c == '.') continue;
+        if (c < 0x20U || c == 0x7FU) return 0;
+        if (c >= 0x80U) continue;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || strchr("$%'-_@~`!(){}^#&", c)))
+            return 0;
+    }
+    if (stem <= 4U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            if (c >= 0x80U) return 1;
+            reserved[i] = (char)(c >= 'a' && c <= 'z'
+                               ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int mac_legacy_name_profile_preflight(const bp_archive_t *archive,
+                                             int codepage,
+                                             size_t max_component,
+                                             size_t max_path,
+                                             const char *profile,
+                                             int allow_amiga_metadata,
+                                             int allow_dos_metadata,
+                                             int dos_83,
+                                             bp_uint8 allowed_native_metadata)
+{
+    mac_name_preflight_t pre;
+    bp_uint32 i;
+    int rc = BP_OK;
+    memset(&pre, 0, sizeof(pre));
+    pre.items = (mac_name_key_t *)calloc(MACOS_NAME_PREFLIGHT_MAX,
+                                         sizeof(mac_name_key_t));
+    if (pre.items == NULL) return BP_ERR_NOMEM;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        char native[4096];
+        char folded[4096];
+        const char *name = entry->name;
+        size_t component = 0;
+        size_t n;
+        size_t j;
+        size_t component_start = 0;
+        int conv;
+
+        if (allow_amiga_metadata && entry->entry_type == BP_TYPE_META &&
+            entry->platform == BP_OS_AMIGA_68K)
+            continue;
+        if (allow_dos_metadata && entry->entry_type == BP_TYPE_META &&
+            (entry->platform == BP_META_PORTABLE ||
+             entry->platform == allowed_native_metadata))
+            continue;
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR) {
+            fprintf(stderr,
+                    "boltpack: %s profile refuses unsupported links, resource forks, and metadata entries\n",
+                    profile);
+            rc = BP_ERR_PARTIAL;
+            break;
+        }
+        if (entry->original_size.hi != 0 ||
+            entry->original_size.lo > 0x7FFFFFFFUL) {
+            fprintf(stderr,
+                    "boltpack: %s profile file exceeds signed 32-bit I/O limit: %s\n",
+                    profile, name);
+            rc = BP_ERR_OVERFLOW;
+            break;
+        }
+        if (name[0] == '/' || !bp_name_is_safe(name)) {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
+        conv = bp_utf8_to_local(name, native, (int)sizeof(native), codepage);
+        if (conv != 0) {
+            fprintf(stderr,
+                    "boltpack: %s profile name is not exactly representable in its target encoding: %s\n",
+                    profile, name);
+            rc = conv == BP_CP_NO_SPACE ? BP_ERR_NAME_TOO_LONG :
+                 BP_ERR_INVALID_ARG;
+            break;
+        }
+        n = strlen(native);
+        if (entry->entry_type == BP_TYPE_DIR && n > 0 &&
+            native[n - 1] == '/')
+            native[--n] = '\0';
+        if (n == 0 || n > max_path) {
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
+        for (j = 0; j <= n; j++) {
+            unsigned char ch = (unsigned char)native[j];
+            if (ch == '/' || ch == '\0') {
+                if (dos_83 &&
+                    !mac_dos_component_83(native + component_start,
+                                          j - component_start)) {
+                    fprintf(stderr,
+                            "boltpack: %s profile has an illegal 8.3 component: %s\n",
+                            profile, name);
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+                if (component == 0 || component > max_component) {
+                    fprintf(stderr,
+                            "boltpack: %s profile component is empty or exceeds %lu target bytes: %s\n",
+                            profile, (unsigned long)max_component, name);
+                    rc = BP_ERR_NAME_TOO_LONG;
+                    break;
+                }
+                if ((component == 1 && native[j - 1] == '.') ||
+                    (component == 2 && native[j - 2] == '.' &&
+                     native[j - 1] == '.')) {
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+                component = 0;
+                component_start = j + 1U;
+            } else {
+                if (ch < 0x20 || ch == 0x7F || ch == ':' || ch == '\\') {
+                    fprintf(stderr,
+                            "boltpack: %s profile name contains a forbidden character: %s\n",
+                            profile, name);
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+                component++;
+            }
+        }
+        if (rc != BP_OK) break;
+        if (bp_local_casefold(native, folded, (int)sizeof(folded),
+                              codepage) != 0) {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
+        if (pre.count >= MACOS_NAME_PREFLIGHT_MAX) {
+            rc = BP_ERR_OVERFLOW;
+            break;
+        }
+        pre.items[pre.count].key = (char *)malloc(strlen(folded) + 1);
+        if (pre.items[pre.count].key == NULL) {
+            rc = BP_ERR_NOMEM;
+            break;
+        }
+        strcpy(pre.items[pre.count].key, folded);
+        pre.items[pre.count].type = entry->entry_type;
+        pre.count++;
+    }
+    if (rc == BP_OK) {
+        qsort(pre.items, pre.count, sizeof(mac_name_key_t),
+              mac_name_key_compare);
+        for (i = 1; i < pre.count; i++) {
+            if (strcmp(pre.items[i - 1].key, pre.items[i].key) == 0) {
+                fprintf(stderr,
+                        "boltpack: %s profile found a target case-fold collision\n",
+                        profile);
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+        for (i = 0; rc == BP_OK && i < pre.count; i++) {
+            char prefix[4096];
+            char *slash;
+            size_t len = strlen(pre.items[i].key);
+            if (len >= sizeof(prefix)) { rc = BP_ERR_NAME_TOO_LONG; break; }
+            strcpy(prefix, pre.items[i].key);
+            for (slash = strchr(prefix, '/'); slash != NULL;
+                 slash = strchr(slash + 1, '/')) {
+                int parent;
+                *slash = '\0';
+                parent = mac_name_key_find(pre.items, pre.count, prefix);
+                *slash = '/';
+                if (parent >= 0 && pre.items[parent].type != BP_TYPE_DIR) {
+                    fprintf(stderr,
+                            "boltpack: %s profile found a file/directory path conflict\n",
+                            profile);
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+            }
+        }
+    }
+    for (i = 0; i < pre.count; i++) free(pre.items[i].key);
+    free(pre.items);
+    return rc;
+}
+
+/* QDOS flattens archive path separators into underscores. Validate the exact
+ * Latin-1 projection and register the projected names so a flat QL filename
+ * cannot alias a nested archive path (for example foo_bar and foo/bar). */
+static int mac_ql_profile_preflight(const bp_archive_t *archive)
+{
+    mac_name_preflight_t pre;
+    bp_uint32 i, j;
+    int rc = BP_OK;
+    memset(&pre, 0, sizeof(pre));
+    pre.items = (mac_name_key_t *)calloc(MACOS_NAME_PREFLIGHT_MAX,
+                                         sizeof(mac_name_key_t));
+    if (pre.items == NULL) return BP_ERR_NOMEM;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        char local[256], projected[256], folded[256];
+        size_t length, component_scan_length, start;
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR) {
+            fprintf(stderr,
+                    "boltpack: Sinclair QL profile refuses links, metadata, and special entries: %s\n",
+                    entry->name);
+            rc = BP_ERR_PARTIAL;
+            break;
+        }
+        if (entry->entry_type == BP_TYPE_DATA &&
+            (entry->original_size.hi != 0 ||
+             entry->original_size.lo > 0x7FFFFFFFUL)) {
+            fprintf(stderr,
+                    "boltpack: Sinclair QL file exceeds signed 32-bit I/O limit: %s\n",
+                    entry->name);
+            rc = BP_ERR_OVERFLOW;
+            break;
+        }
+        if (entry->name[0] == '/' || !bp_name_is_safe(entry->name) ||
+            bp_utf8_to_local(entry->name, local, (int)sizeof(local),
+                             BP_CP_8859_1) != 0) {
+            fprintf(stderr,
+                    "boltpack: Sinclair QL profile name is unsafe or not representable in Latin-1: %s\n",
+                    entry->name);
+            rc = BP_ERR_PARTIAL;
+            break;
+        }
+        length = strlen(local);
+        if (entry->entry_type == BP_TYPE_DIR && length != 0 &&
+            local[length - 1U] == '/')
+            local[--length] = '\0';
+        if (length == 0 || length > 36U) {
+            fprintf(stderr,
+                    "boltpack: Sinclair QL relative path is empty or exceeds 36 bytes: %s\n",
+                    entry->name);
+            rc = BP_ERR_NAME_TOO_LONG;
+            break;
+        }
+        component_scan_length = length;
+        for (start = 0, j = 0; j <= component_scan_length; j++) {
+            if (j == component_scan_length || local[j] == '/') {
+                size_t component_length = j - start;
+                size_t k;
+                if (component_length == 0 ||
+                    (component_length == 1U && local[start] == '.') ||
+                    (component_length == 2U && local[start] == '.' &&
+                     local[start + 1U] == '.')) {
+                    fprintf(stderr,
+                            "boltpack: Sinclair QL profile has an empty or dot path component: %s\n",
+                            entry->name);
+                    rc = BP_ERR_INVALID_ARG;
+                    break;
+                }
+                for (k = start; k < j; k++) {
+                    unsigned char c = (unsigned char)local[k];
+                    if (c < 0x20U || c == 0x7FU || c == ':' || c == '\\') {
+                        fprintf(stderr,
+                                "boltpack: Sinclair QL profile contains a control, colon, or backslash: %s\n",
+                                entry->name);
+                        rc = BP_ERR_INVALID_ARG;
+                        break;
+                    }
+                }
+                if (rc != BP_OK) break;
+                start = j + 1U;
+            }
+        }
+        if (rc != BP_OK) break;
+        for (j = 0; j < length; j++)
+            projected[j] = local[j] == '/' ? '_' : local[j];
+        projected[length] = '\0';
+        if (bp_local_casefold(projected, folded, (int)sizeof(folded),
+                              BP_CP_8859_1) != 0) {
+            rc = BP_ERR_INVALID_ARG;
+            break;
+        }
+        if (pre.count >= MACOS_NAME_PREFLIGHT_MAX) {
+            rc = BP_ERR_OVERFLOW;
+            break;
+        }
+        pre.items[pre.count].key = (char *)malloc(strlen(folded) + 1U);
+        if (pre.items[pre.count].key == NULL) {
+            rc = BP_ERR_NOMEM;
+            break;
+        }
+        strcpy(pre.items[pre.count].key, folded);
+        pre.items[pre.count].type = entry->entry_type;
+        pre.count++;
+    }
+    if (rc == BP_OK) {
+        qsort(pre.items, pre.count, sizeof(mac_name_key_t),
+              mac_name_key_compare);
+        for (i = 1; i < pre.count; i++) {
+            if (strcmp(pre.items[i - 1U].key, pre.items[i].key) == 0) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL projected name collision\n");
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+    }
+    for (i = 0; i < pre.count; i++) free(pre.items[i].key);
+    free(pre.items);
+    return rc;
+}
+
+/* FileCore uses periods as directory syntax. Keep archive slash boundaries,
+ * but reject literal periods and other reserved RISC OS component bytes. */
+static int mac_riscos_profile_preflight(const bp_archive_t *archive)
+{
+    bp_uint32 i;
+    int rc = mac_legacy_name_profile_preflight(
+        archive, BP_CP_8859_1, 10U, 255U, "RISC OS", 0, 0, 0, 0);
+    if (rc != BP_OK) return rc;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        char local[256];
+        size_t length, j;
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR) continue;
+        if (bp_utf8_to_local(entry->name, local, (int)sizeof(local),
+                             BP_CP_8859_1) != 0) return BP_ERR_INVALID_ARG;
+        length = strlen(local);
+        if (entry->entry_type == BP_TYPE_DIR && length != 0 &&
+            local[length - 1U] == '/') length--;
+        for (j = 0; j < length; j++) {
+            unsigned char c = (unsigned char)local[j];
+            if (c == '.' || c == '*' || c == '#' || c == '$' || c == '%' ||
+                c == '&' || c == '@' || c == '"' || c == '|' || c == '^') {
+                fprintf(stderr,
+                        "boltpack: RISC OS profile component contains reserved FileCore syntax: %s\n",
+                        entry->name);
+                return BP_ERR_INVALID_ARG;
+            }
+        }
+    }
+    return BP_OK;
+}
+
+static int mac_classic_hfs_profile_preflight(const bp_archive_t *archive)
+{
+    return mac_legacy_name_profile_preflight(archive, BP_CP_MACROMAN,
+                                             31U, 255U, "Classic HFS", 0,
+                                             0, 0, 0);
+}
+
+static int mac_amiga_profile_preflight(const bp_archive_t *archive)
+{
+    return mac_legacy_name_profile_preflight(archive, BP_CP_8859_1,
+                                             30U, 255U, "AmigaOS 68k", 1,
+                                             0, 0, 0);
+}
+
+static int mac_atari_profile_preflight(const bp_archive_t *archive)
+{
+    bp_atari_name_set_t names;
+    bp_posix_preflight_t paths;
+    bp_uint32 i;
+    int rc = BP_OK;
+
+    memset(&names, 0, sizeof(names));
+    memset(&paths, 0, sizeof(paths));
+    if (archive->block_size > BP_BLOCK_16K ||
+        (archive->method != BP_METHOD_STORED &&
+         archive->method != BP_METHOD_BOLTLITE) ||
+        archive->entries_written > BP_ATARI_PATH_MAX_ENTRIES) {
+        fprintf(stderr, "boltpack: Atari ST profile exceeds codec, block, or entry limits\n");
+        rc = BP_ERR_UNSUPPORTED_METHOD;
+        goto mac_atari_done;
+    }
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        char local[BP_ATARI_GEMDOS_PATH_MAX + 2U];
+        char key[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+        unsigned int key_length;
+        int is_directory;
+
+        if (entry->entry_type == BP_TYPE_META) {
+            if (entry->platform == BP_META_PORTABLE ||
+                entry->platform == BP_OS_ATARI) continue;
+            fprintf(stderr,
+                    "boltpack: Atari ST profile refuses foreign metadata: %s\n",
+                    entry->name);
+            rc = BP_ERR_PARTIAL;
+            goto mac_atari_done;
+        }
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR) {
+            fprintf(stderr,
+                    "boltpack: Atari ST profile does not support this entry type: %s\n",
+                    entry->name);
+            rc = BP_ERR_PARTIAL;
+            goto mac_atari_done;
+        }
+        if (entry->entry_type == BP_TYPE_DATA &&
+            (entry->original_size.hi != 0 ||
+             entry->original_size.lo > 0x7FFFFFFFUL)) {
+            fprintf(stderr,
+                    "boltpack: Atari ST profile file exceeds signed-I/O limit: %s\n",
+                    entry->name);
+            rc = BP_ERR_OVERFLOW;
+            goto mac_atari_done;
+        }
+        if (bp_utf8_to_local(entry->name, local, sizeof(local),
+                             BP_CP_ATARIST) != 0 ||
+            bp_atari_project_name(local, entry->entry_type == BP_TYPE_DIR,
+                                  key, sizeof(key), &key_length) != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: name is outside the Atari GEMDOS 8.3 profile: %s\n",
+                    entry->name);
+            rc = BP_ERR_INVALID_ARG;
+            goto mac_atari_done;
+        }
+        rc = bp_atari_name_set_add(&names, key, key_length);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: Atari ST projected name collision or index limit: %s\n",
+                    entry->name);
+            goto mac_atari_done;
+        }
+        is_directory = entry->entry_type == BP_TYPE_DIR;
+        for (key_length = 0; key_length < strlen(key); key_length++)
+            if (key[key_length] == '\\') key[key_length] = '/';
+        rc = bp_posix_preflight_add(&paths, key, strlen(key), is_directory);
+        if (rc != BP_OK) goto mac_atari_done;
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: Atari ST profile has a file/directory path conflict\n");
+
+mac_atari_done:
+    bp_atari_name_set_free(&names);
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+#define MAC_DOS_PROFILE_NONE           0
+#define MAC_DOS_PROFILE_CP850_83       1
+#define MAC_DOS_PROFILE_CP437_83       2
+#define MAC_DOS_PROFILE_DOS16_CP850    3
+#define MAC_DOS_PROFILE_WIN16_CP437    4
+#define MAC_DOS_PROFILE_OS2_16_CP850   5
+#define MAC_DOS_PROFILE_OS2_FAT_CP850  6
+#define MAC_DOS_PROFILE_CP850_LFN      7
+
+static int mac_dos_profile_codepage(int profile)
+{
+    if (profile == MAC_DOS_PROFILE_CP437_83 ||
+        profile == MAC_DOS_PROFILE_WIN16_CP437)
+        return BP_CP_437;
+    return profile == MAC_DOS_PROFILE_NONE ? BP_CP_INVALID : BP_CP_850;
+}
+
+static bp_uint8 mac_dos_profile_platform(int profile)
+{
+    if (profile == MAC_DOS_PROFILE_WIN16_CP437) return BP_OS_WIN16;
+    if (profile == MAC_DOS_PROFILE_OS2_16_CP850 ||
+        profile == MAC_DOS_PROFILE_OS2_FAT_CP850) return BP_OS_OS2;
+    return BP_OS_DOS;
+}
+
+static const char *mac_dos_profile_name(int profile)
+{
+    switch (profile) {
+    case MAC_DOS_PROFILE_CP850_83: return "DOS CP850 8.3";
+    case MAC_DOS_PROFILE_CP437_83: return "DOS CP437 8.3";
+    case MAC_DOS_PROFILE_DOS16_CP850: return "DOS16 CP850 mini";
+    case MAC_DOS_PROFILE_WIN16_CP437: return "Win16 CP437 mini";
+    case MAC_DOS_PROFILE_OS2_16_CP850: return "OS/2-16 CP850 mini";
+    case MAC_DOS_PROFILE_OS2_FAT_CP850: return "OS/2 FAT CP850";
+    case MAC_DOS_PROFILE_CP850_LFN: return "DOS CP850 LFN";
+    default: return "DOS-family 8.3";
+    }
+}
+
+static int mac_dos_lfn_component_valid(const char *component, size_t length)
+{
+    size_t stem = 0, i;
+    char reserved[9];
+    if (length == 0 || length > 255U || component[length - 1U] == '.' ||
+        component[length - 1U] == ' ') return 0;
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c < 0x20U || c == 0x7FU || c == '\\' ||
+            strchr("\"*:<>?|", c) != NULL ||
+            (c == ' ' && (i + 1U == length || component[i + 1U] == '.')))
+            return 0;
+    }
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem <= 8U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            reserved[i] = (char)(c >= 'a' && c <= 'z'
+                               ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int mac_dos_lfn_profile_preflight(const bp_archive_t *archive)
+{
+    bp_uint32 i;
+    int rc;
+    rc = mac_legacy_name_profile_preflight(
+        archive, BP_CP_850, 255U, 259U, "DOS CP850 LFN", 0, 1, 0,
+        BP_OS_DOS);
+    if (rc != BP_OK) return rc;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        char local[4096];
+        size_t length, start, j;
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR) continue;
+        if (bp_utf8_to_local(entry->name, local, (int)sizeof(local),
+                             BP_CP_850) != 0) return BP_ERR_INVALID_ARG;
+        length = strlen(local);
+        if (entry->entry_type == BP_TYPE_DIR && length != 0 &&
+            local[length - 1U] == '/') local[--length] = '\0';
+        for (start = 0, j = 0; j <= length; j++) {
+            if (j == length || local[j] == '/') {
+                if (!mac_dos_lfn_component_valid(local + start, j - start)) {
+                    fprintf(stderr,
+                            "boltpack: DOS CP850 LFN component is illegal or too long: %s\n",
+                            entry->name);
+                    return BP_ERR_INVALID_ARG;
+                }
+                start = j + 1U;
+            }
+        }
+    }
+    return BP_OK;
+}
+
+static int mac_dos_profile_preflight(const bp_archive_t *archive, int profile)
+{
+    if (profile == MAC_DOS_PROFILE_CP850_LFN)
+        return mac_dos_lfn_profile_preflight(archive);
+    return mac_legacy_name_profile_preflight(
+        archive, mac_dos_profile_codepage(profile), 12U, 259U,
+        mac_dos_profile_name(profile), 0, 1, 1,
+        mac_dos_profile_platform(profile));
+}
+
+static int mac_cpm86_profile_preflight(const bp_archive_t *archive)
+{
+    char names[256][BP_CPM86_NAME_SIZE];
+    bp_uint32 i, j;
+    if (archive->entries_written > 256U) return BP_ERR_OVERFLOW;
+    if (archive->block_size > BP_BLOCK_32K ||
+        (archive->method != BP_METHOD_STORED &&
+         archive->method != BP_METHOD_BOLTLITE))
+        return BP_ERR_UNSUPPORTED_METHOD;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        if (entry->entry_type != BP_TYPE_DATA || entry->flags != 0 ||
+            !bp_u64_is_zero(entry->mtime) ||
+            (entry->method != BP_METHOD_STORED &&
+             entry->method != BP_METHOD_BOLTLITE) ||
+            entry->block_size > BP_BLOCK_32K ||
+            (entry->block_size == 0 &&
+             entry->original_size.lo > BP_BLOCK_32K) ||
+            entry->original_size.hi != 0 ||
+            entry->original_size.lo > 0x7FFFFFFFUL ||
+            strchr(entry->name, '/') != NULL ||
+            strchr(entry->name, '\\') != NULL ||
+            strchr(entry->name, ':') != NULL ||
+            !bp_cpm86_project_name(entry->name, names[i]) ||
+            strcmp(entry->name, names[i]) != 0) {
+            fprintf(stderr, "boltpack: archive entry violates CP/M-86 profile: %s\n",
+                    entry->name);
+            return BP_ERR_PARTIAL;
+        }
+        for (j = 0; j < i; j++) {
+            if (strcmp(names[i], names[j]) == 0) {
+                fprintf(stderr, "boltpack: CP/M-86 projected name collision: %s\n",
+                        entry->name);
+                return BP_ERR_INVALID_ARG;
+            }
+        }
+    }
+    return BP_OK;
+}
+
+static int mac_cpm86_archive_size_check(FILE *fp)
+{
+    off_t end, current;
+    if (fflush(fp) != 0) return BP_ERR_IO;
+    current = ftello(fp);
+    if (current < 0 || fseeko(fp, 0, SEEK_END) != 0) return BP_ERR_IO;
+    end = ftello(fp);
+    if (end < 0) return BP_ERR_IO;
+    if (fseeko(fp, current, SEEK_SET) != 0) return BP_ERR_IO;
+    return end <= (off_t)0x7FFFFFFFL ? BP_OK : BP_ERR_OVERFLOW;
 }
 
 /* Resolve the user-selected extraction root one directory at a time. Once
@@ -2315,7 +3104,9 @@ static int cmd_delete(int argc, char **argv)
 /* ---- cmd_add ----------------------------------------------------------- */
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
-                   int level, int interchange_profile)
+                   int level, int interchange_profile,
+                   int macos_target_profile, int classic_hfs_profile,
+                   int amiga_profile, int dos_profile)
 {
     const char *archive_name;
     FILE *src_fp, *fp;
@@ -2384,6 +3175,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
         return 1;
     }
     ar_open = 1;
+    if (g_target_cpm86 && mac_cpm86_archive_size_check(fp) != BP_OK) {
+        fprintf(stderr, "boltpack: existing archive exceeds CP/M-86 2 GiB limit\n");
+        goto add_failed;
+    }
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
@@ -2406,7 +3201,76 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
             goto add_failed;
         }
     }
+    if (macos_target_profile) {
+        rc = mac_target_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: macOS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (classic_hfs_profile) {
+        rc = mac_classic_hfs_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: Classic HFS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (amiga_profile) {
+        rc = mac_amiga_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: AmigaOS 68k target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (dos_profile != MAC_DOS_PROFILE_NONE) {
+        rc = mac_dos_profile_preflight(&ar, dos_profile);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: %s target profile preflight failed: %s\n",
+                    mac_dos_profile_name(dos_profile), bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (g_target_cpm86) {
+        rc = mac_cpm86_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: CP/M-86 target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (g_target_atari) {
+        rc = mac_atari_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: Atari ST target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (g_target_ql) {
+        rc = mac_ql_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: Sinclair QL target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (g_target_riscos) {
+        rc = mac_riscos_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: RISC OS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_failed;
+        }
+    }
     rc = bp_archive_finalize(&ar);
+    if (rc == BP_OK && g_target_cpm86)
+        rc = mac_cpm86_archive_size_check(fp);
     bp_archive_close(&ar);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
@@ -2443,7 +3307,9 @@ add_failed:
 /* ---- cmd_create -------------------------------------------------------- */
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method, int level, int interchange_profile)
+                      bp_uint8 method, int level, int interchange_profile,
+                      int macos_target_profile, int classic_hfs_profile,
+                      int amiga_profile, int dos_profile)
 {
     const char *archive_name;
     FILE *fp;
@@ -2516,7 +3382,76 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
             bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
         }
     }
+    if (macos_target_profile) {
+        rc = mac_target_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: macOS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (classic_hfs_profile) {
+        rc = mac_classic_hfs_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: Classic HFS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (amiga_profile) {
+        rc = mac_amiga_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: AmigaOS 68k target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (dos_profile != MAC_DOS_PROFILE_NONE) {
+        rc = mac_dos_profile_preflight(&ar, dos_profile);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: %s target profile preflight failed: %s\n",
+                    mac_dos_profile_name(dos_profile), bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (g_target_cpm86) {
+        rc = mac_cpm86_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: CP/M-86 target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (g_target_atari) {
+        rc = mac_atari_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: Atari ST target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (g_target_ql) {
+        rc = mac_ql_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: Sinclair QL target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (g_target_riscos) {
+        rc = mac_riscos_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: RISC OS target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
     rc = bp_archive_finalize(&ar);
+    if (rc == BP_OK && g_target_cpm86)
+        rc = mac_cpm86_archive_size_check(fp);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
         bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
@@ -2765,6 +3700,23 @@ static void usage_basic(void)
         "\nCommon options:\n"
         "  -b SIZE    Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  --interchange-profile-1  Mini-compatible limits for create/add\n"
+        "  --target-profile=macos-modern-v1  Reject names unsafe on macOS volumes (create/add)\n"
+        "  --target-profile=macos-classic-hfs-v1  Check Classic HFS names and limits (create/add)\n"
+        "  --target-profile=atari-st  Check Atari ST GEMDOS names and limits (create/add)\n"
+        "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
+        "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
+        "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n");
+    fprintf(stderr,
+        "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
+        "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
+        "  --target-profile=dos16-cp850-mini  Check DOS16 mini-reader limits\n"
+        "  --target-profile=win16-cp437-mini  Check Win16 mini-reader limits\n");
+    fprintf(stderr,
+        "  --target-profile=os2-16-cp850-mini  Check OS/2-16 mini-reader limits\n"
+        "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
+        "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
+        "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n");
+    fprintf(stderr,
         "  -0         Store only (no compression)\n"
         "  -1         BoltLite compression\n"
         "  -2         boltlz compression (default)\n"
@@ -2809,10 +3761,27 @@ static void usage_advanced(void)
         "\nOptions:\n"
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n"
         "  --interchange-profile-1  Mini-compatible limits for create/add\n"
-        "  -0, --store      Store only (no compression)\n"
+        "  --target-profile=macos-modern-v1  Reject names unsafe on macOS volumes (create/add)\n"
+        "  -0, --store      Store only (no compression)\n");
+    fprintf(stderr,
         "  -1, --boltlite       Use BoltLite compression\n"
         "  -2, --boltlz    Use boltlz compression (default)\n"
         "  -F, --fluff      Use Fluff compression\n");
+    fprintf(stderr,
+        "  --target-profile=macos-classic-hfs-v1  Check Classic HFS names and limits (create/add)\n"
+        "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
+        "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
+        "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n");
+    fprintf(stderr,
+        "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
+        "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
+        "  --target-profile=dos16-cp850-mini  Check DOS16 mini-reader limits\n"
+        "  --target-profile=win16-cp437-mini  Check Win16 mini-reader limits\n");
+    fprintf(stderr,
+        "  --target-profile=os2-16-cp850-mini  Check OS/2-16 mini-reader limits\n"
+        "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
+        "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
+        "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n");
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
@@ -2844,6 +3813,14 @@ int main(int argc, char **argv)
     int force   = 0;
     int dry_run = 0;
     int interchange_profile = 0;
+    int macos_target_profile = 0;
+    int classic_hfs_profile = 0;
+    int amiga_profile = 0;
+    int cpm86_profile = 0;
+    int atari_profile = 0;
+    int ql_profile = 0;
+    int riscos_profile = 0;
+    int dos_profile = MAC_DOS_PROFILE_NONE;
     int codec_given = 0;
     int i;
 
@@ -2892,6 +3869,107 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1;
             i++;
+        } else if (strcmp(argv[i], "--target-profile=atari-st") == 0) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                cpm86_profile || ql_profile || riscos_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE ||
+                atari_profile) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            atari_profile = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-profile=macos-modern-v1") == 0) {
+            if (classic_hfs_profile || amiga_profile || cpm86_profile ||
+                ql_profile || riscos_profile || atari_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            macos_target_profile = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-profile=macos-classic-hfs-v1") == 0) {
+            if (macos_target_profile || amiga_profile || cpm86_profile ||
+                ql_profile || riscos_profile || atari_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            classic_hfs_profile = 1;
+            i++;
+        } else if (strcmp(argv[i],
+                          "--target-profile=amigaos-68k-latin1") == 0) {
+            if (macos_target_profile || classic_hfs_profile || cpm86_profile ||
+                ql_profile || riscos_profile || atari_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            amiga_profile = 1;
+            i++;
+        } else if (strcmp(argv[i],
+                          "--target-profile=sinclair-ql-latin1-v1") == 0) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                cpm86_profile || atari_profile || riscos_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE || ql_profile) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            ql_profile = 1;
+            i++;
+        } else if (strcmp(argv[i],
+                          "--target-profile=riscos-latin1-v1") == 0) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                cpm86_profile || atari_profile || ql_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE || riscos_profile) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            riscos_profile = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-profile=cpm86-83") == 0) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                ql_profile || riscos_profile || atari_profile ||
+                cpm86_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            cpm86_profile = 1;
+            i++;
+        } else if (strncmp(argv[i], "--target-profile=", 17) == 0 &&
+                   (strcmp(argv[i] + 17, "dos-cp850-83") == 0 ||
+                    strcmp(argv[i] + 17, "dos-cp437-83") == 0 ||
+                    strcmp(argv[i] + 17, "dos16-cp850-mini") == 0 ||
+                    strcmp(argv[i] + 17, "win16-cp437-mini") == 0 ||
+                    strcmp(argv[i] + 17, "os2-16-cp850-mini") == 0 ||
+                    strcmp(argv[i] + 17, "os2-fat-cp850") == 0 ||
+                    strcmp(argv[i] + 17, "dos-cp850-lfn-v1") == 0)) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                ql_profile || riscos_profile || atari_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            if (strcmp(argv[i] + 17, "dos-cp850-83") == 0)
+                dos_profile = MAC_DOS_PROFILE_CP850_83;
+            else if (strcmp(argv[i] + 17, "dos-cp437-83") == 0)
+                dos_profile = MAC_DOS_PROFILE_CP437_83;
+            else if (strcmp(argv[i] + 17, "dos16-cp850-mini") == 0)
+                dos_profile = MAC_DOS_PROFILE_DOS16_CP850;
+            else if (strcmp(argv[i] + 17, "win16-cp437-mini") == 0)
+                dos_profile = MAC_DOS_PROFILE_WIN16_CP437;
+            else if (strcmp(argv[i] + 17, "os2-16-cp850-mini") == 0)
+                dos_profile = MAC_DOS_PROFILE_OS2_16_CP850;
+            else if (strcmp(argv[i] + 17, "dos-cp850-lfn-v1") == 0)
+                dos_profile = MAC_DOS_PROFILE_CP850_LFN;
+            else
+                dos_profile = MAC_DOS_PROFILE_OS2_FAT_CP850;
+            i++;
+        } else if (strncmp(argv[i], "--target-profile=", 17) == 0) {
+            fprintf(stderr, "boltpack: unknown target profile: %s\n",
+                    argv[i] + 17);
+            return 1;
         } else if (strcmp(argv[i], "-b") == 0 ||
                    strcmp(argv[i], "--block-size") == 0) {
             if (i + 1 >= argc) {
@@ -2995,9 +4073,52 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if (interchange_profile) {
+    g_target_atari = atari_profile;
+    if (atari_profile) {
         if ((command != 'c' && command != 'a') ||
             (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: atari-st requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (ql_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: sinclair-ql-latin1-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (riscos_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: riscos-latin1-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (interchange_profile) {
+        if ((command != 'c' && command != 'a') ||
+            block_size > BP_BLOCK_32K ||
             (codec_given && method != BP_METHOD_BOLTLITE &&
              method != BP_METHOD_STORED) || opt_level != 0) {
             fprintf(stderr,
@@ -3007,6 +4128,93 @@ int main(int argc, char **argv)
         block_size = BP_BLOCK_16K;
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
+    }
+    if (amiga_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: amigaos-68k-latin1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (classic_hfs_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: macos-classic-hfs-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (dos_profile != MAC_DOS_PROFILE_NONE) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: %s requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n",
+                    mac_dos_profile_name(dos_profile));
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (cpm86_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: cpm86-83 requires create/add, Stored or BoltLite, blocks no larger than 32 KiB, and no codec level\n");
+            return 1;
+        }
+        if (block_size == 0) block_size = BP_BLOCK_32K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (macos_target_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: macos-modern-v1 target profile requires create/add\n");
+        return 1;
+    }
+    if (atari_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: atari-st target profile requires create/add\n");
+        return 1;
+    }
+    if (classic_hfs_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: macos-classic-hfs-v1 target profile requires create/add\n");
+        return 1;
+    }
+    if (amiga_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: amigaos-68k-latin1 target profile requires create/add\n");
+        return 1;
+    }
+    if (dos_profile != MAC_DOS_PROFILE_NONE &&
+        command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: %s target profile requires create/add\n",
+                mac_dos_profile_name(dos_profile));
+        return 1;
+    }
+    if (cpm86_profile && command != 'c' && command != 'a') {
+        fprintf(stderr, "boltpack: cpm86-83 target profile requires create/add\n");
+        return 1;
     }
     if (command == 'x' && i + 1 < argc) {
         fprintf(stderr,
@@ -3019,11 +4227,24 @@ int main(int argc, char **argv)
         block_size = BP_BLOCK_256K;
     }
 
+    g_target_classic_hfs = classic_hfs_profile;
+    g_target_amiga_68k = amiga_profile;
+    g_target_dos_family = dos_profile != MAC_DOS_PROFILE_NONE;
+    g_target_cpm86 = cpm86_profile;
+    g_target_ql = ql_profile;
+    g_target_riscos = riscos_profile;
+    g_target_dos_profile_label = g_target_dos_family
+                               ? mac_dos_profile_name(dos_profile) : NULL;
+
     switch (command) {
     case 'c': return cmd_create(argc - i, argv + i, block_size, method,
-                                opt_level, interchange_profile);
+                                opt_level, interchange_profile,
+                                macos_target_profile, classic_hfs_profile,
+                                amiga_profile, dos_profile);
     case 'a': return cmd_add(argc - i, argv + i, block_size, method,
-                             opt_level, interchange_profile);
+                             opt_level, interchange_profile,
+                             macos_target_profile, classic_hfs_profile,
+                             amiga_profile, dos_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n");

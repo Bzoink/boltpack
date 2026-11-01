@@ -273,7 +273,7 @@ static const char *clean_path(const char *p)
 
 static int p9_mkdir(const char *path)
 {
-    int fd = create(path, OREAD, DMDIR | 0777);
+    int fd = create(path, OREAD | OEXCL, DMDIR | 0700);
     if (fd < 0) return -1;
     close(fd);
     return 0;
@@ -718,7 +718,9 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         fprint(2, "boltpack: cannot create parent directory for: %s\n", path);
         return nil;
     }
-    fd = create(path, OWRITE, 0666);
+    /* OEXCL prevents an archive entry from truncating a file that appeared
+     * after the output root was created. */
+    fd = create(path, OWRITE | OEXCL, 0666);
     if (fd < 0) { fprint(2, "boltpack: cannot create: %s\n", path); return nil; }
     fctx = (p9_io_t *)malloc(sizeof(p9_io_t));
     if (!fctx) { close(fd); return nil; }
@@ -1107,7 +1109,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     if (rc != BP_OK) { fprint(2, "boltpack: %s\n", bp_strerror(rc)); close(fd); return 1; }
     bp_io_from_p9(&arc_ctx.io, fd, &arc_ctx);
     memset(&preflight, 0, sizeof(preflight));
-    preflight.out_dir = out_dir;
+    /* Archive paths are checked relative to a newly created extraction root. */
+    preflight.out_dir = nil;
     rc = p9_path_index_init(&preflight.index);
     if (rc == BP_OK) rc = bp_archive_list(&arc_ctx.io, extract_preflight_entry,
                                           &preflight);
@@ -1119,22 +1122,39 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
     p9_path_index_free(&preflight.index);
-    /* Plan 9 exposes pathname-based create/wstat operations here, but no
-     * held-parent traversal or safe staged publication. Refuse real
-     * extraction until an equivalent race-safe implementation exists. */
     if (!dry_run) {
-        fprint(2,
-               "boltpack: extraction is disabled because this platform cannot anchor output paths safely\n");
-        close(fd);
-        return 1;
-    }
-    if (out_dir && !dry_run && mkdirs(out_dir) < 0) {
-        close(fd);
-        fprint(2, "boltpack: cannot create output directory: %s\n", out_dir);
-        return 1;
+        int root_fd;
+        if (!out_dir) {
+            fprint(2, "boltpack: Plan 9 extraction requires -o with a new output directory\n");
+            close(fd);
+            return 1;
+        }
+        /* A fresh, private root makes every validated archive path relative
+         * to the held working directory. OEXCL refuses an existing output
+         * directory rather than merging with or replacing its contents. */
+        root_fd = create(out_dir, OREAD | OEXCL, DMDIR | 0700);
+        if (root_fd < 0) {
+            Dir *existing = dirstat(out_dir);
+            close(fd);
+            if (existing) {
+                free(existing);
+                fprint(2, "boltpack: output directory must not already exist: %s\n",
+                       out_dir);
+            } else {
+                fprint(2, "boltpack: cannot create output directory: %s\n",
+                       out_dir);
+            }
+            return 1;
+        }
+        close(root_fd);
+        if (chdir(out_dir) < 0) {
+            close(fd);
+            fprint(2, "boltpack: cannot enter output directory: %s\n", out_dir);
+            return 1;
+        }
     }
     memset(&ctx, 0, sizeof(ctx));
-    ctx.out_dir = out_dir; ctx.force = force; ctx.dry_run = dry_run;
+    ctx.out_dir = nil; ctx.force = force; ctx.dry_run = dry_run;
     rc = bp_archive_extract_all_ex(&arc_ctx.io, extract_open, extract_done,
                                    nil, &ctx);
     if (rc == BP_OK || rc == BP_ERR_PARTIAL) {

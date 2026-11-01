@@ -793,11 +793,53 @@ typedef struct wcx_entry {
     char      output_path[WCX_UTF8_PATH];
 } wcx_entry_t;
 
+typedef int (WINAPI *wcx_normalize_string_fn)(int form, LPCWSTR source,
+                                              int source_length,
+                                              LPWSTR destination,
+                                              int destination_capacity);
+
+static int wcx_normalize_nfc(WCHAR *name, int *length)
+{
+    static HMODULE module;
+    static wcx_normalize_string_fn normalize;
+    static int looked_up;
+    union {
+        FARPROC generic;
+        wcx_normalize_string_fn typed;
+    } resolved;
+    WCHAR normalized[WCX_MAX_PATH];
+    int normalized_length, i;
+    if (!looked_up) {
+        module = LoadLibraryW(L"normaliz.dll");
+        if (module != NULL) {
+            resolved.generic = GetProcAddress(module, "NormalizeString");
+            normalize = resolved.typed;
+        }
+        looked_up = 1;
+    }
+    if (normalize == NULL) {
+        for (i = 0; i < *length; i++)
+            if ((unsigned short)name[i] > 0x7f) return -1;
+        return 0;
+    }
+    normalized_length = normalize(1, name, *length, normalized,
+                                  WCX_MAX_PATH - 1);
+    if (normalized_length <= 0 || normalized_length >= WCX_MAX_PATH) return -1;
+    memcpy(name, normalized, (size_t)normalized_length * sizeof(WCHAR));
+    name[normalized_length] = L'\0';
+    *length = normalized_length;
+    return 0;
+}
+
 static int wcx_component_safe(const WCHAR *name, size_t length)
 {
     size_t i, base_length = length;
     WCHAR base[16];
-    if (length == 0 || name[length - 1] == L'.' || name[length - 1] == L' ')
+    if (length == 0 || length > 255 ||
+        (length == 1 && name[0] == L'.') ||
+        (length == 2 && name[0] == L'.' && name[1] == L'.') ||
+        name[length - 1] == L'.' ||
+        name[length - 1] == L' ')
         return 0;
     for (i = 0; i < length; i++) {
         WCHAR c = name[i];
@@ -805,7 +847,11 @@ static int wcx_component_safe(const WCHAR *name, size_t length)
             c == L'|' || c == L'?' || c == L'*' || c == L'\\') return 0;
         if (c == L'.' && base_length == length) base_length = i;
     }
-    if (base_length == 0 || base_length >= sizeof(base) / sizeof(base[0])) return 1;
+    while (base_length > 0 &&
+           (name[base_length - 1] == L' ' || name[base_length - 1] == L'.'))
+        base_length--;
+    if (base_length == 0 ||
+        base_length >= sizeof(base) / sizeof(base[0])) return 1;
     memcpy(base, name, base_length * sizeof(WCHAR));
     base[base_length] = L'\0';
     if (_wcsicmp(base, L"CON") == 0 || _wcsicmp(base, L"PRN") == 0 ||
@@ -814,7 +860,8 @@ static int wcx_component_safe(const WCHAR *name, size_t length)
         return 0;
     if (base_length == 4 &&
         (_wcsnicmp(base, L"COM", 3) == 0 || _wcsnicmp(base, L"LPT", 3) == 0) &&
-        base[3] >= L'1' && base[3] <= L'9') return 0;
+        ((base[3] >= L'1' && base[3] <= L'9') || base[3] == 0x00B9 ||
+         base[3] == 0x00B2 || base[3] == 0x00B3)) return 0;
     return 1;
 }
 
@@ -827,6 +874,7 @@ static int wcx_windows_name_safe(const char *name)
     length = (size_t)n - 1;
     while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
         length--;
+    if (length > 259) return 0;
     start = 0;
     for (i = 0; i <= length; i++) {
         size_t component_length;
@@ -848,16 +896,21 @@ static void wcx_trim_separator(char *path)
 static int wcx_windows_case_key(const char *path, WCHAR *key, size_t capacity)
 {
     WCHAR wide[WCX_MAX_PATH], folded[WCX_MAX_PATH];
-    int wide_length, folded_length;
+    int wide_length, folded_length, i, normalized_length;
     size_t length;
     wide_length = wcx_utf8_to_wide(path, wide, WCX_MAX_PATH);
     if (wide_length <= 0) return -1;
     length = (size_t)wide_length - 1;
     while (length > 0 && (wide[length - 1] == L'/' || wide[length - 1] == L'\\'))
         length--;
+    for (i = 0; i < (int)length; i++)
+        if (wide[i] == L'/') wide[i] = L'\\';
+    normalized_length = (int)length;
+    if (wcx_normalize_nfc(wide, &normalized_length) != 0) return -1;
+    length = (size_t)normalized_length;
     folded_length = LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE, wide,
                                  (int)length, folded, WCX_MAX_PATH - 1);
-    if (folded_length < 0 || (size_t)folded_length + 1 > capacity) return -1;
+    if (folded_length <= 0 || (size_t)folded_length + 1 > capacity) return -1;
     if (folded_length > 0) memcpy(key, folded, (size_t)folded_length * sizeof(WCHAR));
     key[folded_length] = L'\0';
     return folded_length;
@@ -1229,7 +1282,10 @@ static int pack_add_file(bp_archive_t *ar, const char *src_path,
     if (_stat64(src_path, &st) != 0) return BP_ERR_IO;
     if (st.st_size < 0) return BP_ERR_OVERFLOW;
     attributes = GetFileAttributesA(src_path);
-    if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & (FILE_ATTRIBUTE_REPARSE_POINT |
+                       FILE_ATTRIBUTE_DEVICE)) != 0)
+        return BP_ERR_INVALID_ARG;
     if (strlen(arc_name) >= sizeof(arc_name_utf8))
         return BP_ERR_INVALID_ARG;
     if ((bp_off_t)st.st_mtime >= 0 &&
@@ -1797,6 +1853,153 @@ void WINAPI SetProcessDataProcW(HANDLE hArcData, tProcessDataProcW pProc)
     }
 }
 
+static int wcx_build_pack_paths(const char *name, const char *SubPath,
+                                const char *SrcPath, int Flags,
+                                char *src, size_t src_size,
+                                char *arc_name, size_t arc_size)
+{
+    const char *base;
+    const char *sep;
+    size_t length;
+    if (SrcPath != NULL && SrcPath[0] != '\0') {
+        size_t need = strlen(SrcPath) + strlen(name) + 2;
+        if (need > src_size) return BP_ERR_NAME_TOO_LONG;
+        path_join(src, src_size, SrcPath, name);
+    } else {
+        if (strlen(name) >= src_size) return BP_ERR_NAME_TOO_LONG;
+        safe_strcpy(src, src_size, name);
+    }
+
+    if (SubPath != NULL && SubPath[0] != '\0') {
+        length = strlen(SubPath);
+        if (length >= arc_size) return BP_ERR_NAME_TOO_LONG;
+        safe_strcpy(arc_name, arc_size, SubPath);
+        if (!ends_with_sep(arc_name)) {
+            if (length + 1 >= arc_size) return BP_ERR_NAME_TOO_LONG;
+            arc_name[length++] = '/';
+            arc_name[length] = '\0';
+        }
+        if (strlen(name) >= arc_size - length) return BP_ERR_NAME_TOO_LONG;
+        memcpy(arc_name + length, name, strlen(name) + 1);
+    } else if (Flags & PK_PACK_SAVE_PATHS) {
+        if (strlen(name) >= arc_size) return BP_ERR_NAME_TOO_LONG;
+        safe_strcpy(arc_name, arc_size, name);
+    } else {
+        sep = strrchr(name, '\\');
+        {
+            const char *forward = strrchr(name, '/');
+            if (forward != NULL && (sep == NULL || forward > sep)) sep = forward;
+        }
+        base = sep != NULL ? sep + 1 : name;
+        if (strlen(base) >= arc_size) return BP_ERR_NAME_TOO_LONG;
+        safe_strcpy(arc_name, arc_size, base);
+    }
+    to_fwdslash(arc_name);
+    {
+        WCHAR wide[WCX_MAX_PATH];
+        if (wcx_utf8_to_wide(src, wide, WCX_MAX_PATH) <= 0)
+            return BP_ERR_NAME_TOO_LONG;
+    }
+    return BP_OK;
+}
+
+static int wcx_preflight_add_name(wcx_arc_t *index, const char *name,
+                                  bp_uint8 entry_type)
+{
+    wcx_entry_t *entry;
+    struct wcx_entry *new_entries;
+    int new_capacity;
+    if (entry_type != BP_TYPE_DATA && entry_type != BP_TYPE_DIR)
+        return BP_ERR_INVALID_ARG;
+    if (!wcx_windows_name_safe(name)) return BP_ERR_INVALID_ARG;
+    if (index->entry_count >= 65535) return BP_ERR_OVERFLOW;
+    if (index->entry_count >= index->entry_cap) {
+        new_capacity = index->entry_cap == 0 ? 64 : index->entry_cap * 2;
+        if (new_capacity > 65535) new_capacity = 65535;
+        new_entries = (struct wcx_entry *)realloc(
+            index->entries, (size_t)new_capacity * sizeof(wcx_entry_t));
+        if (new_entries == NULL) return BP_ERR_NOMEM;
+        index->entries = new_entries;
+        index->entry_cap = new_capacity;
+    }
+    entry = &index->entries[index->entry_count];
+    memset(entry, 0, sizeof(*entry));
+    safe_strcpy(entry->name_fwd, sizeof(entry->name_fwd), name);
+    safe_strcpy(entry->name, sizeof(entry->name), name);
+    to_backslash(entry->name);
+    entry->entry_type = entry_type;
+    entry->is_dir = entry_type == BP_TYPE_DIR;
+    index->entry_count++;
+    if (wcx_projected_collision(index, entry->name, entry->is_dir)) {
+        index->entry_count--;
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static int wcx_preflight_existing_archive(const char *target,
+                                          wcx_arc_t *index)
+{
+    FILE *fp;
+    bp_io_t io;
+    int rc, i;
+    fp = fopen(target, "rb");
+    if (fp == NULL) return BP_ERR_IO;
+    bp_io_from_file(&io, fp);
+    rc = bp_archive_list(&io, list_populate, index);
+    fclose(fp);
+    if (rc != BP_OK || index->list_error != BP_OK)
+        return index->list_error != BP_OK ? index->list_error : rc;
+    for (i = 0; i < index->entry_count; i++) {
+        const wcx_entry_t *entry = &index->entries[i];
+        if (entry->entry_type != BP_TYPE_DATA &&
+            entry->entry_type != BP_TYPE_DIR)
+            return BP_ERR_PARTIAL;
+        if (entry->foreign_meta_present || entry->resource_present)
+            return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+static int wcx_pack_preflight(const char *target, int appending,
+                              char *SubPath, char *SrcPath,
+                              char *AddList, int Flags)
+{
+    wcx_arc_t index;
+    char *name;
+    int rc = BP_OK;
+    memset(&index, 0, sizeof(index));
+    if (appending) {
+        rc = wcx_preflight_existing_archive(target, &index);
+        if (rc != BP_OK) goto pack_preflight_done;
+    }
+    for (name = AddList; name != NULL && *name != '\0';
+         name += strlen(name) + 1) {
+        char src[WCX_UTF8_PATH];
+        char arc_name[WCX_UTF8_PATH];
+        DWORD attributes;
+        bp_uint8 type;
+        rc = wcx_build_pack_paths(name, SubPath, SrcPath, Flags,
+                                  src, sizeof(src), arc_name,
+                                  sizeof(arc_name));
+        if (rc != BP_OK) goto pack_preflight_done;
+        attributes = GetFileAttributesA(src);
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & (FILE_ATTRIBUTE_REPARSE_POINT |
+                           FILE_ATTRIBUTE_DEVICE)) != 0) {
+            rc = BP_ERR_INVALID_ARG;
+            goto pack_preflight_done;
+        }
+        type = (attributes & FILE_ATTRIBUTE_DIRECTORY)
+             ? BP_TYPE_DIR : BP_TYPE_DATA;
+        rc = wcx_preflight_add_name(&index, arc_name, type);
+        if (rc != BP_OK) goto pack_preflight_done;
+    }
+pack_preflight_done:
+    free(index.entries);
+    return rc;
+}
+
 static int wcx_pack_files_utf8(char *PackedFile, char *SubPath,
                                char *SrcPath, char *AddList, int Flags)
 {
@@ -1809,9 +2012,6 @@ static int wcx_pack_files_utf8(char *PackedFile, char *SubPath,
     char arc_name[WCX_UTF8_PATH];
     char target[WCX_UTF8_PATH];
     char temporary[WCX_UTF8_PATH] = "";
-    const char *base;
-    char *sep;
-    char *fsep;
     DWORD target_length;
     DWORD target_attr;
     int rc;
@@ -1838,6 +2038,9 @@ static int wcx_pack_files_utf8(char *PackedFile, char *SubPath,
             return E_ECREATE;
         appending = 1;
     }
+
+    rc = wcx_pack_preflight(target, appending, SubPath, SrcPath, AddList, Flags);
+    if (rc != BP_OK) return rc == BP_ERR_NOMEM ? E_NO_MEMORY : E_NOT_SUPPORTED;
 
     /* Build the complete archive away from the visible path. This leaves an
      * existing archive intact if adding an entry or finalizing the new table
@@ -1886,43 +2089,13 @@ static int wcx_pack_files_utf8(char *PackedFile, char *SubPath,
     for (name = AddList; name != NULL && *name != '\0';
          name += strlen(name) + 1) {
 
-        /* Build the full source path. */
-        if (SrcPath != NULL && SrcPath[0] != '\0') {
-            path_join(src, sizeof(src), SrcPath, name);
-        } else {
-            safe_strcpy(src, sizeof(src), name);
+        rc = wcx_build_pack_paths(name, SubPath, SrcPath, Flags,
+                                  src, sizeof(src), arc_name,
+                                  sizeof(arc_name));
+        if (rc != BP_OK) {
+            result = E_EWRITE;
+            goto pack_cleanup;
         }
-
-        /* Build the archive entry name. */
-        if (SubPath != NULL && SubPath[0] != '\0') {
-            safe_strcpy(arc_name, sizeof(arc_name), SubPath);
-
-            if (!ends_with_sep(SubPath)) {
-                size_t len = strlen(arc_name);
-                if (len < sizeof(arc_name) - 1) {
-                    arc_name[len] = '/';
-                    arc_name[len + 1] = '\0';
-                }
-            }
-
-            size_t len = strlen(arc_name);
-            if (len < sizeof(arc_name) - 1) {
-                strncat(arc_name, name, sizeof(arc_name) - len - 1);
-            }
-        } else if (Flags & PK_PACK_SAVE_PATHS) {
-            /* Preserve relative paths as-is. */
-            safe_strcpy(arc_name, sizeof(arc_name), name);
-        } else {
-            /* Strip any directory prefix; store bare filename only. */
-            sep  = strrchr(name, '\\');
-            fsep = strrchr(name, '/');
-            if (fsep != NULL && (sep == NULL || fsep > sep)) sep = fsep;
-            base = (sep != NULL) ? sep + 1 : name;
-            safe_strcpy(arc_name, sizeof(arc_name), base);
-        }
-
-        /* Archive paths always use forward slashes. */
-        to_fwdslash(arc_name);
 
         rc = pack_add_file(&ar, src, arc_name);
         if (rc == BP_ERR_PARTIAL) {
