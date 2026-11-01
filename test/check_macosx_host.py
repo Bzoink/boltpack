@@ -371,6 +371,9 @@ def main():
         binary = root / "boltpack-macosx-host"
         check_apple_branches_syntax(args.cc)
         build_host_cli(args.cc, binary)
+        run([sys.executable, str(ROOT / "test/check_other_target_auto.py"),
+             "--platform", "macos", "--binary", str(binary),
+             "--linux-cli", str(linux)], root)
 
         # Profile create, append, test, and delete all operate on staged files.
         (root / "first.txt").write_bytes(
