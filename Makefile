@@ -219,6 +219,7 @@ POSIX_DIRFD_HOST_BINS = $(foreach frontend,$(POSIX_DIRFD_FRONTENDS),$(POSIX_DIRF
 
 $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/linux/main.c \
 	    src/frontend/common/target_profiles.h src/frontend/common/target_auto.h \
+	    src/frontend/common/target_legacy_preflight.h \
 	    src/frontend/common/x68000_target_name.h src/frontend/common/target_utf8_preflight.h \
 	    src/frontend/posix/extract_paths.h \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
@@ -336,6 +337,7 @@ $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 	                          src/frontend/posix/archive_preflight.h \
 	                          src/frontend/common/target_profiles.h \
 	                          src/frontend/common/target_auto.h \
+	                          src/frontend/common/target_legacy_preflight.h \
 	                          src/frontend/common/x68000_target_name.h \
 	                          src/frontend/common/target_utf8_preflight.h
 
@@ -2455,6 +2457,12 @@ linux-gui:
 	    $(GUI_FAST_FLUFF_LDFLAGS) \
 	    -o $(LINUX_GUI_BUILDDIR)/boltpack-gui
 	@echo "  OK    $(LINUX_GUI_BUILDDIR)/boltpack-gui"
+
+.PHONY: linux-gui-target-profile-test
+linux-gui-target-profile-test: modern linux-gui
+	python3 test/check_linux_gui_target_profile.py \
+	    --gui $(LINUX_GUI_BUILDDIR)/boltpack-gui \
+	    --cli build/linux/boltpack
 
 .PHONY: linux-gui-interoperability-test
 LINUX_GUI_PREFIX_FIXTURE = $(LINUX_GUI_BUILDDIR)/prefix-conflict-fixture
