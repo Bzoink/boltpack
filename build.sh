@@ -452,6 +452,7 @@ do_macos9_68k() {
     if [ -n "$VERBOSE" ]; then
         if make macos9-68k 2>&1 | sed 's/^/        /'; then
             echo "  OK    build/macos9-68k/.rsrc/BoltPack"
+            echo "  OK    build/macos9-68k/BoltPack.bin (build/macos9-68k/BoltPack.dsk)"
             return 0
         else
             echo "  FAIL  macos9-68k"
@@ -460,6 +461,7 @@ do_macos9_68k() {
     else
         if make macos9-68k >/dev/null 2>&1; then
             echo "  OK    build/macos9-68k/.rsrc/BoltPack"
+            echo "  OK    build/macos9-68k/BoltPack.bin (build/macos9-68k/BoltPack.dsk)"
             return 0
         else
             echo "  FAIL  macos9-68k"

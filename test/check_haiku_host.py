@@ -1032,6 +1032,70 @@ def main():
         cwd=work, expected=1)
     if (work / "nonprofile.blt").read_bytes() != nonprofile_bytes:
         raise RuntimeError("Profile 1 refusal changed an incompatible archive")
+
+    # Linux writer -> Haiku BFS target profile: BFS names are UTF-8 byte
+    # strings and its directory lookup is case-sensitive, so case and Unicode
+    # normalization variants remain distinct. Exercise the 255-byte component
+    # ceiling, 1,023-byte relative-path ceiling, supported symlinks, and the
+    # exact bytes/names produced by the Haiku host-shim reader.
+    haiku_cli = str(args.linux_boltpack.resolve())
+    bfs_source = work / "bfs-source"
+    bfs_source.mkdir()
+    (bfs_source / "Name.txt").write_bytes(b"upper-case name\n")
+    (bfs_source / "name.txt").write_bytes(b"lower-case name\n")
+    (bfs_source / "\u00e9.txt").write_bytes(b"composed UTF-8\n")
+    (bfs_source / "e\u0301.txt").write_bytes(b"decomposed UTF-8\n")
+    max_component_name = "m" * 251 + ".txt"
+    (bfs_source / max_component_name).write_bytes(b"255 byte component\n")
+    (bfs_source / "link.txt").symlink_to("Name.txt")
+    bfs_archive = work / "haiku-target.blt"
+    run([haiku_cli, "c", "--target-profile=haiku-bfs-v1",
+         bfs_archive.name, bfs_source.name], cwd=work)
+    bfs_info = run([haiku_cli, "i", str(bfs_archive)])
+    if b"Stored" not in bfs_info and b"BoltLite" not in bfs_info:
+        raise RuntimeError("Haiku BFS profile selected an unsupported codec")
+    bfs_output = work / "haiku-target-output"
+    bfs_output.mkdir()
+    run([str(binary), "x", "-o", str(bfs_output), str(bfs_archive)])
+    bfs_result = bfs_output / "bfs-source"
+    for name, expected in (("Name.txt", b"upper-case name\n"),
+                           ("name.txt", b"lower-case name\n"),
+                           ("\u00e9.txt", b"composed UTF-8\n"),
+                           ("e\u0301.txt", b"decomposed UTF-8\n"),
+                           (max_component_name, b"255 byte component\n")):
+        if (bfs_result / name).read_bytes() != expected:
+            raise RuntimeError("Haiku profile transfer changed " + repr(name))
+    if not (bfs_result / "link.txt").is_symlink() or \
+            os.readlink(bfs_result / "link.txt") != "Name.txt":
+        raise RuntimeError("Haiku profile transfer changed symlink target")
+    run([haiku_cli, "a", "--target-profile=haiku-bfs-v1",
+         bfs_archive.name, "extra.bin"], cwd=work)
+    run([str(binary), "t", str(bfs_archive)])
+
+    too_long_root = work / "haiku-path-limit"
+    node = too_long_root
+    for index in range(5):
+        node = node / (chr(ord("a") + index) * 200)
+        node.mkdir(parents=True)
+    (node / "over-limit.txt").write_bytes(b"too long for BFS\n")
+    run([haiku_cli, "c", "--target-profile=haiku-bfs-v1",
+         "must-not-exist.blt", too_long_root.name], cwd=work, expected=1)
+    if (work / "must-not-exist.blt").exists():
+        raise RuntimeError("Haiku path-limit refusal published an archive")
+
+    long_archive = work / "haiku-existing-long-path.blt"
+    run([haiku_cli, "c", "-1", "-b", "16k", str(long_archive),
+         too_long_root.name], cwd=work)
+    before_long_append = long_archive.read_bytes()
+    run([haiku_cli, "a", "--target-profile=haiku-bfs-v1",
+         str(long_archive), "extra.bin"], cwd=work, expected=1)
+    if long_archive.read_bytes() != before_long_append:
+        raise RuntimeError("Haiku profile append refusal changed archive bytes")
+
+    run([haiku_cli, "c", "-F", "--target-profile=haiku-bfs-v1",
+         "haiku-bad-codec.blt", "source.bin"], cwd=work, expected=1)
+    if (work / "haiku-bad-codec.blt").exists():
+        raise RuntimeError("Haiku profile accepted a codec it cannot read")
     print("PASS: Haiku host-shim extraction lifecycle and Profile 1; evidence:", work)
 
 

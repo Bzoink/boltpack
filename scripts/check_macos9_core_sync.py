@@ -25,6 +25,7 @@ CORE_FILES = (
     "fluff.c",
     "fluff.h",
 )
+SUPPORT_FILES = ("mini/stack_probe.h",)
 SHARED_CORE_FILES = {
     "archive_name.h",
     "archiver.c",
@@ -89,12 +90,20 @@ def main() -> int:
             mismatches.append(f"{name}: missing shared or copied file")
         elif shared.read_bytes() != copied.read_bytes():
             mismatches.append(f"{name}: copied source differs from src/core")
+    for name in SUPPORT_FILES:
+        shared = SHARED / name
+        copied = COPIED / name
+        if not shared.is_file() or not copied.is_file():
+            mismatches.append(f"{name}: missing shared or copied support file")
+        elif shared.read_bytes() != copied.read_bytes():
+            mismatches.append(f"{name}: copied support file differs from src/core")
     if mismatches:
         print("Classic Mac 68k copied-core check failed:", file=sys.stderr)
         for mismatch in mismatches:
             print(f"  {mismatch}", file=sys.stderr)
         return 1
-    print(f"Classic Mac 68k copied core matches src/core ({len(CORE_FILES)} files)")
+    print("Classic Mac 68k copied core matches src/core "
+          f"({len(CORE_FILES)} source files, {len(SUPPORT_FILES)} support file)")
     return 0
 
 

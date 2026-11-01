@@ -95,6 +95,10 @@ def main():
                         help="refuse a source child replaced after enumeration")
     parser.add_argument("--nested-directory-race", action="store_true",
                         help="refuse a nested directory replaced after enumeration")
+    parser.add_argument("--source-case-collision", action="store_true",
+                        help="refuse case-colliding source names before save dialog")
+    parser.add_argument("--source-nfc-collision", action="store_true",
+                        help="refuse NFC-colliding source names before save dialog")
     parser.add_argument("--attributes-probe", type=Path,
                         default=ROOT / "build/win64-fltk-gui/attributes-probe.exe")
     args = parser.parse_args()
@@ -110,6 +114,20 @@ def main():
                   args.nested_directory_race]
     if sum(race_cases) > 1:
         parser.error("select only one source race case")
+    if args.source_case_collision and args.source_nfc_collision:
+        parser.error("select only one source collision case")
+    source_collision = (args.source_case_collision or
+                        args.source_nfc_collision)
+    if source_collision and (any(race_cases) or args.profile1 or
+                             args.fat_attributes):
+        parser.error("source collision case cannot be combined with other scenarios")
+    collision_expected_key = ("source_case_collision_expected"
+                              if args.source_case_collision else
+                              "source_nfc_collision_expected")
+    if (source_collision and
+            manifest.get(collision_expected_key) !=
+            "refuse before save dialog or archive publication"):
+        parser.error("manifest does not define the expected source-collision outcome")
     if any(race_cases):
         expected_key = ("directory_race_expected" if args.directory_race else
                         "child_race_expected" if args.child_race else
@@ -135,6 +153,18 @@ def main():
     payload = (manifest["payload_line_utf8"].encode("utf-8") *
                int(manifest["payload_repetitions"]))
     source.write_bytes(payload)
+    source_collision_names = []
+    if source_collision:
+        if args.source_case_collision:
+            collision_files = (("Case.txt", b"upper case source\n"),
+                               ("case.txt", b"lower case source\n"))
+        else:
+            collision_files = (("caf\u00e9.txt", b"composed NFC source\n"),
+                               ("cafe\u0301.txt", b"decomposed NFC source\n"))
+        for name, data in collision_files:
+            collision = source_dir / name
+            collision.write_bytes(data)
+            source_collision_names.append(name)
     nested_directory = source_dir / "nested-directory"
     if args.nested_directory_race:
         nested_directory.mkdir()
@@ -189,14 +219,75 @@ def main():
     source_race_move = None
     child_race_metadata_copy = None
     child_race_metadata_check = None
+    source_collision_windows = None
+    source_collision_screenshot = None
     try:
         main_window = wait_for_title(process, "BoltPack")
-        save_dialog = wait_for_title(process, "Save archive as")
-        if not main_window or not save_dialog:
-            raise RuntimeError("GUI or archive save dialog did not appear")
+        if not main_window:
+            raise RuntimeError("GUI main window did not appear")
+        if source_collision:
+            # FLTK's alert can be drawn into the same Wine toplevel, so it
+            # need not have a second X window or a distinct title. The
+            # observable contract is that preflight leaves the GUI alive at
+            # its error alert, never opens the save dialog, and publishes no
+            # archive.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and process.poll() is None:
+                windows = visible_windows()
+                if (archive.exists() or any(
+                        "Save archive as" in title for _, title in windows)):
+                    break
+                source_collision_windows = windows
+                time.sleep(0.05)
+            if (process.poll() is not None or archive.exists() or
+                    source_collision_windows is None or
+                    main_window[0] not in {window for window, _ in
+                                           source_collision_windows} or
+                    any("Save archive as" in title
+                        for _, title in source_collision_windows)):
+                raise RuntimeError(
+                    "case-colliding source names were not refused before save dialog")
+            try:
+                from PIL import ImageGrab
+            except ImportError as exc:
+                raise RuntimeError(
+                    "python3-pil is required to retain the collision-alert screenshot") from exc
+            screenshot_name = ("source-case-collision-alert.png"
+                               if args.source_case_collision else
+                               "source-nfc-collision-alert.png")
+            screenshot = out / screenshot_name
+            geometry = subprocess.run(
+                ["xdotool", "getwindowgeometry", "--shell", main_window[0]],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                check=True).stdout
+            bounds = {key: int(value) for key, value in
+                      (line.split("=", 1) for line in geometry.splitlines()
+                       if "=" in line)}
+            bbox = (bounds["X"], bounds["Y"],
+                    bounds["X"] + bounds["WIDTH"],
+                    bounds["Y"] + bounds["HEIGHT"])
+            ImageGrab.grab(bbox=bbox).save(screenshot)
+            source_collision_screenshot = str(screenshot.relative_to(ROOT))
+            subprocess.run(["xdotool", "key", "Return"], check=False)
+            time.sleep(0.2)
+            subprocess.run(["xdotool", "key", "ctrl+q"], check=False)
+            process.wait(timeout=8)
+            if archive.exists() or list(out.glob(".boltpack-create-*.tmp")):
+                raise RuntimeError(
+                    "FLTK profile preflight published an archive for colliding names")
+            result = ("passed_under_wine_refused_source_case_collision"
+                      if args.source_case_collision else
+                      "passed_under_wine_refused_source_nfc_collision")
+        else:
+            save_dialog = wait_for_title(process, "Save archive as")
+            if not save_dialog:
+                raise RuntimeError("GUI archive save dialog did not appear")
         # The source directory path is ASCII; its Unicode child name is read
         # by the production recursive enumeration path.
-        subprocess.run(["xdotool", "key", "alt+s"], check=True)
+        if source_collision:
+            pass
+        else:
+            subprocess.run(["xdotool", "key", "alt+s"], check=True)
         if any(race_cases):
             if args.directory_race:
                 ready = out / "source-guard.ready"
@@ -325,7 +416,7 @@ def main():
                 if not archive.is_file():
                     raise RuntimeError("GUI did not publish after Win32 rename refusal")
                 result = "created"
-        else:
+        elif not source_collision:
             deadline = time.monotonic() + 30
             while (time.monotonic() < deadline and process.poll() is None and
                    not archive.is_file()):
@@ -383,13 +474,21 @@ def main():
         extract_status = run_command(
             [linux, "x", "-o", extracted, archive], out,
             out / "linux-extract.log")
+        extract_log = (out / "linux-extract.log").read_text(
+            encoding="utf-8", errors="replace")
+        skipped_lines = [line for line in extract_log.splitlines()
+                         if "skipping:" in line]
+        expected_metadata_partial = (
+            extract_status == 1 and bool(skipped_lines) and
+            all("metadata - not supported on this platform" in line
+                for line in skipped_lines))
         profile_ok = (not args.profile1 or
                       (manifest.get("profile1_expected", {}).get("method") ==
                        "BoltLite" and "BoltLite" in method_line and
                        "boltlz" not in method_line.lower() and
                        mini_test_status == 0))
-        extraction_status_ok = (extract_status in (0, 1)
-                                if args.fat_attributes else extract_status == 0)
+        extraction_status_ok = (
+            extract_status == 0 or expected_metadata_partial)
         if (linux_test_status == 0 and mini_test_status == 0 and
                 extraction_status_ok and output.is_file() and
                 output.read_bytes() == payload and profile_ok):
@@ -475,6 +574,11 @@ def main():
         "directory_race_requested": args.directory_race,
         "child_race_requested": args.child_race,
         "nested_directory_race_requested": args.nested_directory_race,
+        "source_case_collision_requested": args.source_case_collision,
+        "source_nfc_collision_requested": args.source_nfc_collision,
+        "source_collision_names": source_collision_names,
+        "source_collision_windows": source_collision_windows,
+        "source_collision_screenshot": source_collision_screenshot,
         "source_race_move": source_race_move,
         "child_race_metadata_copy": child_race_metadata_copy,
         "child_race_metadata_check": child_race_metadata_check,
@@ -482,6 +586,10 @@ def main():
         "child_race_expected": manifest.get("child_race_expected"),
         "nested_directory_race_expected": manifest.get(
             "nested_directory_race_expected"),
+        "source_case_collision_expected": manifest.get(
+            "source_case_collision_expected"),
+        "source_nfc_collision_expected": manifest.get(
+            "source_nfc_collision_expected"),
         "directory_race_parked_source_sha256": (
             sha256(out / "source-parked" / member)
             if args.directory_race and (out / "source-parked" / member).is_file()
@@ -543,7 +651,11 @@ def main():
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n",
                                    encoding="utf-8")
     print(json.dumps(record, indent=2))
-    if result not in ("passed_under_wine", "passed_under_wine_refused_substitution") or process.returncode != 0:
+    if (result not in ("passed_under_wine",
+                       "passed_under_wine_refused_substitution",
+                       "passed_under_wine_refused_source_case_collision",
+                       "passed_under_wine_refused_source_nfc_collision") or
+            process.returncode != 0 or error is not None):
         raise SystemExit("Win64 FLTK Wine create failed; evidence: " + str(out))
 
 

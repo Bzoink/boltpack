@@ -82,6 +82,23 @@ non-UTF-8 Windows ANSI code page, it also verifies that the legacy ANSI header
 API refuses an unrepresentable entry name. The fixture is not a Total
 Commander host test.
 
+### .NET GUI profile preflight check
+
+The host-side .NET GUI profile test compiles the WinForms sources and invokes
+the production Windows-name and create-preflight methods. On Debian, install
+Mono and its WinForms assemblies with:
+
+```bash
+sudo apt install mono-mcs mono-runtime \
+  libmono-system-windows-forms4.0-cil libmono-system-drawing4.0-cil
+```
+
+Then run `make win-gui-net-profile-host-test`. The test does not run the GUI;
+the .NET Framework 4.8 project build and Windows WinForms runtime require a
+Windows environment and remain separate qualification steps. If Mono is
+installed outside `PATH`, pass its compiler and runtime using `MCS` and
+`MONO` make variables.
+
 ### For Compile Packages
 
 When a target is not part of the aggregate Linux-hosted build workflow, create
@@ -198,9 +215,14 @@ make macos9-68k-kit
 make macos9-ppc-xcoff
 ```
 
-`macos9-68k-kit` compiles from `src/frontend/macos9/68k/Source`. Both targets
-produce the application and merged resource file under `build/`; neither
-qualifies runtime behavior on Mac OS 9.
+`macos9-68k-kit` compiles from `src/frontend/macos9/68k/Source`. Each target
+produces its own packaged MacBinary application and HFS disk image under its
+build directory, alongside resource-fork artifacts. The final Rez step reads
+the `.r` resource source directly; passing the intermediate raw `.rsrc` fork
+omitted the GUI resources. A build check now verifies `APPL/BoPk` against
+`kCreatorCode` and requires the GUI, code, and sizing resource types in the
+MacBinary resource fork. This verifies package construction, not runtime
+behavior on Mac OS 9 ([resource package audit](../build/macos-classic-qemu/resource-package-20261101/run.json)).
 `macos9-ppc-xcoff` uses the Retro68 PowerPC compiler and Universal import
 libraries to build `build/macos9-ppc/BoltPack.xcoff`. This checks frontend
 compilation and linking only: Retro68 emits XCOFF, not a runnable Mac OS 9
@@ -541,9 +563,10 @@ requires their respective guest environments.
 Plan 9 and OpenVMS frontends are present, but the root `Makefile` does not
 build them. The Plan 9 manual `6c`/`6l` command is documented under the Plan 9
 frontend in `frontends.md` and was built and run on 9front amd64 under QEMU
-TCG. Plan 9 currently refuses real extraction because safe anchored staging
-and publication are not implemented; create/add and dry-run remain available.
-The historical guest run cannot be repeated here, and other CPU targets remain
+TCG. Plan 9 extraction requires `-o` naming a new directory; the frontend
+creates a private root and writes validated paths relative to it. The host-shim
+suite exercises this behavior, but the historical guest run cannot be repeated
+here and native extraction remains unqualified. Other CPU targets also remain
 unqualified. The z/OS manual build command is also documented there, but it
 has not been target-built or runtime-qualified. The build commands in this
 guide apply only to targets defined by the root `Makefile`.

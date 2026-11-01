@@ -202,6 +202,31 @@ def main():
         if (shared / "K0000001").exists():
             raise AssertionError("forced QDOS replacement left a backup")
 
+        ql_profile_source = root / "ql-profile-source"
+        ql_profile_tree = ql_profile_source / "QLPROFILE" / "sub"
+        ql_profile_tree.mkdir(parents=True)
+        profile_flat = ql_profile_source / "QLPROFILE" / "caf\u00e9.txt"
+        profile_nested = ql_profile_tree / "Gr\u00fc\u00dfe.dat"
+        profile_flat.write_bytes(b"QL Latin-1 profile flat file\n")
+        profile_nested.write_bytes(b"QL Latin-1 profile nested file\n")
+        ql_profile_archive = shared / "ql-profile.blt"
+        run([str(linux_binary), "c",
+             "--target-profile=sinclair-ql-latin1-v1",
+             str(ql_profile_archive), "QLPROFILE"], cwd=ql_profile_source)
+        run([str(linux_binary), "t", str(ql_profile_archive)])
+        run(["qemu-i386", str(mini_binary), "t", str(ql_profile_archive)])
+        profile_flat_out = shared / os.fsdecode(b"QLPROFILE_caf\xe9.txt")
+        profile_nested_out = shared / os.fsdecode(
+            b"QLPROFILE_sub_Gr\xfc\xdfe.dat")
+        profile_dir_out = shared / "QLPROFILE_sub_"
+        run_ql(sqlux, rom, shared, "x win1_ql-profile.blt",
+               lambda: profile_flat_out.is_file() and
+               profile_flat_out.read_bytes() == b"QL Latin-1 profile flat file\n" and
+               profile_nested_out.is_file() and
+               profile_nested_out.read_bytes() == b"QL Latin-1 profile nested file\n")
+        if not profile_dir_out.is_file():
+            raise AssertionError("QDOS did not create the QL profile directory")
+
         (source / names["flat_output"]).write_bytes(payload)
         run([str(linux_binary), "c", "-0",
              str(shared / names["linux_flat_archive"]), names["flat_output"]],
@@ -325,6 +350,7 @@ def main():
             "artifacts": artifacts,
             "checks": ["QDOS-created archive read by Linux full and mini",
                        "Linux-created archive extracted by QDOS",
+                       "Linux QL target-profile archive extracted with Latin-1 flat and nested names",
                        "forced replacement and stage collision",
                        "output-root and nested paths",
                        "UTC timestamps and -300, +60, +330 minute offsets"],
@@ -337,9 +363,9 @@ def main():
             temp_context.cleanup()
 
     if args.output:
-        print("sQLux QDOS create/extract, UTC and timezone-offset timestamps, forced replacement, -o paths, stage collision, nested paths, and Linux transfer passed; evidence: %s" % root)
+        print("sQLux QDOS transfers, Linux QL target-profile Latin-1 names, timestamps, replacement, -o paths, stage collision and nested paths passed; evidence: %s" % root)
     else:
-        print("sQLux QDOS create/extract, UTC and timezone-offset timestamps, forced replacement, -o paths, stage collision, nested paths, and Linux transfer passed")
+        print("sQLux QDOS transfers, Linux QL target-profile Latin-1 names, timestamps, replacement, -o paths, stage collision and nested paths passed")
 
 
 if __name__ == "__main__":

@@ -503,8 +503,8 @@ namespace BoltPack
 
         /* Extract callbacks -- these are called from native code */
 
-        private static readonly NativeMethods.BpExtractOpenDelegate ExtractOpenCb = ExtractOpen;
-        private static readonly NativeMethods.BpExtractDoneStatusDelegate ExtractDoneStatusCb = ExtractDoneStatus;
+        private static readonly BpExtractOpenDelegate ExtractOpenCb = ExtractOpen;
+        private static readonly BpExtractDoneStatusDelegate ExtractDoneStatusCb = ExtractDoneStatus;
         private static readonly BpProgressDelegate ExtractProgressCb = ExtractProgress;
 
         private bool TryPrepareExtraction(string destination, out ExtractContext ctx,
@@ -525,6 +525,9 @@ namespace BoltPack
                 NativeMethods.bp_dll_fseek_start(archiveFp);
                 BpIo io = new BpIo();
                 NativeMethods.bp_dll_io_from_file(ref io, archiveFp);
+                /* An out parameter cannot be captured by the preflight
+                 * callback. Capture the newly allocated context by value. */
+                ExtractContext context = ctx;
                 BpListDelegate preflight = delegate (ref BpEntry entry, IntPtr userData)
                 {
                     try
@@ -538,9 +541,9 @@ namespace BoltPack
                                 entry.entry_type == NativeMethods.BP_TYPE_DIR);
                             string key = relative.Normalize(NormalizationForm.FormC)
                                 .Replace('/', '\\');
-                            if (ctx.paths.Count >= 65535)
+                            if (context.paths.Count >= 65535)
                                 throw new IOException("The archive exceeds the .NET frontend's 65,535-primary-entry preflight limit.");
-                            if (ctx.paths.ContainsKey(key))
+                            if (context.paths.ContainsKey(key))
                                 throw new IOException("Two archive entries map to the same Windows path: " + name);
 
                             string[] components = key.Split('\\');
@@ -552,55 +555,55 @@ namespace BoltPack
                                 if (i < components.Length - 1)
                                 {
                                     byte ancestorType;
-                                    if (ctx.paths.TryGetValue(prefix, out ancestorType) &&
+                                    if (context.paths.TryGetValue(prefix, out ancestorType) &&
                                         ancestorType != NativeMethods.BP_TYPE_DIR)
                                         throw new IOException("A file conflicts with a child path: " + name);
                                 }
-                                if (!ctx.pathNodes.Contains(prefix)) newNodeCount++;
+                                if (!context.pathNodes.Contains(prefix)) newNodeCount++;
                             }
-                            if (ctx.pathNodes.Count + newNodeCount > 65535)
+                            if (context.pathNodes.Count + newNodeCount > 65535)
                                 throw new IOException("The archive exceeds the .NET frontend's 65,535-path-node preflight limit.");
                             if (entry.entry_type != NativeMethods.BP_TYPE_DIR &&
-                                ctx.descendantPrefixes.Contains(key))
+                                context.descendantPrefixes.Contains(key))
                                 throw new IOException("A file conflicts with an existing child path: " + name);
 
                             prefix = "";
                             for (int i = 0; i < components.Length; i++)
                             {
                                 prefix = i == 0 ? components[i] : prefix + "\\" + components[i];
-                                ctx.pathNodes.Add(prefix);
+                                context.pathNodes.Add(prefix);
                                 if (i < components.Length - 1)
-                                    ctx.descendantPrefixes.Add(prefix);
+                                    context.descendantPrefixes.Add(prefix);
                             }
-                            ctx.paths.Add(key, entry.entry_type);
-                            ctx.subjectTypes.Add(key, entry.entry_type);
+                            context.paths.Add(key, entry.entry_type);
+                            context.subjectTypes.Add(key, entry.entry_type);
 
-                            string full = GetOutputPath(ctx, relative);
+                            string full = GetOutputPath(context, relative);
                             if (full.Length >= 260)
                                 throw new IOException("A path exceeds the Windows MAX_PATH limit: " + name);
                             if (entry.entry_type == NativeMethods.BP_TYPE_DATA &&
                                 full.Length + 46 >= 260)
                                 throw new IOException("A path leaves no room for the required sibling staging file: " + name);
-                            VerifyExistingOutputPath(ctx, relative,
+                            VerifyExistingOutputPath(context, relative,
                                 entry.entry_type == NativeMethods.BP_TYPE_DIR);
                             if (entry.entry_type == NativeMethods.BP_TYPE_DATA)
                             {
                                 FileAttributes existing;
                                 if (TryGetAttributes(full, out existing))
-                                    ctx.existingFiles.Add(key);
+                                    context.existingFiles.Add(key);
                             }
                             if (entry.entry_type == NativeMethods.BP_TYPE_SYMLINK ||
                                 (entry.flags & NativeMethods.BP_ENTRY_FLAG_MODE_VALID) != 0)
-                                ctx.partial = true;
+                                context.partial = true;
                         }
                         else if (entry.entry_type == NativeMethods.BP_TYPE_RSRC ||
                                  (entry.entry_type == NativeMethods.BP_TYPE_META &&
                                   entry.platform != NativeMethods.BP_META_PORTABLE))
-                            ctx.partial = true;
+                            context.partial = true;
                     }
                     catch (Exception ex)
                     {
-                        if (ctx.preflightError == null) ctx.preflightError = ex.Message;
+                        if (context.preflightError == null) context.preflightError = ex.Message;
                     }
                     return 0;
                 };
@@ -863,10 +866,14 @@ namespace BoltPack
             else if (name.EndsWith("/", StringComparison.Ordinal))
                 throw new IOException("A file entry ends with a slash.");
 
+            if (name.Length > 259)
+                throw new IOException("A Windows relative path exceeds 259 UTF-16 code units.");
+
             string[] components = name.Split('/');
             foreach (string component in components)
             {
-                if (component.Length == 0 || component == "." || component == ".." ||
+                if (component.Length == 0 || component.Length > 255 ||
+                    component == "." || component == ".." ||
                     component.EndsWith(".", StringComparison.Ordinal) ||
                     component.EndsWith(" ", StringComparison.Ordinal))
                     throw new IOException("The archive contains an unsafe Windows path component.");
@@ -894,7 +901,9 @@ namespace BoltPack
         {
             return name.Length == 4 &&
                 name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
-                name[3] >= '1' && name[3] <= '9';
+                ((name[3] >= '1' && name[3] <= '9') ||
+                 name[3] == '\u00B9' || name[3] == '\u00B2' ||
+                 name[3] == '\u00B3');
         }
 
         private static string GetOutputPath(ExtractContext ctx, string relative)
@@ -1240,7 +1249,7 @@ namespace BoltPack
             public StringBuilder log;
         }
 
-        private static readonly NativeMethods.BpTestDelegate ValidateCb = ValidateEntry;
+        private static readonly BpTestDelegate ValidateCb = ValidateEntry;
         private static readonly BpProgressDelegate ValidateProgressCb = ValidateProgress;
 
         private static void ValidateEntry(ref BpEntry entry, int result, IntPtr ud)

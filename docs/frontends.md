@@ -173,11 +173,38 @@ Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion n
 | `-q` / `-qq`      | Quiet / silent                                |
 | `--single-thread` | Force sequential compression on modern builds  |
 | `--interchange-profile-1` | Create or append using mini-reader limits: BoltLite, 16 KiB blocks, 65,535 entries, 4 GiB minus one byte per entry, and 2 GiB minus one byte total |
+| `--target-profile=posix-utf8-v1` | Create/add with strict UTF-8 byte names, case-sensitive path checks, 255-byte components, 4,095-byte paths, safe relative symlinks, and no foreign metadata |
+| `--target-profile=plan9-utf8-v1` | Create/add with Plan 9 UTF-8 path and control-character checks, 255-byte components, 511-byte paths, and Stored/BoltLite/BoltLZ/Fluff only |
+| `--target-profile=haiku-bfs-v1` | Create/add with UTF-8 BFS byte-name rules, 255-byte components, 1,023-byte paths, supported entry types, and Interchange Profile 1 limits |
 
-The profile option is valid only for `create` and `add`. Append checks the
+`--interchange-profile-1` is valid only for `create` and `add`. Append checks the
 existing archive against the profile before modifying it. It refuses codec,
 block-size, or level overrides that conflict with the selected profile. It
 uses BoltLite by default; add `-0` to select Stored.
+
+`--target-profile=haiku-bfs-v1` is one Linux x86-64 target profile. It retains
+UTF-8 bytes, treats names as case-sensitive, and refuses paths the Haiku CLI
+cannot restore. The exact target constraints are in the
+[target compatibility profiles](target-compatibility-profiles.md#implemented-haiku-bfs-profile).
+
+`--target-profile=plan9-utf8-v1` is Linux writer-side preflight for Plan 9
+names, paths, entry types, codecs, permission metadata, and timestamp range.
+It writes Plan 9 mode metadata from source rwx bits, refuses setuid, setgid, or
+sticky permissions, and rejects append when existing entries do not carry
+matching Plan 9 metadata. The Plan 9 reader extracts with `-o` into a new
+private output root and refuses existing roots or implicit extraction into the
+current directory. See the
+[target compatibility profile](target-compatibility-profiles.md#implemented-plan-9-utf-8-profile)
+and the `plan9-host-test` evidence; host-shim results do not qualify a native
+Plan 9 runtime.
+
+`--target-profile=posix-utf8-v1` applies a stated byte-sensitive POSIX
+filesystem contract; it is not a claim that every POSIX filesystem shares
+those name semantics. It retains full codecs selected by the build and checks
+existing symlink targets when appending. Only use it for a destination client
+with directory-relative no-follow extraction and a filesystem matching the
+profile's UTF-8 byte-name, case-sensitive rules. The complete contract is in
+the [target compatibility profiles](target-compatibility-profiles.md#implemented-generic-posix-utf-8-profile).
 
 ### Advanced Help
 
@@ -244,6 +271,57 @@ BoltLite with 16 KiB blocks by default, or Stored with `-0`, and enforces the
 mini-compatible entry-count, per-entry, block, and serialized archive limits.
 Explicit codec, block-size, or level settings that conflict with the profile
 are refused. Appending also checks that the existing archive already conforms.
+The Windows CLI also accepts `--target-profile=macos-classic-hfs-v1` to create
+archives for Classic HFS destinations. It requires exact MacRoman names,
+31-byte components, 255-byte paths, Stored or BoltLite with 16 KiB blocks,
+and files no larger than signed 32-bit I/O. It omits Windows FAT metadata and
+refuses source read-only, hidden, or system attributes; append rejects existing
+metadata records. `make win64-target-profile-test` checks this under Wine, but
+does not qualify Classic Mac extraction. The CLI also accepts
+`--target-profile=amigaos-68k-latin1`: it requires exact Latin-1 representability,
+30-byte components, 255-byte paths, Latin-1 case-collision safety, and the same
+Interchange Profile 1 codecs and size limits. It omits portable FAT metadata
+and refuses source read-only, hidden, or system attributes; append rejects
+foreign metadata. The same Wine test verifies archive contents, profile
+refusals, and Linux-reader compatibility, without qualifying Amiga runtime
+behavior.
+The Windows CLI also accepts `--target-profile=atari-st`. It checks classic
+GEMDOS printable-ASCII 8.3 names, case aliases, path and signed-size limits,
+portable/Atari metadata policy, and Interchange Profile 1 codec limits. Wine
+checks creation, append collision and encoding refusals, codec refusal, and
+Linux-reader acceptance. Native Windows volume behavior remains unqualified;
+automatic aliases and `BPNAMES.TXT` reporting remain Linux-only.
+The Windows CLI also accepts `--target-profile=sinclair-ql-latin1-v1`. It
+checks Latin-1 representability, QDOS slash-to-underscore projection,
+case-folded collisions, the 36-byte path ceiling, data/directory-only content,
+and Interchange Profile 1 codec and size limits. It omits Windows FAT
+metadata. Win64 Wine checks creation, append collision refusal, projection
+collisions, unmappable names, codec refusal, and Linux-reader acceptance;
+native QL behavior is separately qualified by the Linux client’s sQLux hostFS
+fixture.
+The Windows CLI also accepts `--target-profile=riscos-latin1-v1`. It enforces
+exact Latin-1 conversion, ten-byte components, 255-byte paths, FileCore
+reserved syntax and case-fold collision rules, data/directory-only archives,
+and Interchange Profile 1 limits. Windows FAT metadata is omitted because the
+profile uses destination defaults. Win64 Wine checks creation, append and
+existing-alias refusal, invalid component refusal, and Linux-reader acceptance;
+native RISC OS runtime behavior remains unqualified.
+The Windows CLI also accepts `--target-profile=x68000-sjis-v1`. It applies
+standard Shift-JIS conversion and Human68k v3 18.3 component rules, validates
+the 255-byte relative path, reserved characters, collisions, trail-byte
+separators, Stored/BoltLite and 16 KiB limits, and signed 32-bit file sizes.
+It omits Windows FAT metadata. Win64 Wine tests valid Japanese names, the
+Shift-JIS `0x5c` trail-byte case, invalid 18.3 names, case/prefix collisions,
+codec refusal, and Linux-reader acceptance. Native Human68k behavior remains
+unqualified.
+The Windows CLI also accepts `--target-profile=cpm86-83`. It projects flat
+ASCII 8.3 names to uppercase, omits FAT metadata, refuses directories and
+projected collisions, and enforces Stored/BoltLite, 32 KiB blocks, 256 entries,
+signed 32-bit file sizes, and a 2 GiB serialized archive ceiling. Wine checks
+creation, append, refusals, metadata omission, and Linux-reader compatibility;
+native CP/M-86 runtime behavior remains unqualified.
+The CLI also accepts `--target-profile=dos-cp850-83` and `--target-profile=dos-cp437-83`, `--target-profile=dos16-cp850-mini`, `--target-profile=win16-cp437-mini`, `--target-profile=os2-16-cp850-mini`, and `--target-profile=os2-fat-cp850`. These enforce exact codepage projection, DOS 8.3 legal-character/device-name checks, collision and prefix checks, Stored or BoltLite with 16 KiB blocks, and a signed 32-bit per-file limit. Portable FAT attributes are retained. Win64 Wine creates all six profiles and checks them with the Linux reader. The CP850 8.3 case also covers append and invalid existing names; DOS/Win16/OS/2 runtime qualification remains open.
+The Windows CLI also supports `--target-profile=dos-cp850-lfn-v1`. It enforces exact CP850 conversion, DOS LFN forbidden characters and device names, 255-byte components, 259-byte paths, case-fold and prefix checks, Stored/BoltLite with 16 KiB blocks, and the signed 32-bit file limit. Portable FAT metadata is retained. Win64 Wine verifies long names, invalid names, append collisions, and Linux-reader acceptance. This does not qualify native DOS filesystem behavior.
 The Win64 CLI creates a Profile 1 archive under Wine that is byte-checked as
 BoltLite/16 KiB and accepted by both Linux full and mini readers. Native Windows
 profile/runtime behavior remains unqualified. Append and delete refuse read-only, multiply linked, and reparse-point archive
@@ -284,8 +362,12 @@ The Unicode path covers opening and listing archives, extraction, packing,
 deletion, and progress/volume callbacks. Paths enter as UTF-16, are represented
 internally as UTF-8, and use wide Windows filesystem calls. The ANSI path is
 retained for older hosts and rejects paths that do not round-trip through the
-active ANSI codepage. Win32 and Win64 builds pass; runtime behavior in Total
-Commander has not yet been qualified.
+active ANSI codepage. Pack calls now preflight incoming and existing names
+before staging, checking NFC/case collisions, reserved names, path bounds,
+entry types, and foreign metadata. `make win64-wcx-wine-test` verifies Unicode
+pack/append/delete and refuses case/NFC collisions; a colliding append leaves
+the previous archive byte-for-byte unchanged. Native Total Commander runtime
+behavior remains unqualified.
 
 ### Compression Method Selection
 
@@ -636,6 +718,14 @@ Lower four bits (RWED) are inverted: a clear bit grants the permission. Upper fo
 Foreign native metadata, portable FAT envelopes, resource forks, and symlink entries are skipped and make the extraction result partial. Malformed payloads for this Amiga-family metadata type are rejected as corrupt, including when the subject was skipped. Amiga protection bits are not mapped from POSIX or FAT fields because their meanings differ. Extracted files without native Amiga metadata receive the filesystem's default permissions.
 
 File and directory modification times use format-6 UTC seconds. Epoch zero is preserved. Negative or host-unrepresentable source times are warned about and recorded as unknown rather than wrapping into a different date.
+
+AmigaDOS `DateStamp` values are local wall time and carry no timezone. Set the
+global AmigaDOS variable `BP_TZ_OFFSET` to minutes east of UTC before creating
+or extracting archives (for example, `C:SetEnv BP_TZ_OFFSET 60` for UTC+1).
+The Amiga frontend reads this with C `getenv()` or, when that is unavailable,
+AmigaDOS `GetVar()`. If the offset is absent or invalid, creation stores source
+times as unknown and extraction reports partial when a known time cannot be
+restored.
 
 ### AmigaOS: Text Encoding
 
@@ -1263,6 +1353,13 @@ does not list `-Z` in its help, though generic level and preset descriptions
 still mention zstd. The modern Cocoa GUI has a separate OpenMP build path
 described below.
 
+The macOS CLI also accepts `--target-profile=riscos-latin1-v1` for create and
+append. Its host-shim check enforces Latin-1 representability, FileCore name
+syntax, ten-byte components, 255-byte paths, case-fold collisions, data and
+directory-only entries, metadata omission/refusal, and Stored/BoltLite with
+16 KiB blocks. This host evidence does not qualify native macOS filesystem or
+RISC OS behavior; see the [target profile](target-compatibility-profiles.md#implemented-risc-os-profile).
+
 ### macOS: Native Compile Packages
 
 To prepare portable source packages for native compilation on Macs without
@@ -1427,6 +1524,9 @@ macOS uses UTF-8 natively. No filename conversion is required; `bp_local_to_utf8
 | ---------- | --------------------------------------------- |
 | `-b SIZE`  | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `--interchange-profile-1` | Create/add under the mini-compatible profile (BoltLite, 16 KiB by default) |
+| `--target-profile=macos-modern-v1` | Preflight create/add names against macOS path, case, and Unicode-equivalence checks |
+| `--target-profile=macos-classic-hfs-v1` | Preflight create/add for exact MacRoman names, HFS path limits, and data/directory-only archives |
+| `--target-profile=atari-st` | Preflight strict Atari ST GEMDOS names, 8.3 paths, and Interchange Profile 1 limits |
 | `-0`       | Store only (no compression)                   |
 | `-F`       | Use Fluff compression                         |
 | `-o PATH`  | Extract to directory                          |
@@ -1445,6 +1545,18 @@ macOS CLI surface.
 | `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
 | `--interchange-profile-1` | Create/add using mini-compatible limits; defaults to BoltLite and 16 KiB blocks |
+| `--target-profile=macos-modern-v1` | Reject create/add names that collide or exceed macOS path limits |
+| `--target-profile=macos-classic-hfs-v1` | Require Classic HFS MacRoman names and Interchange Profile 1 limits |
+| `--target-profile=atari-st` | Require legal Atari GEMDOS 8.3 names and Interchange Profile 1 limits |
+| `--target-profile=amigaos-68k-latin1` | Require AmigaOS 68k Latin-1 names and Interchange Profile 1 limits |
+| `--target-profile=sinclair-ql-latin1-v1` | Require Latin-1 QDOS paths, 36-byte limits, slash-to-underscore collision checks, and Interchange Profile 1 limits |
+| `--target-profile=dos-cp850-83` | Require DOS CP850 8.3 names and Interchange Profile 1 limits |
+| `--target-profile=dos-cp437-83` | Require DOS CP437 8.3 names and Interchange Profile 1 limits |
+| `--target-profile=dos16-cp850-mini` | Require DOS16 mini-reader limits |
+| `--target-profile=win16-cp437-mini` | Require Win16 mini-reader limits |
+| `--target-profile=os2-16-cp850-mini` | Require OS/2-16 mini-reader limits |
+| `--target-profile=os2-fat-cp850` | Require OS/2 FAT CP850 8.3 names and limits |
+| `--target-profile=cpm86-83` | Project flat ASCII 8.3 names to uppercase; enforce CP/M-86 entry, codec, and size limits |
 | `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
 | `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
 | `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
@@ -1457,6 +1569,68 @@ macOS CLI surface.
 | `--dry-run`         | Long-form alias for `-n`               |
 | `--quiet`           | Long-form alias for `-q`               |
 | `--silent`          | Long-form alias for `-qq`              |
+
+`--target-profile=macos-classic-hfs-v1` composes Interchange Profile 1 with
+31-byte MacRoman components, a 255-byte relative path ceiling, MacRoman
+case-fold collision and file/directory-prefix checks, and a signed 32-bit
+per-file limit. It writes only data and directory entries: Unix mode records
+are omitted because Classic HFS has no corresponding attribute. On macOS,
+source resource forks and meaningful Finder information are refused. The
+host-shim test covers name and archive policy but does not qualify a Classic
+Mac runtime.
+
+`--target-profile=amigaos-68k-latin1` composes Interchange Profile 1 with
+30-byte Latin-1 components, a 255-byte path ceiling, case-fold and
+file/directory-prefix checks, and a signed 32-bit per-file limit. It omits Unix
+mode metadata. On macOS, it refuses source resource forks and meaningful Finder
+information. `make macosx-host-test` checks create, append, refusal cases, and
+Linux-reader compatibility through the POSIX host shim; native macOS and Amiga
+runtime behavior remain unqualified.
+
+`--target-profile=sinclair-ql-latin1-v1` composes Interchange Profile 1 with
+exact Latin-1 names, QDOS's 36-byte path ceiling, case-fold checks after
+projecting `/` to `_`, Stored/BoltLite with 16 KiB blocks, signed 32-bit file
+limits, and data/directory-only entries. The macOS CLI omits Unix mode records
+and refuses source resource forks and meaningful Finder information.
+`make CC=clang macosx-host-test` covers create/append, Latin-1 projection,
+slash and case aliases, path and codec limits, metadata omission/refusal,
+and Linux-reader acceptance through the host shim; native macOS and physical
+QDOS behavior remain unqualified.
+
+`--target-profile=atari-st` composes Interchange Profile 1 with Atari ST
+codepage conversion, classic GEMDOS 8.3 legality, case-collision and
+file/directory-prefix checks, a 125-byte full-path ceiling, and a signed 32-bit
+per-file limit. It omits Unix mode metadata and refuses resource forks and
+Finder information on macOS. `make macosx-host-test` covers macOS create,
+append, high-bit name refusal, and codec limits through the POSIX host shim;
+this does not qualify native macOS metadata behavior. The Windows CLI has the
+same strict preflight, with `make win64-target-profile-test` covering creation,
+append collisions, rejected high-bit names and codecs, and Linux-reader
+acceptance under Wine. Native Windows behavior remains unqualified. Only the
+Linux CLI provides Atari auto-renaming and `BPNAMES.TXT` generation.
+
+`--target-profile=cpm86-83` projects flat ASCII names to uppercase and permits
+only regular files. It omits Unix modes and timestamps, refuses resource forks
+and Finder information, and enforces Stored/BoltLite, 32 KiB blocks, 256
+entries, signed 32-bit files, and the 2 GiB serialized archive ceiling.
+`make macosx-host-test` covers projection, append collisions, directory and
+codec refusals, metadata omission, and Linux-reader compatibility. Native
+CP/M-86 runtime behavior remains unqualified.
+
+The macOS CLI also supports the DOS/Win16/OS/2 target profiles for create and
+append. It enforces exact CP437/CP850 conversion, 8.3 and reserved-name rules,
+case-fold collisions, Interchange Profile 1 codec/size limits, and refuses
+foreign metadata. Unix mode records are omitted; on macOS, source resource
+forks and meaningful Finder information are refused. `make macosx-host-test`
+checks all six profile identifiers through the POSIX host shim and verifies the
+archives with the Linux reader; native target filesystems remain unqualified.
+The macOS CLI also supports `--target-profile=dos-cp850-lfn-v1`: exact CP850
+conversion, DOS LFN forbidden-character and device-name checks, 255-byte
+components, 259-byte paths, case-fold and prefix checks, Stored/BoltLite with
+16 KiB blocks, and signed 32-bit file limits. It refuses resource forks,
+Finder information, and foreign metadata. The host-shim test checks long names,
+case aliases, invalid names, codec refusal, append preservation, and Linux
+reader acceptance; DOS filesystem behavior remains unqualified.
 
 ---
 
@@ -1915,14 +2089,14 @@ Uses `dirread(fd)` to obtain a `Dir *` array for a directory opened with `open(p
 After every `BP_TYPE_DATA` and `BP_TYPE_DIR` entry, a `BP_TYPE_META` entry with `platform = BP_OS_PLAN9` is written. The payload is 2 bytes: the lower 16 bits of `Dir.mode`.
 
 The low 9 bits of `Dir.mode` are the familiar owner/group/others rwx bits.
-Archive creation stores these mode bits. Real extraction currently refuses
-after archive preflight and before creating output: the frontend has only
-pathname-based create/metadata operations and cannot safely anchor or publish
-under a selected output directory. Dry-run, listing, integrity testing, create,
-and append remain available. Earlier native mode/time restoration results are
-historical and do not describe current extraction behavior. Re-enable real
-extraction only after safe anchored staging/publication is implemented and
-qualified.
+Archive creation stores these mode bits. Extraction requires `-o` naming a new
+directory. The client creates it with owner-only permissions, changes into it,
+and writes safe archive paths relative to that working directory using
+exclusive file creation. Existing roots and implicit extraction into the
+current directory are refused, including with `-f`. Extraction restores rwx
+permissions and representable timestamps. Dry-run, listing, integrity testing,
+create, and append remain available. Native mode/time behavior has not been
+qualified on a current Plan 9 runtime.
 
 ### Plan 9: Text Encoding
 
@@ -1940,7 +2114,8 @@ Plan 9 was the first production operating system to adopt UTF-8, designed by Rob
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-`x` currently refuses real extraction for the safety reason above; `-n`
+`x` requires `-o` naming a new output directory; existing roots and implicit
+extraction into the current directory are refused, including with `-f`. `-n`
 remains available for extraction dry-run.
 
 | Option    | Description                                   |
@@ -2054,7 +2229,8 @@ Sinclair QL uses ISO-8859-1 (Latin-1) for filenames. File names are converted to
 Before creating the output root, extraction scans the full archive table. It
 refuses DATA/DIR names that cannot be represented in Latin-1, exceed QDOS's
 36-byte complete relative pathname limit, alias under ASCII or Latin-1
-case-folding, or conflict as a file and descendant path. This follows the
+case-folding after `/` is projected to QDOS `_`, or collide between a literal
+underscore and a projected path separator. This follows the
 documented QDOS case-insensitive naming and path-length behavior described in
 [Directories](https://sinclairql.net/djw/docs/articles/Directories.pdf).
 Regular file bytes are written to a same-directory stage created with
@@ -2195,6 +2371,12 @@ create semantics still need native qualification.
 ### X68000: Text Encoding
 
 Human68k uses Shift-JIS for filenames. ASCII, half-width kana, and standard JIS X 0208 double-byte characters are converted to UTF-8 on archive and back on extraction via `bp_local_to_utf8()` / `bp_utf8_to_local()` with `BP_CP_SJIS`. Undefined pairs and CP932 vendor extensions are refused. Path scans skip valid Shift-JIS pairs, including trail byte `0x5c`, when locating separators. Unit tests round-trip all 6,879 mapped JIS X 0208 pairs; the X68000 host DOS-call shim also checks Linux extraction and malformed/unmapped names. The table is reproducible with `scripts/generate_sjis_table.py`. Native Human68k path and encoding behavior still needs target qualification.
+
+The Linux x86-64 CLI provides `--target-profile=x68000-sjis-v1` for archives
+intended for Human68k v3's 18.3 naming rules. It preflights strict standard
+Shift-JIS projection, path and component byte limits, case collisions, and
+entry support; the profile details and limits are documented in the
+[target compatibility profile](target-compatibility-profiles.md#implemented-x68000-profile).
 
 ### X68000: Commands and Options
 
@@ -2380,6 +2562,10 @@ cd src/frontend/win_gui_net
 dotnet build -c Release BoltPack.csproj
 ```
 
+When Mono is installed, `make win-gui-net-profile-host-test` compiles the C#
+sources and runs Windows-name/create-preflight checks without opening the GUI.
+Override `MCS` and `MONO` when those tools are not on `PATH`.
+
 The resulting `BoltPack.exe` expects `boltpack_core.dll` in the same directory.
 
 ---
@@ -2494,7 +2680,20 @@ the mini-compatible entry-count, entry-size, and serialized-size limits.
 Archive creation writes a sibling stage and only replaces the selected file
 after finalization, flush, and close succeed. Existing destinations are
 rechecked before publication; Windows `ReplaceFile` preserves destination
-metadata when replacing an existing archive.
+metadata when replacing an existing archive. Windows target-name preflight
+walks selected files and directories before opening the save dialog. It checks
+UTF-16/NFC Windows names, component and path limits, collisions and prefixes,
+supported entry types, and reparse points. `make
+win64-fltk-wine-create-test` verifies a production GUI create with a
+supplementary-Unicode filename and exact Linux extraction.
+`make win64-fltk-wine-source-collision-test` passes a tree containing
+`Case.txt` and `case.txt` through the same create path under Wine. The GUI
+shows its preflight error, does not open the save dialog, and publishes no
+archive; its run record retains the alert screenshot. This focused test also
+requires `python3-pil`, Xvfb, and xdotool.
+`make win64-fltk-wine-nfc-collision-test` does the same with composed
+`café.txt` and decomposed `café.txt`, verifying that the FLTK preflight
+rejects names that normalize to the same Windows path.
 
 #### Unsigned test builds on Windows
 
@@ -2549,8 +2748,15 @@ attributes and ACLs; the compatibility fallback uses recovery renames. Source
 reparse points are refused rather than followed into their targets. File-dialog
 and drag-and-drop creation preflight case-insensitive duplicate names and
 file/directory path conflicts, bounded at 65,535 primary entries/path nodes
-and 16 MiB of path keys. Unicode normalization collisions and source-tree
-changes during creation remain unqualified.
+and 16 MiB of path keys. They also preflight NFC collision keys, Windows
+reserved names, forbidden characters, 255-unit components, and the 259-unit
+relative-path limit before staging. On Windows versions without
+`NormalizeString`, non-ASCII names are refused conservatively. These checks
+compile for Win32 and Win64. `make win64-gui-profile-test` exercises these
+production preflight functions under Wine, including reserved-name and length
+boundaries, case/NFC/prefix collisions, and recursive source-tree enumeration.
+This does not cover the full dialog/archive-create flow, native Windows
+behavior, reparse points, or source-tree changes during creation.
 
 Link libraries: `comctl32`, `comdlg32`, `shell32`, `user32`, `gdi32`.
 
@@ -2578,16 +2784,20 @@ reports unsupported links, resource forks, POSIX modes, and metadata as
 partial. Archive creation also uses an exclusive sibling stage, captures
 portable FAT flags and explicit timestamp validity, and replaces the selected
 archive only after successful finalization and close. Path-based checks retain
-a race with concurrent parent substitution.
+a race with concurrent parent substitution. Create preflight also applies NFC
+collision keys, Windows reserved-name rules, 255-unit components, and the
+259-unit relative-path limit before staging.
 
 The Archive menu's Interchange Profile 1 check applies to new archives. It
 selects BoltLite with 16 KiB blocks and enforces mini-reader entry-count,
 entry-size, and serialized-size limits through the DLL profile-create wrapper.
 The archive is still published through the existing exclusive sibling stage.
 
-The Win32 and Win64 DLL variants cross-build, but the .NET project has not been
-compiled or run in this environment because no .NET compiler or Windows runtime
-is available.
+The Win32 and Win64 DLL variants cross-build. Mono 6.12 compiled all C# GUI
+sources and the production validator tests passed with
+`make MCS=<mcs> MONO=<mono> win-gui-net-profile-host-test`. This host compile
+does not replace the SDK-style .NET 4.8 project build or Windows runtime
+qualification.
 
 | File               | Purpose                                                 |
 | ------------------ | ------------------------------------------------------- |

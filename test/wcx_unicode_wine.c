@@ -95,6 +95,30 @@ static int append_path(WCHAR *out, size_t capacity, const WCHAR *root,
     return 1;
 }
 
+static int files_equal(const WCHAR *left_path, const WCHAR *right_path)
+{
+    HANDLE left = INVALID_HANDLE_VALUE, right = INVALID_HANDLE_VALUE;
+    BYTE left_buffer[4096], right_buffer[4096];
+    DWORD left_read, right_read;
+    int equal = 0;
+    left = CreateFileW(left_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    right = CreateFileW(right_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (left == INVALID_HANDLE_VALUE || right == INVALID_HANDLE_VALUE) goto done;
+    for (;;) {
+        if (!ReadFile(left, left_buffer, sizeof(left_buffer), &left_read, NULL) ||
+            !ReadFile(right, right_buffer, sizeof(right_buffer), &right_read, NULL) ||
+            left_read != right_read ||
+            memcmp(left_buffer, right_buffer, left_read) != 0) goto done;
+        if (left_read == 0) { equal = 1; break; }
+    }
+done:
+    if (left != INVALID_HANDLE_VALUE) CloseHandle(left);
+    if (right != INVALID_HANDLE_VALUE) CloseHandle(right);
+    return equal;
+}
+
 static int report(const char *message, DWORD error)
 {
     fprintf(stderr, "FAIL: %s (error=%lu)\n", message,
@@ -115,12 +139,20 @@ int wmain(int argc, wchar_t **argv)
     delete_files_w_fn delete_files;
     WCHAR dll_path[1024], root[1024], archive_path[1024], ansi_archive_path[1024];
     WCHAR packed_archive_path[1024], pack_source_path[1024];
+    WCHAR collision_archive_path[1024], collision_source_path[1024];
+    WCHAR nfc_archive_path[1024], nfc_source_path[1024];
+    WCHAR backup_archive_path[1024];
+    WCHAR collision_first_path[1024], collision_second_path[1024];
+    WCHAR nfc_first_path[1024], nfc_second_path[1024];
     WCHAR directory_archive_path[1024], directory_extract_path[1024];
     WCHAR extract_path[1024], nested_path[1024], output_path[1024];
     WCHAR expected_name[] = L"nested\\\x6771\x4EAC-\xD83D\xDE42.txt";
     WCHAR add_list[] = L"nested\\\x6771\x4EAC-\xD83D\xDE42.txt\0";
     WCHAR append_list[] = L"extra-\x6771\x4EAC.txt\0";
+    WCHAR hidden_list[] = L".hidden.txt\0";
     WCHAR delete_list[] = L"nested\\\x6771\x4EAC-\xD83D\xDE42.txt\0";
+    WCHAR case_collision_list[] = L"Name.txt\0name.TXT\0";
+    WCHAR nfc_collision_list[] = L"\x00E9.txt\0e\x0301.txt\0";
     char acp_probe[1024];
     BOOL used_default = FALSE;
     open_data_w open_data;
@@ -149,6 +181,23 @@ int wmain(int argc, wchar_t **argv)
         !append_path(directory_archive_path, 1024, root,
                      L"\\directory-archive.blt") ||
         !append_path(pack_source_path, 1024, root, L"\\pack-source") ||
+        !append_path(collision_archive_path, 1024, root,
+                     L"\\collision-output.blt") ||
+        !append_path(collision_source_path, 1024, root,
+                     L"\\collision-source") ||
+        !append_path(nfc_archive_path, 1024, root,
+                     L"\\nfc-output.blt") ||
+        !append_path(nfc_source_path, 1024, root, L"\\nfc-source") ||
+        !append_path(collision_first_path, 1024, root,
+                     L"\\collision-source\\Name.txt") ||
+        !append_path(collision_second_path, 1024, root,
+                     L"\\collision-source\\name.TXT") ||
+        !append_path(nfc_first_path, 1024, root,
+                     L"\\nfc-source\\\x00E9.txt") ||
+        !append_path(nfc_second_path, 1024, root,
+                     L"\\nfc-source\\e\x0301.txt") ||
+        !append_path(backup_archive_path, 1024, root,
+                     L"\\packed-before-collision.blt") ||
         !append_path(directory_extract_path, 1024, root,
                      L"\\directory-extract") ||
         !append_path(extract_path, 1024, root, L"\\extract") ||
@@ -276,9 +325,40 @@ int wmain(int argc, wchar_t **argv)
     rc = pack_files(packed_archive_path, NULL, pack_source_path, add_list, 2);
     if (rc != WCX_E_SUCCESS && rc != WCX_E_NOT_SUPPORTED)
         return report("PackFilesW", (DWORD)rc);
+    rc = pack_files(packed_archive_path, NULL, pack_source_path, hidden_list, 2);
+    if (rc != WCX_E_SUCCESS && rc != WCX_E_NOT_SUPPORTED)
+        return report("PackFilesW hidden-name", (DWORD)rc);
     rc = pack_files(packed_archive_path, NULL, pack_source_path, append_list, 2);
     if (rc != WCX_E_SUCCESS && rc != WCX_E_NOT_SUPPORTED)
         return report("PackFilesW append", (DWORD)rc);
+
+    if (GetFileAttributesW(collision_source_path) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(nfc_source_path) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(collision_first_path) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(collision_second_path) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(nfc_first_path) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(nfc_second_path) == INVALID_FILE_ATTRIBUTES)
+        return report("collision source directories are missing", GetLastError());
+    rc = pack_files(collision_archive_path, NULL, collision_source_path,
+                    case_collision_list, 2);
+    if (rc != WCX_E_NOT_SUPPORTED ||
+        GetFileAttributesW(collision_archive_path) != INVALID_FILE_ATTRIBUTES)
+        return report("PackFilesW accepted a Windows case collision",
+                      (DWORD)rc);
+    rc = pack_files(nfc_archive_path, NULL, nfc_source_path,
+                    nfc_collision_list, 2);
+    if (rc != WCX_E_NOT_SUPPORTED ||
+        GetFileAttributesW(nfc_archive_path) != INVALID_FILE_ATTRIBUTES)
+        return report("PackFilesW accepted an NFC collision", (DWORD)rc);
+    if (!CopyFileW(packed_archive_path, backup_archive_path, FALSE))
+        return report("copy archive before duplicate append", GetLastError());
+    rc = pack_files(packed_archive_path, NULL, pack_source_path, append_list, 2);
+    if (rc != WCX_E_NOT_SUPPORTED ||
+        !files_equal(packed_archive_path, backup_archive_path))
+        return report("PackFilesW append changed archive after collision",
+                      (DWORD)rc);
+    DeleteFileW(backup_archive_path);
+
     rc = delete_files(archive_path, delete_list);
     if (rc != WCX_E_SUCCESS && rc != WCX_E_NOT_SUPPORTED)
         return report("DeleteFilesW on Linux-created archive", (DWORD)rc);
@@ -288,7 +368,7 @@ int wmain(int argc, wchar_t **argv)
 
     FreeLibrary(module);
     puts(ansi_refusal_checked
-         ? "WCX Unicode open/list/extract/pack/append/delete passed; ANSI header refused non-ACP name"
-         : "WCX Unicode open/list/extract/pack/append/delete passed");
+         ? "WCX Unicode open/list/extract/pack/append/delete and preflight collision refusal passed; ANSI header refused non-ACP name"
+         : "WCX Unicode open/list/extract/pack/append/delete and preflight collision refusal passed");
     return 0;
 }

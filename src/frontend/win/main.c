@@ -14,6 +14,10 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_metadata.h"
+#include "../../core/bp_codepage.h"
+#include "../cpm86/cpm86_path.h"
+#include "../atari/atari_path.h"
+#include "../x68k/x68k_path_index.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -341,6 +345,14 @@ typedef struct {
     unsigned pos;
 } win_fat_source_t;
 
+static int g_target_classic_hfs;
+static int g_target_amiga_68k;
+static int g_target_cpm86;
+static int g_target_atari_st;
+static int g_target_ql;
+static int g_target_riscos;
+static int g_target_x68000;
+
 static long win_fat_read(void *handle, void *buffer, bp_uint32 count)
 {
     win_fat_source_t *source = (win_fat_source_t *)handle;
@@ -359,6 +371,9 @@ static int add_win_fat_metadata_value(bp_archive_t *ar, const char *name,
     bp_io_t io;
     bp_uint8 value;
     int rc;
+    if (g_target_classic_hfs || g_target_amiga_68k || g_target_cpm86 ||
+        g_target_ql || g_target_riscos || g_target_x68000)
+        return BP_OK;
     if (attributes == INVALID_FILE_ATTRIBUTES) return BP_ERR_IO;
     value = (bp_uint8)(attributes & BP_META_FAT_MASK);
     rc = bp_metadata_fat_encode(source.data, sizeof(source.data),
@@ -2442,20 +2457,35 @@ static int win_component_is_device(const wchar_t *component, size_t length)
     if (base == 4 &&
         (win_path_compare_n(component, 3, "COM", 3) == 0 ||
          win_path_compare_n(component, 3, "LPT", 3) == 0) &&
-        component[3] >= L'1' && component[3] <= L'9') return 1;
+        ((component[3] >= L'1' && component[3] <= L'9') ||
+         component[3] == 0x00B9 || component[3] == 0x00B2 ||
+         component[3] == 0x00B3)) return 1;
     return 0;
 }
 
 static int win_project_windows_path(const char *local_name, wchar_t *key,
                                     int key_capacity)
 {
-    int length, i, start;
+    wchar_t normalized[BP_MAX_PATH_WIDE];
+    int length, normalized_length, i, start;
     length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, local_name, -1,
                                  key, key_capacity);
     if (length <= 0) return BP_ERR_INVALID_ARG;
     length--;
-    for (i = 0; i < length; i++) {
+    if (!win_wide_is_valid_utf16(key)) return BP_ERR_INVALID_ARG;
+    for (i = 0; i < length; i++)
         if (key[i] == L'/') key[i] = L'\\';
+    normalized_length = NormalizeString(NormalizationC, key, length,
+                                        normalized, BP_MAX_PATH_WIDE);
+    if (normalized_length <= 0 || normalized_length >= key_capacity)
+        return BP_ERR_INVALID_ARG;
+    memcpy(key, normalized,
+           (size_t)normalized_length * sizeof(wchar_t));
+    length = normalized_length;
+    key[length] = L'\0';
+    if (length == 0 || key[0] == L'\\' || length >= BP_MAX_PATH_WIDE)
+        return BP_ERR_INVALID_ARG;
+    for (i = 0; i < length; i++) {
         if (key[i] == L':' || key[i] == L'<' || key[i] == L'>' ||
             key[i] == L'"' || key[i] == L'|' || key[i] == L'?' ||
             key[i] == L'*' || key[i] < 32) return BP_ERR_INVALID_ARG;
@@ -2468,6 +2498,7 @@ static int win_project_windows_path(const char *local_name, wchar_t *key,
         if (key[i] == L'\\' || key[i] == L'\0') {
             int component_length = i - start;
             if (component_length <= 0 || key[i - 1] == L'.' ||
+                component_length > 255 ||
                 key[i - 1] == L' ' ||
                 (component_length == 1 && key[start] == L'.') ||
                 win_component_is_device(key + start,
@@ -2537,6 +2568,1118 @@ static int win_register_output_path(extract_ctx_t *ctx, const char *local_name,
     }
     ctx->projected_names = win_path_insert(ctx->projected_names, key,
                                            entry_type, &rc);
+    return rc;
+}
+
+typedef struct {
+    char *key;
+    bp_uint8 type;
+} win_hfs_path_t;
+
+static int win_legacy_paths_check(win_hfs_path_t *items, bp_uint32 count,
+                                  const char *profile);
+
+typedef struct {
+    char name[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    bp_uint8 type;
+} win_atari_path_t;
+
+static int win_atari_path_prefix_conflict(const win_atari_path_t *paths,
+                                          unsigned count)
+{
+    unsigned i, j;
+    for (i = 0; i < count; i++) {
+        size_t length = strlen(paths[i].name);
+        for (j = 0; j < count; j++) {
+            if (paths[i].type != BP_TYPE_DATA || i == j) continue;
+            if (strncmp(paths[j].name, paths[i].name, length) == 0 &&
+                paths[j].name[length] == '\\') return 1;
+        }
+    }
+    return 0;
+}
+
+static int win_atari_profile_add_name(bp_atari_name_set_t *names,
+                                      win_atari_path_t *paths,
+                                      unsigned *count, const char *name,
+                                      bp_uint8 type)
+{
+    char key[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    unsigned int key_length;
+    int rc;
+    if (*count >= BP_ATARI_PATH_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+    rc = bp_atari_project_name(name, type == BP_TYPE_DIR, key, sizeof(key),
+                               &key_length);
+    if (rc != BP_OK) return rc;
+    rc = bp_atari_name_set_add(names, key, key_length);
+    if (rc != BP_OK) return rc;
+    memcpy(paths[*count].name, key, (size_t)key_length + 1U);
+    paths[*count].type = type;
+    (*count)++;
+    return BP_OK;
+}
+
+/* Atari ST GEMDOS writer profile: classic printable-ASCII 8.3 names,
+ * bounded path/index, and only data/directories plus portable/Atari metadata. */
+static int win_atari_profile_preflight(const add_job_list_t *jobs,
+                                       const bp_archive_t *existing)
+{
+    bp_atari_name_set_t names;
+    win_atari_path_t *paths;
+    unsigned count = 0;
+    int rc = BP_OK;
+    int i;
+
+    bp_atari_name_set_init(&names);
+    paths = (win_atari_path_t *)calloc(BP_ATARI_PATH_MAX_ENTRIES,
+                                      sizeof(*paths));
+    if (paths == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE ||
+                    entry->platform == BP_OS_ATARI) continue;
+                fprintf(stderr,
+                        "boltpack: Atari ST profile refuses foreign metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_atari_profile_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Atari ST profile does not support this entry type: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_atari_profile_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: Atari ST profile file exceeds signed 32-bit I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto win_atari_profile_done;
+            }
+            rc = win_atari_profile_add_name(&names, paths, &count,
+                                            entry->name, entry->entry_type);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Atari ST name is invalid, colliding, or over the profile index limit: %s\n",
+                        entry->name);
+                goto win_atari_profile_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            if (job->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: Atari ST profile does not support symbolic links: %s\n",
+                        job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_atari_profile_done;
+            }
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) continue;
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: Atari ST profile file exceeds signed 32-bit I/O limit: %s\n",
+                        job->path);
+                rc = BP_ERR_OVERFLOW;
+                goto win_atari_profile_done;
+            }
+            rc = win_atari_profile_add_name(&names, paths, &count,
+                                            job->arcname, job->entry_type);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Atari ST name is invalid, colliding, or over the profile index limit: %s\n",
+                        job->path);
+                goto win_atari_profile_done;
+            }
+        }
+    }
+    if (win_atari_path_prefix_conflict(paths, count)) {
+        fprintf(stderr,
+                "boltpack: Atari ST profile has a file/directory prefix conflict\n");
+        rc = BP_ERR_PARTIAL;
+    }
+
+win_atari_profile_done:
+    bp_atari_name_set_free(&names);
+    free(paths);
+    return rc;
+}
+
+/* Sinclair QL names are Latin-1; QDOS uses underscore in place of archive
+ * separators, so project before case-fold collision checking. */
+static int win_ql_add_name(win_hfs_path_t *items, bp_uint32 *count,
+                           const char *utf8_name, bp_uint8 type,
+                           bp_uint64 file_size)
+{
+    char local[256], folded[256];
+    size_t length, scan_length, start, i;
+    if (type != BP_TYPE_DATA && type != BP_TYPE_DIR) return BP_ERR_PARTIAL;
+    if (type == BP_TYPE_DATA &&
+        (file_size.hi != 0 || file_size.lo > 0x7FFFFFFFUL))
+        return BP_ERR_OVERFLOW;
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_8859_1) != 0)
+        return BP_ERR_INVALID_ARG;
+    length = strlen(local);
+    if (length == 0 || length > 36U || local[0] == '/')
+        return BP_ERR_NAME_TOO_LONG;
+    scan_length = length;
+    if (type == BP_TYPE_DIR && local[length - 1U] == '/') scan_length--;
+    for (start = 0, i = 0; i <= scan_length; i++) {
+        if (i == scan_length || local[i] == '/') {
+            size_t n = i - start, j;
+            if (n == 0 || (n == 1U && local[start] == '.') ||
+                (n == 2U && local[start] == '.' && local[start + 1U] == '.'))
+                return BP_ERR_INVALID_ARG;
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == ':' || c == '\\')
+                    return BP_ERR_INVALID_ARG;
+            }
+            start = i + 1U;
+        }
+    }
+    for (i = 0; i < length; i++)
+        if (local[i] == '/') local[i] = '_';
+    if (bp_local_casefold(local, folded, (int)sizeof(folded),
+                          BP_CP_8859_1) != 0)
+        return BP_ERR_INVALID_ARG;
+    if (*count >= BP_PROFILE1_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+    items[*count].key = dup_string(folded);
+    if (items[*count].key == NULL) return BP_ERR_NOMEM;
+    items[*count].type = type;
+    (*count)++;
+    return BP_OK;
+}
+
+static int win_ql_profile_preflight(const add_job_list_t *jobs,
+                                    const bp_archive_t *existing)
+{
+    win_hfs_path_t *items;
+    bp_uint32 count = 0, i;
+    int rc = BP_OK;
+    items = (win_hfs_path_t *)calloc(BP_PROFILE1_MAX_ENTRIES,
+                                     sizeof(*items));
+    if (items == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL profile refuses metadata, links, or special entries: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_ql_done;
+            }
+            rc = win_ql_add_name(items, &count, entry->name,
+                                 entry->entry_type, entry->original_size);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing entry violates Sinclair QL profile: %s\n",
+                        entry->name);
+                goto win_ql_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        int j;
+        for (j = 0; j < jobs->count; j++) {
+            const add_job_t *job = &jobs->items[j];
+            rc = win_ql_add_name(items, &count, job->arcname,
+                                 job->entry_type, job->file_size);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: source entry violates Sinclair QL profile: %s\n",
+                        job->path);
+                goto win_ql_done;
+            }
+        }
+    }
+    rc = win_legacy_paths_check(items, count, "Sinclair QL");
+win_ql_done:
+    for (i = 0; i < count; i++) free(items[i].key);
+    free(items);
+    return rc;
+}
+
+/* RISC OS FileCore uses Latin-1 names and treats a period as path syntax.
+ * Keep archive slashes as path boundaries after validating each leaf. */
+static int win_riscos_add_name(win_hfs_path_t *items, bp_uint32 *count,
+                               const char *utf8_name, bp_uint8 type,
+                               bp_uint64 file_size)
+{
+    char local[256], folded[256];
+    size_t length, scan_length, start, i;
+    if (type != BP_TYPE_DATA && type != BP_TYPE_DIR) return BP_ERR_PARTIAL;
+    if (type == BP_TYPE_DATA &&
+        (file_size.hi != 0 || file_size.lo > 0x7FFFFFFFUL))
+        return BP_ERR_OVERFLOW;
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_8859_1) != 0)
+        return BP_ERR_INVALID_ARG;
+    length = strlen(local);
+    if (length == 0 || length > 255U || local[0] == '/')
+        return BP_ERR_NAME_TOO_LONG;
+    scan_length = length;
+    if (type == BP_TYPE_DIR && local[length - 1U] == '/') scan_length--;
+    for (start = 0, i = 0; i <= scan_length; i++) {
+        if (i == scan_length || local[i] == '/') {
+            size_t n = i - start, j;
+            if (n == 0 || n > 10U || (n == 1U && local[start] == '.') ||
+                (n == 2U && local[start] == '.' && local[start + 1U] == '.'))
+                return BP_ERR_NAME_TOO_LONG;
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == '.' || c == ':' ||
+                    c == '*' || c == '#' || c == '$' || c == '%' ||
+                    c == '&' || c == '@' || c == '"' || c == '|' ||
+                    c == '^' || c == '\\') return BP_ERR_INVALID_ARG;
+            }
+            start = i + 1U;
+        }
+    }
+    if (type == BP_TYPE_DIR && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (bp_local_casefold(local, folded, (int)sizeof(folded),
+                          BP_CP_8859_1) != 0)
+        return BP_ERR_INVALID_ARG;
+    if (*count >= BP_PROFILE1_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+    items[*count].key = dup_string(folded);
+    if (items[*count].key == NULL) return BP_ERR_NOMEM;
+    items[*count].type = type;
+    (*count)++;
+    return BP_OK;
+}
+
+static int win_riscos_profile_preflight(const add_job_list_t *jobs,
+                                        const bp_archive_t *existing)
+{
+    win_hfs_path_t *items;
+    bp_uint32 count = 0, i;
+    int rc = BP_OK;
+    items = (win_hfs_path_t *)calloc(BP_PROFILE1_MAX_ENTRIES,
+                                     sizeof(*items));
+    if (items == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: RISC OS profile refuses metadata, links, or special entries: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_riscos_done;
+            }
+            rc = win_riscos_add_name(items, &count, entry->name,
+                                     entry->entry_type, entry->original_size);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing entry violates RISC OS profile: %s\n",
+                        entry->name);
+                goto win_riscos_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        int j;
+        for (j = 0; j < jobs->count; j++) {
+            const add_job_t *job = &jobs->items[j];
+            rc = win_riscos_add_name(items, &count, job->arcname,
+                                     job->entry_type, job->file_size);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: source entry violates RISC OS profile: %s\n",
+                        job->path);
+                goto win_riscos_done;
+            }
+        }
+    }
+    rc = win_legacy_paths_check(items, count, "RISC OS");
+win_riscos_done:
+    for (i = 0; i < count; i++) free(items[i].key);
+    free(items);
+    return rc;
+}
+
+/* Human68k v3 uses standard Shift-JIS 18.3 names. Count multibyte
+ * characters before inspecting punctuation so a 0x5c trail byte stays data. */
+static int win_x68000_add_name(x68k_path_index_t *paths,
+                               const char *utf8_name, int is_directory)
+{
+    char local[X68K_INDEX_MAX_PATH * 3U];
+    size_t length, scan_length, start, i;
+    int rc;
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_SJIS) != 0) {
+        fprintf(stderr,
+                "boltpack: X68000 profile cannot encode standard Shift-JIS name: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (length == 0 || length > 255U || local[0] == '/')
+        return BP_ERR_NAME_TOO_LONG;
+    scan_length = length;
+    if (is_directory && local[length - 1U] == '/') scan_length--;
+    for (start = 0, i = 0; i <= scan_length; i++) {
+        if (i == scan_length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t stem_bytes = 0, extension_bytes = 0, j;
+            int in_extension = 0, has_dot = 0;
+            if (component_length == 0) return BP_ERR_PARTIAL;
+            for (j = start; j < i;) {
+                unsigned char c = (unsigned char)local[j];
+                size_t char_bytes = 1U;
+                if (x68k_index_sjis_pair_at(local + j)) {
+                    char_bytes = 2U;
+                } else if ((c >= 0x81U && c <= 0x9FU) ||
+                           (c >= 0xE0U && c <= 0xEFU)) {
+                    return BP_ERR_PARTIAL;
+                }
+                if (char_bytes == 1U) {
+                    if (c == '.') {
+                        if (has_dot || j == start || j + 1U == i)
+                            return BP_ERR_PARTIAL;
+                        has_dot = 1;
+                        in_extension = 1;
+                        j++;
+                        continue;
+                    }
+                    if (c < 0x21U || c == 0x7FU || c == '"' || c == '*' ||
+                        c == '+' || c == ',' || c == ':' || c == ';' ||
+                        c == '<' || c == '=' || c == '>' || c == '?' ||
+                        c == '[' || c == '\\' || c == ']' || c == '|')
+                        return BP_ERR_PARTIAL;
+                }
+                if (in_extension) extension_bytes += char_bytes;
+                else stem_bytes += char_bytes;
+                j += char_bytes;
+            }
+            if (stem_bytes == 0 || stem_bytes > 18U || extension_bytes > 3U)
+                return BP_ERR_NAME_TOO_LONG;
+            start = i + 1U;
+        }
+    }
+    rc = x68k_path_index_add(paths, local, is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: X68000 projected path collision or path limit: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int win_x68000_profile_preflight(const add_job_list_t *jobs,
+                                        const bp_archive_t *existing)
+{
+    x68k_path_index_t paths;
+    int rc = x68k_path_index_init(&paths);
+    int i;
+    if (rc != BP_OK) return rc;
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: X68000 profile refuses metadata, links, or special entries: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_x68000_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                rc = BP_ERR_OVERFLOW;
+                goto win_x68000_done;
+            }
+            rc = win_x68000_add_name(&paths, entry->name,
+                                     entry->entry_type == BP_TYPE_DIR);
+            if (rc != BP_OK) goto win_x68000_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: X68000 profile does not support links or special entries: %s\n",
+                        job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_x68000_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                rc = BP_ERR_OVERFLOW;
+                goto win_x68000_done;
+            }
+            rc = win_x68000_add_name(&paths, job->arcname,
+                                     job->entry_type == BP_TYPE_DIR);
+            if (rc != BP_OK) goto win_x68000_done;
+        }
+    }
+win_x68000_done:
+    x68k_path_index_free(&paths);
+    return rc;
+}
+
+/* Windows NT path profile used by the native Windows CLI. Path keys are
+ * validated as UTF-16, normalized to NFC for conservative collision checks,
+ * and compared with Windows ordinal case-insensitive semantics. */
+static int win_target_profile_preflight(const add_job_list_t *jobs,
+                                        const bp_archive_t *existing)
+{
+    extract_ctx_t ctx;
+    int rc = BP_OK;
+    int i;
+
+    memset(&ctx, 0, sizeof(ctx));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE) continue;
+                fprintf(stderr,
+                        "boltpack: Windows NT profile refuses non-portable metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_target_profile_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Windows NT profile does not support this entry type: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_target_profile_done;
+            }
+            rc = win_register_output_path(&ctx, entry->name,
+                                          entry->entry_type);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Windows NT path is invalid, too long, or collides: %s\n",
+                        entry->name);
+                goto win_target_profile_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Windows NT profile does not support this source entry type: %s\n",
+                        job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_target_profile_done;
+            }
+            rc = win_register_output_path(&ctx, job->arcname,
+                                          job->entry_type);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Windows NT path is invalid, too long, or collides: %s\n",
+                        job->path);
+                goto win_target_profile_done;
+            }
+        }
+    }
+
+win_target_profile_done:
+    win_path_free(ctx.projected_names);
+    return rc;
+}
+
+#define WIN_DOS_PROFILE_NONE          0
+#define WIN_DOS_PROFILE_CP850_83      1
+#define WIN_DOS_PROFILE_CP437_83      2
+#define WIN_DOS_PROFILE_DOS16_CP850   3
+#define WIN_DOS_PROFILE_WIN16_CP437   4
+#define WIN_DOS_PROFILE_OS2_16_CP850  5
+#define WIN_DOS_PROFILE_OS2_FAT_CP850 6
+#define WIN_DOS_PROFILE_CP850_LFN      7
+
+static int win_dos_profile_codepage(int profile)
+{
+    if (profile == WIN_DOS_PROFILE_CP437_83 ||
+        profile == WIN_DOS_PROFILE_WIN16_CP437)
+        return BP_CP_437;
+    return profile == WIN_DOS_PROFILE_NONE ? BP_CP_INVALID : BP_CP_850;
+}
+
+static bp_uint8 win_dos_profile_metadata(int profile)
+{
+    if (profile == WIN_DOS_PROFILE_WIN16_CP437) return BP_OS_WIN16;
+    if (profile == WIN_DOS_PROFILE_OS2_16_CP850 ||
+        profile == WIN_DOS_PROFILE_OS2_FAT_CP850) return BP_OS_OS2;
+    return BP_OS_DOS;
+}
+
+static const char *win_dos_profile_label(int profile)
+{
+    switch (profile) {
+    case WIN_DOS_PROFILE_CP850_83: return "DOS CP850 8.3";
+    case WIN_DOS_PROFILE_CP437_83: return "DOS CP437 8.3";
+    case WIN_DOS_PROFILE_DOS16_CP850: return "DOS16 CP850 mini";
+    case WIN_DOS_PROFILE_WIN16_CP437: return "Win16 CP437 mini";
+    case WIN_DOS_PROFILE_OS2_16_CP850: return "OS/2-16 CP850 mini";
+    case WIN_DOS_PROFILE_OS2_FAT_CP850: return "OS/2 FAT CP850";
+    case WIN_DOS_PROFILE_CP850_LFN: return "DOS CP850 LFN";
+    default: return "DOS-family 8.3";
+    }
+}
+
+static int win_hfs_path_compare(const void *left, const void *right)
+{
+    const win_hfs_path_t *a = (const win_hfs_path_t *)left;
+    const win_hfs_path_t *b = (const win_hfs_path_t *)right;
+    return strcmp(a->key, b->key);
+}
+
+static int win_legacy_register_name(win_hfs_path_t *items, bp_uint32 *count,
+                                    const char *utf8_name, bp_uint8 type,
+                                    bp_uint64 file_size, int codepage,
+                                    size_t max_component, size_t max_path)
+{
+    char native[4096];
+    char folded[4096];
+    size_t n, component = 0, i;
+    int rc;
+    if (type != BP_TYPE_DATA && type != BP_TYPE_DIR) return BP_ERR_PARTIAL;
+    if (file_size.hi != 0 || file_size.lo > 0x7FFFFFFFUL)
+        return BP_ERR_OVERFLOW;
+    if (utf8_name[0] == '/' || !bp_name_is_safe(utf8_name))
+        return BP_ERR_INVALID_ARG;
+    rc = bp_utf8_to_local(utf8_name, native, (int)sizeof(native),
+                          codepage);
+    if (rc != 0) return rc == BP_CP_NO_SPACE ? BP_ERR_NAME_TOO_LONG :
+                                               BP_ERR_INVALID_ARG;
+    n = strlen(native);
+    if (type == BP_TYPE_DIR && n > 0 && native[n - 1] == '/')
+        native[--n] = '\0';
+    if (n == 0 || n > max_path) return BP_ERR_NAME_TOO_LONG;
+    for (i = 0; i <= n; i++) {
+        unsigned char ch = (unsigned char)native[i];
+        if (ch == '/' || ch == '\0') {
+            if (component == 0 || component > max_component)
+                return BP_ERR_NAME_TOO_LONG;
+            if ((component == 1 && native[i - 1] == '.') ||
+                (component == 2 && native[i - 2] == '.' &&
+                 native[i - 1] == '.')) return BP_ERR_INVALID_ARG;
+            component = 0;
+        } else {
+            if (ch < 0x20 || ch == 0x7F || ch == ':' || ch == '\\')
+                return BP_ERR_INVALID_ARG;
+            component++;
+        }
+    }
+    if (bp_local_casefold(native, folded, (int)sizeof(folded),
+                          codepage) != 0) return BP_ERR_INVALID_ARG;
+    if (*count >= BP_PROFILE1_MAX_ENTRIES) return BP_ERR_OVERFLOW;
+    items[*count].key = dup_string(folded);
+    if (items[*count].key == NULL) return BP_ERR_NOMEM;
+    items[*count].type = type;
+    (*count)++;
+    return BP_OK;
+}
+
+static int win_legacy_paths_check(win_hfs_path_t *items, bp_uint32 count,
+                                  const char *profile)
+{
+    bp_uint32 i;
+    int rc = BP_OK;
+    qsort(items, count, sizeof(win_hfs_path_t), win_hfs_path_compare);
+    for (i = 1; i < count; i++) {
+        if (strcmp(items[i - 1].key, items[i].key) == 0) {
+            fprintf(stderr,
+                    "boltpack: %s profile found a projected case-fold collision\n",
+                    profile);
+            return BP_ERR_INVALID_ARG;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        char prefix[4096];
+        char *slash;
+        size_t n = strlen(items[i].key);
+        if (n >= sizeof(prefix)) { rc = BP_ERR_NAME_TOO_LONG; break; }
+        strcpy(prefix, items[i].key);
+        for (slash = strchr(prefix, '/'); slash != NULL;
+             slash = strchr(slash + 1, '/')) {
+            bp_uint32 lo = 0, hi = count;
+            int parent = -1;
+            *slash = '\0';
+            while (lo < hi) {
+                bp_uint32 mid = lo + (hi - lo) / 2;
+                int cmp = strcmp(items[mid].key, prefix);
+                if (cmp == 0) { parent = (int)mid; break; }
+                if (cmp < 0) lo = mid + 1;
+                else hi = mid;
+            }
+            *slash = '/';
+            if (parent >= 0 && items[parent].type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: %s profile found a file/directory path conflict\n",
+                        profile);
+                rc = BP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+        if (rc != BP_OK) break;
+    }
+    return rc;
+}
+
+static int win_dos_component_83(const char *component, size_t length)
+{
+    size_t stem = 0, extension = 0, i;
+    char reserved[9];
+    if (length == 0 || component[length - 1U] == ' ' ||
+        component[length - 1U] == '.') return 0;
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem == 0 || stem > 8U) return 0;
+    if (stem < length) {
+        if (stem + 1U == length) return 0;
+        extension = length - stem - 1U;
+        if (extension > 3U ||
+            memchr(component + stem + 1U, '.', extension) != NULL) return 0;
+    }
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c == '.') continue;
+        if (c < 0x20U || c == 0x7FU) return 0;
+        if (c >= 0x80U) continue;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || strchr("$%'-_@~`!(){}^#&", c)))
+            return 0;
+    }
+    if (stem <= 4U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            if (c >= 0x80U) return 1;
+            reserved[i] = (char)(c >= 'a' && c <= 'z'
+                               ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int win_dos_83_add_name(win_hfs_path_t *items, bp_uint32 *count,
+                               const char *utf8_name, bp_uint8 type,
+                               bp_uint64 file_size, int codepage)
+{
+    char local[260];
+    size_t length, i, start = 0;
+    int rc;
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local), codepage) != 0)
+        return BP_ERR_INVALID_ARG;
+    length = strlen(local);
+    if (type == BP_TYPE_DIR && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length >= 260U || local[0] == '/')
+        return BP_ERR_NAME_TOO_LONG;
+    for (i = 0; i <= length; i++) {
+        size_t component_length;
+        if (i != length && local[i] != '/') {
+            if (local[i] == '\\' || local[i] == ':') return BP_ERR_INVALID_ARG;
+            continue;
+        }
+        component_length = i - start;
+        if (!win_dos_component_83(local + start, component_length))
+            return BP_ERR_INVALID_ARG;
+        start = i + 1U;
+    }
+    rc = win_legacy_register_name(items, count, utf8_name, type, file_size,
+                                  codepage, 12U, 259U);
+    return rc;
+}
+
+static int win_dos_lfn_component_valid(const char *component, size_t length)
+{
+    size_t stem = 0, i;
+    char reserved[9];
+    if (length == 0 || length > 255U || component[length - 1U] == '.' ||
+        component[length - 1U] == ' ') return 0;
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c < 0x20U || c == 0x7FU || c == '\\' ||
+            strchr("\"*:<>?|", c) != NULL ||
+            (c == ' ' && (i + 1U == length || component[i + 1U] == '.')))
+            return 0;
+    }
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem <= 8U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            reserved[i] = (char)(c >= 'a' && c <= 'z'
+                               ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int win_dos_lfn_add_name(win_hfs_path_t *items, bp_uint32 *count,
+                                const char *utf8_name, bp_uint8 type,
+                                bp_uint64 file_size, int codepage)
+{
+    char local[4096];
+    size_t length, start, i;
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local), codepage) != 0)
+        return BP_ERR_INVALID_ARG;
+    length = strlen(local);
+    if (type == BP_TYPE_DIR && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length > 259U || local[0] == '/')
+        return BP_ERR_NAME_TOO_LONG;
+    for (start = 0, i = 0; i <= length; i++) {
+        if (i == length || local[i] == '/') {
+            if (!win_dos_lfn_component_valid(local + start, i - start))
+                return BP_ERR_INVALID_ARG;
+            start = i + 1U;
+        }
+    }
+    return win_legacy_register_name(items, count, utf8_name, type, file_size,
+                                    codepage, 255U, 259U);
+}
+
+static int win_dos_83_profile_preflight(const add_job_list_t *jobs,
+                                        const bp_archive_t *existing,
+                                        int codepage,
+                                        bp_uint8 metadata_platform,
+                                        const char *profile,
+                                        int long_names)
+{
+    win_hfs_path_t *items;
+    bp_uint32 count = 0, i;
+    int rc = BP_OK;
+    items = (win_hfs_path_t *)calloc(BP_PROFILE1_MAX_ENTRIES,
+                                     sizeof(win_hfs_path_t));
+    if (items == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE ||
+                    entry->platform == metadata_platform) continue;
+                fprintf(stderr,
+                        "boltpack: existing archive has metadata unsupported by %s: %s\n",
+                        profile, entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_dos_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: %s does not support this existing entry type: %s\n",
+                        profile, entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_dos_done;
+            }
+            rc = long_names
+               ? win_dos_lfn_add_name(items, &count, entry->name,
+                                      entry->entry_type,
+                                      entry->original_size, codepage)
+               : win_dos_83_add_name(items, &count, entry->name,
+                                     entry->entry_type,
+                                     entry->original_size, codepage);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing entry violates %s: %s\n",
+                        profile, entry->name);
+                goto win_dos_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        int j;
+        for (j = 0; j < jobs->count; j++) {
+            const add_job_t *job = &jobs->items[j];
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: %s supports only regular files and directories: %s\n",
+                        profile, job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_dos_done;
+            }
+            rc = long_names
+               ? win_dos_lfn_add_name(items, &count, job->arcname,
+                                      job->entry_type, job->file_size,
+                                      codepage)
+               : win_dos_83_add_name(items, &count, job->arcname,
+                                     job->entry_type, job->file_size,
+                                     codepage);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: source entry violates %s: %s\n",
+                        profile, job->path);
+                goto win_dos_done;
+            }
+        }
+    }
+    rc = win_legacy_paths_check(items, count, profile);
+
+win_dos_done:
+    for (i = 0; i < count; i++) free(items[i].key);
+    free(items);
+    return rc;
+}
+
+static int win_cpm86_profile_preflight(add_job_list_t *jobs,
+                                       const bp_archive_t *existing)
+{
+    char names[256][BP_CPM86_NAME_SIZE];
+    bp_uint32 count = 0, i, j;
+    int k;
+    if (existing != NULL) {
+        if (existing->entries_written > 256U ||
+            (existing->method != BP_METHOD_STORED &&
+             existing->method != BP_METHOD_BOLTLITE) ||
+            existing->block_size > BP_BLOCK_32K)
+            return BP_ERR_OVERFLOW;
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA || entry->flags != 0 ||
+                !bp_u64_is_zero(entry->mtime) ||
+                (entry->method != BP_METHOD_STORED &&
+                 entry->method != BP_METHOD_BOLTLITE) ||
+                entry->block_size > BP_BLOCK_32K ||
+                (entry->block_size == 0 &&
+                 entry->original_size.lo > BP_BLOCK_32K) ||
+                entry->original_size.hi != 0 ||
+                entry->original_size.lo > 0x7FFFFFFFUL ||
+                strchr(entry->name, '/') != NULL ||
+                strchr(entry->name, '\\') != NULL ||
+                strchr(entry->name, ':') != NULL ||
+                !bp_cpm86_project_name(entry->name, names[count]) ||
+                strcmp(entry->name, names[count]) != 0) {
+                fprintf(stderr, "boltpack: existing entry violates CP/M-86 profile: %s\n",
+                        entry->name);
+                return BP_ERR_PARTIAL;
+            }
+            count++;
+        }
+    }
+    if (jobs == NULL) return BP_OK;
+    if ((bp_uint32)jobs->count > 256U - count) return BP_ERR_OVERFLOW;
+    for (k = 0; k < jobs->count; k++) {
+        add_job_t *job = &jobs->items[k];
+        char projected[BP_CPM86_NAME_SIZE];
+        char *copy;
+        if (job->entry_type != BP_TYPE_DATA ||
+            job->file_size.hi != 0 || job->file_size.lo > 0x7FFFFFFFUL ||
+            strchr(job->arcname, '/') != NULL ||
+            strchr(job->arcname, '\\') != NULL ||
+            strchr(job->arcname, ':') != NULL ||
+            !bp_cpm86_project_name(job->arcname, projected)) {
+            fprintf(stderr, "boltpack: source is not a regular flat CP/M-86 8.3 file: %s\n",
+                    job->path);
+            return BP_ERR_PARTIAL;
+        }
+        for (j = 0; j < count; j++) {
+            if (strcmp(projected, names[j]) == 0) {
+                fprintf(stderr, "boltpack: CP/M-86 projected name collision: %s\n",
+                        job->path);
+                return BP_ERR_INVALID_ARG;
+            }
+        }
+        strcpy(names[count++], projected);
+        copy = dup_string(projected);
+        if (copy == NULL) return BP_ERR_NOMEM;
+        free(job->arcname);
+        job->arcname = copy;
+        job->mtime = bp_u64_from_u32(0);
+        job->mtime_flags = 0;
+    }
+    return BP_OK;
+}
+
+static int win_cpm86_archive_size_check(FILE *fp)
+{
+    __int64 end, current;
+    if (fflush(fp) != 0) return BP_ERR_IO;
+    current = _ftelli64(fp);
+    if (current < 0 || _fseeki64(fp, 0, SEEK_END) != 0)
+        return BP_ERR_IO;
+    end = _ftelli64(fp);
+    if (end < 0) return BP_ERR_IO;
+    if (_fseeki64(fp, current, SEEK_SET) != 0) return BP_ERR_IO;
+    return (unsigned __int64)end <= 0x7FFFFFFFULL
+         ? BP_OK : BP_ERR_OVERFLOW;
+}
+
+/* Windows is a full creator too, so its CLI can prepare Classic HFS archives
+ * without requiring a Linux round trip. Keys use exact MacRoman projection
+ * and case folding; the archive retains canonical UTF-8 names. */
+static int win_classic_hfs_profile_preflight(const add_job_list_t *jobs,
+                                             const bp_archive_t *existing)
+{
+    win_hfs_path_t *items;
+    bp_uint32 count = 0, i;
+    int rc = BP_OK;
+    items = (win_hfs_path_t *)calloc(BP_PROFILE1_MAX_ENTRIES,
+                                     sizeof(win_hfs_path_t));
+    if (items == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Classic HFS profile refuses links, resource forks, and metadata entries: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_hfs_done;
+            }
+            rc = win_legacy_register_name(items, &count, entry->name,
+                                          entry->entry_type,
+                                          entry->original_size,
+                                          BP_CP_MACROMAN, 31U, 255U);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing entry violates Classic HFS profile: %s\n",
+                        entry->name);
+                goto win_hfs_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        int j;
+        for (j = 0; j < jobs->count; j++) {
+            const add_job_t *job = &jobs->items[j];
+            DWORD attributes = job->source_info_valid
+                             ? job->source_info.dwFileAttributes
+                             : GetFileAttributesA(job->path);
+            if (attributes == INVALID_FILE_ATTRIBUTES) {
+                rc = BP_ERR_IO;
+                goto win_hfs_done;
+            }
+            if ((attributes & (FILE_ATTRIBUTE_READONLY |
+                               FILE_ATTRIBUTE_HIDDEN |
+                               FILE_ATTRIBUTE_SYSTEM)) != 0) {
+                fprintf(stderr,
+                        "boltpack: Classic HFS profile cannot preserve source FAT attributes: %s\n",
+                        job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_hfs_done;
+            }
+            rc = win_legacy_register_name(items, &count, job->arcname,
+                                          job->entry_type, job->file_size,
+                                          BP_CP_MACROMAN, 31U, 255U);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: source entry violates Classic HFS profile: %s\n",
+                        job->path);
+                goto win_hfs_done;
+            }
+        }
+    }
+    rc = win_legacy_paths_check(items, count, "Classic HFS");
+
+win_hfs_done:
+    for (i = 0; i < count; i++) free(items[i].key);
+    free(items);
+    return rc;
+}
+
+/* AmigaOS 68k has a Latin-1 name space and its own native metadata namespace.
+ * Windows source FAT metadata is not meaningful there, so the profile omits
+ * it and refuses source attributes it cannot represent. */
+static int win_amiga_profile_preflight(const add_job_list_t *jobs,
+                                       const bp_archive_t *existing)
+{
+    win_hfs_path_t *items;
+    bp_uint32 count = 0, i;
+    int rc = BP_OK;
+    items = (win_hfs_path_t *)calloc(BP_PROFILE1_MAX_ENTRIES,
+                                     sizeof(win_hfs_path_t));
+    if (items == NULL) return BP_ERR_NOMEM;
+    if (existing != NULL) {
+        for (i = 0; i < existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type == BP_TYPE_META &&
+                entry->platform == BP_OS_AMIGA_68K) continue;
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: AmigaOS 68k profile refuses foreign metadata, resource forks, and links: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto win_amiga_done;
+            }
+            rc = win_legacy_register_name(items, &count, entry->name,
+                                          entry->entry_type,
+                                          entry->original_size,
+                                          BP_CP_8859_1, 30U, 255U);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing entry violates AmigaOS 68k profile: %s\n",
+                        entry->name);
+                goto win_amiga_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        int j;
+        for (j = 0; j < jobs->count; j++) {
+            const add_job_t *job = &jobs->items[j];
+            DWORD attributes = job->source_info_valid
+                             ? job->source_info.dwFileAttributes
+                             : GetFileAttributesA(job->path);
+            if (attributes == INVALID_FILE_ATTRIBUTES) {
+                rc = BP_ERR_IO;
+                goto win_amiga_done;
+            }
+            if ((attributes & (FILE_ATTRIBUTE_READONLY |
+                               FILE_ATTRIBUTE_HIDDEN |
+                               FILE_ATTRIBUTE_SYSTEM)) != 0) {
+                fprintf(stderr,
+                        "boltpack: AmigaOS 68k profile cannot preserve source FAT attributes: %s\n",
+                        job->path);
+                rc = BP_ERR_PARTIAL;
+                goto win_amiga_done;
+            }
+            rc = win_legacy_register_name(items, &count, job->arcname,
+                                          job->entry_type, job->file_size,
+                                          BP_CP_8859_1, 30U, 255U);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: source entry violates AmigaOS 68k profile: %s\n",
+                        job->path);
+                goto win_amiga_done;
+            }
+        }
+    }
+    rc = win_legacy_paths_check(items, count, "AmigaOS 68k");
+
+win_amiga_done:
+    for (i = 0; i < count; i++) free(items[i].key);
+    free(items);
     return rc;
 }
 
@@ -3170,6 +4313,21 @@ static void usage_basic(void)
     fprintf(stderr,
         "  --interchange-profile-1  Mini-compatible create/add limits\n"
         "                         (BoltLite or Stored, 16 KiB blocks)\n"
+        "  --target-profile=windows-nt-lfn-v1  Check NT path compatibility\n"
+        "  --target-profile=macos-classic-hfs-v1  Check Classic HFS MacRoman names and limits\n"
+        "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
+        "  --target-profile=atari-st  Check Atari ST GEMDOS 8.3 names and limits\n"
+        "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
+        "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n"
+        "  --target-profile=x68000-sjis-v1  Check Human68k Shift-JIS names and limits\n"
+        "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
+        "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
+        "  --target-profile=dos16-cp850-mini  Check DOS16 mini-reader limits\n"
+        "  --target-profile=win16-cp437-mini  Check Win16 mini-reader limits\n"
+        "  --target-profile=os2-16-cp850-mini  Check OS/2-16 mini-reader limits\n"
+        "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
+        "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
+        "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
@@ -3248,6 +4406,21 @@ static void usage_advanced(void)
 #endif
     fprintf(stderr,
         "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n"
+        "  --target-profile=windows-nt-lfn-v1  Check NT path compatibility\n"
+        "  --target-profile=macos-classic-hfs-v1  Check Classic HFS MacRoman names and limits\n"
+        "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
+        "  --target-profile=atari-st  Check Atari ST GEMDOS 8.3 names and limits\n"
+        "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
+        "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n"
+        "  --target-profile=x68000-sjis-v1  Check Human68k Shift-JIS names and limits\n"
+        "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
+        "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
+        "  --target-profile=dos16-cp850-mini  Check DOS16 mini-reader limits\n"
+        "  --target-profile=win16-cp437-mini  Check Win16 mini-reader limits\n"
+        "  --target-profile=os2-16-cp850-mini  Check OS/2-16 mini-reader limits\n"
+        "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
+        "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
+        "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n"
         "  -q               Quiet (summary only)\n"
         "  -qq              Silent (errors only)\n"
         "  -o PATH          Output directory for extraction\n"
@@ -3263,7 +4436,9 @@ static void usage(void)
 /* ---- commands ---------------------------------------------------------- */
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method, int level, int interchange_profile)
+                      bp_uint8 method, int level, int interchange_profile,
+                      int windows_target_profile, int classic_hfs_profile,
+                      int amiga_profile, int dos_83_profile)
 {
     const char *archive_name;
     add_job_list_t list;
@@ -3363,6 +4538,111 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
+    if (windows_target_profile) {
+        rc = win_target_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (g_target_atari_st) {
+        rc = win_atari_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (g_target_ql) {
+        rc = win_ql_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (g_target_riscos) {
+        rc = win_riscos_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (g_target_x68000) {
+        rc = win_x68000_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (classic_hfs_profile) {
+        rc = win_classic_hfs_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (amiga_profile) {
+        rc = win_amiga_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (dos_83_profile != WIN_DOS_PROFILE_NONE) {
+        int codepage = win_dos_profile_codepage(dos_83_profile);
+        bp_uint8 metadata = win_dos_profile_metadata(dos_83_profile);
+        const char *profile = win_dos_profile_label(dos_83_profile);
+        rc = win_dos_83_profile_preflight(&list, NULL, codepage, metadata,
+                                          profile,
+                                          dos_83_profile == WIN_DOS_PROFILE_CP850_LFN);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (g_target_cpm86) {
+        rc = win_cpm86_profile_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+
     rc = add_job_list_with_policy(&ar, &list, method);
     free_job_list(&list);
     if (rc != BP_OK) {
@@ -3376,6 +4656,8 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
 
     rc = bp_archive_finalize(&ar);
+    if (rc == BP_OK && g_target_cpm86)
+        rc = win_cpm86_archive_size_check(fp);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
         bp_archive_close(&ar);
@@ -3911,7 +5193,9 @@ delete_cleanup_win:
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
-                   bp_uint8 method, int level, int interchange_profile)
+                   bp_uint8 method, int level, int interchange_profile,
+                   int windows_target_profile, int classic_hfs_profile,
+                   int amiga_profile, int dos_83_profile)
 {
     const char *archive_name;
     add_job_list_t list;
@@ -3983,6 +5267,10 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         goto add_cleanup_win;
     }
     archive_open = 1;
+    if (g_target_cpm86 && win_cpm86_archive_size_check(fp) != BP_OK) {
+        fprintf(stderr, "boltpack: existing archive exceeds CP/M-86 2 GiB limit\n");
+        goto add_cleanup_win;
+    }
     if (interchange_profile) {
         rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
         if (rc != BP_OK) {
@@ -4003,6 +5291,48 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         goto add_cleanup_win;
     }
 
+    if (windows_target_profile) {
+        rc = win_target_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_target_atari_st) {
+        rc = win_atari_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_target_ql) {
+        rc = win_ql_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_target_riscos) {
+        rc = win_riscos_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_target_x68000) {
+        rc = win_x68000_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (classic_hfs_profile) {
+        rc = win_classic_hfs_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (amiga_profile) {
+        rc = win_amiga_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (dos_83_profile != WIN_DOS_PROFILE_NONE) {
+        int codepage = win_dos_profile_codepage(dos_83_profile);
+        bp_uint8 metadata = win_dos_profile_metadata(dos_83_profile);
+        const char *profile = win_dos_profile_label(dos_83_profile);
+        rc = win_dos_83_profile_preflight(&list, &ar, codepage, metadata,
+                                          profile,
+                                          dos_83_profile == WIN_DOS_PROFILE_CP850_LFN);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_target_cpm86) {
+        rc = win_cpm86_profile_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup_win;
+    }
+
     rc = add_job_list_with_policy(&ar, &list, method);
     free_job_list(&list);
     if (rc != BP_OK) {
@@ -4012,6 +5342,8 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     }
 
     fin_rc = bp_archive_finalize(&ar);
+    if (fin_rc == BP_OK && g_target_cpm86)
+        fin_rc = win_cpm86_archive_size_check(fp);
     bp_archive_close(&ar);
     archive_open = 0;
 
@@ -4081,6 +5413,15 @@ int main(int argc, char **argv)
     int force = 0;
     int dry_run = 0;
     int interchange_profile = 0;
+    int windows_target_profile = 0;
+    int cpm86_profile = 0;
+    int classic_hfs_profile = 0;
+    int amiga_profile = 0;
+    int atari_st_profile = 0;
+    int ql_profile = 0;
+    int riscos_profile = 0;
+    int x68000_profile = 0;
+    int dos_83_profile = WIN_DOS_PROFILE_NONE;
     int codec_given = 0;
     int i;
     char **utf8_argv;
@@ -4153,6 +5494,110 @@ int main(int argc, char **argv)
             return 0;
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1;
+            i++;
+        } else if (strncmp(argv[i], "--target-profile=", 17) == 0) {
+            if (strcmp(argv[i] + 17, "windows-nt-lfn-v1") == 0) {
+                if (classic_hfs_profile || amiga_profile || atari_st_profile ||
+                    ql_profile || riscos_profile || x68000_profile || cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                windows_target_profile = 1;
+            } else if (strcmp(argv[i] + 17,
+                              "macos-classic-hfs-v1") == 0) {
+                if (windows_target_profile || amiga_profile || atari_st_profile ||
+                    ql_profile || riscos_profile || x68000_profile || cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                classic_hfs_profile = 1;
+            } else if (strcmp(argv[i] + 17,
+                              "amigaos-68k-latin1") == 0) {
+                if (windows_target_profile || classic_hfs_profile || cpm86_profile ||
+                    atari_st_profile || ql_profile || riscos_profile || x68000_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                amiga_profile = 1;
+            } else if (strcmp(argv[i] + 17, "atari-st") == 0) {
+                if (windows_target_profile || classic_hfs_profile || amiga_profile ||
+                    ql_profile || riscos_profile || x68000_profile || cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                atari_st_profile = 1;
+            } else if (strcmp(argv[i] + 17,
+                              "sinclair-ql-latin1-v1") == 0) {
+                if (windows_target_profile || classic_hfs_profile || amiga_profile ||
+                    atari_st_profile || riscos_profile || x68000_profile ||
+                    cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                ql_profile = 1;
+            } else if (strcmp(argv[i] + 17, "riscos-latin1-v1") == 0) {
+                if (windows_target_profile || classic_hfs_profile || amiga_profile ||
+                    atari_st_profile || ql_profile || x68000_profile || cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                riscos_profile = 1;
+            } else if (strcmp(argv[i] + 17, "x68000-sjis-v1") == 0) {
+                if (windows_target_profile || classic_hfs_profile || amiga_profile ||
+                    atari_st_profile || ql_profile || riscos_profile ||
+                    cpm86_profile || dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                x68000_profile = 1;
+            } else if (strcmp(argv[i] + 17, "cpm86-83") == 0) {
+                if (windows_target_profile || classic_hfs_profile || amiga_profile ||
+                    atari_st_profile || ql_profile || riscos_profile || x68000_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                cpm86_profile = 1;
+            } else if (strcmp(argv[i] + 17, "dos-cp850-83") == 0 ||
+                       strcmp(argv[i] + 17, "dos-cp437-83") == 0 ||
+                       strcmp(argv[i] + 17, "dos16-cp850-mini") == 0 ||
+                       strcmp(argv[i] + 17, "win16-cp437-mini") == 0 ||
+                       strcmp(argv[i] + 17, "os2-16-cp850-mini") == 0 ||
+                       strcmp(argv[i] + 17, "os2-fat-cp850") == 0 ||
+                       strcmp(argv[i] + 17, "dos-cp850-lfn-v1") == 0) {
+                if (windows_target_profile || classic_hfs_profile ||
+                    amiga_profile || atari_st_profile || ql_profile || riscos_profile || x68000_profile ||
+                    cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                if (strcmp(argv[i] + 17, "dos-cp850-83") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_CP850_83;
+                else if (strcmp(argv[i] + 17, "dos-cp437-83") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_CP437_83;
+                else if (strcmp(argv[i] + 17, "dos16-cp850-mini") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_DOS16_CP850;
+                else if (strcmp(argv[i] + 17, "win16-cp437-mini") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_WIN16_CP437;
+                else if (strcmp(argv[i] + 17, "os2-16-cp850-mini") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_OS2_16_CP850;
+                else if (strcmp(argv[i] + 17, "dos-cp850-lfn-v1") == 0)
+                    dos_83_profile = WIN_DOS_PROFILE_CP850_LFN;
+                else
+                    dos_83_profile = WIN_DOS_PROFILE_OS2_FAT_CP850;
+            } else {
+                fprintf(stderr,
+                        "boltpack: unsupported Windows target profile: %s\n",
+                        argv[i] + 17);
+                return 1;
+            }
             i++;
         } else if (strcmp(argv[i], "-b") == 0 ||
                    strcmp(argv[i], "--block-size") == 0) {
@@ -4301,7 +5746,7 @@ int main(int argc, char **argv)
     }
     if (interchange_profile) {
         if ((command != 'c' && command != 'a') ||
-            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            block_size > BP_BLOCK_32K ||
             (codec_given && method != BP_METHOD_BOLTLITE &&
              method != BP_METHOD_STORED) || opt_level != 0) {
             fprintf(stderr,
@@ -4311,6 +5756,159 @@ int main(int argc, char **argv)
         block_size = BP_BLOCK_16K;
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
+    }
+    if (dos_83_profile != WIN_DOS_PROFILE_NONE) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: DOS-family target profiles require create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (atari_st_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: atari-st requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (ql_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: Sinclair QL profile requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (riscos_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: RISC OS profile requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (x68000_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: X68000 profile requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (cpm86_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: cpm86-83 requires create/add, Stored or BoltLite, blocks no larger than 32 KiB, and no codec level\n");
+            return 1;
+        }
+        if (block_size == 0) block_size = BP_BLOCK_32K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (atari_st_profile && command != 'c' && command != 'a') {
+        fprintf(stderr, "boltpack: atari-st is available only for create/add\n");
+        return 1;
+    }
+    if (ql_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: Sinclair QL profile is available only for create/add\n");
+        return 1;
+    }
+    if (riscos_profile && command != 'c' && command != 'a') {
+        fprintf(stderr, "boltpack: RISC OS profile is available only for create/add\n");
+        return 1;
+    }
+    if (x68000_profile && command != 'c' && command != 'a') {
+        fprintf(stderr, "boltpack: X68000 profile is available only for create/add\n");
+        return 1;
+    }
+    if (classic_hfs_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: macos-classic-hfs-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (amiga_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: amigaos-68k-latin1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (windows_target_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: windows-nt-lfn-v1 is available only for create/add\n");
+        return 1;
+    }
+    if (classic_hfs_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: macos-classic-hfs-v1 is available only for create/add\n");
+        return 1;
+    }
+    if (amiga_profile && command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: amigaos-68k-latin1 is available only for create/add\n");
+        return 1;
+    }
+    if (dos_83_profile != WIN_DOS_PROFILE_NONE &&
+        command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: DOS-family target profiles are available only for create/add\n");
+        return 1;
+    }
+    if (cpm86_profile && command != 'c' && command != 'a') {
+        fprintf(stderr, "boltpack: cpm86-83 target profile is available only for create/add\n");
+        return 1;
     }
     if (command == 'x' && i + 1 < argc) {
         fprintf(stderr,
@@ -4334,6 +5932,14 @@ int main(int argc, char **argv)
         fluff_fast_set_group_blocks(g_fast_group_blocks);
 #endif
 
+    g_target_classic_hfs = classic_hfs_profile;
+    g_target_amiga_68k = amiga_profile;
+    g_target_cpm86 = cpm86_profile;
+    g_target_atari_st = atari_st_profile;
+    g_target_ql = ql_profile;
+    g_target_riscos = riscos_profile;
+    g_target_x68000 = x68000_profile;
+
     switch (command) {
     case 'c':
         if ((method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD)
@@ -4341,14 +5947,18 @@ int main(int argc, char **argv)
             block_size = BP_BLOCK_256K;
         }
         return cmd_create(argc - i, argv + i, block_size, method, opt_level,
-                          interchange_profile);
+                          interchange_profile, windows_target_profile,
+                          classic_hfs_profile, amiga_profile,
+                          dos_83_profile);
     case 'a':
         if ((method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD)
             && block_size == 0) {
             block_size = BP_BLOCK_256K;
         }
         return cmd_add(argc - i, argv + i, block_size, method, opt_level,
-                       interchange_profile);
+                       interchange_profile, windows_target_profile,
+                       classic_hfs_profile, amiga_profile,
+                       dos_83_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n");

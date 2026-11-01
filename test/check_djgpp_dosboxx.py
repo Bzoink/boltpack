@@ -15,6 +15,8 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 PAYLOAD = b"DJGPP DOS FAT12 interoperability probe\r\n"
 APPENDED = b"DJGPP DOS archive append probe\r\n"
+LFN_NAME = "Long Filename Ø With Spaces.txt"
+LFN_PAYLOAD = b"DJGPP DOS CP850 LFN profile extraction probe\r\n"
 
 
 def sha256(path):
@@ -75,6 +77,8 @@ def main():
     source.write_bytes(PAYLOAD)
     appended = out / "ADD.TXT"
     appended.write_bytes(APPENDED)
+    lfn_source = out / LFN_NAME
+    lfn_source.write_bytes(LFN_PAYLOAD)
     shutil.copyfile(executable, out / "BOLTPACK.EXE")
     shutil.copyfile(dpmi, out / "CWSDPMI.EXE")
     rename_probe = out / "RENAMER.EXE"
@@ -82,9 +86,12 @@ def main():
          str(ROOT / "test/dos_rename_noreplace_probe.c"), "-o", str(rename_probe)])
     linux = ROOT / "build/linux/boltpack"
     run([str(linux), "c", "LINUX.BLT", "SRC.TXT"], cwd=out)
+    run([str(linux), "c", "--target-profile=dos-cp850-lfn-v1", "-0",
+         "LFN.BLT", LFN_NAME], cwd=out)
+    run([str(linux), "t", "LFN.BLT"], cwd=out)
     run(["mformat", "-i", str(image), "-C", "-f", "720", "::"])
     for name in ("BOLTPACK.EXE", "CWSDPMI.EXE", "RENAMER.EXE",
-                 "SRC.TXT", "ADD.TXT", "LINUX.BLT"):
+                 "SRC.TXT", "ADD.TXT", "LINUX.BLT", "LFN.BLT"):
         run(["mcopy", "-i", str(image), str(out / name), "::/" + name])
     run(["mmd", "-i", str(image), "::/OUT"])
 
@@ -109,9 +116,22 @@ def main():
     output = run(emulator, env=env, timeout=150, cwd=out)
     (out / "dosboxx.log").write_bytes(output)
 
+    lfn_commands = ["KEYB UK 850", "BOLTPACK t LFN.BLT",
+                    "BOLTPACK x -o OUT LFN.BLT", "exit"]
+    lfn_emulator = [args.dosbox_x, "-nopromptfolder", "-nogui", "-fastlaunch",
+                    "-set", "dos lfn=true",
+                    "-c", "imgmount a " + str(image) + " -t floppy",
+                    "-c", "a:"]
+    for command in lfn_commands:
+        lfn_emulator.extend(("-c", command))
+    lfn_output = run(lfn_emulator, env=env, timeout=60, cwd=out)
+    (out / "dosboxx-lfn.log").write_bytes(lfn_output)
+
     dos_extracted = out / "dos-extracted.txt"
     dos_archive = out / "dos-created.blt"
     run(["mcopy", "-i", str(image), "::/OUT/SRC.TXT", str(dos_extracted)])
+    lfn_extracted = out / "dos-lfn-extracted.txt"
+    run(["mcopy", "-i", str(image), "::/OUT/" + LFN_NAME, str(lfn_extracted)])
     run(["mcopy", "-i", str(image), "::/DOS.BLT", str(dos_archive)])
     rename_report = out / "rename-probe-report.txt"
     run(["mcopy", "-i", str(image), "::/RENAMER.TXT", str(rename_report)])
@@ -127,6 +147,8 @@ def main():
         raise RuntimeError("DJGPP DOS edits did not preserve FAT archive flags: " + attributes)
     if dos_extracted.read_bytes() != PAYLOAD:
         raise RuntimeError("DJGPP DOS extraction differed from source bytes")
+    if lfn_extracted.read_bytes() != LFN_PAYLOAD:
+        raise RuntimeError("DJGPP DOS CP850 LFN profile extraction differed from source bytes")
     run([str(linux), "t", str(dos_archive)])
     listing = run([str(linux), "l", str(dos_archive)]).decode("utf-8", "replace")
     if "ADD.TXT" not in listing or "SRC.TXT" in listing:
@@ -143,7 +165,8 @@ def main():
         raise RuntimeError("Linux could not extract the DJGPP-created archive; evidence: " + str(out))
     (out / "result.txt").write_text(
         "PASS: DJGPP DOS CLI created, appended, deleted, and tested an archive on DOSBox-X FAT12; "
-        "DOS extracted a Linux-created archive and Linux extracted the edited DOS archive byte-identically\n",
+        "DOS extracted Linux-created archives including the CP850 LFN profile and Linux extracted "
+        "the edited DOS archive byte-identically\n",
         encoding="utf-8")
     revision = command_version(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
     status = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain=v1",
@@ -160,7 +183,7 @@ def main():
     manifest_path = out / "manifest.json"
     manifest = {
         "result": "PASS",
-        "test": "full DJGPP DOS CLI bidirectional FAT12 interoperability",
+        "test": "full DJGPP DOS CLI bidirectional FAT12 interoperability and CP850 LFN target profile",
         "source": {
             "git_revision": revision[0] if revision else "unavailable",
             "worktree_dirty": bool(status),
@@ -182,6 +205,11 @@ def main():
             "cwsdpmi_sha256": sha256(dpmi),
             "mtools_mformat": command_version(["mformat", "--version"]),
         },
+        "dosbox_x_dos_configuration": {
+            "baseline_reported_version": "5.0 default", "baseline_lfn": False,
+            "profile_reported_version": "5.0 default", "profile_lfn": True,
+            "profile_codepage": 850, "profile_codepage_command": "KEYB UK 850"},
+        "emulator_commands": {"baseline": emulator, "lfn_profile": lfn_emulator},
         "build": {
             "target": "dos-djgpp",
             "make_variables": {"DOS_CC": args.dos_cc},
@@ -196,11 +224,15 @@ def main():
         "filesystem": {"type": "FAT12", "image_bytes": image.stat().st_size,
                        "image_sha256": sha256(image)},
         "inputs": {"source_sha256": hashlib.sha256(PAYLOAD).hexdigest(),
-                   "appended_sha256": hashlib.sha256(APPENDED).hexdigest()},
+                   "appended_sha256": hashlib.sha256(APPENDED).hexdigest(),
+                   "lfn_name": LFN_NAME,
+                   "lfn_payload_sha256": hashlib.sha256(LFN_PAYLOAD).hexdigest()},
         "observed": {
             "dos_commands": commands,
+            "dos_lfn_profile_commands": lfn_commands,
             "dos_operations": ["create", "set HIDDEN/SYSTEM/ARCHIVE", "append",
                                "delete", "test", "extract Linux-created archive",
+                               "test/extract dos-cp850-lfn-v1 archive with long filename",
                                "refuse rename over existing target on FAT12"],
             "linux_operations": ["test edited DOS archive", "extract edited DOS archive"],
             "payload_bytes_match": True,
@@ -218,7 +250,7 @@ def main():
     manifest["artifacts"] = artifact_index(out, manifest_path)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n",
                              encoding="utf-8")
-    print("PASS: DJGPP DOS CLI create/append/delete/test/extract on DOSBox-X FAT12; evidence:", out)
+    print("PASS: DJGPP DOS CLI lifecycle and CP850 LFN profile on DOSBox-X FAT12; evidence:", out)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
 
 #include "boltlite.h"
 #include "archiver.h"
+#include "mini/stack_probe.h"
 #if !defined(__PLAN9__)
 #include <string.h>
 #endif
@@ -83,6 +84,13 @@ static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_
     boltlite_index distance;
     boltlite_index limit;
     boltlite_index length;
+#ifdef BP_TEST_STACK_HIGHWATER
+    static int stack_probed;
+    if (!stack_probed) {
+        BP_STACK_PROBE();
+        stack_probed = 1;
+    }
+#endif
 
     *best_distance = 0;
     *best_length = 0;
@@ -159,6 +167,8 @@ static bp_uint32 boltlite_compress_capacity(const bp_uint8 *src, boltlite_index 
     unsigned int d;
     unsigned int packed;
     int have_match;
+
+    BP_STACK_PROBE();
 
     if (src == NULL || dst == NULL || work == NULL || src_len == 0) return 0;
     if (dst_capacity < BOLTLITE_COMPRESS_BOUND(src_len)) return 0;
@@ -293,6 +303,8 @@ static int boltlite_decompress_capacity(const bp_uint8 *src, boltlite_index src_
     unsigned int b0;
     unsigned int b1;
     unsigned int mask;
+
+    BP_STACK_PROBE();
 
     if (src == NULL || dst == NULL || src_len == 0 || dst_capacity == 0) return 0;
     in = 0;

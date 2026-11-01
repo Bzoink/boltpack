@@ -37,7 +37,7 @@
   "expected_refusals": {
     "case": "destination name collision",
     "latin1-case": "destination name collision",
-    "prefix": "file/directory name conflict",
+    "prefix": "destination name collision",
     "dir-alias": "destination name collision",
     "unmappable": "name is not representable on QL",
     "overlong": "output path is too long for QL"

@@ -41,8 +41,14 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/archive_name.h"
 #include "../../core/fluff.h"
 #include "../posix/archive_preflight.h"
+#if defined(__linux__) && defined(__x86_64__)
+#include "../atari/atari_path.h"
+#include "../cpm86/cpm86_path.h"
+#include "../x68k/x68k_path_index.h"
+#endif
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -89,6 +95,7 @@ typedef enum {
 #define FAST_FLUFF_LARGE_FILE_THRESHOLD_SCALE 0.25
 
 static int g_verbosity    = VERB_DEFAULT;
+static int g_target_plan9_profile;
 static fast_thread_policy_t g_fast_thread_policy = FAST_THREAD_AUTO;
 
 /*
@@ -630,6 +637,7 @@ static int parse_thread_count_arg(const char *s)
 typedef struct {
     char      *path;
     char      *arcname;
+    char      *original_arcname;
     char      *symlink_target;
     bp_uint8   entry_type;
     bp_uint64  file_size;
@@ -653,6 +661,29 @@ typedef struct {
     int        cap;
 } add_job_list_t;
 
+typedef enum {
+    TARGET_PROFILE_NONE = 0,
+    TARGET_PROFILE_ATARI_ST = 1,
+    TARGET_PROFILE_DOS_CP850_83,
+    TARGET_PROFILE_DOS_CP437_83,
+    TARGET_PROFILE_DOS_CP850_LFN,
+    TARGET_PROFILE_DOS16_CP850_MINI,
+    TARGET_PROFILE_WIN16_CP437_MINI,
+    TARGET_PROFILE_OS2_16_CP850_MINI,
+    TARGET_PROFILE_OS2_FAT_CP850,
+    TARGET_PROFILE_AMIGAOS_68K_LATIN1,
+    TARGET_PROFILE_MACOS_CLASSIC_HFS,
+    TARGET_PROFILE_SINCLAIR_QL_LATIN1,
+    TARGET_PROFILE_RISCOS_LATIN1,
+    TARGET_PROFILE_X68000_SJIS,
+    TARGET_PROFILE_LINUX_POSIX,
+    TARGET_PROFILE_POSIX_UTF8,
+    TARGET_PROFILE_PLAN9_UTF8,
+    TARGET_PROFILE_LINUX_MINI,
+    TARGET_PROFILE_HAIKU_BFS,
+    TARGET_PROFILE_CPM86_83
+} target_profile_t;
+
 #ifdef BOLTPACK_FAST_FLUFF
 typedef struct {
     FILE              *tmp_fp;
@@ -674,6 +705,7 @@ static void free_add_job(add_job_t *job)
     if (job == NULL) return;
     free(job->path);
     free(job->arcname);
+    free(job->original_arcname);
     free(job->symlink_target);
     memset(job, 0, sizeof(*job));
 }
@@ -699,6 +731,7 @@ static int append_job(add_job_list_t *list, const char *path,
     add_job_t *new_items;
     char *path_copy;
     char *arc_copy;
+    char *original_arc_copy;
     char *target_copy = NULL;
     int new_cap;
 
@@ -715,17 +748,20 @@ static int append_job(add_job_list_t *list, const char *path,
 
     path_copy = dup_string(path);
     arc_copy = dup_string(arcname);
+    original_arc_copy = dup_string(arcname);
     if (symlink_target != NULL) target_copy = dup_string(symlink_target);
-    if (path_copy == NULL || arc_copy == NULL ||
+    if (path_copy == NULL || arc_copy == NULL || original_arc_copy == NULL ||
         (symlink_target != NULL && target_copy == NULL)) {
         free(path_copy);
         free(arc_copy);
+        free(original_arc_copy);
         free(target_copy);
         return BP_ERR_NOMEM;
     }
 
     list->items[list->count].path = path_copy;
     list->items[list->count].arcname = arc_copy;
+    list->items[list->count].original_arcname = original_arc_copy;
     list->items[list->count].symlink_target = target_copy;
     list->items[list->count].entry_type = entry_type;
     list->items[list->count].file_size = file_size;
@@ -897,6 +933,73 @@ static void print_added_data_result(bp_archive_t *ar, const char *arcname,
     }
 }
 
+typedef struct {
+    bp_uint8 bytes[2];
+    bp_uint32 position;
+} plan9_meta_input_t;
+
+static long plan9_meta_read(void *handle, void *buffer, bp_uint32 count)
+{
+    plan9_meta_input_t *input = (plan9_meta_input_t *)handle;
+    bp_uint32 left = 2U - input->position;
+    if (count > left) count = left;
+    if (count == 0) return 0;
+    memcpy(buffer, input->bytes + input->position, count);
+    input->position += count;
+    return (long)count;
+}
+
+static long plan9_meta_write(void *handle, const void *buffer,
+                             bp_uint32 count)
+{
+    (void)handle;
+    (void)buffer;
+    (void)count;
+    return -1L;
+}
+
+static int plan9_meta_seek(void *handle, bp_off_t offset, int origin)
+{
+    plan9_meta_input_t *input = (plan9_meta_input_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)input->position + (long)offset;
+    else if (origin == SEEK_END) position = 2L + (long)offset;
+    else return -1;
+    if (position < 0 || position > 2L) return -1;
+    input->position = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t plan9_meta_tell(void *handle)
+{
+    plan9_meta_input_t *input = (plan9_meta_input_t *)handle;
+    return (bp_off_t)input->position;
+}
+
+static int add_plan9_target_metadata(bp_archive_t *ar, const add_job_t *job)
+{
+    plan9_meta_input_t input;
+    bp_io_t io;
+    bp_uint16 mode;
+    if (!g_target_plan9_profile ||
+        (job->flags & BP_ENTRY_FLAG_MODE_VALID) == 0)
+        return BP_OK;
+    mode = (bp_uint16)(job->flags & 0x01ffU);
+    input.bytes[0] = (bp_uint8)(mode & 0xffU);
+    input.bytes[1] = (bp_uint8)((mode >> 8) & 0xffU);
+    input.position = 0;
+    io.read = plan9_meta_read;
+    io.write = plan9_meta_write;
+    io.seek = plan9_meta_seek;
+    io.tell = plan9_meta_tell;
+    io.handle = &input;
+    return bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_META,
+                                   BP_OS_PLAN9, &io,
+                                   bp_u64_from_u32(2U),
+                                   bp_u64_from_u32(0), 0);
+}
+
 static int add_job(bp_archive_t *ar, add_job_t *job)
 {
     int rc;
@@ -917,10 +1020,12 @@ static int add_job(bp_archive_t *ar, add_job_t *job)
         if (g_verbosity == VERB_DEFAULT) {
             printf("   creating: %s\n", job->arcname);
         }
-        return bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_DIR,
-                                      BP_CREATOR_OS, NULL,
-                                      bp_u64_from_u32(0), job->mtime,
-                                      job->flags);
+        rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_DIR,
+                                     BP_CREATOR_OS, NULL,
+                                     bp_u64_from_u32(0), job->mtime,
+                                     job->flags);
+        if (rc == BP_OK) rc = add_plan9_target_metadata(ar, job);
+        return rc;
     }
 
     if (job->entry_type == BP_TYPE_DATA) {
@@ -1001,6 +1106,13 @@ static int add_job(bp_archive_t *ar, add_job_t *job)
 
         job->packed_checksum = source_reader.checksum;
         job->packed_checksum_valid = 1;
+        rc = add_plan9_target_metadata(ar, job);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: cannot add Plan 9 mode metadata for %s: %s\n",
+                    job->arcname, bp_strerror(rc));
+            return rc;
+        }
         print_added_data_result(ar, job->arcname, actual_size);
         return BP_OK;
     }
@@ -1382,6 +1494,2769 @@ static int collect_arg_jobs(add_job_list_t *list, int argc, char **argv)
     return BP_OK;
 }
 
+#if defined(__linux__) && defined(__x86_64__)
+/* Target profile writer checks currently run in the Linux x86-64 CLI. The
+ * filesystem ceilings are conservative profile rules, not a claim that every
+ * target filesystem/runtime has been qualified. */
+static int atari_target_add_name(bp_atari_name_set_t *projected_names,
+                                 bp_posix_preflight_t *prefixes,
+                                 const char *utf8_name, int is_directory)
+{
+    char local_name[BP_ATARI_GEMDOS_PATH_MAX + 2U];
+    char key[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    unsigned int key_length;
+    size_t i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local_name, sizeof(local_name),
+                         BP_CP_ATARIST) != 0) {
+        fprintf(stderr,
+                "boltpack: Atari target profile cannot encode name: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    rc = bp_atari_project_name(local_name, is_directory, key, sizeof(key),
+                               &key_length);
+    if (rc != BP_OK) {
+        fprintf(stderr,
+                "boltpack: name is outside the Atari GEMDOS 8.3 profile: %s\n",
+                utf8_name);
+        return rc;
+    }
+    rc = bp_atari_name_set_add(projected_names, key, key_length);
+    if (rc != BP_OK) {
+        fprintf(stderr,
+                "boltpack: Atari target name collision or profile index limit: %s\n",
+                utf8_name);
+        return rc;
+    }
+
+    /* The generic prefix checker handles file/parent conflicts.  The Atari
+     * key has already been uppercased and normalized to GEMDOS separators. */
+    for (i = 0; i < key_length; i++)
+        if (key[i] == '\\') key[i] = '/';
+    rc = bp_posix_preflight_add(prefixes, key, key_length, is_directory);
+    if (rc != BP_OK) {
+        fprintf(stderr,
+                "boltpack: Atari target file/directory path conflict: %s\n",
+                utf8_name);
+        return rc;
+    }
+    return BP_OK;
+}
+
+typedef struct {
+    char *original_prefix;
+    char *target_prefix;
+} atari_alias_entry_t;
+
+typedef struct {
+    atari_alias_entry_t *entries;
+    unsigned int count;
+    unsigned int capacity;
+    bp_atari_name_set_t reserved;
+    target_profile_t profile;
+} atari_alias_map_t;
+
+static int dos_target_codepage(target_profile_t profile);
+static int dos_target_component_83(const char *component, size_t length);
+static int dos_lfn_component_valid(const char *component, size_t length);
+static int target_auto_codepage(target_profile_t profile)
+{
+    if (profile == TARGET_PROFILE_LINUX_POSIX || profile == TARGET_PROFILE_POSIX_UTF8 ||
+        profile == TARGET_PROFILE_LINUX_MINI || profile == TARGET_PROFILE_PLAN9_UTF8 ||
+        profile == TARGET_PROFILE_HAIKU_BFS || profile == TARGET_PROFILE_CPM86_83)
+        return BP_CP_UTF8;
+    if (profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ||
+        profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1 ||
+        profile == TARGET_PROFILE_RISCOS_LATIN1) return BP_CP_8859_1;
+    if (profile == TARGET_PROFILE_MACOS_CLASSIC_HFS) return BP_CP_MACROMAN;
+    if (profile == TARGET_PROFILE_X68000_SJIS) return BP_CP_SJIS;
+    return dos_target_codepage(profile);
+}
+
+static int target_auto_long_component(target_profile_t profile,
+                                      const char *local)
+{
+    size_t i, n = strlen(local), limit;
+    if (profile == TARGET_PROFILE_X68000_SJIS) {
+        size_t stem = 0, ext = 0;
+        int in_ext = 0;
+        for (i = 0; i < n;) {
+            unsigned char c = (unsigned char)local[i];
+            size_t width = x68k_index_sjis_pair_at(local + i) ? 2U : 1U;
+            if (width == 1U) {
+                if ((c >= 0x81U && c <= 0x9FU) || (c >= 0xE0U && c <= 0xEFU)) return 0;
+                if (c == '.') {
+                    if (in_ext || stem == 0 || i + 1U == n) return 0;
+                    in_ext = 1;
+                    i++;
+                    continue;
+                }
+                if (c < 0x21U || c == 0x7FU || strchr("\"*+, :;<=>?[\\]|", c)) return 0;
+            }
+            if (in_ext) ext += width; else stem += width;
+            i += width;
+        }
+        return stem > 0 && stem <= 18U && ext <= 3U;
+    }
+    if (target_auto_codepage(profile) == BP_CP_UTF8) {
+        char prefixed[258];
+        if (n == 0 || n > 255U) return 0;
+        prefixed[0] = 'X'; prefixed[1] = '/';
+        memcpy(prefixed + 2, local, n + 1U);
+        if (!bp_archive_name_valid(prefixed, (bp_uint32)n + 2U) ||
+            !bp_archive_name_type_valid(prefixed, (bp_uint32)n + 2U, BP_TYPE_DATA)) return 0;
+        if (profile == TARGET_PROFILE_PLAN9_UTF8) {
+            for (i = 0; i < n; i++) {
+                unsigned char c = (unsigned char)local[i];
+                if (c < 0x20U || c == 0x7fU ||
+                    (c == 0xc2U && i + 1U < n &&
+                     (unsigned char)local[i + 1U] >= 0x80U &&
+                     (unsigned char)local[i + 1U] <= 0x9fU)) return 0;
+            }
+        }
+        return 1;
+    }
+    if (profile == TARGET_PROFILE_DOS_CP850_LFN)
+        return dos_lfn_component_valid(local, n);
+    limit = profile == TARGET_PROFILE_RISCOS_LATIN1 ? 10U :
+            profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ? 30U :
+            profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1 ? 36U : 31U;
+    if (n == 0 || n > limit || strcmp(local, ".") == 0 ||
+        strcmp(local, "..") == 0) return 0;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)local[i];
+        if (c < 0x20U || c == 0x7fU || c == ':' || c == '\\' || c == '/')
+            return 0;
+        if (profile == TARGET_PROFILE_RISCOS_LATIN1 &&
+            strchr(".*#$%&@\"|^", c) != NULL) return 0;
+    }
+    return 1;
+}
+
+static int atari_job_name_compare(const void *left, const void *right)
+{
+    const add_job_t *a = (const add_job_t *)left;
+    const add_job_t *b = (const add_job_t *)right;
+    return strcmp(a->original_arcname, b->original_arcname);
+}
+
+static void atari_alias_map_free(atari_alias_map_t *map)
+{
+    unsigned int i;
+    for (i = 0; i < map->count; i++) {
+        free(map->entries[i].original_prefix);
+        free(map->entries[i].target_prefix);
+    }
+    free(map->entries);
+    bp_atari_name_set_free(&map->reserved);
+    memset(map, 0, sizeof(*map));
+}
+
+static const char *atari_alias_lookup(const atari_alias_map_t *map,
+                                      const char *original_prefix)
+{
+    unsigned int i;
+    for (i = 0; i < map->count; i++)
+        if (strcmp(map->entries[i].original_prefix, original_prefix) == 0)
+            return map->entries[i].target_prefix;
+    return NULL;
+}
+
+static int target_auto_name_set_add(atari_alias_map_t *map,
+                                    const char *key, unsigned int length)
+{
+    bp_atari_name_set_t *set = &map->reserved;
+    bp_atari_name_node_t *node;
+    unsigned long hash = 2166136261UL;
+    unsigned int i, bucket;
+    if (map->profile == TARGET_PROFILE_ATARI_ST)
+        return bp_atari_name_set_add(set, key, length);
+    if (set->count >= BP_POSIX_PREFLIGHT_MAX_ENTRIES ||
+        (unsigned long)length + 1UL > BP_POSIX_PREFLIGHT_MAX_KEY_BYTES - set->bytes)
+        return BP_ERR_OVERFLOW;
+    for (i = 0; i < length; i++) hash = (hash ^ (unsigned char)key[i]) * 16777619UL;
+    bucket = (unsigned int)(hash % BP_ATARI_PATH_BUCKETS);
+    if (set->buckets == NULL) {
+        set->buckets = (bp_atari_name_node_t **)calloc(BP_ATARI_PATH_BUCKETS,
+                                                       sizeof(*set->buckets));
+        if (set->buckets == NULL) return BP_ERR_NOMEM;
+    }
+    for (node = set->buckets[bucket]; node != NULL; node = node->next)
+        if (node->hash == hash && node->length == length &&
+            memcmp(node->key, key, length) == 0) return BP_ERR_CORRUPT;
+    node = (bp_atari_name_node_t *)malloc(sizeof(*node));
+    if (node == NULL) return BP_ERR_NOMEM;
+    node->key = (char *)malloc((size_t)length + 1U);
+    if (node->key == NULL) { free(node); return BP_ERR_NOMEM; }
+    memcpy(node->key, key, length);
+    node->key[length] = '\0';
+    node->length = length;
+    node->hash = hash;
+    node->next = set->buckets[bucket];
+    set->buckets[bucket] = node;
+    set->count++;
+    set->bytes += (unsigned long)length + 1UL;
+    return BP_OK;
+}
+
+static int atari_alias_remember(atari_alias_map_t *map,
+                                const char *original_prefix,
+                                const char *target_prefix)
+{
+    atari_alias_entry_t *grown;
+    unsigned int capacity;
+    char *original_copy, *target_copy;
+
+    if (map->count >= (map->profile == TARGET_PROFILE_ATARI_ST
+                      ? BP_ATARI_PATH_MAX_ENTRIES
+                      : BP_POSIX_PREFLIGHT_MAX_ENTRIES)) return BP_ERR_OVERFLOW;
+    if (map->count == map->capacity) {
+        capacity = map->capacity == 0 ? 32U : map->capacity * 2U;
+        if (capacity > (map->profile == TARGET_PROFILE_ATARI_ST
+                        ? BP_ATARI_PATH_MAX_ENTRIES : BP_POSIX_PREFLIGHT_MAX_ENTRIES))
+            capacity = map->profile == TARGET_PROFILE_ATARI_ST
+                     ? BP_ATARI_PATH_MAX_ENTRIES : BP_POSIX_PREFLIGHT_MAX_ENTRIES;
+        grown = (atari_alias_entry_t *)realloc(
+            map->entries, (size_t)capacity * sizeof(*grown));
+        if (grown == NULL) return BP_ERR_NOMEM;
+        map->entries = grown;
+        map->capacity = capacity;
+    }
+    original_copy = dup_string(original_prefix);
+    target_copy = dup_string(target_prefix);
+    if (original_copy == NULL || target_copy == NULL) {
+        free(original_copy);
+        free(target_copy);
+        return BP_ERR_NOMEM;
+    }
+    map->entries[map->count].original_prefix = original_copy;
+    map->entries[map->count].target_prefix = target_copy;
+    map->count++;
+    return BP_OK;
+}
+
+static int atari_alias_reserve(atari_alias_map_t *map,
+                               const char *parent_target,
+                               const char *component,
+                               char *target_path, size_t target_capacity)
+{
+    size_t parent_length = strlen(parent_target);
+    size_t component_length = strlen(component);
+    size_t path_length = parent_length +
+                         (parent_length != 0 ? 1U : 0U) + component_length;
+    int rc;
+
+    if ((map->profile == TARGET_PROFILE_ATARI_ST &&
+         path_length > BP_ATARI_GEMDOS_PATH_MAX) ||
+        path_length + 1U > target_capacity)
+        return BP_ERR_NAME_TOO_LONG;
+    if (parent_length != 0) {
+        memcpy(target_path, parent_target, parent_length);
+        target_path[parent_length] = '/';
+        memcpy(target_path + parent_length + 1U, component,
+               component_length + 1U);
+    } else {
+        memcpy(target_path, component, component_length + 1U);
+    }
+    if (map->profile != TARGET_PROFILE_ATARI_ST) {
+        char local[4097], folded[4097];
+        int cp = target_auto_codepage(map->profile);
+        size_t max_path = map->profile == TARGET_PROFILE_PLAN9_UTF8 ? 511U :
+                          map->profile == TARGET_PROFILE_HAIKU_BFS ? 1023U :
+                          cp == BP_CP_UTF8 ? 4095U :
+                          map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1
+                        ? 35U : (map->profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ||
+                           map->profile == TARGET_PROFILE_RISCOS_LATIN1 ||
+                           map->profile == TARGET_PROFILE_X68000_SJIS ||
+                           map->profile == TARGET_PROFILE_MACOS_CLASSIC_HFS)
+                        ? 255U : 259U;
+        if (bp_utf8_to_local(target_path, local, sizeof(local), cp) != 0 ||
+            strlen(local) > max_path)
+            return BP_ERR_NAME_TOO_LONG;
+        if (map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1) {
+            char *p;
+            for (p = local; *p; p++) if (*p == '/') *p = '_';
+        }
+        if (cp == BP_CP_UTF8) {
+            if (!bp_archive_name_valid(local, (bp_uint32)strlen(local)))
+                return BP_ERR_NAME_TOO_LONG;
+            strcpy(folded, local);
+        }
+        else if (cp == BP_CP_SJIS) {
+            size_t i;
+            for (i = 0; local[i]; i++) {
+                unsigned char c = (unsigned char)local[i];
+                if (x68k_index_sjis_pair_at(local + i)) {
+                    folded[i] = local[i]; folded[i + 1U] = local[i + 1U]; i++;
+                } else folded[i] = (char)(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+            }
+            folded[i] = '\0';
+        }
+        else if (bp_local_casefold(local, folded, sizeof(folded), cp) != 0)
+            return BP_ERR_NAME_TOO_LONG;
+        rc = target_auto_name_set_add(map, folded,
+                                   (unsigned int)strlen(folded));
+    } else {
+        rc = target_auto_name_set_add(map, target_path,
+                                   (unsigned int)path_length);
+    }
+    return rc;
+}
+
+static void atari_alias_hash_prefix(const char *component, char *prefix,
+                                    char *extension)
+{
+    const unsigned char *p = (const unsigned char *)component;
+    const char *dot = strrchr(component, '.');
+    size_t stem_length = dot != NULL && dot != component
+                       ? (size_t)(dot - component) : strlen(component);
+    size_t ext_length = dot != NULL ? strlen(dot + 1) : 0;
+    size_t prefix_length = 0, extension_length = 0, i;
+
+    for (i = 0; i < stem_length && prefix_length < 2U; i++) {
+        unsigned char c = p[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9')) {
+            if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+            prefix[prefix_length++] = (char)c;
+        }
+    }
+    if (prefix_length == 0) prefix[prefix_length++] = 'F';
+    prefix[prefix_length] = '\0';
+
+    if (dot != NULL) {
+        for (i = 0; i < ext_length && extension_length < 3U; i++) {
+            unsigned char c = (unsigned char)dot[1 + i];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9')) {
+                if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+                extension[extension_length++] = (char)c;
+            }
+        }
+    }
+    extension[extension_length] = '\0';
+}
+
+static int atari_alias_component(atari_alias_map_t *map,
+                                 const char *parent_target,
+                                 const char *original_component,
+                                 int force_alias,
+                                 int portable_alias,
+                                 char *target_path, size_t target_capacity)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char local[4097];
+    char direct[BP_ATARI_GEMDOS_PATH_MAX + 1U];
+    char prefix[3], extension[4], candidate[1025];
+    unsigned int direct_length, attempt;
+    unsigned long hash = 2166136261UL;
+    const unsigned char *p;
+    int rc;
+
+    if (map->profile != TARGET_PROFILE_ATARI_ST &&
+        map->profile != TARGET_PROFILE_CPM86_83 &&
+        target_auto_codepage(map->profile) != BP_CP_INVALID &&
+        bp_utf8_to_local(original_component, local, sizeof(local),
+                         target_auto_codepage(map->profile)) == 0 &&
+        (target_auto_codepage(map->profile) == BP_CP_UTF8 ||
+         map->profile == TARGET_PROFILE_DOS_CP850_LFN ||
+         map->profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ||
+         map->profile == TARGET_PROFILE_MACOS_CLASSIC_HFS ||
+         map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1 ||
+         map->profile == TARGET_PROFILE_RISCOS_LATIN1 ||
+         map->profile == TARGET_PROFILE_X68000_SJIS
+         ? target_auto_long_component(map->profile, local)
+         : dos_target_component_83(local, strlen(local)))) {
+        rc = atari_alias_reserve(map, parent_target, original_component,
+                                 target_path, target_capacity);
+        if (rc == BP_OK) return BP_OK;
+        if (rc != BP_ERR_CORRUPT && rc != BP_ERR_NAME_TOO_LONG) return rc;
+    }
+
+    if (map->profile == TARGET_PROFILE_ATARI_ST && !force_alias &&
+        bp_utf8_to_local(original_component, local, sizeof(local),
+                         BP_CP_ATARIST) == 0 &&
+        bp_atari_project_name(local, 0, direct, sizeof(direct),
+                              &direct_length) == BP_OK) {
+        rc = atari_alias_reserve(map, parent_target, direct, target_path,
+                                 target_capacity);
+        if (rc == BP_OK) return BP_OK;
+        if (rc != BP_ERR_CORRUPT && rc != BP_ERR_NAME_TOO_LONG)
+            return rc;
+    }
+
+    atari_alias_hash_prefix(original_component, prefix, extension);
+    for (p = (const unsigned char *)original_component; *p != '\0'; p++)
+        hash = (hash ^ *p) * 16777619UL;
+    for (attempt = 0; attempt <= (portable_alias ? 0xFFFFFFU : 0xFFFFFU);
+         attempt++) {
+        unsigned long mask = portable_alias ? 0xFFFFFFUL : 0xFFFFFUL;
+        unsigned long suffix = (hash + attempt) & mask;
+        size_t pos = 0, i;
+        if ((target_auto_codepage(map->profile) == BP_CP_UTF8 &&
+             map->profile != TARGET_PROFILE_CPM86_83) ||
+            map->profile == TARGET_PROFILE_DOS_CP850_LFN ||
+            map->profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ||
+            map->profile == TARGET_PROFILE_MACOS_CLASSIC_HFS ||
+            map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1 ||
+            map->profile == TARGET_PROFILE_RISCOS_LATIN1 ||
+            map->profile == TARGET_PROFILE_X68000_SJIS) {
+            char parent_local[4097];
+            const char *dot = strrchr(original_component, '.');
+            size_t parent_len, limit, stem_len, j, native_used = 0;
+            size_t ext_len = map->profile == TARGET_PROFILE_RISCOS_LATIN1
+                           ? 0U : strlen(extension);
+            size_t path_limit = map->profile == TARGET_PROFILE_PLAN9_UTF8 ? 511U :
+                                map->profile == TARGET_PROFILE_HAIKU_BFS ? 1023U :
+                                target_auto_codepage(map->profile) == BP_CP_UTF8 ? 4095U :
+                                map->profile == TARGET_PROFILE_DOS_CP850_LFN
+                              ? 259U : map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1
+                              ? 35U : 255U;
+            size_t component_limit = target_auto_codepage(map->profile) == BP_CP_UTF8 ? 255U :
+                                    map->profile == TARGET_PROFILE_DOS_CP850_LFN
+                                   ? 255U : map->profile == TARGET_PROFILE_RISCOS_LATIN1
+                                   ? 10U : map->profile == TARGET_PROFILE_X68000_SJIS
+                                   ? 18U + (ext_len ? ext_len + 1U : 0U) : map->profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1
+                                   ? 36U : (map->profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1 ? 30U : 31U);
+            if (bp_utf8_to_local(parent_target, parent_local,
+                                 sizeof(parent_local), target_auto_codepage(map->profile)) != 0)
+                return BP_ERR_NAME_TOO_LONG;
+            parent_len = strlen(parent_local);
+            if (parent_len >= path_limit) return BP_ERR_NAME_TOO_LONG;
+            limit = path_limit - parent_len - (parent_len ? 1U : 0U);
+            if (limit > component_limit) limit = component_limit;
+            if (limit < 7U + (ext_len ? ext_len + 1U : 0U))
+                return BP_ERR_NAME_TOO_LONG;
+            stem_len = dot && dot != original_component
+                     ? (size_t)(dot - original_component)
+                     : strlen(original_component);
+            for (j = 0; j < stem_len;) {
+                unsigned char c = (unsigned char)original_component[j];
+                char character[5], encoded[8];
+                size_t width, local_width, budget;
+                if (c < 0x80U) {
+                    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9'))) { j++; continue; }
+                    width = 1U;
+                } else if (c >= 0xC2U && c <= 0xDFU) width = 2U;
+                else if (c >= 0xE0U && c <= 0xEFU) width = 3U;
+                else if (c >= 0xF0U && c <= 0xF4U) width = 4U;
+                else { j++; continue; }
+                if (width > stem_len - j) break;
+                memcpy(character, original_component + j, width);
+                character[width] = '\0';
+                if (!bp_archive_name_valid(character, (bp_uint32)width) ||
+                    (map->profile == TARGET_PROFILE_PLAN9_UTF8 && c == 0xC2U &&
+                     width == 2U && (unsigned char)character[1] <= 0x9FU) ||
+                    bp_utf8_to_local(character, encoded, sizeof(encoded),
+                                     target_auto_codepage(map->profile)) != 0) {
+                    j += width;
+                    continue;
+                }
+                local_width = strlen(encoded);
+                budget = limit - 6U - (ext_len ? ext_len + 1U : 0U);
+                if (native_used + local_width > budget || pos + width >= sizeof(candidate)) break;
+                memcpy(candidate + pos, character, width);
+                pos += width;
+                native_used += local_width;
+                j += width;
+            }
+            if (pos == 0) candidate[pos++] = 'F';
+            if (map->profile == TARGET_PROFILE_RISCOS_LATIN1) extension[0] = '\0';
+        } else if (map->profile != TARGET_PROFILE_ATARI_ST &&
+                   map->profile != TARGET_PROFILE_CPM86_83) {
+            const char *dot = strrchr(original_component, '.');
+            size_t j = 0, native_used = 0;
+            size_t stem_len = dot && dot != original_component
+                            ? (size_t)(dot - original_component)
+                            : strlen(original_component);
+            while (j < stem_len && native_used < 2U) {
+                unsigned char c = (unsigned char)original_component[j];
+                char character[5], encoded[8];
+                size_t width;
+                if (c < 0x80U) {
+                    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9'))) { j++; continue; }
+                    width = 1U;
+                } else if (c >= 0xC2U && c <= 0xDFU) width = 2U;
+                else if (c >= 0xE0U && c <= 0xEFU) width = 3U;
+                else if (c >= 0xF0U && c <= 0xF4U) width = 4U;
+                else { j++; continue; }
+                if (width > stem_len - j) break;
+                memcpy(character, original_component + j, width);
+                character[width] = '\0';
+                if (bp_archive_name_valid(character, (bp_uint32)width) &&
+                    bp_utf8_to_local(character, encoded, sizeof(encoded),
+                                     target_auto_codepage(map->profile)) == 0 &&
+                    strlen(encoded) == 1U) {
+                    memcpy(candidate + pos, character, width);
+                    pos += width;
+                    native_used++;
+                }
+                j += width;
+            }
+            if (pos == 0) candidate[pos++] = 'F';
+        } else {
+            memcpy(candidate + pos, prefix, strlen(prefix));
+            pos += strlen(prefix);
+        }
+        if (!portable_alias) candidate[pos++] = '~';
+        for (i = 0; i < (portable_alias ? 6U : 5U); i++)
+            candidate[pos++] = hex[(suffix >>
+                (((portable_alias ? 5U : 4U) - i) * 4U)) & 0x0FU];
+        if (extension[0] != '\0') {
+            candidate[pos++] = '.';
+            memcpy(candidate + pos, extension, strlen(extension));
+            pos += strlen(extension);
+        }
+        candidate[pos] = '\0';
+        rc = atari_alias_reserve(map, parent_target, candidate,
+                                 target_path, target_capacity);
+        if (rc == BP_OK) return BP_OK;
+        if (rc == BP_ERR_NAME_TOO_LONG) return rc;
+        if (rc != BP_ERR_CORRUPT) return rc;
+    }
+    return BP_ERR_OVERFLOW;
+}
+
+static int atari_alias_map_name(atari_alias_map_t *map, const char *original,
+                                int is_directory, int force_nonportable,
+                                char *target,
+                                size_t target_capacity)
+{
+    char original_prefix[4096];
+    char target_prefix[4096];
+    size_t original_length = strlen(original), pos = 0;
+
+    if (is_directory && original_length != 0 &&
+        original[original_length - 1U] == '/') original_length--;
+    if (original_length == 0 || original_length >= sizeof(original_prefix))
+        return BP_ERR_NAME_TOO_LONG;
+    original_prefix[0] = '\0';
+    target_prefix[0] = '\0';
+    /* Absolute Linux source operands have no leading-root representation on
+     * Atari.  Treat the remaining components as a relative archive path. */
+    while (pos < original_length && original[pos] == '/') pos++;
+    if (pos == original_length) return BP_ERR_PARTIAL;
+    while (pos < original_length) {
+        size_t start = pos, component_length;
+        char component[4096];
+        char next_target[4096];
+        const char *mapped;
+        int rc;
+
+        while (pos < original_length && original[pos] != '/') pos++;
+        component_length = pos - start;
+        if (component_length == 0 || component_length >= sizeof(component))
+            return BP_ERR_PARTIAL;
+        component[component_length] = '\0';
+        memcpy(component, original + start, component_length);
+        if (strlen(original_prefix) + (original_prefix[0] ? 1U : 0U) +
+                component_length >= sizeof(original_prefix))
+            return BP_ERR_NAME_TOO_LONG;
+        if (original_prefix[0] != '\0') strcat(original_prefix, "/");
+        strcat(original_prefix, component);
+
+        mapped = atari_alias_lookup(map, original_prefix);
+        if (mapped == NULL) {
+            rc = atari_alias_component(map, target_prefix, component,
+                                       0, force_nonportable,
+                                       next_target, sizeof(next_target));
+            if (rc != BP_OK) return rc;
+            rc = atari_alias_remember(map, original_prefix, next_target);
+            if (rc != BP_OK) return rc;
+            mapped = atari_alias_lookup(map, original_prefix);
+        }
+        if (strlen(mapped) > sizeof(target_prefix) - 1U)
+            return BP_ERR_NAME_TOO_LONG;
+        strcpy(target_prefix, mapped);
+        if (pos < original_length) pos++;
+    }
+    if (is_directory) {
+        if (strlen(target_prefix) + 2U > target_capacity)
+            return BP_ERR_NAME_TOO_LONG;
+        strcpy(target, target_prefix);
+        strcat(target, "/");
+    } else {
+        if (strlen(target_prefix) + 1U > target_capacity)
+            return BP_ERR_NAME_TOO_LONG;
+        strcpy(target, target_prefix);
+    }
+    return BP_OK;
+}
+
+/* Project names using the selected target's encoding, component and path
+ * limits, and collision rules. CP/M-86 files use a flat 8.3 namespace. */
+static int target_auto_rename_jobs(add_job_list_t *jobs,
+                                   target_profile_t profile)
+{
+    atari_alias_map_t map;
+    int i, rc = BP_OK;
+    memset(&map, 0, sizeof(map));
+    map.profile = profile;
+    bp_atari_name_set_init(&map.reserved);
+    {
+        const char *report_name = profile == TARGET_PROFILE_RISCOS_LATIN1
+                                ? "BPNAMESTXT" : "BPNAMES.TXT";
+        rc = target_auto_name_set_add(&map, report_name,
+                                   (unsigned int)strlen(report_name));
+    }
+    if (rc != BP_OK) {
+        atari_alias_map_free(&map);
+        return rc;
+    }
+    if (jobs->count > 1)
+        qsort(jobs->items, (size_t)jobs->count, sizeof(*jobs->items),
+              atari_job_name_compare);
+
+    i = 0;
+    while (i < jobs->count) {
+        add_job_t *job = &jobs->items[i];
+        char renamed[4096];
+        char *renamed_copy;
+        if (job->entry_type == BP_TYPE_SYMLINK) {
+            fprintf(stderr,
+                    "boltpack: --target-auto-rename does not support symbolic links: %s\n",
+                    job->original_arcname);
+            rc = BP_ERR_PARTIAL;
+            break;
+        }
+        if (job->entry_type != BP_TYPE_DATA && job->entry_type != BP_TYPE_DIR) {
+            i++;
+            continue;
+        }
+        if (profile == TARGET_PROFILE_CPM86_83 &&
+            job->entry_type == BP_TYPE_DIR) {
+            free_add_job(job);
+            memmove(job, job + 1,
+                    (size_t)(jobs->count - i - 1) * sizeof(*job));
+            jobs->count--;
+            continue;
+        }
+        if (profile == TARGET_PROFILE_CPM86_83) {
+            char alias[13];
+            rc = atari_alias_component(&map, "", job->original_arcname, 1, 1,
+                                       alias, sizeof(alias));
+            if (rc == BP_OK) strcpy(renamed, alias);
+        } else {
+            rc = atari_alias_map_name(&map, job->original_arcname,
+                                      job->entry_type == BP_TYPE_DIR,
+                                      profile != TARGET_PROFILE_ATARI_ST,
+                                      renamed, sizeof(renamed));
+        }
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: cannot create a target-safe alias for path: %s\n",
+                    job->original_arcname);
+            break;
+        }
+        renamed_copy = dup_string(renamed);
+        if (renamed_copy == NULL) {
+            rc = BP_ERR_NOMEM;
+            break;
+        }
+        free(job->arcname);
+        job->arcname = renamed_copy;
+        i++;
+    }
+    atari_alias_map_free(&map);
+    return rc;
+}
+
+static int dos_target_codepage(target_profile_t profile)
+{
+    switch (profile) {
+    case TARGET_PROFILE_DOS_CP850_83:
+    case TARGET_PROFILE_DOS_CP850_LFN:
+    case TARGET_PROFILE_DOS16_CP850_MINI:
+    case TARGET_PROFILE_OS2_16_CP850_MINI:
+    case TARGET_PROFILE_OS2_FAT_CP850:
+        return BP_CP_850;
+    case TARGET_PROFILE_DOS_CP437_83:
+    case TARGET_PROFILE_WIN16_CP437_MINI:
+        return BP_CP_437;
+    default:
+        return BP_CP_INVALID;
+    }
+}
+
+static const char *dos_target_label(target_profile_t profile)
+{
+    switch (profile) {
+    case TARGET_PROFILE_DOS_CP850_83: return "DOS CP850 8.3";
+    case TARGET_PROFILE_DOS_CP850_LFN: return "DOS CP850 LFN";
+    case TARGET_PROFILE_DOS_CP437_83: return "DOS CP437 8.3";
+    case TARGET_PROFILE_DOS16_CP850_MINI: return "DOS16 CP850 mini";
+    case TARGET_PROFILE_WIN16_CP437_MINI: return "Win16 CP437 mini";
+    case TARGET_PROFILE_OS2_16_CP850_MINI: return "OS/2-16 CP850 mini";
+    case TARGET_PROFILE_OS2_FAT_CP850: return "OS/2 FAT CP850";
+    default: return "legacy DOS-family";
+    }
+}
+
+static bp_uint8 dos_target_metadata_platform(target_profile_t profile)
+{
+    switch (profile) {
+    case TARGET_PROFILE_WIN16_CP437_MINI: return BP_OS_WIN16;
+    case TARGET_PROFILE_OS2_16_CP850_MINI:
+    case TARGET_PROFILE_OS2_FAT_CP850: return BP_OS_OS2;
+    default: return BP_OS_DOS;
+    }
+}
+
+static int dos_target_component_83(const char *component, size_t length)
+{
+    size_t stem = 0, extension = 0, i;
+    char reserved[9];
+
+    if (length == 0 || component[length - 1U] == ' ' ||
+        component[length - 1U] == '.') return 0;
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem == 0 || stem > 8U) return 0;
+    if (stem < length) {
+        if (stem + 1U == length) return 0;
+        extension = length - stem - 1U;
+        if (extension > 3U ||
+            memchr(component + stem + 1U, '.', extension) != NULL) return 0;
+    }
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c == '.') continue;
+        if (c < 0x20U || c == 0x7FU) return 0;
+        if (c >= 0x80U) continue; /* CP437/CP850 bytes are target-defined. */
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || strchr("$%'-_@~`!(){}^#&", c)))
+            return 0;
+    }
+    if (stem <= 4U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            if (c >= 0x80U) return 1;
+            reserved[i] = (char)(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int dos_target_add_name(bp_posix_preflight_t *paths,
+                               const char *utf8_name, int is_directory,
+                               target_profile_t profile)
+{
+    char local[261], folded[261];
+    size_t length, i, start;
+    int codepage = dos_target_codepage(profile);
+    int rc;
+
+    if (codepage == BP_CP_INVALID ||
+        bp_utf8_to_local(utf8_name, local, (int)sizeof(local), codepage) != 0) {
+        fprintf(stderr, "boltpack: %s cannot encode name: %s\n",
+                dos_target_label(profile), utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (is_directory && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length >= 260U || local[0] == '/') {
+        fprintf(stderr, "boltpack: %s path is empty, absolute, or too long: %s\n",
+                dos_target_label(profile), utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    start = 0;
+    for (i = 0; i <= length; i++) {
+        size_t component_length;
+        if (i != length && local[i] != '/') {
+            if (local[i] == '\\') {
+                fprintf(stderr, "boltpack: %s path contains a backslash: %s\n",
+                        dos_target_label(profile), utf8_name);
+                return BP_ERR_PARTIAL;
+            }
+            continue;
+        }
+        component_length = i - start;
+        if (!dos_target_component_83(local + start, component_length)) {
+            fprintf(stderr,
+                    "boltpack: %s component is not legal 8.3 or is a reserved device name: %s\n",
+                    dos_target_label(profile), utf8_name);
+            return BP_ERR_PARTIAL;
+        }
+        start = i + 1U;
+    }
+    if (bp_local_casefold(local, folded, (int)sizeof(folded), codepage) != 0)
+        return BP_ERR_PARTIAL;
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: %s projected path collision or path limit: %s\n",
+                dos_target_label(profile), utf8_name);
+    return rc;
+}
+
+static int dos_target_preflight(const add_job_list_t *jobs,
+                                const bp_archive_t *existing,
+                                target_profile_t profile)
+{
+    bp_posix_preflight_t paths;
+    bp_uint8 metadata_platform = dos_target_metadata_platform(profile);
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE ||
+                    entry->platform == metadata_platform) continue;
+                fprintf(stderr,
+                        "boltpack: existing archive has metadata unsupported by %s: %s\n",
+                        dos_target_label(profile), entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto dos_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_RSRC ||
+                entry->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an unsupported entry type for %s: %s\n",
+                        dos_target_label(profile), entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto dos_target_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) continue;
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: existing file exceeds the %s signed-I/O limit: %s\n",
+                        dos_target_label(profile), entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto dos_target_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = dos_target_add_name(&paths, entry->name, is_directory,
+                                     profile);
+            if (rc != BP_OK) goto dos_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: %s does not support symbolic links: %s\n",
+                        dos_target_label(profile), job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto dos_target_done;
+            }
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) continue;
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the %s signed-I/O limit: %s\n",
+                        dos_target_label(profile), job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto dos_target_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = dos_target_add_name(&paths, job->arcname, is_directory,
+                                     profile);
+            if (rc != BP_OK) goto dos_target_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: %s file/directory path conflict\n",
+                dos_target_label(profile));
+
+dos_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+/* DOS LFN uses the full DOS frontend's CP850 namespace and bounded path
+ * buffers, with LFN component lengths in place of its short-name rule. */
+static int dos_lfn_component_valid(const char *component, size_t length)
+{
+    size_t stem = 0, i;
+    char reserved[9];
+
+    if (length == 0 || length > 255U || component[length - 1U] == '.' ||
+        component[length - 1U] == ' ') return 0;
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)component[i];
+        if (c < 0x20U || c == 0x7FU || c == '\\' ||
+            strchr("\"*:<>?|", c) != NULL) return 0;
+        if (c == ' ' && (i + 1U == length || component[i + 1U] == '.'))
+            return 0;
+    }
+    while (stem < length && component[stem] != '.') stem++;
+    if (stem <= 8U) {
+        for (i = 0; i < stem; i++) {
+            unsigned char c = (unsigned char)component[i];
+            reserved[i] = (char)(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+        }
+        reserved[stem] = '\0';
+        if (strcmp(reserved, "CON") == 0 || strcmp(reserved, "PRN") == 0 ||
+            strcmp(reserved, "AUX") == 0 || strcmp(reserved, "NUL") == 0 ||
+            (stem == 4U && reserved[3] >= '1' && reserved[3] <= '9' &&
+             (memcmp(reserved, "COM", 3) == 0 ||
+              memcmp(reserved, "LPT", 3) == 0))) return 0;
+    }
+    return 1;
+}
+
+static int dos_lfn_add_name(bp_posix_preflight_t *paths,
+                            const char *utf8_name, int is_directory)
+{
+    char local[260], folded[260];
+    size_t length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local), BP_CP_850) != 0) {
+        fprintf(stderr, "boltpack: DOS CP850 LFN cannot encode name: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (is_directory && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length >= 260U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: DOS CP850 LFN path is empty, absolute, or exceeds 259 bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    for (start = 0, i = 0; i <= length; i++) {
+        if (i == length || local[i] == '/') {
+            if (!dos_lfn_component_valid(local + start, i - start)) {
+                fprintf(stderr,
+                        "boltpack: DOS CP850 LFN component is illegal or exceeds 255 bytes: %s\n",
+                        utf8_name);
+                return BP_ERR_PARTIAL;
+            }
+            start = i + 1U;
+        }
+    }
+    if (bp_local_casefold(local, folded, (int)sizeof(folded), BP_CP_850) != 0)
+        return BP_ERR_PARTIAL;
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: DOS CP850 LFN projected path collision or limit: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int dos_lfn_target_preflight(const add_job_list_t *jobs,
+                                    const bp_archive_t *existing)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE ||
+                    entry->platform == BP_OS_DOS) continue;
+                fprintf(stderr,
+                        "boltpack: existing archive has foreign metadata for DOS LFN: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto dos_lfn_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: DOS CP850 LFN does not support this entry type: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto dos_lfn_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                rc = BP_ERR_OVERFLOW;
+                goto dos_lfn_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = dos_lfn_add_name(&paths, entry->name, is_directory);
+            if (rc != BP_OK) goto dos_lfn_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: DOS CP850 LFN does not support source links or special entries: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto dos_lfn_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                rc = BP_ERR_OVERFLOW;
+                goto dos_lfn_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = dos_lfn_add_name(&paths, job->arcname, is_directory);
+            if (rc != BP_OK) goto dos_lfn_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: DOS CP850 LFN file/directory path conflict\n");
+
+dos_lfn_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+/* AmigaOS 68k profile: archive paths remain canonical UTF-8, while this
+ * preflight projects them to the target's ISO-8859-1 namespace.  The 30-byte
+ * component and 255-byte relative path ceilings are deliberately conservative
+ * v1 bounds; filesystem/runtime qualification remains separate. */
+static void amiga_latin1_casefold(const char *src, char *dst, size_t size)
+{
+    size_t i, length = strlen(src);
+    if (size == 0) return;
+    if (length >= size) length = size - 1U;
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        else if ((c >= 0xE0U && c <= 0xF6U) ||
+                 (c >= 0xF8U && c <= 0xFEU))
+            c = (unsigned char)(c - 0x20U);
+        dst[i] = (char)c;
+    }
+    dst[length] = '\0';
+}
+
+static int amiga_target_add_name(bp_posix_preflight_t *paths,
+                                 const char *utf8_name, int is_directory)
+{
+    char local[257], folded[257];
+    size_t length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_8859_1) != 0) {
+        fprintf(stderr,
+                "boltpack: AmigaOS 68k profile cannot encode name as Latin-1: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (is_directory && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length > 255U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: AmigaOS 68k path is empty, absolute, or exceeds 255 Latin-1 bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    for (start = 0, i = 0; i <= length; i++) {
+        if (i == length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t j;
+            if (component_length == 0 || component_length > 30U ||
+                (component_length == 1U && local[start] == '.') ||
+                (component_length == 2U && local[start] == '.' &&
+                 local[start + 1U] == '.')) {
+                fprintf(stderr,
+                        "boltpack: AmigaOS 68k component is empty, reserved, or exceeds 30 bytes: %s\n",
+                        utf8_name);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == ':') {
+                    fprintf(stderr,
+                            "boltpack: AmigaOS 68k name contains a control character or volume separator: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                }
+            }
+            start = i + 1U;
+        } else if (local[i] == '\\') {
+            fprintf(stderr,
+                    "boltpack: AmigaOS 68k profile rejects backslashes in paths: %s\n",
+                    utf8_name);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    amiga_latin1_casefold(local, folded, sizeof(folded));
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: AmigaOS 68k projected path collision or path conflict: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int amiga_target_preflight(const add_job_list_t *jobs,
+                                  const bp_archive_t *existing)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_OS_AMIGA_68K) continue;
+                fprintf(stderr,
+                        "boltpack: existing archive has metadata unsupported by AmigaOS 68k: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto amiga_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_RSRC ||
+                entry->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an entry type unsupported by AmigaOS 68k: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto amiga_target_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an unknown entry type for AmigaOS 68k: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto amiga_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: existing file exceeds AmigaOS 68k signed-I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto amiga_target_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = amiga_target_add_name(&paths, entry->name, is_directory);
+            if (rc != BP_OK) goto amiga_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: AmigaOS 68k does not support symbolic links: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto amiga_target_done;
+            }
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: unsupported source entry type for AmigaOS 68k: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto amiga_target_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds AmigaOS 68k signed-I/O limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto amiga_target_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = amiga_target_add_name(&paths, job->arcname, is_directory);
+            if (rc != BP_OK) goto amiga_target_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: AmigaOS 68k file/directory path conflict\n");
+
+amiga_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+static int macos_classic_add_name(bp_posix_preflight_t *paths,
+                                  const char *utf8_name, int is_directory)
+{
+    char local[256], folded[256];
+    size_t length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_MACROMAN) != 0) {
+        fprintf(stderr,
+                "boltpack: Classic Mac HFS profile cannot encode name as MacRoman: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (is_directory && length != 0 && local[length - 1U] == '/')
+        local[--length] = '\0';
+    if (length == 0 || length > 255U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: Classic Mac HFS path is empty, absolute, or exceeds 255 bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    for (start = 0, i = 0; i <= length; i++) {
+        if (i == length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t j;
+            if (component_length == 0 || component_length > 31U ||
+                (component_length == 1U && local[start] == '.') ||
+                (component_length == 2U && local[start] == '.' &&
+                 local[start + 1U] == '.')) {
+                fprintf(stderr,
+                        "boltpack: Classic Mac HFS component is empty, reserved, or exceeds 31 MacRoman bytes: %s\n",
+                        utf8_name);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == ':') {
+                    fprintf(stderr,
+                            "boltpack: Classic Mac HFS name contains a control character or colon: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                }
+            }
+            start = i + 1U;
+        } else if (local[i] == '\\') {
+            fprintf(stderr,
+                    "boltpack: Classic Mac HFS profile rejects backslashes in paths: %s\n",
+                    utf8_name);
+            return BP_ERR_PARTIAL;
+        }
+    }
+    if (bp_local_casefold(local, folded, (int)sizeof(folded),
+                          BP_CP_MACROMAN) != 0) {
+        fprintf(stderr,
+                "boltpack: cannot safely case-fold Classic Mac HFS name: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: Classic Mac HFS projected path collision or conflict: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int macos_classic_target_preflight(const add_job_list_t *jobs,
+                                         const bp_archive_t *existing)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Classic Mac HFS profile cannot preserve this entry type or metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto macos_classic_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: Classic Mac HFS file exceeds signed 32-bit I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto macos_classic_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = macos_classic_add_name(&paths, entry->name, is_directory);
+            if (rc != BP_OK) goto macos_classic_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Classic Mac HFS profile does not support source links or special entries: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto macos_classic_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds Classic Mac HFS signed 32-bit I/O limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto macos_classic_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = macos_classic_add_name(&paths, job->arcname, is_directory);
+            if (rc != BP_OK) goto macos_classic_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: Classic Mac HFS file/directory path conflict\n");
+
+macos_classic_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+/* QDOS uses underscores as separators in native paths. Project archive
+ * slashes to underscores before collision checks because an underscore in a
+ * single archived component can otherwise alias a nested archive path. */
+static int ql_target_add_name(bp_posix_preflight_t *paths,
+                              const char *utf8_name, int is_directory)
+{
+    char local[256], projected[256], folded[256];
+    size_t length, component_scan_length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_8859_1) != 0) {
+        fprintf(stderr, "boltpack: Sinclair QL profile cannot encode name as Latin-1: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (length == 0 || length > 36U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: Sinclair QL relative path is empty, absolute, or exceeds 36 bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    component_scan_length = length;
+    if (is_directory && local[length - 1U] == '/') component_scan_length--;
+    for (start = 0, i = 0; i <= component_scan_length; i++) {
+        if (i == component_scan_length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t j;
+            if (component_length == 0 ||
+                (component_length == 1U && local[start] == '.') ||
+                (component_length == 2U && local[start] == '.' &&
+                 local[start + 1U] == '.')) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL path has an empty or dot component: %s\n",
+                        utf8_name);
+                return BP_ERR_PARTIAL;
+            }
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == ':' || c == '\\') {
+                    fprintf(stderr,
+                            "boltpack: Sinclair QL component contains a control, colon, or backslash: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                }
+            }
+            start = i + 1U;
+        }
+    }
+    for (i = 0; i < length; i++)
+        projected[i] = local[i] == '/' ? '_' : local[i];
+    projected[length] = '\0';
+    amiga_latin1_casefold(projected, folded, sizeof(folded));
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: Sinclair QL projected path collision: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int ql_target_preflight(const add_job_list_t *jobs,
+                               const bp_archive_t *existing)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL profile cannot preserve this entry type or metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto ql_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL file exceeds signed 32-bit I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto ql_target_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = ql_target_add_name(&paths, entry->name, is_directory);
+            if (rc != BP_OK) goto ql_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: Sinclair QL profile does not support source links or special entries: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto ql_target_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                rc = BP_ERR_OVERFLOW;
+                goto ql_target_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = ql_target_add_name(&paths, job->arcname, is_directory);
+            if (rc != BP_OK) goto ql_target_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+
+ql_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+/* RISC OS FileCore names are Latin-1, use dot as the native path separator,
+ * and limit each leaf to ten bytes. Reject dots inside archive components so
+ * one archive name cannot alias a different directory tree on extraction. */
+static int riscos_target_add_name(bp_posix_preflight_t *paths,
+                                 const char *utf8_name, int is_directory)
+{
+    char local[256], folded[256];
+    size_t length, scan_length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_8859_1) != 0) {
+        fprintf(stderr,
+                "boltpack: RISC OS profile cannot encode name as Latin-1: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (length == 0 || length > 255U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: RISC OS relative path is empty, absolute, or exceeds 255 bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    scan_length = length;
+    if (is_directory && local[length - 1U] == '/') scan_length--;
+    for (start = 0, i = 0; i <= scan_length; i++) {
+        if (i == scan_length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t j;
+            if (component_length == 0 || component_length > 10U ||
+                (component_length == 1U && local[start] == '.') ||
+                (component_length == 2U && local[start] == '.' &&
+                 local[start + 1U] == '.')) {
+                fprintf(stderr,
+                        "boltpack: RISC OS component is empty, dot syntax, or exceeds 10 bytes: %s\n",
+                        utf8_name);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            for (j = start; j < i; j++) {
+                unsigned char c = (unsigned char)local[j];
+                if (c < 0x20U || c == 0x7FU || c == '.' || c == ':' ||
+                    c == '*' || c == '#' || c == '$' || c == '%' ||
+                    c == '&' || c == '@' || c == '"' || c == '|' ||
+                    c == '^' || c == '\\') {
+                    fprintf(stderr,
+                            "boltpack: RISC OS component contains reserved syntax: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                }
+            }
+            start = i + 1U;
+        }
+    }
+    amiga_latin1_casefold(local, folded, sizeof(folded));
+    rc = bp_posix_preflight_add(paths, folded, strlen(folded), is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: RISC OS projected path collision or file/directory conflict: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int riscos_target_preflight(const add_job_list_t *jobs,
+                                   const bp_archive_t *existing)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: RISC OS profile cannot preserve this entry type or metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto riscos_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: RISC OS file exceeds the signed 32-bit I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto riscos_target_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = riscos_target_add_name(&paths, entry->name, is_directory);
+            if (rc != BP_OK) goto riscos_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: RISC OS profile does not support links or special entries: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto riscos_target_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the RISC OS signed 32-bit I/O limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto riscos_target_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = riscos_target_add_name(&paths, job->arcname, is_directory);
+            if (rc != BP_OK) goto riscos_target_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: RISC OS file/directory path conflict\n");
+
+riscos_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+/* Human68k v3 filenames use an 18-byte stem and optional 3-byte extension.
+ * This strict Shift-JIS profile follows the X68000 frontend's 255-byte path
+ * buffer and case-insensitive path index, and refuses truncation/aliases. */
+static int x68000_target_add_name(x68k_path_index_t *paths,
+                                  const char *utf8_name, int is_directory)
+{
+    char local[X68K_INDEX_MAX_PATH * 3U];
+    size_t length, scan_length, start, i;
+    int rc;
+
+    if (bp_utf8_to_local(utf8_name, local, (int)sizeof(local),
+                         BP_CP_SJIS) != 0) {
+        fprintf(stderr,
+                "boltpack: X68000 profile cannot encode name as standard Shift-JIS: %s\n",
+                utf8_name);
+        return BP_ERR_PARTIAL;
+    }
+    length = strlen(local);
+    if (length == 0 || length > 255U || local[0] == '/') {
+        fprintf(stderr,
+                "boltpack: X68000 relative path is empty, absolute, or exceeds 255 Shift-JIS bytes: %s\n",
+                utf8_name);
+        return BP_ERR_NAME_TOO_LONG;
+    }
+    scan_length = length;
+    if (is_directory && local[length - 1U] == '/') scan_length--;
+    for (start = 0, i = 0; i <= scan_length; i++) {
+        if (i == scan_length || local[i] == '/') {
+            size_t component_length = i - start;
+            size_t stem_bytes = 0, extension_bytes = 0;
+            size_t j;
+            int in_extension = 0, has_dot = 0;
+            if (component_length == 0) {
+                fprintf(stderr,
+                        "boltpack: X68000 path contains an empty component: %s\n",
+                        utf8_name);
+                return BP_ERR_PARTIAL;
+            }
+            for (j = start; j < i; ) {
+                unsigned char c = (unsigned char)local[j];
+                size_t char_bytes = 1U;
+                if (x68k_index_sjis_pair_at(local + j)) char_bytes = 2U;
+                else if (c >= 0x81U && c <= 0x9FU) {
+                    fprintf(stderr,
+                            "boltpack: X68000 component has an invalid Shift-JIS sequence: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                } else if (c >= 0xE0U && c <= 0xEFU) {
+                    fprintf(stderr,
+                            "boltpack: X68000 component has an invalid Shift-JIS sequence: %s\n",
+                            utf8_name);
+                    return BP_ERR_PARTIAL;
+                }
+                if (char_bytes == 1U) {
+                    if (c == '.') {
+                        if (has_dot || j == start || j + 1U == i) {
+                            fprintf(stderr,
+                                    "boltpack: X68000 component has invalid 18.3 extension syntax: %s\n",
+                                    utf8_name);
+                            return BP_ERR_PARTIAL;
+                        }
+                        has_dot = 1;
+                        in_extension = 1;
+                        j++;
+                        continue;
+                    }
+                    if (c < 0x21U || c == 0x7FU || c == '"' || c == '*' ||
+                        c == '+' || c == ',' || c == ':' || c == ';' ||
+                        c == '<' || c == '=' || c == '>' || c == '?' ||
+                        c == '[' || c == '\\' || c == ']' || c == '|') {
+                        fprintf(stderr,
+                                "boltpack: X68000 component contains a forbidden character: %s\n",
+                                utf8_name);
+                        return BP_ERR_PARTIAL;
+                    }
+                }
+                if (in_extension) extension_bytes += char_bytes;
+                else stem_bytes += char_bytes;
+                j += char_bytes;
+            }
+            if (stem_bytes == 0 || stem_bytes > 18U ||
+                extension_bytes > 3U) {
+                fprintf(stderr,
+                        "boltpack: X68000 component exceeds Human68k 18.3 byte limits: %s\n",
+                        utf8_name);
+                return BP_ERR_NAME_TOO_LONG;
+            }
+            start = i + 1U;
+        }
+    }
+    rc = x68k_path_index_add(paths, local, is_directory);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: X68000 projected path collision or path limit: %s\n",
+                utf8_name);
+    return rc;
+}
+
+static int x68000_target_preflight(const add_job_list_t *jobs,
+                                   const bp_archive_t *existing)
+{
+    x68k_path_index_t paths;
+    int rc = x68k_path_index_init(&paths);
+    int i;
+    if (rc != BP_OK) return rc;
+
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: X68000 profile cannot preserve this entry type or metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto x68000_target_done;
+            }
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: X68000 file exceeds the signed 32-bit I/O limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto x68000_target_done;
+            }
+            rc = x68000_target_add_name(&paths, entry->name,
+                                         entry->entry_type == BP_TYPE_DIR);
+            if (rc != BP_OK) goto x68000_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: X68000 profile does not support links or special entries: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto x68000_target_done;
+            }
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the X68000 signed 32-bit I/O limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto x68000_target_done;
+            }
+            rc = x68000_target_add_name(&paths, job->arcname,
+                                         job->entry_type == BP_TYPE_DIR);
+            if (rc != BP_OK) goto x68000_target_done;
+        }
+    }
+
+x68000_target_done:
+    x68k_path_index_free(&paths);
+    return rc;
+}
+
+static int posix_target_validate_existing_links(bp_archive_t *archive,
+                                                bp_uint32 max_target);
+
+#define BP_LINUX_MINI_TARGET_MAX_ENTRIES 65535UL
+#define BP_LINUX_MINI_TARGET_MAX_ARCHIVE_SIZE 2147483647UL
+
+/* Linux full and Linux mini share UTF-8 POSIX name projection. The mini
+ * reader has narrower codec, entry-type, count, per-file and archive-size
+ * capabilities, all checked here for the full Linux writer. */
+static int linux_target_preflight(const add_job_list_t *jobs,
+                                  bp_archive_t *existing,
+                                  int mini_profile, bp_uint8 method,
+                                  bp_uint32 block_size)
+{
+    bp_posix_preflight_t paths;
+    unsigned long existing_count = 0;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (mini_profile &&
+        (method > BP_METHOD_BOLTLZ || block_size > BP_BLOCK_32K)) {
+        fprintf(stderr,
+                "boltpack: Linux mini profile supports Stored, BoltLite, or BoltLZ with blocks no larger than 32 KiB\n");
+        rc = BP_ERR_UNSUPPORTED_METHOD;
+        goto linux_target_done;
+    }
+    if (existing != NULL) {
+        existing_count = (unsigned long)existing->entries_written;
+        if (mini_profile && existing_count > BP_LINUX_MINI_TARGET_MAX_ENTRIES) {
+            fprintf(stderr,
+                    "boltpack: existing archive exceeds the Linux mini 65,535-entry limit\n");
+            rc = BP_ERR_OVERFLOW;
+            goto linux_target_done;
+        }
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory = entry->entry_type == BP_TYPE_DIR;
+            size_t name_len = entry->name_len;
+
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR &&
+                (!(!mini_profile && entry->entry_type == BP_TYPE_SYMLINK))) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an entry type unsupported by Linux%s: %s\n",
+                        mini_profile ? " mini" : " POSIX", entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto linux_target_done;
+            }
+            if (mini_profile &&
+                (entry->method > BP_METHOD_BOLTLZ ||
+                 entry->block_size > BP_BLOCK_32K ||
+                 (entry->block_size == 0 &&
+                  (entry->original_size.hi != 0 ||
+                   entry->original_size.lo > BP_BLOCK_32K)))) {
+                fprintf(stderr,
+                        "boltpack: existing archive uses a codec or block size unsupported by Linux mini: %s\n",
+                        entry->name);
+                rc = BP_ERR_UNSUPPORTED_METHOD;
+                goto linux_target_done;
+            }
+            if (mini_profile && entry->entry_type == BP_TYPE_DATA &&
+                entry->original_size.hi != 0) {
+                fprintf(stderr,
+                        "boltpack: existing file exceeds the Linux mini 4 GiB limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto linux_target_done;
+            }
+            if (name_len == 0 ||
+                !bp_archive_name_valid(entry->name, (bp_uint32)name_len) ||
+                !bp_archive_name_type_valid(entry->name, (bp_uint32)name_len,
+                                            entry->entry_type)) {
+                fprintf(stderr,
+                        "boltpack: existing archive has a noncanonical Linux UTF-8 path: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto linux_target_done;
+            }
+            rc = bp_posix_preflight_add(&paths, entry->name, name_len,
+                                        is_directory);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing Linux path is too long or collides: %s\n",
+                        entry->name);
+                goto linux_target_done;
+            }
+        }
+    }
+    if (mini_profile && jobs != NULL &&
+        (unsigned long)jobs->count >
+            BP_LINUX_MINI_TARGET_MAX_ENTRIES - existing_count) {
+        fprintf(stderr,
+                "boltpack: Linux mini profile exceeds the 65,535-entry limit\n");
+        rc = BP_ERR_OVERFLOW;
+        goto linux_target_done;
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory = job->entry_type == BP_TYPE_DIR;
+            size_t name_len = strlen(job->arcname);
+
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR &&
+                (!(!mini_profile && job->entry_type == BP_TYPE_SYMLINK))) {
+                fprintf(stderr,
+                        "boltpack: source entry type is unsupported by Linux%s: %s\n",
+                        mini_profile ? " mini" : " POSIX",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto linux_target_done;
+            }
+            if (mini_profile && job->entry_type == BP_TYPE_DATA &&
+                job->file_size.hi != 0) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the Linux mini 4 GiB limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto linux_target_done;
+            }
+            if (name_len == 0 || name_len > 0xFFFFFFFFUL ||
+                !bp_archive_name_valid(job->arcname, (bp_uint32)name_len) ||
+                !bp_archive_name_type_valid(job->arcname,
+                                            (bp_uint32)name_len,
+                                            job->entry_type)) {
+                fprintf(stderr,
+                        "boltpack: source path is not canonical UTF-8 for Linux: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto linux_target_done;
+            }
+            rc = bp_posix_preflight_add(&paths, job->arcname, name_len,
+                                        is_directory);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Linux path is too long or collides: %s\n",
+                        job->original_arcname);
+                goto linux_target_done;
+            }
+            if (job->entry_type == BP_TYPE_SYMLINK &&
+                (job->symlink_target == NULL ||
+                 strlen(job->symlink_target) >=
+                     BP_POSIX_PREFLIGHT_MAX_PATH ||
+                 !bp_symlink_target_is_safe(job->arcname,
+                                            job->symlink_target))) {
+                fprintf(stderr,
+                        "boltpack: POSIX target profile refuses an unsafe or overlong symlink target: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto linux_target_done;
+            }
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: Linux profile has a file/directory path conflict\n");
+    if (rc == BP_OK && existing != NULL && !mini_profile) {
+        rc = posix_target_validate_existing_links(
+            existing, BP_POSIX_PREFLIGHT_MAX_PATH - 1U);
+        if (rc != BP_OK)
+            fprintf(stderr,
+                    "boltpack: existing POSIX archive has an invalid symlink or entry payload\n");
+    }
+
+linux_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+#define BP_PLAN9_TARGET_MAX_PATH 511U
+#define BP_PLAN9_TARGET_MAX_ENTRIES 65535UL
+
+/* 9P names are UTF-8, slash-separated, and case-sensitive. Plan 9's 9P
+ * documentation excludes control characters; this conservative projection
+ * also rejects DEL and C1 controls. The Plan 9 frontend's path buffers cap
+ * the complete relative archive path at 511 bytes. */
+static int plan9_target_name_valid(const char *name, size_t length,
+                                   bp_uint8 entry_type)
+{
+    size_t i = 0;
+    size_t component = 0;
+    size_t path_length = length;
+    int is_directory = entry_type == BP_TYPE_DIR;
+
+    if (length == 0 || length > BP_PLAN9_TARGET_MAX_PATH ||
+        !bp_archive_name_valid(name, (bp_uint32)length) ||
+        !bp_archive_name_type_valid(name, (bp_uint32)length, entry_type))
+        return 0;
+    if (is_directory && name[length - 1U] == '/') path_length--;
+    while (i < path_length) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '/') {
+            if (component == 0) return 0;
+            component = 0;
+            i++;
+            continue;
+        }
+        if (c < 0x20U || c == 0x7fU) return 0;
+        if (c == 0xc2U && i + 1U < path_length &&
+            (unsigned char)name[i + 1U] >= 0x80U &&
+            (unsigned char)name[i + 1U] <= 0x9fU)
+            return 0;
+        component++;
+        if (component > 255U) return 0;
+        i++;
+    }
+    return component != 0;
+}
+
+static int plan9_target_budget(const char *name, size_t name_len,
+                               int is_directory,
+                               unsigned long *path_nodes,
+                               unsigned long *path_bytes)
+{
+    size_t effective_len = name_len;
+    size_t i;
+    unsigned long components = 1UL;
+    unsigned long bytes = (unsigned long)name_len + 1UL;
+    if (is_directory && effective_len > 0) effective_len--;
+    for (i = 0; i < effective_len; i++)
+        if (name[i] == '/') components++;
+    if (*path_nodes > BP_PLAN9_TARGET_MAX_ENTRIES - components ||
+        bytes > 16UL * 1024UL * 1024UL - *path_bytes)
+        return 0;
+    *path_nodes += components;
+    *path_bytes += bytes;
+    return 1;
+}
+
+static int plan9_target_preflight(const add_job_list_t *jobs,
+                                  bp_archive_t *existing,
+                                  bp_uint8 method, bp_uint32 block_size)
+{
+    bp_posix_preflight_t paths;
+    unsigned long path_entries = 0;
+    unsigned long path_nodes = 0;
+    unsigned long path_bytes = 0;
+    int rc = BP_OK;
+    int i;
+
+    memset(&paths, 0, sizeof(paths));
+    if (method > BP_METHOD_FLUFF || block_size > BP_BLOCK_256K) {
+        fprintf(stderr,
+                "boltpack: Plan 9 profile supports Stored, BoltLite, BoltLZ, or Fluff with blocks no larger than 256 KiB\n");
+        return BP_ERR_UNSUPPORTED_METHOD;
+    }
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory = entry->entry_type == BP_TYPE_DIR;
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform != BP_OS_PLAN9 ||
+                    entry->original_size.hi != 0 ||
+                    entry->original_size.lo != 2U || i == 0 ||
+                    (existing->entry_list[i - 1].entry_type != BP_TYPE_DATA &&
+                     existing->entry_list[i - 1].entry_type != BP_TYPE_DIR) ||
+                    strcmp(existing->entry_list[i - 1].name,
+                           entry->name) != 0) {
+                    fprintf(stderr,
+                            "boltpack: existing archive has metadata Plan 9 cannot restore: %s\n",
+                            entry->name);
+                    rc = BP_ERR_PARTIAL;
+                    goto plan9_target_done;
+                }
+                if (entry->method > BP_METHOD_FLUFF ||
+                    entry->block_size > BP_BLOCK_256K) {
+                    fprintf(stderr,
+                            "boltpack: existing Plan 9 metadata uses an unsupported codec: %s\n",
+                            entry->name);
+                    rc = BP_ERR_UNSUPPORTED_METHOD;
+                    goto plan9_target_done;
+                }
+                continue;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an entry type unsupported by Plan 9: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto plan9_target_done;
+            }
+            if (i + 1 >= (int)existing->entries_written ||
+                existing->entry_list[i + 1].entry_type != BP_TYPE_META ||
+                existing->entry_list[i + 1].platform != BP_OS_PLAN9 ||
+                existing->entry_list[i + 1].original_size.hi != 0 ||
+                existing->entry_list[i + 1].original_size.lo != 2U ||
+                strcmp(existing->entry_list[i + 1].name, entry->name) != 0) {
+                fprintf(stderr,
+                        "boltpack: existing Plan 9 profile entry lacks its native mode metadata: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto plan9_target_done;
+            }
+            if (entry->method > BP_METHOD_FLUFF ||
+                entry->block_size > BP_BLOCK_256K) {
+                fprintf(stderr,
+                        "boltpack: existing archive uses a codec or block size unsupported by Plan 9: %s\n",
+                        entry->name);
+                rc = BP_ERR_UNSUPPORTED_METHOD;
+                goto plan9_target_done;
+            }
+            if ((entry->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0 &&
+                entry->mtime.hi != 0) {
+                fprintf(stderr,
+                        "boltpack: existing Plan 9 entry has a timestamp outside the target range: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            if (!plan9_target_name_valid(entry->name, entry->name_len,
+                                         entry->entry_type)) {
+                fprintf(stderr,
+                        "boltpack: existing archive has a path Plan 9 cannot represent: %s\n",
+                        entry->name);
+                rc = BP_ERR_NAME_TOO_LONG;
+                goto plan9_target_done;
+            }
+            if (++path_entries > BP_PLAN9_TARGET_MAX_ENTRIES) {
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            if (!plan9_target_budget(entry->name, entry->name_len,
+                                     is_directory, &path_nodes, &path_bytes)) {
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            rc = bp_posix_preflight_add(&paths, entry->name,
+                                        entry->name_len, is_directory);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing Plan 9 path is duplicated or conflicts: %s\n",
+                        entry->name);
+                goto plan9_target_done;
+            }
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            size_t name_len = strlen(job->arcname);
+            int is_directory = job->entry_type == BP_TYPE_DIR;
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR) {
+                fprintf(stderr,
+                        "boltpack: source entry type is unsupported by Plan 9: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto plan9_target_done;
+            }
+            if (!plan9_target_name_valid(job->arcname, name_len,
+                                         job->entry_type)) {
+                fprintf(stderr,
+                        "boltpack: source path is not representable by Plan 9 (UTF-8 controls, component, or path limit): %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto plan9_target_done;
+            }
+            if ((job->flags & BP_ENTRY_FLAG_MTIME_VALID) != 0 &&
+                job->mtime.hi != 0) {
+                fprintf(stderr,
+                        "boltpack: source timestamp is outside the Plan 9 range: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            if ((job->flags & BP_ENTRY_FLAG_MODE_VALID) != 0 &&
+                (job->flags & BP_ENTRY_FLAG_MODE_MASK & ~0x01ffU) != 0) {
+                fprintf(stderr,
+                        "boltpack: Plan 9 cannot preserve special POSIX mode bits: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto plan9_target_done;
+            }
+            if (++path_entries > BP_PLAN9_TARGET_MAX_ENTRIES) {
+                fprintf(stderr,
+                        "boltpack: Plan 9 profile exceeds the 65,535-entry path limit\n");
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            if (!plan9_target_budget(job->arcname, name_len, is_directory,
+                                     &path_nodes, &path_bytes)) {
+                fprintf(stderr,
+                        "boltpack: Plan 9 profile exceeds the path-index memory limit\n");
+                rc = BP_ERR_OVERFLOW;
+                goto plan9_target_done;
+            }
+            rc = bp_posix_preflight_add(&paths, job->arcname, name_len,
+                                        is_directory);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: Plan 9 path is duplicated or conflicts: %s\n",
+                        job->original_arcname);
+                goto plan9_target_done;
+            }
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: Plan 9 profile has a file/directory path conflict\n");
+
+plan9_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+#define BP_HAIKU_BFS_MAX_PATH 1023U
+
+typedef struct {
+    bp_io_t io;
+    char target[BP_POSIX_PREFLIGHT_MAX_PATH];
+    size_t length;
+} haiku_link_sink_t;
+
+typedef struct {
+    haiku_link_sink_t link;
+    int error;
+    bp_uint32 max_target;
+} haiku_link_scan_t;
+
+static long haiku_link_sink_write(void *handle, const void *buffer,
+                                  bp_uint32 count)
+{
+    haiku_link_sink_t *sink = (haiku_link_sink_t *)handle;
+    if ((size_t)count > sizeof(sink->target) - 1U - sink->length) return -1;
+    memcpy(sink->target + sink->length, buffer, (size_t)count);
+    sink->length += (size_t)count;
+    return (long)count;
+}
+
+static bp_io_t *haiku_link_scan_open(const bp_entry_t *entry, void *user_data)
+{
+    haiku_link_scan_t *scan = (haiku_link_scan_t *)user_data;
+    if (entry->entry_type != BP_TYPE_SYMLINK)
+        return bp_archive_dry_run_stream();
+    if (entry->original_size.hi != 0 ||
+        entry->original_size.lo > scan->max_target) {
+        scan->error = BP_ERR_NAME_TOO_LONG;
+        return bp_archive_dry_run_stream();
+    }
+    memset(&scan->link, 0, sizeof(scan->link));
+    scan->link.io.write = haiku_link_sink_write;
+    scan->link.io.handle = &scan->link;
+    return &scan->link.io;
+}
+
+static int haiku_link_scan_done(const bp_entry_t *entry, bp_io_t *output,
+                                int status, void *user_data)
+{
+    haiku_link_scan_t *scan = (haiku_link_scan_t *)user_data;
+    haiku_link_sink_t *sink = (haiku_link_sink_t *)output->handle;
+    if (status != BP_OK) return status;
+    if (sink->length != entry->original_size.lo ||
+        memchr(sink->target, '\0', sink->length) != NULL) {
+        scan->error = BP_ERR_PARTIAL;
+        return BP_ERR_PARTIAL;
+    }
+    sink->target[sink->length] = '\0';
+    if (!bp_symlink_target_is_safe(entry->name, sink->target)) {
+        scan->error = BP_ERR_PARTIAL;
+        return BP_ERR_PARTIAL;
+    }
+    return BP_OK;
+}
+
+/* Existing symlink payloads are part of the target profile too. Decode and
+ * checksum the staged archive only when it contains links, validating their
+ * targets before append, then restore the append cursor. */
+static int posix_target_validate_existing_links(bp_archive_t *archive,
+                                                bp_uint32 max_target)
+{
+    haiku_link_scan_t scan;
+    bp_off_t position;
+    bp_uint32 i;
+    int has_link = 0, rc, restore_rc;
+    for (i = 0; i < archive->entries_written; i++)
+        if (archive->entry_list[i].entry_type == BP_TYPE_SYMLINK) {
+            has_link = 1;
+            break;
+        }
+    if (!has_link) return BP_OK;
+    position = archive->io->tell(archive->io->handle);
+    if (position < 0) return BP_ERR_IO;
+    if (archive->io->seek(archive->io->handle, 0, SEEK_SET) != 0)
+        return BP_ERR_IO;
+    memset(&scan, 0, sizeof(scan));
+    scan.max_target = max_target;
+    rc = bp_archive_extract_all_ex(archive->io, haiku_link_scan_open,
+                                   haiku_link_scan_done, NULL, &scan);
+    restore_rc = archive->io->seek(archive->io->handle, position, SEEK_SET);
+    if (restore_rc != 0) return BP_ERR_IO;
+    if (scan.error != BP_OK) return scan.error;
+    if (rc != BP_OK) return rc;
+    return BP_OK;
+}
+
+/* Haiku BFS stores UTF-8 byte names and looks them up byte-for-byte (case
+ * sensitive). The Haiku CLI accepts data, directories, symlinks, and its own
+ * BEOS metadata records; resource forks and foreign metadata are skipped. */
+static int haiku_target_add_name(bp_posix_preflight_t *paths,
+                                 const char *name, size_t name_len,
+                                 int is_directory)
+{
+    char utf8[BP_HAIKU_BFS_MAX_PATH + 1U];
+    if (name_len == 0 || name_len > BP_HAIKU_BFS_MAX_PATH ||
+        !bp_archive_name_valid(name, (bp_uint32)name_len) ||
+        bp_utf8_to_local(name, utf8, (int)sizeof(utf8), BP_CP_UTF8) != 0) {
+        fprintf(stderr,
+                "boltpack: Haiku BFS requires a canonical UTF-8 path no longer than 1,023 bytes\n");
+        return BP_ERR_PARTIAL;
+    }
+    return bp_posix_preflight_add(paths, name, name_len, is_directory);
+}
+
+static int haiku_target_preflight(const add_job_list_t *jobs,
+                                  bp_archive_t *existing,
+                                  bp_uint8 method)
+{
+    bp_posix_preflight_t paths;
+    int rc = BP_OK;
+    int i;
+    memset(&paths, 0, sizeof(paths));
+
+    /* Haiku's standard CLI build has no zstd reader. Target profiles also
+     * select Interchange Profile 1, so creation is further limited to
+     * Stored/BoltLite and its 16 KiB blocks. */
+    if (method > BP_METHOD_BOLTLITE) {
+        fprintf(stderr,
+                "boltpack: Haiku BFS profile supports only Stored or BoltLite\n");
+        rc = BP_ERR_UNSUPPORTED_METHOD;
+        goto haiku_target_done;
+    }
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory = entry->entry_type == BP_TYPE_DIR;
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform != BP_OS_BEOS) {
+                    fprintf(stderr,
+                            "boltpack: existing archive has metadata Haiku cannot restore: %s\n",
+                            entry->name);
+                    rc = BP_ERR_PARTIAL;
+                    goto haiku_target_done;
+                }
+                continue;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR &&
+                entry->entry_type != BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: existing archive has an entry type unsupported by Haiku BFS: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto haiku_target_done;
+            }
+            rc = haiku_target_add_name(&paths, entry->name,
+                                       entry->name_len, is_directory);
+            if (rc != BP_OK) goto haiku_target_done;
+        }
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            size_t name_len = strlen(job->arcname);
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR &&
+                job->entry_type != BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: source entry type is unsupported by Haiku BFS: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto haiku_target_done;
+            }
+            rc = haiku_target_add_name(&paths, job->arcname, name_len,
+                                       job->entry_type == BP_TYPE_DIR);
+            if (rc != BP_OK) {
+                fprintf(stderr, "boltpack: invalid Haiku BFS name: %s\n",
+                        job->original_arcname);
+                goto haiku_target_done;
+            }
+            if (job->entry_type == BP_TYPE_SYMLINK &&
+                !bp_symlink_target_is_safe(job->arcname,
+                                           job->symlink_target)) {
+                fprintf(stderr,
+                        "boltpack: Haiku BFS profile refuses an unsafe symlink target: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto haiku_target_done;
+            }
+        }
+    }
+    if (existing != NULL) {
+        rc = posix_target_validate_existing_links(existing,
+                                                   BP_HAIKU_BFS_MAX_PATH);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: existing Haiku BFS archive has an invalid symlink or entry payload\n");
+            goto haiku_target_done;
+        }
+    }
+    rc = bp_posix_preflight_finish(&paths);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: Haiku BFS profile found a duplicate or file/directory path conflict\n");
+
+haiku_target_done:
+    bp_posix_preflight_free(&paths);
+    return rc;
+}
+
+#define BP_CPM86_TARGET_MAX_ENTRIES 256UL
+#define BP_CPM86_TARGET_MAX_FILE_SIZE 2147483647UL
+#define BP_CPM86_TARGET_MAX_ARCHIVE_SIZE 2147483647UL
+
+/* CP/M-86 has a flat, uppercase ASCII 8.3 namespace. Its current frontend
+ * keeps a 256-name extraction collision table and uses signed 32-bit file
+ * sizes, so this writer profile enforces those reader limits rather than the
+ * larger generic mini-core ceilings. */
+static int cpm86_target_preflight(add_job_list_t *jobs,
+                                  const bp_archive_t *existing,
+                                  bp_uint8 method, bp_uint32 block_size)
+{
+    bp_posix_preflight_t names;
+    unsigned long existing_count = 0;
+    int rc = BP_OK;
+    int i;
+
+    memset(&names, 0, sizeof(names));
+    if ((method != BP_METHOD_STORED && method != BP_METHOD_BOLTLITE) ||
+        block_size > BP_BLOCK_32K) {
+        fprintf(stderr,
+                "boltpack: CP/M-86 supports Stored or BoltLite with blocks no larger than 32 KiB\n");
+        rc = BP_ERR_UNSUPPORTED_METHOD;
+        goto cpm86_target_done;
+    }
+    if (existing != NULL) {
+        existing_count = (unsigned long)existing->entries_written;
+        if (existing_count > BP_CPM86_TARGET_MAX_ENTRIES) {
+            fprintf(stderr,
+                    "boltpack: existing archive exceeds the CP/M-86 256-entry extraction limit\n");
+            rc = BP_ERR_OVERFLOW;
+            goto cpm86_target_done;
+        }
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            char projected[BP_CPM86_NAME_SIZE];
+
+            if (entry->entry_type != BP_TYPE_DATA) {
+                fprintf(stderr,
+                        "boltpack: CP/M-86 supports regular files only: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto cpm86_target_done;
+            }
+            if (entry->flags != 0 || !bp_u64_is_zero(entry->mtime)) {
+                fprintf(stderr,
+                        "boltpack: existing archive carries attributes that CP/M-86 cannot restore: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto cpm86_target_done;
+            }
+            if (entry->method != BP_METHOD_STORED &&
+                entry->method != BP_METHOD_BOLTLITE) {
+                fprintf(stderr,
+                        "boltpack: existing entry uses a codec unsupported by CP/M-86: %s\n",
+                        entry->name);
+                rc = BP_ERR_UNSUPPORTED_METHOD;
+                goto cpm86_target_done;
+            }
+            if (entry->block_size > BP_BLOCK_32K ||
+                (entry->block_size == 0 &&
+                 entry->original_size.lo > BP_BLOCK_32K) ||
+                entry->original_size.hi != 0 ||
+                entry->original_size.lo > BP_CPM86_TARGET_MAX_FILE_SIZE) {
+                fprintf(stderr,
+                        "boltpack: existing entry exceeds CP/M-86 size or block limits: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto cpm86_target_done;
+            }
+            if (!bp_cpm86_project_name(entry->name, projected) ||
+                strcmp(entry->name, projected) != 0) {
+                fprintf(stderr,
+                        "boltpack: existing entry is not uppercase CP/M-86 8.3: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto cpm86_target_done;
+            }
+            rc = bp_posix_preflight_add(&names, projected,
+                                        strlen(projected), 0);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: existing CP/M-86 name collision: %s\n",
+                        entry->name);
+                goto cpm86_target_done;
+            }
+        }
+    }
+    if (jobs != NULL &&
+        (unsigned long)jobs->count >
+            BP_CPM86_TARGET_MAX_ENTRIES - existing_count) {
+        fprintf(stderr,
+                "boltpack: CP/M-86 profile exceeds the 256-entry extraction limit\n");
+        rc = BP_ERR_OVERFLOW;
+        goto cpm86_target_done;
+    }
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            add_job_t *job = &jobs->items[i];
+            char projected[BP_CPM86_NAME_SIZE];
+            char *projected_copy;
+
+            if (job->entry_type != BP_TYPE_DATA) {
+                fprintf(stderr,
+                        "boltpack: CP/M-86 does not support directories or symbolic links: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto cpm86_target_done;
+            }
+            if (job->file_size.hi != 0 ||
+                job->file_size.lo > BP_CPM86_TARGET_MAX_FILE_SIZE) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the CP/M-86 signed 32-bit file-size limit: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto cpm86_target_done;
+            }
+            if (strchr(job->arcname, '/') != NULL ||
+                strchr(job->arcname, '\\') != NULL ||
+                strchr(job->arcname, ':') != NULL ||
+                !bp_cpm86_project_name(job->arcname, projected)) {
+                fprintf(stderr,
+                        "boltpack: source name is not a flat CP/M-86 8.3 name: %s\n",
+                        job->original_arcname);
+                rc = BP_ERR_PARTIAL;
+                goto cpm86_target_done;
+            }
+            rc = bp_posix_preflight_add(&names, projected,
+                                        strlen(projected), 0);
+            if (rc != BP_OK) {
+                fprintf(stderr,
+                        "boltpack: CP/M-86 projected name collision: %s\n",
+                        job->original_arcname);
+                goto cpm86_target_done;
+            }
+            projected_copy = dup_string(projected);
+            if (projected_copy == NULL) {
+                rc = BP_ERR_NOMEM;
+                goto cpm86_target_done;
+            }
+            free(job->arcname);
+            job->arcname = projected_copy;
+            /* CP/M-86 has no timestamp or POSIX mode restoration. Do not
+             * serialize source-host attributes that its reader cannot apply. */
+            job->mtime = bp_u64_from_u32(0);
+            job->flags = 0;
+        }
+    }
+    rc = bp_posix_preflight_finish(&names);
+
+cpm86_target_done:
+    bp_posix_preflight_free(&names);
+    return rc;
+}
+
+static int atari_target_preflight(const add_job_list_t *jobs,
+                                  const bp_archive_t *existing,
+                                  int include_name_report)
+{
+    bp_atari_name_set_t projected_names;
+    bp_posix_preflight_t prefixes;
+    int rc = BP_OK;
+    int i;
+
+    memset(&projected_names, 0, sizeof(projected_names));
+    memset(&prefixes, 0, sizeof(prefixes));
+
+    if (existing != NULL) {
+        for (i = 0; i < (int)existing->entries_written; i++) {
+            const bp_entry_t *entry = &existing->entry_list[i];
+            int is_directory;
+
+            if (entry->entry_type == BP_TYPE_META) {
+                if (entry->platform == BP_META_PORTABLE ||
+                    entry->platform == BP_OS_ATARI)
+                    continue;
+                fprintf(stderr,
+                        "boltpack: existing archive has metadata not supported by the Atari target profile: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto atari_preflight_done;
+            }
+            if (entry->entry_type == BP_TYPE_RSRC ||
+                entry->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: existing archive contains an entry type unsupported by the Atari target profile: %s\n",
+                        entry->name);
+                rc = BP_ERR_PARTIAL;
+                goto atari_preflight_done;
+            }
+            if (entry->entry_type != BP_TYPE_DATA &&
+                entry->entry_type != BP_TYPE_DIR)
+                continue;
+            if (entry->entry_type == BP_TYPE_DATA &&
+                (entry->original_size.hi != 0 ||
+                 entry->original_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: existing entry exceeds the Atari signed-I/O size limit: %s\n",
+                        entry->name);
+                rc = BP_ERR_OVERFLOW;
+                goto atari_preflight_done;
+            }
+            is_directory = entry->entry_type == BP_TYPE_DIR;
+            rc = atari_target_add_name(&projected_names, &prefixes,
+                                       entry->name, is_directory);
+            if (rc != BP_OK) goto atari_preflight_done;
+        }
+    }
+
+    if (jobs != NULL) {
+        for (i = 0; i < jobs->count; i++) {
+            const add_job_t *job = &jobs->items[i];
+            int is_directory;
+
+            if (job->entry_type == BP_TYPE_SYMLINK) {
+                fprintf(stderr,
+                        "boltpack: Atari target profile does not support symbolic links: %s\n",
+                        job->arcname);
+                rc = BP_ERR_PARTIAL;
+                goto atari_preflight_done;
+            }
+            if (job->entry_type != BP_TYPE_DATA &&
+                job->entry_type != BP_TYPE_DIR)
+                continue;
+            if (job->entry_type == BP_TYPE_DATA &&
+                (job->file_size.hi != 0 ||
+                 job->file_size.lo > 0x7FFFFFFFUL)) {
+                fprintf(stderr,
+                        "boltpack: source exceeds the Atari signed-I/O size limit: %s\n",
+                        job->arcname);
+                rc = BP_ERR_OVERFLOW;
+                goto atari_preflight_done;
+            }
+            is_directory = job->entry_type == BP_TYPE_DIR;
+            rc = atari_target_add_name(&projected_names, &prefixes,
+                                       job->arcname, is_directory);
+            if (rc != BP_OK) goto atari_preflight_done;
+        }
+    }
+
+    if (include_name_report) {
+        rc = atari_target_add_name(&projected_names, &prefixes,
+                                   "BPNAMES.TXT", 0);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: Atari name report path BPNAMES.TXT conflicts with an input name\n");
+            goto atari_preflight_done;
+        }
+    }
+
+    rc = bp_posix_preflight_finish(&prefixes);
+    if (rc != BP_OK)
+        fprintf(stderr,
+                "boltpack: Atari target profile has a file/directory prefix conflict\n");
+
+atari_preflight_done:
+    bp_atari_name_set_free(&projected_names);
+    bp_posix_preflight_free(&prefixes);
+    return rc;
+}
+
+static int write_atari_report_original(FILE *fp, const char *name)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    const unsigned char *p = (const unsigned char *)name;
+    while (*p != '\0') {
+        unsigned char c = *p++;
+        if (c >= 0x20U && c <= 0x7EU && c != '\\') {
+            if (fputc((int)c, fp) == EOF) return 0;
+        } else if (c == '\\') {
+            if (fputs("\\\\", fp) == EOF) return 0;
+        } else {
+            if (fputs("\\x", fp) == EOF ||
+                fputc(hex[c >> 4], fp) == EOF ||
+                fputc(hex[c & 0x0FU], fp) == EOF)
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* Add an ASCII-readable mapping as a regular archive member.  Non-ASCII
+ * original UTF-8 bytes are escaped so the report is usable on legacy targets. */
+static int add_target_name_report(bp_archive_t *ar,
+                                  const add_job_list_t *jobs,
+                                  target_profile_t profile)
+{
+    FILE *fp;
+    bp_io_t io;
+    long report_size;
+    int i, rc = BP_OK;
+
+    fp = tmpfile();
+    if (fp == NULL) {
+        fprintf(stderr, "boltpack: cannot create temporary target name report: %s\n",
+                strerror(errno));
+        return BP_ERR_IO;
+    }
+    if (profile == TARGET_PROFILE_ATARI_ST) {
+        if (fprintf(fp,
+                    "BoltPack Atari ST filename report v1\r\n"
+                    "Original UTF-8 path (non-ASCII bytes escaped as \\xHH)\tAtari GEMDOS path\r\n") < 0) {
+            rc = BP_ERR_IO;
+            goto report_done;
+        }
+    } else if (fprintf(fp,
+                       "BoltPack target filename report v1\r\n"
+                       "Original UTF-8 path (non-ASCII bytes escaped as \\xHH)\tTarget archive path\r\n") < 0) {
+        rc = BP_ERR_IO;
+        goto report_done;
+    }
+    for (i = 0; i < jobs->count; i++) {
+        const add_job_t *job = &jobs->items[i];
+        const char *p;
+        char local_target[4097];
+
+        if (job->entry_type != BP_TYPE_DATA && job->entry_type != BP_TYPE_DIR)
+            continue;
+        if (!write_atari_report_original(fp, job->original_arcname) ||
+            fputc('\t', fp) == EOF) {
+            rc = BP_ERR_IO;
+            goto report_done;
+        }
+        if (profile != TARGET_PROFILE_ATARI_ST &&
+            bp_utf8_to_local(job->arcname, local_target, sizeof(local_target),
+                             target_auto_codepage(profile)) != 0) {
+            rc = BP_ERR_PARTIAL;
+            goto report_done;
+        }
+        for (p = profile == TARGET_PROFILE_ATARI_ST ? job->arcname : local_target;
+             *p != '\0'; p++) {
+            int ch = (unsigned char)*p;
+            if (target_auto_codepage(profile) == BP_CP_UTF8 &&
+                (ch < 0x20 || ch == 0x7f || ch == '\\')) {
+                if (fprintf(fp, "\\x%02X", ch) < 0) {
+                    rc = BP_ERR_IO;
+                    goto report_done;
+                }
+                continue;
+            }
+            if (*p == '/') {
+                if (profile == TARGET_PROFILE_MACOS_CLASSIC_HFS) ch = ':';
+                else if (profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1) ch = '_';
+                else if (profile == TARGET_PROFILE_RISCOS_LATIN1) ch = '.';
+                else if (profile != TARGET_PROFILE_AMIGAOS_68K_LATIN1 &&
+                         target_auto_codepage(profile) != BP_CP_UTF8) ch = '\\';
+            }
+            if (fputc(ch, fp) == EOF) {
+                rc = BP_ERR_IO;
+                goto report_done;
+            }
+        }
+        if (fputs("\r\n", fp) == EOF) {
+            rc = BP_ERR_IO;
+            goto report_done;
+        }
+    }
+    if (fflush(fp) != 0 || fseek(fp, 0, SEEK_END) != 0 ||
+        (report_size = ftell(fp)) < 0 || fseek(fp, 0, SEEK_SET) != 0) {
+        rc = BP_ERR_IO;
+        goto report_done;
+    }
+    if ((unsigned long)report_size > 0xFFFFFFFFUL) {
+        rc = BP_ERR_OVERFLOW;
+        goto report_done;
+    }
+    bp_io_from_file(&io, fp);
+    rc = bp_archive_add_entry_ex(ar,
+                                 profile == TARGET_PROFILE_RISCOS_LATIN1
+                                 ? "BPNAMESTXT" : "BPNAMES.TXT", BP_TYPE_DATA,
+                                 BP_CREATOR_OS, &io,
+                                 bp_u64_from_u32((bp_uint32)report_size),
+                                 bp_u64_from_u32(0), 0);
+    if (rc != BP_OK)
+        fprintf(stderr, "boltpack: cannot add target name report: %s\n",
+                bp_strerror(rc));
+
+report_done:
+    fclose(fp);
+    return rc;
+}
+#endif
+
 static int add_job_list_serial(bp_archive_t *ar, add_job_list_t *list)
 {
     int i;
@@ -1745,6 +4620,12 @@ static int add_data_job_batch(bp_archive_t *ar, add_job_t *jobs,
         }
         jobs[i].packed_checksum = packed_jobs[i].packed.checksum;
         jobs[i].packed_checksum_valid = 1;
+        rc = add_plan9_target_metadata(ar, &jobs[i]);
+        if (rc != BP_OK) {
+            cleanup_packed_job(&packed_jobs[i]);
+            free(packed_jobs);
+            return rc;
+        }
         /* Use packed.original_size (reflects actual size used during pack). */
         print_added_data_result(ar, jobs[i].arcname,
                                 packed_jobs[i].packed.original_size);
@@ -2642,7 +5523,10 @@ static void usage_basic(void)
         "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression\n");
     fprintf(stderr,
-        "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n");
+        "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n"
+        "  --target-profile=PROFILE  Select a target compatibility profile\n"
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add BPNAMES.TXT with original/target paths (create)\n");
 #ifdef BOLTPACK_ZSTD
     fprintf(stderr, "  -Z               Use zstd compression\n");
 #endif
@@ -2710,7 +5594,10 @@ static void usage_advanced(void)
         "  -1               BoltLite compression\n"
         "  -2               boltlz compression\n"
         "  -F               Use fluff compression (defaults to 256k blocks)\n"
-        "  --interchange-profile-1  BoltLite default (or -0 Stored), 16 KiB, mini limits\n");
+        "  --interchange-profile-1  BoltLite default (or -0 Stored), 16 KiB, mini limits\n"
+        "  --target-profile=PROFILE  Select a target compatibility profile\n"
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add BPNAMES.TXT with original/target paths (create)\n");
 #ifdef BOLTPACK_ZSTD
     fprintf(stderr,
         "  -Z               Use zstd compression (defaults to 256k blocks, method 4)\n");
@@ -2754,7 +5641,9 @@ static void usage(void)
 /* ---- commands ---------------------------------------------------------- */
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method, int level, int interchange_profile)
+                      bp_uint8 method, int level, int interchange_profile,
+                      target_profile_t target_profile, int target_report,
+                      int target_auto_rename)
 {
     const char *archive_name;
     add_job_list_t list;
@@ -2852,7 +5741,183 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
+#if defined(__linux__) && defined(__x86_64__)
+    if (target_auto_rename) {
+        rc = target_auto_rename_jobs(&list, target_profile);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+        if (target_profile != TARGET_PROFILE_ATARI_ST &&
+            (unsigned long)list.count >=
+                (target_profile == TARGET_PROFILE_CPM86_83 ? 256UL :
+                 (interchange_profile || target_profile == TARGET_PROFILE_LINUX_MINI ||
+                  target_profile == TARGET_PROFILE_PLAN9_UTF8) ? 65535UL :
+                 (unsigned long)BP_POSIX_PREFLIGHT_MAX_ENTRIES)) {
+            fprintf(stderr,
+                    "boltpack: target name report would exceed the target entry limit\n");
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+    if (target_profile == TARGET_PROFILE_ATARI_ST) {
+        rc = atari_target_preflight(&list, NULL, target_report);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_DOS_CP850_LFN) {
+        rc = dos_lfn_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (dos_target_codepage(target_profile) != BP_CP_INVALID) {
+        rc = dos_target_preflight(&list, NULL, target_profile);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1) {
+        rc = amiga_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_MACOS_CLASSIC_HFS) {
+        rc = macos_classic_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1) {
+        rc = ql_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_RISCOS_LATIN1) {
+        rc = riscos_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_X68000_SJIS) {
+        rc = x68000_target_preflight(&list, NULL);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_LINUX_POSIX ||
+               target_profile == TARGET_PROFILE_POSIX_UTF8 ||
+               target_profile == TARGET_PROFILE_LINUX_MINI) {
+        rc = linux_target_preflight(&list, NULL,
+                    target_profile == TARGET_PROFILE_LINUX_MINI,
+                    method, block_size == 0 ? BP_BLOCK_DEFAULT : block_size);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_HAIKU_BFS) {
+        rc = haiku_target_preflight(&list, NULL, method);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_PLAN9_UTF8) {
+        rc = plan9_target_preflight(&list, NULL, method,
+                    block_size == 0 ? BP_BLOCK_DEFAULT : block_size);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    } else if (target_profile == TARGET_PROFILE_CPM86_83) {
+        rc = cpm86_target_preflight(&list, NULL, method,
+                    block_size == 0 ? BP_BLOCK_32K : block_size);
+        if (rc != BP_OK) {
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive();
+            signal(SIGINT,  old_sigint);
+            signal(SIGTERM, old_sigterm);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+#else
+    (void)target_profile;
+#endif
+
     rc = add_job_list_with_policy(&ar, &list, method);
+#if defined(__linux__) && defined(__x86_64__)
+    if (rc == BP_OK && target_report)
+        rc = add_target_name_report(&ar, &list, target_profile);
+#endif
     free_job_list(&list);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error adding input: %s\n",
@@ -2893,6 +5958,24 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
             }
             total_orig = bp_u64_add(total_orig, ar.entry_list[j].original_size);
             total_comp = bp_u64_add(total_comp, ar.entry_list[j].compressed_size);
+        }
+
+        if (target_profile == TARGET_PROFILE_LINUX_MINI ||
+            target_profile == TARGET_PROFILE_CPM86_83) {
+            struct stat temp_stat;
+            if (fflush(fp) != 0 || fstat(fileno(fp), &temp_stat) != 0 ||
+                temp_stat.st_size < 0 ||
+                temp_stat.st_size >
+                    (off_t)BP_LINUX_MINI_TARGET_MAX_ARCHIVE_SIZE) {
+                fprintf(stderr,
+                        "boltpack: completed archive exceeds the selected mini target's 2 GiB limit or cannot be measured\n");
+                bp_archive_close(&ar);
+                fclose(fp);
+                cleanup_tmp_archive();
+                signal(SIGINT,  old_sigint);
+                signal(SIGTERM, old_sigterm);
+                return 1;
+            }
         }
 
         bp_archive_close(&ar);
@@ -3530,7 +6613,8 @@ static int copy_archive_stream(FILE *source, FILE *destination)
 }
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
-                   bp_uint8 method, int level, int interchange_profile)
+                   bp_uint8 method, int level, int interchange_profile,
+                   target_profile_t target_profile)
 {
     const char *archive_name;
     add_job_list_t list;
@@ -3581,6 +6665,21 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         !S_ISREG(original_stat.st_mode)) {
         fprintf(stderr, "boltpack: archive must be a regular, non-symlink file: %s\n",
                 archive_name);
+        goto add_cleanup;
+    }
+    if (target_profile == TARGET_PROFILE_LINUX_MINI &&
+        (original_stat.st_size < 0 ||
+         original_stat.st_size >
+             (off_t)BP_LINUX_MINI_TARGET_MAX_ARCHIVE_SIZE)) {
+        fprintf(stderr,
+                "boltpack: existing archive exceeds the Linux mini 2 GiB limit\n");
+        goto add_cleanup;
+    }
+    if (target_profile == TARGET_PROFILE_CPM86_83 &&
+        (original_stat.st_size < 0 ||
+         original_stat.st_size > (off_t)BP_CPM86_TARGET_MAX_ARCHIVE_SIZE)) {
+        fprintf(stderr,
+                "boltpack: existing archive exceeds the CP/M-86 2 GiB limit\n");
         goto add_cleanup;
     }
     if (original_stat.st_nlink > 1) {
@@ -3661,6 +6760,62 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         goto add_cleanup;
     }
 
+#if defined(__linux__) && defined(__x86_64__)
+    if (target_profile == TARGET_PROFILE_ATARI_ST) {
+        rc = atari_target_preflight(&list, &ar, 0);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_DOS_CP850_LFN) {
+        rc = dos_lfn_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (dos_target_codepage(target_profile) != BP_CP_INVALID) {
+        rc = dos_target_preflight(&list, &ar, target_profile);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_AMIGAOS_68K_LATIN1) {
+        rc = amiga_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_MACOS_CLASSIC_HFS) {
+        rc = macos_classic_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_SINCLAIR_QL_LATIN1) {
+        rc = ql_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_RISCOS_LATIN1) {
+        rc = riscos_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_X68000_SJIS) {
+        rc = x68000_target_preflight(&list, &ar);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_LINUX_POSIX ||
+               target_profile == TARGET_PROFILE_POSIX_UTF8 ||
+               target_profile == TARGET_PROFILE_LINUX_MINI) {
+        if (target_profile == TARGET_PROFILE_LINUX_MINI &&
+            (original_stat.st_size < 0 ||
+             original_stat.st_size >
+                 (off_t)BP_LINUX_MINI_TARGET_MAX_ARCHIVE_SIZE)) {
+            fprintf(stderr,
+                    "boltpack: existing archive exceeds the Linux mini 2 GiB limit\n");
+            goto add_cleanup;
+        }
+        rc = linux_target_preflight(&list, &ar,
+                    target_profile == TARGET_PROFILE_LINUX_MINI, method,
+                    block_size == 0 ? ar.block_size : block_size);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_HAIKU_BFS) {
+        rc = haiku_target_preflight(&list, &ar, method);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_PLAN9_UTF8) {
+        rc = plan9_target_preflight(&list, &ar, method,
+                    block_size == 0 ? ar.block_size : block_size);
+        if (rc != BP_OK) goto add_cleanup;
+    } else if (target_profile == TARGET_PROFILE_CPM86_83) {
+        rc = cpm86_target_preflight(&list, &ar, method,
+                    block_size == 0 ? BP_BLOCK_32K : block_size);
+        if (rc != BP_OK) goto add_cleanup;
+    }
+#else
+    (void)target_profile;
+#endif
+
     rc = add_job_list_with_policy(&ar, &list, method);
     free_job_list(&list);
     if (rc != BP_OK) {
@@ -3675,6 +6830,19 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (fin_rc != BP_OK) {
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
         goto add_cleanup;
+    }
+
+    if (target_profile == TARGET_PROFILE_LINUX_MINI ||
+        target_profile == TARGET_PROFILE_CPM86_83) {
+        struct stat temp_stat;
+        if (fflush(fp) != 0 || fstat(fileno(fp), &temp_stat) != 0 ||
+            temp_stat.st_size < 0 ||
+            temp_stat.st_size >
+                (off_t)BP_LINUX_MINI_TARGET_MAX_ARCHIVE_SIZE) {
+            fprintf(stderr,
+                    "boltpack: completed archive exceeds the selected mini target's 2 GiB limit or cannot be measured\n");
+            goto add_cleanup;
+        }
     }
 
     if (fflush(fp) != 0 ||
@@ -4127,6 +7295,9 @@ int main(int argc, char **argv)
     int force = 0;
     int dry_run = 0;
     int interchange_profile = 0;
+    target_profile_t target_profile = TARGET_PROFILE_NONE;
+    int target_report = 0;
+    int target_auto_rename = 0;
     int codec_given = 0;
     int i;
 
@@ -4185,6 +7356,64 @@ int main(int argc, char **argv)
             return 0;
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1;
+            i++;
+        } else if (strncmp(argv[i], "--target-profile=", 17) == 0) {
+            const char *profile_name = argv[i] + 17;
+#if defined(__linux__) && defined(__x86_64__)
+            if (strcmp(profile_name, "atari-st") == 0) {
+                target_profile = TARGET_PROFILE_ATARI_ST;
+            } else if (strcmp(profile_name, "dos-cp850-83") == 0) {
+                target_profile = TARGET_PROFILE_DOS_CP850_83;
+            } else if (strcmp(profile_name, "dos-cp437-83") == 0) {
+                target_profile = TARGET_PROFILE_DOS_CP437_83;
+            } else if (strcmp(profile_name, "dos-cp850-lfn-v1") == 0) {
+                target_profile = TARGET_PROFILE_DOS_CP850_LFN;
+            } else if (strcmp(profile_name, "dos16-cp850-mini") == 0) {
+                target_profile = TARGET_PROFILE_DOS16_CP850_MINI;
+            } else if (strcmp(profile_name, "win16-cp437-mini") == 0) {
+                target_profile = TARGET_PROFILE_WIN16_CP437_MINI;
+            } else if (strcmp(profile_name, "os2-16-cp850-mini") == 0) {
+                target_profile = TARGET_PROFILE_OS2_16_CP850_MINI;
+            } else if (strcmp(profile_name, "os2-fat-cp850") == 0) {
+                target_profile = TARGET_PROFILE_OS2_FAT_CP850;
+            } else if (strcmp(profile_name, "amigaos-68k-latin1") == 0) {
+                target_profile = TARGET_PROFILE_AMIGAOS_68K_LATIN1;
+            } else if (strcmp(profile_name, "macos-classic-hfs-v1") == 0) {
+                target_profile = TARGET_PROFILE_MACOS_CLASSIC_HFS;
+            } else if (strcmp(profile_name, "sinclair-ql-latin1-v1") == 0) {
+                target_profile = TARGET_PROFILE_SINCLAIR_QL_LATIN1;
+            } else if (strcmp(profile_name, "riscos-latin1-v1") == 0) {
+                target_profile = TARGET_PROFILE_RISCOS_LATIN1;
+            } else if (strcmp(profile_name, "x68000-sjis-v1") == 0) {
+                target_profile = TARGET_PROFILE_X68000_SJIS;
+            } else if (strcmp(profile_name, "linux-posix-v1") == 0) {
+                target_profile = TARGET_PROFILE_LINUX_POSIX;
+            } else if (strcmp(profile_name, "posix-utf8-v1") == 0) {
+                target_profile = TARGET_PROFILE_POSIX_UTF8;
+            } else if (strcmp(profile_name, "plan9-utf8-v1") == 0) {
+                target_profile = TARGET_PROFILE_PLAN9_UTF8;
+            } else if (strcmp(profile_name, "linux-mini-v1") == 0) {
+                target_profile = TARGET_PROFILE_LINUX_MINI;
+            } else if (strcmp(profile_name, "haiku-bfs-v1") == 0) {
+                target_profile = TARGET_PROFILE_HAIKU_BFS;
+            } else if (strcmp(profile_name, "cpm86-83") == 0) {
+                target_profile = TARGET_PROFILE_CPM86_83;
+            } else {
+                fprintf(stderr, "boltpack: unknown target profile: %s\n",
+                        profile_name);
+                return 1;
+            }
+#else
+            fprintf(stderr,
+                    "boltpack: target profiles are available only in the Linux x86-64 CLI\n");
+            return 1;
+#endif
+            i++;
+        } else if (strcmp(argv[i], "--target-name-report") == 0) {
+            target_report = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-auto-rename") == 0) {
+            target_auto_rename = 1;
             i++;
         } else if (strcmp(argv[i], "-b") == 0 ||
                    strcmp(argv[i], "--block-size") == 0) {
@@ -4331,6 +7560,78 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (target_auto_rename) {
+#if defined(__linux__) && defined(__x86_64__)
+        if (target_profile == TARGET_PROFILE_NONE) {
+            fprintf(stderr,
+                    "boltpack: --target-auto-rename requires --target-profile=PROFILE\n");
+            return 1;
+        }
+        if (target_profile != TARGET_PROFILE_ATARI_ST &&
+            target_auto_codepage(target_profile) == BP_CP_INVALID) {
+            fprintf(stderr,
+                    "boltpack: --target-auto-rename is not yet implemented for this target profile\n");
+            return 1;
+        }
+        target_report = 1;
+#else
+        fprintf(stderr,
+                "boltpack: --target-auto-rename is available only in the Linux x86-64 CLI\n");
+        return 1;
+#endif
+    }
+    if (target_profile == TARGET_PROFILE_CPM86_83) {
+        if (!codec_given) method = BP_METHOD_BOLTLITE;
+        if (block_size == 0) block_size = BP_BLOCK_32K;
+        if ((command != 'c' && command != 'a') ||
+            block_size > BP_BLOCK_32K ||
+            (method != BP_METHOD_STORED && method != BP_METHOD_BOLTLITE) ||
+            opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: cpm86-83 requires create/add, Stored or BoltLite, blocks no larger than 32 KiB, and no codec level\n");
+            return 1;
+        }
+    }
+    if ((target_profile == TARGET_PROFILE_LINUX_POSIX ||
+         target_profile == TARGET_PROFILE_POSIX_UTF8 ||
+         target_profile == TARGET_PROFILE_PLAN9_UTF8) &&
+        command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: POSIX and Plan 9 target profiles require create/add\n");
+        return 1;
+    }
+    if (target_profile != TARGET_PROFILE_NONE &&
+        target_profile != TARGET_PROFILE_LINUX_POSIX &&
+        target_profile != TARGET_PROFILE_POSIX_UTF8 &&
+        target_profile != TARGET_PROFILE_PLAN9_UTF8 &&
+        target_profile != TARGET_PROFILE_LINUX_MINI &&
+        target_profile != TARGET_PROFILE_CPM86_83)
+        interchange_profile = 1;
+    if (target_profile == TARGET_PROFILE_LINUX_MINI &&
+        ((command != 'c' && command != 'a') ||
+         (block_size != 0 && block_size > BP_BLOCK_32K) ||
+         method > BP_METHOD_BOLTLZ)) {
+        fprintf(stderr,
+                "boltpack: linux-mini-v1 requires create/add, Stored, BoltLite, or BoltLZ, and blocks no larger than 32 KiB\n");
+        return 1;
+    }
+    if (target_auto_rename && command != 'c') {
+        fprintf(stderr,
+                "boltpack: --target-auto-rename is currently supported only with create\n");
+        return 1;
+    }
+    if (target_report &&
+        (target_profile == TARGET_PROFILE_NONE || command != 'c')) {
+        fprintf(stderr,
+                "boltpack: --target-name-report requires create and --target-profile=PROFILE\n");
+        return 1;
+    }
+    if (target_report && target_profile != TARGET_PROFILE_ATARI_ST &&
+        !target_auto_rename) {
+        fprintf(stderr,
+                "boltpack: --target-name-report for this target requires --target-auto-rename\n");
+        return 1;
+    }
     if (interchange_profile) {
         if ((command != 'c' && command != 'a') ||
             (block_size != 0 && block_size != BP_BLOCK_16K) ||
@@ -4366,6 +7667,9 @@ int main(int argc, char **argv)
         fluff_fast_set_group_blocks(g_fast_group_blocks);
 #endif
 
+    g_target_plan9_profile =
+        target_profile == TARGET_PROFILE_PLAN9_UTF8;
+
     switch (command) {
     case 'c':
         /* fluff/zstd work best with blocks matching the codec window size */
@@ -4374,14 +7678,15 @@ int main(int argc, char **argv)
             block_size = BP_BLOCK_256K;
         }
         return cmd_create(argc - i, argv + i, block_size, method, opt_level,
-                          interchange_profile);
+                          interchange_profile, target_profile, target_report,
+                          target_auto_rename);
     case 'a':
         if ((method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD)
             && block_size == 0) {
             block_size = BP_BLOCK_256K;
         }
         return cmd_add(argc - i, argv + i, block_size, method, opt_level,
-                       interchange_profile);
+                       interchange_profile, target_profile);
     case 'l':
         if (i >= argc) {
             fprintf(stderr, "boltpack: list requires archive name\n");

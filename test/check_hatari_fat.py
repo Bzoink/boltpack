@@ -16,6 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
+RUN_DIR = None
 EXPECTED_PATH = ROOT / "test/reference/interoperability/atari-amiga-fsuae.json"
 ATARI_AMIGA = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
 UNICODE_EXPECTED_PATH = ROOT / "test/reference/interoperability/atari-cli-unicode-refusal.json"
@@ -52,6 +53,24 @@ def artifact_index(root):
     }
 
 
+def write_failure_record(error):
+    if RUN_DIR is None or (RUN_DIR / "run.json").exists():
+        return
+    record = {
+        "result": "FAIL: " + str(error),
+        "argv": sys.argv,
+        "host": platform.platform(),
+        "python": sys.version,
+        "hatari_version": command_version(["hatari", "--version"]),
+        "artifacts": artifact_index(RUN_DIR),
+        "limitations": [
+            "This is a failed/incomplete fixture run; artifacts and guest logs are retained for diagnosis.",
+        ],
+    }
+    (RUN_DIR / "run.json").write_text(json.dumps(record, indent=2) + "\n",
+                                       encoding="utf-8")
+
+
 def manifest_bytes(archive_name):
     record = ATARI_AMIGA["files"][archive_name]
     data = record["content"].encode("utf-8") * record["repetitions"]
@@ -67,6 +86,8 @@ def main():
     p.add_argument("--hconsole", type=Path,
                     default=Path("/usr/share/hatari/hconsole/hconsole.py"))
     p.add_argument("--cc", default="m68k-atari-mint-gcc")
+    p.add_argument("--memsize", default="4",
+                    help="Hatari ST RAM in MiB (0 selects 512 KiB; default: 4)")
     p.add_argument("--host-cc", default="cc",
                     help="host compiler for the malformed-metadata archive fixture")
     p.add_argument("--atari-cli", type=Path, default=ROOT / "build/atari/boltpack.tos")
@@ -82,6 +103,8 @@ def main():
         build = ROOT / "build"
         build.mkdir(exist_ok=True)
         out = Path(tempfile.mkdtemp(prefix="atari-fat12-", dir=build))
+    global RUN_DIR
+    RUN_DIR = out
     host = out / "host"
     host.mkdir()
     image = out / "floppy.st"
@@ -154,13 +177,22 @@ def main():
         run([str(linux), "t", str(native_first_archive)])
         run([str(linux), "t", str(portable_first_archive)])
         run([args.cc, "-O2", str(ROOT / "test/atari/guest_runner.c"), "-o", str(host / "RUN.TOS")])
-        run([str(linux), "c", "--interchange-profile-1", "-1", "LINUX.BLT", "SRC.TXT"], host)
+        run([str(linux), "c", "--target-profile=atari-st", "-1",
+             "LINUX.BLT", "SRC.TXT"], host)
+        alias_source = out / "alias-source"
+        alias_source.mkdir()
+        alias_payload = b"Atari alias preserves payload bytes\n"
+        (alias_source / "öong.txt").write_bytes(alias_payload)
+        run([str(linux), "c", "--target-profile=atari-st",
+             "--target-auto-rename", "ALIAS.BLT", "öong.txt"], alias_source)
         run(["mformat", "-i", str(image), "-C", "-f", "720", "::"])
         run(["mcopy", "-i", str(image), str(unicode_archive),
              "::/" + UNICODE_EXPECTED["archive"]])
         run(["mmd", "-i", str(image), "::/" + UNICODE_EXPECTED["output_directory"]])
         for name in ("SRC.TXT", "NEW.TXT", "LINUX.BLT"):
             run(["mcopy", "-m", "-i", str(image), str(host / name), "::/" + name])
+        run(["mcopy", "-i", str(image), str(alias_source / "ALIAS.BLT"),
+             "::/ALIAS.BLT"])
         run(["mcopy", "-i", str(image), str(host / "LINUX.BLT"), "::/EDIT.BLT"])
         run(["mcopy", "-i", str(image), str(host / "LINUX.BLT"), "::/READONLY.BLT"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/EDIT.BLT"])
@@ -176,7 +208,7 @@ def main():
         run(["mattrib", "-i", str(image), "+h", "+s", "::/SRC.TXT"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/TREE"])
         run(["mattrib", "-i", str(image), "+h", "+s", "::/TREE/EMPTY"])
-        for name in (("OUT", "RESTORE", "METAOUT", "NATOUT", "PORTOUT") +
+        for name in (("OUT", "RESTORE", "METAOUT", "NATOUT", "PORTOUT", "ALIOUT") +
                      (("AMIOUT",) if args.amiga_archive else ())):
             run(["mmd", "-i", str(image), "::/" + name])
         before = out / "floppy-before.st"
@@ -197,6 +229,7 @@ def main():
             r"d A:\READONLY.BLT SRC.TXT",
             r"c A:\READONLY.BLT A:\NEW.TXT",
             r"x -o A:\UNIOUT A:\UNICODE.BLT",
+            r"x -o A:\ALIOUT A:\ALIAS.BLT",
         ]
         if args.amiga_archive:
             commands.append(r"x -o A:\AMIOUT A:\AMIGA.BLT")
@@ -207,12 +240,12 @@ def main():
         hconsole_script.write_text("sleep 25\nquit\n", encoding="ascii")
         run([sys.executable, str(args.hconsole), str(hconsole_script), "--exit", "--",
              "--machine", "ste", "--tos", str(tos), "--sound", "off",
-             "--confirm-quit", "off", "--fast-forward", "on", "--fast-boot", "on", "--memsize", "4",
+             "--confirm-quit", "off", "--fast-forward", "on", "--fast-boot", "on", "--memsize", args.memsize,
              "--harddrive", str(host), "--disk-a", str(image), "--protect-floppy", "off",
              "--auto", r"C:\RUN.TOS"], ROOT, env, timeout=80)
         statuses = (host / "RESULT.TXT").read_text().splitlines()
         expected_statuses = ["0", "0", "0", "1", "0", "0", "1", "0", "0",
-                             "0", "0", "1", "1", "1", "1"]
+                             "0", "0", "1", "1", "1", "1", "0"]
         if args.amiga_archive:
             expected_statuses.append("1")
         if statuses != expected_statuses:
@@ -227,6 +260,26 @@ def main():
         if unicode_names:
             raise RuntimeError("Atari CLI partially published entries despite name preflight: " +
                                repr(unicode_names) + "; evidence: " + str(out))
+        alias_report = out / "atari-alias-report.txt"
+        run(["mcopy", "-i", str(image), "::/ALIOUT/BPNAMES.TXT",
+             str(alias_report)])
+        alias_rows = [line.split("\t", 1)
+                      for line in alias_report.read_text(encoding="ascii").splitlines()[2:]]
+        alias_target = next(
+            (target for original, target in alias_rows
+             if original.endswith(r"\xC3\xB6ong.txt")), None)
+        if alias_target is None or "\\" in alias_target or "/" in alias_target:
+            raise RuntimeError("Atari alias report omitted the escaped source or has an invalid path; evidence: " +
+                               str(out))
+        alias_listing = run(["mdir", "-b", "-i", str(image), "::/ALIOUT"]).decode("ascii")
+        listed_names = [line.rsplit("/", 1)[-1] for line in alias_listing.splitlines()]
+        if alias_target not in listed_names:
+            raise RuntimeError("Atari did not create the reported 8.3 alias; evidence: " + str(out))
+        restored_alias = out / "restored-atari-alias.bin"
+        run(["mcopy", "-i", str(image), "::/ALIOUT/" + alias_target,
+             str(restored_alias)])
+        if restored_alias.read_bytes() != alias_payload:
+            raise RuntimeError("Atari alias extraction changed payload bytes; evidence: " + str(out))
         extract_log = (host / "LOG03.TXT").read_text(errors="replace")
         if "some attributes were not restored" not in extract_log:
             raise RuntimeError("Atari directory metadata limitation was not reported; evidence: " + str(out))
@@ -425,6 +478,13 @@ def main():
             "diagnostic_log": "LOG14.TXT",
             "destination_empty": not unicode_names,
         },
+        "alias_transfer": {
+            "source_name_utf8": "öong.txt",
+            "reported_target": alias_target,
+            "payload_sha256": sha256(restored_alias),
+            "payload_byte_identical": restored_alias.read_bytes() == alias_payload,
+            "guest_status": statuses[15],
+        },
         "inputs": {
             "tos_sha256": sha256(tos),
             "linux_cli_sha256": sha256(linux),
@@ -450,4 +510,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        write_failure_record(exc)
+        raise

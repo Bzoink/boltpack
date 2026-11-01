@@ -87,7 +87,9 @@ def main():
     check_manifest_file(source / "NEW.TXT", "new")
     shutil.copyfile(ROOT / "build/dos16/bpmini.exe", out / "BPMINI.EXE")
     linux = ROOT / "build/linux/boltpack"
-    run([str(linux), "c", "--store", "OEM.BLT", "café.txt"], cwd=source)
+    run([str(linux), "c", "--target-profile=dos-cp437-83", "-0",
+         "OEM.BLT", "café.txt"], cwd=source)
+    run([str(linux), "t", "OEM.BLT"], cwd=source)
     shutil.copyfile(source / "OEM.BLT", out / "OEM.BLT")
     shutil.copyfile(source / "SRC.TXT", out / "SRC.TXT")
     shutil.copyfile(source / "NEW.TXT", out / "NEW.TXT")
@@ -178,7 +180,7 @@ def main():
         status = "complete"
     if not dos_archive.exists() or not replacement_archive.exists():
         raise RuntimeError("DOS16 did not create archives on FAT12; evidence: " + str(out))
-    result_text = ("PASS: CP437 extraction, DOS16-to-Linux archive creation, archive replacement, "
+    result_text = ("PASS: Linux DOS CP437 8.3 profile archive creation and integrity, CP437 extraction, DOS16-to-Linux archive creation, archive replacement, "
                    "and FAT attribute preservation verified on DOSBox-X FAT12\nresult=" +
                    status + "\n")
     (out / "result.txt").write_text(result_text, encoding="utf-8")
@@ -210,7 +212,8 @@ def main():
         },
         "filesystem": "720 KiB FAT12 floppy image under DOSBox-X",
         "commands": {
-            "linux_create": [str(linux), "c", "--store", "OEM.BLT", "café.txt"],
+            "linux_create": [str(linux), "c", "--target-profile=dos-cp437-83", "-0",
+                             "OEM.BLT", "café.txt"],
             "guest_batch": commands,
             "emulator": emulator,
             "linux_list": [str(linux), "l", str(dos_archive)],
