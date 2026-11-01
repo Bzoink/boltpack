@@ -24,7 +24,10 @@ def report_key(name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--boltpack", required=True)
-    exe = str(pathlib.Path(parser.parse_args().boltpack).resolve())
+    parser.add_argument("--reader", help="alternate CLI used to extract the archives")
+    args = parser.parse_args()
+    exe = str(pathlib.Path(args.boltpack).resolve())
+    reader = str(pathlib.Path(args.reader).resolve()) if args.reader else exe
     for profile, codepage in (("dos-cp850-83", "cp850"),
                               ("dos-cp437-83", "cp437"),
                               ("dos16-cp850-mini", "cp850"),
@@ -66,7 +69,11 @@ def main():
                 (root / name).write_bytes(contents)
             run(exe, root, "create", "--target-profile=" + profile,
                 "--target-auto-rename", "archive.blt", *files)
-            run(exe, root, "extract", "-o", "out", "archive.blt",
+            if profile == "plan9-utf8-v1":
+                (root / "append.txt").write_bytes(b"appended")
+                run(exe, root, "add", "--target-profile=" + profile,
+                    "archive.blt", "append.txt")
+            run(reader, root, "extract", "-o", "out", "archive.blt",
                 allow_partial=profile == "plan9-utf8-v1")
             report_name = "BPNAMESTXT" if profile == "riscos-latin1-v1" else "BPNAMES.TXT"
             report = (root / "out" / report_name).read_bytes().decode(codepage)
@@ -133,7 +140,7 @@ def main():
             (root / name).write_bytes(b"x")
         run(exe, root, "create", "--target-profile=dos-cp850-83",
             "--target-auto-rename", "archive.blt", *names)
-        run(exe, root, "extract", "-o", "out", "archive.blt")
+        run(reader, root, "extract", "-o", "out", "archive.blt")
         assert len((root / "out" / "BPNAMES.TXT").read_text("cp850").splitlines()) == 1032
     print("Target auto-rename: PASS")
 

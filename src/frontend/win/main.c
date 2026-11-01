@@ -15,6 +15,9 @@
 #include "../../core/fluff.h"
 #include "../../core/bp_metadata.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/archive_name.h"
+#include "../common/target_profiles.h"
+#include "../posix/archive_preflight.h"
 #include "../cpm86/cpm86_path.h"
 #include "../atari/atari_path.h"
 #include "../x68k/x68k_path_index.h"
@@ -44,6 +47,8 @@
 #include <stdint.h>
 #include <wchar.h>
 #include <utime.h>
+
+#define BP_CREATOR_OS BP_OS_WINDOWS
 
 #ifdef BOLTPACK_NET
 #include "../common/bp_net_cli.h"
@@ -348,6 +353,9 @@ typedef struct {
 static int g_target_classic_hfs;
 static int g_target_amiga_68k;
 static int g_target_cpm86;
+static target_profile_t g_win_auto_profile = TARGET_PROFILE_NONE;
+static target_profile_t g_win_report_profile = TARGET_PROFILE_NONE;
+static target_profile_t g_win_utf8_profile = TARGET_PROFILE_NONE;
 static int g_target_atari_st;
 static int g_target_ql;
 static int g_target_riscos;
@@ -363,6 +371,39 @@ static long win_fat_read(void *handle, void *buffer, bp_uint32 count)
     return (long)count;
 }
 
+typedef struct {
+    unsigned char data[2];
+    unsigned pos;
+} win_plan9_source_t;
+
+static long win_plan9_read(void *handle, void *buffer, bp_uint32 count)
+{
+    win_plan9_source_t *source = (win_plan9_source_t *)handle;
+    unsigned remaining = 2U - source->pos;
+    if (count > remaining) count = remaining;
+    memcpy(buffer, source->data + source->pos, count);
+    source->pos += count;
+    return (long)count;
+}
+
+/* Windows has no POSIX mode to preserve. Plan 9 targets still require the
+ * two-byte mode record, so use conservative regular-file/directory defaults. */
+static int add_win_plan9_metadata(bp_archive_t *ar, const char *name,
+                                  bp_uint8 subject_type)
+{
+    win_plan9_source_t source;
+    bp_io_t io;
+    bp_uint16 mode = subject_type == BP_TYPE_DIR ? 0755U : 0644U;
+    source.data[0] = (unsigned char)(mode & 0xffU);
+    source.data[1] = (unsigned char)((mode >> 8) & 0xffU);
+    source.pos = 0;
+    io.read = win_plan9_read; io.write = NULL; io.seek = NULL; io.tell = NULL;
+    io.handle = &source;
+    return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_OS_PLAN9,
+                                   &io, bp_u64_from_u32(2U),
+                                   bp_u64_from_u32(0), 0);
+}
+
 static int add_win_fat_metadata_value(bp_archive_t *ar, const char *name,
                                       bp_uint8 subject_type,
                                       DWORD attributes)
@@ -371,6 +412,10 @@ static int add_win_fat_metadata_value(bp_archive_t *ar, const char *name,
     bp_io_t io;
     bp_uint8 value;
     int rc;
+    if (g_win_utf8_profile == TARGET_PROFILE_PLAN9_UTF8)
+        return add_win_plan9_metadata(ar, name, subject_type);
+    if (g_win_utf8_profile != TARGET_PROFILE_NONE)
+        return BP_OK;
     if (g_target_classic_hfs || g_target_amiga_68k || g_target_cpm86 ||
         g_target_ql || g_target_riscos || g_target_x68000)
         return BP_OK;
@@ -1057,10 +1102,13 @@ static char *dup_string(const char *s)
 typedef struct {
     char     *path;
     char     *arcname;
+    char     *original_arcname;
+    char     *symlink_target;
     bp_uint8  entry_type;
     bp_uint64 file_size;
     bp_uint64 mtime;
     bp_uint16 mtime_flags;
+    bp_uint16 flags;
     BY_HANDLE_FILE_INFORMATION source_info;
     FILE_BASIC_INFO source_basic_info;
     int      source_info_valid;
@@ -1103,6 +1151,8 @@ static void free_add_job(add_job_t *job)
     if (job == NULL) return;
     free(job->path);
     free(job->arcname);
+    free(job->original_arcname);
+    free(job->symlink_target);
     memset(job, 0, sizeof(*job));
 }
 
@@ -1128,6 +1178,7 @@ static int append_job(add_job_list_t *list, const char *path,
     add_job_t *new_items;
     char *path_copy;
     char *arc_copy;
+    char *original_arc_copy;
     int new_cap;
 
     if (list->count == list->cap) {
@@ -1143,18 +1194,23 @@ static int append_job(add_job_list_t *list, const char *path,
 
     path_copy = dup_string(path);
     arc_copy = dup_string(arcname);
-    if (path_copy == NULL || arc_copy == NULL) {
+    original_arc_copy = dup_string(arcname);
+    if (path_copy == NULL || arc_copy == NULL || original_arc_copy == NULL) {
         free(path_copy);
         free(arc_copy);
+        free(original_arc_copy);
         return BP_ERR_NOMEM;
     }
 
     list->items[list->count].path = path_copy;
     list->items[list->count].arcname = arc_copy;
+    list->items[list->count].original_arcname = original_arc_copy;
     list->items[list->count].entry_type = entry_type;
     list->items[list->count].file_size = file_size;
     list->items[list->count].mtime = mtime;
     list->items[list->count].mtime_flags = mtime_flags;
+    list->items[list->count].flags = 0;
+    list->items[list->count].symlink_target = NULL;
     list->items[list->count].source_info_valid =
         source_info != NULL && source_basic_info != NULL;
     if (list->items[list->count].source_info_valid) {
@@ -2622,7 +2678,8 @@ static int win_atari_profile_add_name(bp_atari_name_set_t *names,
 /* Atari ST GEMDOS writer profile: classic printable-ASCII 8.3 names,
  * bounded path/index, and only data/directories plus portable/Atari metadata. */
 static int win_atari_profile_preflight(const add_job_list_t *jobs,
-                                       const bp_archive_t *existing)
+                                       const bp_archive_t *existing,
+                                       int include_report)
 {
     bp_atari_name_set_t names;
     win_atari_path_t *paths;
@@ -2702,6 +2759,14 @@ static int win_atari_profile_preflight(const add_job_list_t *jobs,
                         job->path);
                 goto win_atari_profile_done;
             }
+        }
+    }
+    if (include_report) {
+        rc = win_atari_profile_add_name(&names, paths, &count,
+                                        "BPNAMES.TXT", BP_TYPE_DATA);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: Atari name report conflicts with an input or index limit\n");
+            goto win_atari_profile_done;
         }
     }
     if (win_atari_path_prefix_conflict(paths, count)) {
@@ -3683,6 +3748,47 @@ win_amiga_done:
     return rc;
 }
 
+static int dos_target_codepage(target_profile_t profile)
+{
+    switch (profile) {
+    case TARGET_PROFILE_DOS_CP850_83:
+    case TARGET_PROFILE_DOS_CP850_LFN:
+    case TARGET_PROFILE_DOS16_CP850_MINI:
+    case TARGET_PROFILE_OS2_16_CP850_MINI:
+    case TARGET_PROFILE_OS2_FAT_CP850: return BP_CP_850;
+    case TARGET_PROFILE_DOS_CP437_83:
+    case TARGET_PROFILE_WIN16_CP437_MINI: return BP_CP_437;
+    default: return BP_CP_INVALID;
+    }
+}
+
+static int dos_target_component_83(const char *component, size_t length)
+{
+    return win_dos_component_83(component, length);
+}
+
+static int dos_lfn_component_valid(const char *component, size_t length)
+{
+    return win_dos_lfn_component_valid(component, length);
+}
+
+#include "../common/target_auto.h"
+#include "../common/target_utf8_preflight.h"
+
+static int win_utf8_target_preflight(const add_job_list_t *jobs,
+                                     bp_archive_t *existing,
+                                     bp_uint8 method, bp_uint32 block_size)
+{
+    if (g_win_utf8_profile == TARGET_PROFILE_NONE) return BP_OK;
+    if (g_win_utf8_profile == TARGET_PROFILE_PLAN9_UTF8)
+        return plan9_target_preflight(jobs, existing, method, block_size);
+    if (g_win_utf8_profile == TARGET_PROFILE_HAIKU_BFS)
+        return haiku_target_preflight(jobs, existing, method);
+    return linux_target_preflight(jobs, existing,
+               g_win_utf8_profile == TARGET_PROFILE_LINUX_MINI,
+               method, block_size);
+}
+
 /* Validate every primary path before extraction creates or replaces anything.
  * The streaming extractor also registers each path as a defense in depth, but
  * that check alone can discover a later case alias after an earlier entry has
@@ -4313,6 +4419,9 @@ static void usage_basic(void)
     fprintf(stderr,
         "  --interchange-profile-1  Mini-compatible create/add limits\n"
         "                         (BoltLite or Stored, 16 KiB blocks)\n"
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add a target name mapping report (create)\n"
+        "  --help-targets       List target profiles and options\n"
         "  --target-profile=windows-nt-lfn-v1  Check NT path compatibility\n"
         "  --target-profile=macos-classic-hfs-v1  Check Classic HFS MacRoman names and limits\n"
         "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
@@ -4328,6 +4437,11 @@ static void usage_basic(void)
         "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
         "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
         "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n"
+        "  --target-profile=linux-posix-v1  Check full Linux UTF-8 paths and limits\n"
+        "  --target-profile=linux-mini-v1  Check Linux mini UTF-8 paths and limits\n"
+        "  --target-profile=posix-utf8-v1  Check generic POSIX UTF-8 paths and limits\n"
+        "  --target-profile=plan9-utf8-v1  Check Plan 9 UTF-8 paths and limits\n"
+        "  --target-profile=haiku-bfs-v1  Check Haiku BFS UTF-8 paths and limits\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n"
@@ -4406,6 +4520,9 @@ static void usage_advanced(void)
 #endif
     fprintf(stderr,
         "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n"
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add a target name mapping report (create)\n"
+        "  --help-targets       List target profiles and options\n"
         "  --target-profile=windows-nt-lfn-v1  Check NT path compatibility\n"
         "  --target-profile=macos-classic-hfs-v1  Check Classic HFS MacRoman names and limits\n"
         "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
@@ -4421,11 +4538,25 @@ static void usage_advanced(void)
         "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
         "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
         "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n"
+        "  --target-profile=linux-posix-v1  Check full Linux UTF-8 paths and limits\n"
+        "  --target-profile=linux-mini-v1  Check Linux mini UTF-8 paths and limits\n"
+        "  --target-profile=posix-utf8-v1  Check generic POSIX UTF-8 paths and limits\n"
+        "  --target-profile=plan9-utf8-v1  Check Plan 9 UTF-8 paths and limits\n"
+        "  --target-profile=haiku-bfs-v1  Check Haiku BFS UTF-8 paths and limits\n"
         "  -q               Quiet (summary only)\n"
         "  -qq              Silent (errors only)\n"
         "  -o PATH          Output directory for extraction\n"
         "  -f               Force overwrite existing files\n"
         "  -n               Dry run\n");
+}
+
+static void usage_targets(void)
+{
+    usage_basic();
+    fprintf(stderr,
+            "\nUse --target-profile=PROFILE on create or add. Auto-rename is create-only\n"
+            "and generates a name report; Windows NT profile does not yet support it.\n"
+            "The profile is not stored in the archive; select it again when adding.\n");
 }
 
 static void usage(void)
@@ -4538,6 +4669,23 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
 
+    if (g_win_auto_profile != TARGET_PROFILE_NONE) {
+        rc = target_auto_rename_jobs(&list, g_win_auto_profile);
+        if (rc == BP_OK &&
+            (unsigned long)list.count >= (g_win_auto_profile == TARGET_PROFILE_CPM86_83
+                                          ? 256UL : 65535UL))
+            rc = BP_ERR_OVERFLOW;
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: cannot prepare target aliases: %s\n", bp_strerror(rc));
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+
     if (windows_target_profile) {
         rc = win_target_profile_preflight(&list, NULL);
         if (rc != BP_OK) {
@@ -4550,7 +4698,8 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         }
     }
     if (g_target_atari_st) {
-        rc = win_atari_profile_preflight(&list, NULL);
+        rc = win_atari_profile_preflight(&list, NULL,
+                 g_win_report_profile == TARGET_PROFILE_ATARI_ST);
         if (rc != BP_OK) {
             bp_archive_close(&ar);
             fclose(fp);
@@ -4643,7 +4792,25 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         }
     }
 
+    if (g_win_utf8_profile != TARGET_PROFILE_NONE) {
+        rc = win_utf8_target_preflight(&list, NULL, method,
+                                       block_size == 0 ? ar.block_size
+                                                       : block_size);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: UTF-8 target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            bp_archive_close(&ar);
+            fclose(fp);
+            cleanup_tmp_archive_win();
+            SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
+            free_job_list(&list);
+            return 1;
+        }
+    }
+
     rc = add_job_list_with_policy(&ar, &list, method);
+    if (rc == BP_OK && g_win_report_profile != TARGET_PROFILE_NONE)
+        rc = add_target_name_report(&ar, &list, g_win_report_profile);
     free_job_list(&list);
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: error adding input: %s\n",
@@ -5296,7 +5463,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) goto add_cleanup_win;
     }
     if (g_target_atari_st) {
-        rc = win_atari_profile_preflight(&list, &ar);
+        rc = win_atari_profile_preflight(&list, &ar, 0);
         if (rc != BP_OK) goto add_cleanup_win;
     }
     if (g_target_ql) {
@@ -5331,6 +5498,16 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
     if (g_target_cpm86) {
         rc = win_cpm86_profile_preflight(&list, &ar);
         if (rc != BP_OK) goto add_cleanup_win;
+    }
+    if (g_win_utf8_profile != TARGET_PROFILE_NONE) {
+        rc = win_utf8_target_preflight(&list, &ar, method,
+                                       block_size == 0 ? ar.block_size
+                                                       : block_size);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: UTF-8 target profile preflight failed: %s\n",
+                    bp_strerror(rc));
+            goto add_cleanup_win;
+        }
     }
 
     rc = add_job_list_with_policy(&ar, &list, method);
@@ -5422,6 +5599,11 @@ int main(int argc, char **argv)
     int riscos_profile = 0;
     int x68000_profile = 0;
     int dos_83_profile = WIN_DOS_PROFILE_NONE;
+    target_profile_t utf8_profile = TARGET_PROFILE_NONE;
+    int target_profile_seen = 0;
+    target_profile_t auto_profile = TARGET_PROFILE_NONE;
+    int target_auto_rename = 0;
+    int target_name_report = 0;
     int codec_given = 0;
     int i;
     char **utf8_argv;
@@ -5445,6 +5627,9 @@ int main(int argc, char **argv)
         strcmp(argv[1], "--help") == 0 ||
         strcmp(argv[1], "-h") == 0) {
         if (argc >= 3 &&
+            (strcmp(argv[2], "targets") == 0 || strcmp(argv[2], "--help-targets") == 0)) {
+            usage_targets();
+        } else if (argc >= 3 &&
             (strcmp(argv[2], "advanced") == 0 ||
              strcmp(argv[2], "--advanced") == 0 ||
              strcmp(argv[2], "--help-advanced") == 0)) {
@@ -5457,6 +5642,10 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--help-advanced") == 0) {
         usage_advanced();
+        return 0;
+    }
+    if (strcmp(argv[1], "--help-targets") == 0) {
+        usage_targets();
         return 0;
     }
 
@@ -5492,10 +5681,18 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--help-advanced") == 0) {
             usage_advanced();
             return 0;
+        } else if (strcmp(argv[i], "--help-targets") == 0) {
+            usage_targets();
+            return 0;
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1;
             i++;
         } else if (strncmp(argv[i], "--target-profile=", 17) == 0) {
+            auto_profile = bp_target_profile_from_name(argv[i] + 17);
+            if (target_profile_seen++) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
             if (strcmp(argv[i] + 17, "windows-nt-lfn-v1") == 0) {
                 if (classic_hfs_profile || amiga_profile || atari_st_profile ||
                     ql_profile || riscos_profile || x68000_profile || cpm86_profile ||
@@ -5556,6 +5753,19 @@ int main(int argc, char **argv)
                     return 1;
                 }
                 x68000_profile = 1;
+            } else if (strcmp(argv[i] + 17, "linux-posix-v1") == 0 ||
+                       strcmp(argv[i] + 17, "posix-utf8-v1") == 0 ||
+                       strcmp(argv[i] + 17, "plan9-utf8-v1") == 0 ||
+                       strcmp(argv[i] + 17, "linux-mini-v1") == 0 ||
+                       strcmp(argv[i] + 17, "haiku-bfs-v1") == 0) {
+                if (windows_target_profile || classic_hfs_profile ||
+                    amiga_profile || atari_st_profile || ql_profile ||
+                    riscos_profile || x68000_profile || cpm86_profile ||
+                    dos_83_profile != WIN_DOS_PROFILE_NONE) {
+                    fprintf(stderr, "boltpack: select only one target profile\n");
+                    return 1;
+                }
+                utf8_profile = bp_target_profile_from_name(argv[i] + 17);
             } else if (strcmp(argv[i] + 17, "cpm86-83") == 0) {
                 if (windows_target_profile || classic_hfs_profile || amiga_profile ||
                     atari_st_profile || ql_profile || riscos_profile || x68000_profile ||
@@ -5598,6 +5808,12 @@ int main(int argc, char **argv)
                         argv[i] + 17);
                 return 1;
             }
+            i++;
+        } else if (strcmp(argv[i], "--target-auto-rename") == 0) {
+            target_auto_rename = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-name-report") == 0) {
+            target_name_report = 1;
             i++;
         } else if (strcmp(argv[i], "-b") == 0 ||
                    strcmp(argv[i], "--block-size") == 0) {
@@ -5829,7 +6045,7 @@ int main(int argc, char **argv)
     }
     if (cpm86_profile) {
         if ((command != 'c' && command != 'a') ||
-            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            block_size > BP_BLOCK_32K ||
             (codec_given && method != BP_METHOD_BOLTLITE &&
              method != BP_METHOD_STORED) || opt_level != 0) {
             fprintf(stderr,
@@ -5839,6 +6055,34 @@ int main(int argc, char **argv)
         if (block_size == 0) block_size = BP_BLOCK_32K;
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
+    }
+    if (utf8_profile == TARGET_PROFILE_HAIKU_BFS) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: haiku-bfs-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (utf8_profile == TARGET_PROFILE_LINUX_MINI &&
+        ((command != 'c' && command != 'a') ||
+         (block_size != 0 && block_size > BP_BLOCK_32K) ||
+         method > BP_METHOD_BOLTLZ)) {
+        fprintf(stderr,
+                "boltpack: linux-mini-v1 requires create/add, Stored, BoltLite, or BoltLZ, and blocks no larger than 32 KiB\n");
+        return 1;
+    }
+    if (utf8_profile != TARGET_PROFILE_NONE &&
+        command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: the selected UTF-8 target profile is available only for create/add\n");
+        return 1;
     }
     if (atari_st_profile && command != 'c' && command != 'a') {
         fprintf(stderr, "boltpack: atari-st is available only for create/add\n");
@@ -5910,6 +6154,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "boltpack: cpm86-83 target profile is available only for create/add\n");
         return 1;
     }
+    if (target_auto_rename && (command != 'c' || auto_profile == TARGET_PROFILE_NONE)) {
+        fprintf(stderr, "boltpack: --target-auto-rename requires create and a supported --target-profile\n");
+        return 1;
+    }
+    if (target_name_report &&
+        (command != 'c' || auto_profile == TARGET_PROFILE_NONE ||
+         (!target_auto_rename && auto_profile != TARGET_PROFILE_ATARI_ST))) {
+        fprintf(stderr, "boltpack: --target-name-report requires Atari create or --target-auto-rename\n");
+        return 1;
+    }
+    if (target_auto_rename) g_win_auto_profile = auto_profile;
+    if (target_auto_rename || target_name_report) g_win_report_profile = auto_profile;
     if (command == 'x' && i + 1 < argc) {
         fprintf(stderr,
                 "boltpack: extract options must precede the archive name\n");
@@ -5939,6 +6195,7 @@ int main(int argc, char **argv)
     g_target_ql = ql_profile;
     g_target_riscos = riscos_profile;
     g_target_x68000 = x68000_profile;
+    g_win_utf8_profile = utf8_profile;
 
     switch (command) {
     case 'c':

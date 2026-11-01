@@ -67,10 +67,13 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "../../core/archive_name.h"
+#include "../common/target_profiles.h"
 #include "../posix/extract_paths.h"
 #include "../posix/archive_preflight.h"
 #include "../cpm86/cpm86_path.h"
 #include "../atari/atari_path.h"
+#include "../x68k/x68k_path_index.h"
 #ifdef BOLTPACK_ZSTD
 #include "../../core/zstd_wrap.h"
 #endif
@@ -134,6 +137,11 @@ static int g_target_cpm86;
 static int g_target_atari;
 static int g_target_ql;
 static int g_target_riscos;
+static int g_target_x68000;
+static target_profile_t g_mac_auto_profile = TARGET_PROFILE_NONE;
+static target_profile_t g_mac_report_profile = TARGET_PROFILE_NONE;
+static target_profile_t g_mac_utf8_profile = TARGET_PROFILE_NONE;
+static int g_mac_auto_write_jobs;
 static const char *g_target_dos_profile_label;
 
 static const char *mac_legacy_target_label(void)
@@ -143,6 +151,8 @@ static const char *mac_legacy_target_label(void)
     if (g_target_atari) return "Atari ST";
     if (g_target_ql) return "Sinclair QL";
     if (g_target_riscos) return "RISC OS";
+    if (g_target_x68000) return "X68000";
+    if (g_mac_utf8_profile != TARGET_PROFILE_NONE) return "UTF-8 target";
     if (g_target_dos_profile_label != NULL) return g_target_dos_profile_label;
     return "legacy target";
 }
@@ -785,6 +795,21 @@ static int add_mode_meta_entry(bp_archive_t *ar, const char *arcname,
                                 bp_u64_from_u32(0), 0);
 }
 
+static int add_plan9_mode_entry(bp_archive_t *ar, const char *arcname,
+                                bp_uint16 mode)
+{
+    unsigned char bytes[2];
+    bp_io_t io;
+    rbuf_ctx_t input;
+    bytes[0] = (unsigned char)(mode & 0xffU);
+    bytes[1] = (unsigned char)((mode >> 8) & 0xffU);
+    input.buf = bytes; input.size = 2U; input.pos = 0;
+    bp_io_from_rbuf(&io, &input);
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_PLAN9,
+                                   &io, bp_u64_from_u32(2U),
+                                   bp_u64_from_u32(0), 0);
+}
+
 static int add_classic_meta_entry(bp_archive_t *ar, const char *arcname,
                                   const unsigned char *fi_raw,
                                   bp_uint32 crdate_mac, bp_uint32 mdate_mac)
@@ -807,6 +832,122 @@ static int add_classic_meta_entry(bp_archive_t *ar, const char *arcname,
 }
 
 /* ---- recursive add ----------------------------------------------------- */
+
+typedef struct {
+    char *path;
+    char *arcname;
+    char *original_arcname;
+    char *symlink_target;
+    bp_uint8 entry_type;
+    bp_uint64 file_size;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+} add_job_t;
+
+typedef struct {
+    add_job_t *items;
+    int count;
+    int cap;
+} add_job_list_t;
+
+static char *dup_string(const char *s)
+{
+    size_t n = strlen(s) + 1U;
+    char *copy = (char *)malloc(n);
+    if (copy != NULL) memcpy(copy, s, n);
+    return copy;
+}
+
+static void free_add_job(add_job_t *job)
+{
+    free(job->path);
+    free(job->arcname);
+    free(job->original_arcname);
+    free(job->symlink_target);
+    memset(job, 0, sizeof(*job));
+}
+
+static void free_job_list(add_job_list_t *list)
+{
+    int i;
+    for (i = 0; i < list->count; i++) free_add_job(&list->items[i]);
+    free(list->items);
+    memset(list, 0, sizeof(*list));
+}
+
+static int mac_auto_collect(add_job_list_t *list, const char *path,
+                            const char *arcname)
+{
+    struct stat st;
+    add_job_t *job;
+    char directory_name[4096];
+    const char *name = arcname;
+    bp_uint8 type;
+    if (lstat(path, &st) != 0) return BP_ERR_IO;
+    if (S_ISDIR(st.st_mode)) {
+        size_t n = strlen(arcname);
+        if (n + 2U > sizeof(directory_name)) return BP_ERR_NAME_TOO_LONG;
+        memcpy(directory_name, arcname, n + 1U);
+        if (n && directory_name[n - 1U] != '/') {
+            directory_name[n++] = '/';
+            directory_name[n] = '\0';
+        }
+        name = directory_name;
+        type = BP_TYPE_DIR;
+    } else if (S_ISREG(st.st_mode)) type = BP_TYPE_DATA;
+    else if (S_ISLNK(st.st_mode)) type = BP_TYPE_SYMLINK;
+    else return BP_OK;
+    if (list->count == list->cap) {
+        int capacity = list->cap ? list->cap * 2 : 64;
+        add_job_t *grown = (add_job_t *)realloc(list->items,
+                                               (size_t)capacity * sizeof(*grown));
+        if (grown == NULL) return BP_ERR_NOMEM;
+        list->items = grown;
+        list->cap = capacity;
+    }
+    job = &list->items[list->count];
+    memset(job, 0, sizeof(*job));
+    job->path = dup_string(path);
+    job->arcname = dup_string(name);
+    job->original_arcname = dup_string(name);
+    job->entry_type = type;
+    job->file_size = bp_off_to_u64((bp_off_t)st.st_size);
+    job->flags = BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    job->mtime = macos_archive_mtime(st.st_mtime, &job->flags);
+    if (!job->path || !job->arcname || !job->original_arcname) {
+        free_add_job(job);
+        return BP_ERR_NOMEM;
+    }
+    if (type == BP_TYPE_SYMLINK) {
+        char target[4096];
+        ssize_t length = readlink(path, target, sizeof(target) - 1U);
+        if (length < 0 || (size_t)length >= sizeof(target) - 1U) {
+            free_add_job(job);
+            return BP_ERR_IO;
+        }
+        target[length] = '\0';
+        job->symlink_target = dup_string(target);
+        if (job->symlink_target == NULL) { free_add_job(job); return BP_ERR_NOMEM; }
+    }
+    list->count++;
+    if (type == BP_TYPE_DIR) {
+        DIR *dir = opendir(path);
+        struct dirent *ent;
+        int rc = BP_OK;
+        if (dir == NULL) return BP_ERR_IO;
+        while ((ent = readdir(dir)) != NULL) {
+            char child_path[4096], child_arc[4096];
+            if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+            rc = path_join(child_path, sizeof(child_path), path, ent->d_name);
+            if (rc == BP_OK) rc = path_join(child_arc, sizeof(child_arc), name, ent->d_name);
+            if (rc == BP_OK) rc = mac_auto_collect(list, child_path, child_arc);
+            if (rc != BP_OK) break;
+        }
+        closedir(dir);
+        return rc;
+    }
+    return BP_OK;
+}
 
 static int add_path(bp_archive_t *ar, const char *path, const char *arcname);
 
@@ -859,8 +1000,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             return BP_ERR_PARTIAL;
         }
         if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari ||
-            g_target_ql || g_target_riscos ||
-            g_target_dos_family) {
+            g_target_ql || g_target_riscos || g_target_x68000 ||
+            g_target_dos_family || g_mac_utf8_profile != TARGET_PROFILE_NONE) {
             rc = macos_legacy_target_check_source_metadata(
                 path, mac_legacy_target_label());
             if (rc != BP_OK) return rc;
@@ -876,20 +1017,26 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 
         flags = 0;
         mtime = macos_archive_mtime(st.st_mtime, &flags);
+        if (g_mac_utf8_profile != TARGET_PROFILE_NONE)
+            flags |= BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         rc = bp_archive_add_entry_ex(ar, dir_arc, BP_TYPE_DIR, BP_CREATOR_OS,
                                      NULL, bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
+        if (g_mac_utf8_profile == TARGET_PROFILE_PLAN9_UTF8) {
+            rc = add_plan9_mode_entry(ar, dir_arc, (bp_uint16)(st.st_mode & 0x1ffU));
+            if (rc != BP_OK) return rc;
+        }
 
         /* These legacy target profiles have no Unix mode field. */
         if (!g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari &&
-            !g_target_ql && !g_target_riscos &&
-            !g_target_dos_family) {
+            !g_target_ql && !g_target_riscos && !g_target_x68000 &&
+            !g_target_dos_family && g_mac_utf8_profile == TARGET_PROFILE_NONE) {
             rc = add_mode_meta_entry(ar, dir_arc,
                                      (bp_uint16)(st.st_mode & 0x1FF));
             if (rc != BP_OK) return rc;
         }
 
-        return add_directory(ar, path, dir_arc);
+        return g_mac_auto_write_jobs ? BP_OK : add_directory(ar, path, dir_arc);
 
     } else if (S_ISREG(st.st_mode)) {
         FILE      *fp;
@@ -906,8 +1053,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         }
 #ifdef __APPLE__
         if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari ||
-            g_target_ql || g_target_riscos ||
-            g_target_dos_family) {
+            g_target_ql || g_target_riscos || g_target_x68000 ||
+            g_target_dos_family || g_mac_utf8_profile != TARGET_PROFILE_NONE) {
             rc = macos_legacy_target_check_source_metadata(
                 path, mac_legacy_target_label());
             if (rc != BP_OK) return rc;
@@ -931,6 +1078,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         mtime = g_target_cpm86 ? bp_u64_from_u32(0) :
                                  macos_archive_mtime(st.st_mtime, &flags);
         if (g_target_cpm86) flags = 0;
+        if (g_mac_utf8_profile != TARGET_PROFILE_NONE)
+            flags |= BP_ENTRY_FLAG_MODE_VALID | (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         rc = bp_archive_add_entry_ex(ar, stored_arcname, BP_TYPE_DATA, BP_CREATOR_OS,
                                      &fio, file_size, mtime, flags);
         if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
@@ -939,7 +1088,6 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
                     bp_strerror(rc));
             return rc;
         }
-
         if (g_verbosity == VERB_DEFAULT) {
             bp_entry_t *e = &ar->entry_list[ar->entries_written - 1];
             bp_uint64 comp = e->compressed_size;
@@ -958,14 +1106,18 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             }
         }
 
+        if (g_mac_utf8_profile == TARGET_PROFILE_PLAN9_UTF8) {
+            rc = add_plan9_mode_entry(ar, stored_arcname, (bp_uint16)(st.st_mode & 0x1ffU));
+            if (rc != BP_OK) return rc;
+        }
         /* -- Resource fork --------------------------------------------- */
 #ifdef __APPLE__
         {
             ssize_t rsrc_sz = getxattr(path, XATTR_RESOURCEFORK_NAME,
                                        NULL, 0, 0, XATTR_NOFOLLOW);
             if (rsrc_sz > 0 &&
-                (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_cpm86 ||
-                 g_target_dos_family)) {
+                (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_x68000 || g_target_cpm86 ||
+                 g_target_dos_family || g_mac_utf8_profile != TARGET_PROFILE_NONE)) {
                 fprintf(stderr,
                         "boltpack: %s profile cannot preserve a resource fork: %s\n",
                         mac_legacy_target_label(), path);
@@ -1020,8 +1172,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
 #endif /* __APPLE__ */
 
         /* -- Unix mode meta -------------------------------------------- */
-        if (!g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari && !g_target_ql && !g_target_riscos && !g_target_cpm86 &&
-            !g_target_dos_family) {
+        if (!g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari && !g_target_ql && !g_target_riscos && !g_target_x68000 && !g_target_cpm86 &&
+            !g_target_dos_family && g_mac_utf8_profile == TARGET_PROFILE_NONE) {
             rc = add_mode_meta_entry(ar, arcname,
                                      (bp_uint16)(st.st_mode & 0x1FF));
             if (rc != BP_OK) return rc;
@@ -1036,8 +1188,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             if (fi_sz == APPLE_FINDERINFO_SIZE
                 && macos_has_meaningful_finder_info(fi_raw)) {
                 bp_uint32 crdate_mac, mdate_mac;
-                if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_cpm86 ||
-                    g_target_dos_family) {
+                if (g_target_classic_hfs || g_target_amiga_68k || g_target_atari || g_target_ql || g_target_riscos || g_target_x68000 || g_target_cpm86 ||
+                    g_target_dos_family || g_mac_utf8_profile != TARGET_PROFILE_NONE) {
                     fprintf(stderr,
                             "boltpack: %s profile cannot preserve Finder information: %s\n",
                             mac_legacy_target_label(), path);
@@ -2075,6 +2227,76 @@ static int mac_cpm86_profile_preflight(const bp_archive_t *archive)
         }
     }
     return BP_OK;
+}
+
+static int dos_target_codepage(target_profile_t profile)
+{
+    switch (profile) {
+    case TARGET_PROFILE_DOS_CP850_83:
+    case TARGET_PROFILE_DOS_CP850_LFN:
+    case TARGET_PROFILE_DOS16_CP850_MINI:
+    case TARGET_PROFILE_OS2_16_CP850_MINI:
+    case TARGET_PROFILE_OS2_FAT_CP850: return BP_CP_850;
+    case TARGET_PROFILE_DOS_CP437_83:
+    case TARGET_PROFILE_WIN16_CP437_MINI: return BP_CP_437;
+    default: return BP_CP_INVALID;
+    }
+}
+
+static int dos_target_component_83(const char *component, size_t length)
+{
+    return mac_dos_component_83(component, length);
+}
+
+static int dos_lfn_component_valid(const char *component, size_t length)
+{
+    return mac_dos_lfn_component_valid(component, length);
+}
+
+#include "../common/target_auto.h"
+#include "../common/x68000_target_name.h"
+#include "../common/target_utf8_preflight.h"
+
+/* Run the shared UTF-8 target checks. Create validates the collected jobs
+ * before the archive table is finalized; append also validates the existing
+ * staged archive so the resulting archive stays inside the profile. */
+static int mac_utf8_target_preflight(const add_job_list_t *jobs,
+                                     bp_archive_t *existing,
+                                     bp_uint8 method, bp_uint32 block_size)
+{
+    if (g_mac_utf8_profile == TARGET_PROFILE_NONE) return BP_OK;
+    if (g_mac_utf8_profile == TARGET_PROFILE_PLAN9_UTF8)
+        return plan9_target_preflight(jobs, existing, method, block_size);
+    if (g_mac_utf8_profile == TARGET_PROFILE_HAIKU_BFS)
+        return haiku_target_preflight(jobs, existing, method);
+    return linux_target_preflight(jobs, existing,
+               g_mac_utf8_profile == TARGET_PROFILE_LINUX_MINI,
+               method, block_size);
+}
+
+static int mac_x68000_profile_preflight(const bp_archive_t *archive)
+{
+    x68k_path_index_t paths;
+    bp_uint32 i;
+    int rc = x68k_path_index_init(&paths);
+    if (rc != BP_OK) return rc;
+    for (i = 0; i < archive->entries_written; i++) {
+        const bp_entry_t *entry = &archive->entry_list[i];
+        if (entry->entry_type != BP_TYPE_DATA && entry->entry_type != BP_TYPE_DIR) {
+            rc = BP_ERR_PARTIAL;
+            break;
+        }
+        if (entry->entry_type == BP_TYPE_DATA &&
+            (entry->original_size.hi != 0 || entry->original_size.lo > 0x7FFFFFFFUL)) {
+            rc = BP_ERR_OVERFLOW;
+            break;
+        }
+        rc = x68000_target_add_name(&paths, entry->name,
+                                     entry->entry_type == BP_TYPE_DIR);
+        if (rc != BP_OK) break;
+    }
+    x68k_path_index_free(&paths);
+    return rc;
 }
 
 static int mac_cpm86_archive_size_check(FILE *fp)
@@ -3191,14 +3413,36 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     }
     if (level > 0) ar.method_level = (bp_uint8)level;
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
-    for (i = 1; i < argc; i++) {
-        const char *path    = argv[i];
-        const char *arcname = clean_path(path);
-        rc = add_path(&ar, path, arcname);
+    if (g_mac_utf8_profile != TARGET_PROFILE_NONE) {
+        add_job_list_t jobs;
+        memset(&jobs, 0, sizeof(jobs));
+        rc = BP_OK;
+        for (i = 1; i < argc && rc == BP_OK; i++)
+            rc = mac_auto_collect(&jobs, argv[i], clean_path(argv[i]));
+        if (rc == BP_OK)
+            rc = mac_utf8_target_preflight(&jobs, &ar, method,
+                        block_size == 0 ? ar.block_size : block_size);
+        g_mac_auto_write_jobs = 1;
+        for (i = 0; i < jobs.count && rc == BP_OK; i++)
+            rc = add_path(&ar, jobs.items[i].path, jobs.items[i].arcname);
+        g_mac_auto_write_jobs = 0;
+        free_job_list(&jobs);
         if (rc != BP_OK) {
-            fprintf(stderr, "boltpack: error adding %s: %s\n", path,
+            fprintf(stderr,
+                    "boltpack: UTF-8 target profile preflight failed: %s\n",
                     bp_strerror(rc));
             goto add_failed;
+        }
+    } else {
+        for (i = 1; i < argc; i++) {
+            const char *path    = argv[i];
+            const char *arcname = clean_path(path);
+            rc = add_path(&ar, path, arcname);
+            if (rc != BP_OK) {
+                fprintf(stderr, "boltpack: error adding %s: %s\n", path,
+                        bp_strerror(rc));
+                goto add_failed;
+            }
         }
     }
     if (macos_target_profile) {
@@ -3265,6 +3509,13 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: RISC OS target profile preflight failed: %s\n",
                     bp_strerror(rc));
+            goto add_failed;
+        }
+    }
+    if (g_target_x68000) {
+        rc = mac_x68000_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: X68000 target profile preflight failed: %s\n", bp_strerror(rc));
             goto add_failed;
         }
     }
@@ -3372,14 +3623,43 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     bp_archive_set_log(&ar, cli_log_stderr, NULL);
 
     start = clock();
-    for (i = 1; i < argc; i++) {
-        const char *path    = argv[i];
-        const char *arcname = clean_path(path);
-        rc = add_path(&ar, path, arcname);
+    if (g_mac_report_profile != TARGET_PROFILE_NONE ||
+        g_mac_utf8_profile != TARGET_PROFILE_NONE) {
+        add_job_list_t jobs;
+        memset(&jobs, 0, sizeof(jobs));
+        rc = BP_OK;
+        for (i = 1; i < argc && rc == BP_OK; i++)
+            rc = mac_auto_collect(&jobs, argv[i], clean_path(argv[i]));
+        if (rc == BP_OK && g_mac_auto_profile != TARGET_PROFILE_NONE)
+            rc = target_auto_rename_jobs(&jobs, g_mac_auto_profile);
+        if (rc == BP_OK && g_mac_report_profile != TARGET_PROFILE_NONE &&
+            (unsigned long)jobs.count >=
+            (g_mac_report_profile == TARGET_PROFILE_CPM86_83 ? 256UL : 65535UL))
+            rc = BP_ERR_OVERFLOW;
+        if (rc == BP_OK && g_mac_utf8_profile != TARGET_PROFILE_NONE)
+            rc = mac_utf8_target_preflight(&jobs, NULL, ar.method,
+                                           ar.block_size);
+        g_mac_auto_write_jobs = 1;
+        for (i = 0; i < jobs.count && rc == BP_OK; i++)
+            rc = add_path(&ar, jobs.items[i].path, jobs.items[i].arcname);
+        g_mac_auto_write_jobs = 0;
+        if (rc == BP_OK && g_mac_report_profile != TARGET_PROFILE_NONE)
+            rc = add_target_name_report(&ar, &jobs, g_mac_report_profile);
+        free_job_list(&jobs);
         if (rc != BP_OK) {
-            fprintf(stderr, "boltpack: error adding %s: %s\n", path,
-                    bp_strerror(rc));
+            fprintf(stderr, "boltpack: error preparing target archive: %s\n", bp_strerror(rc));
             bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    } else {
+        for (i = 1; i < argc; i++) {
+            const char *path = argv[i];
+            const char *arcname = clean_path(path);
+            rc = add_path(&ar, path, arcname);
+            if (rc != BP_OK) {
+                fprintf(stderr, "boltpack: error adding %s: %s\n", path,
+                        bp_strerror(rc));
+                bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+            }
         }
     }
     if (macos_target_profile) {
@@ -3446,6 +3726,13 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         if (rc != BP_OK) {
             fprintf(stderr, "boltpack: RISC OS target profile preflight failed: %s\n",
                     bp_strerror(rc));
+            bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
+        }
+    }
+    if (g_target_x68000) {
+        rc = mac_x68000_profile_preflight(&ar);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: X68000 target profile preflight failed: %s\n", bp_strerror(rc));
             bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
         }
     }
@@ -3707,6 +3994,12 @@ static void usage_basic(void)
         "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
         "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n");
     fprintf(stderr,
+        "  --target-profile=x68000-sjis-v1  Check X68000 Shift-JIS names and limits\n");
+    fprintf(stderr,
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add a target name mapping report (create)\n"
+        "  --help-targets       List target profiles and options\n");
+    fprintf(stderr,
         "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
         "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
         "  --target-profile=dos16-cp850-mini  Check DOS16 mini-reader limits\n"
@@ -3716,6 +4009,12 @@ static void usage_basic(void)
         "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
         "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
         "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n");
+    fprintf(stderr,
+        "  --target-profile=linux-posix-v1  Check full Linux UTF-8 paths and limits\n"
+        "  --target-profile=linux-mini-v1  Check Linux mini UTF-8 paths and limits\n"
+        "  --target-profile=posix-utf8-v1  Check generic POSIX UTF-8 paths and limits\n"
+        "  --target-profile=plan9-utf8-v1  Check Plan 9 UTF-8 paths and limits\n"
+        "  --target-profile=haiku-bfs-v1  Check Haiku BFS UTF-8 paths and limits\n");
     fprintf(stderr,
         "  -0         Store only (no compression)\n"
         "  -1         BoltLite compression\n"
@@ -3768,10 +4067,16 @@ static void usage_advanced(void)
         "  -2, --boltlz    Use boltlz compression (default)\n"
         "  -F, --fluff      Use Fluff compression\n");
     fprintf(stderr,
+        "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
+        "  --target-name-report  Add a target name mapping report (create)\n"
+        "  --help-targets       List target profiles and options\n");
+    fprintf(stderr,
         "  --target-profile=macos-classic-hfs-v1  Check Classic HFS names and limits (create/add)\n"
         "  --target-profile=amigaos-68k-latin1  Check AmigaOS 68k Latin-1 names and limits\n"
         "  --target-profile=sinclair-ql-latin1-v1  Check Sinclair QL names and limits\n"
         "  --target-profile=riscos-latin1-v1  Check RISC OS FileCore names and limits\n");
+    fprintf(stderr,
+        "  --target-profile=x68000-sjis-v1  Check X68000 Shift-JIS names and limits\n");
     fprintf(stderr,
         "  --target-profile=dos-cp850-83  Check DOS CP850 8.3 names and limits\n"
         "  --target-profile=dos-cp437-83  Check DOS CP437 8.3 names and limits\n"
@@ -3782,6 +4087,12 @@ static void usage_advanced(void)
         "  --target-profile=os2-fat-cp850  Check OS/2 FAT 8.3 names and limits\n"
         "  --target-profile=dos-cp850-lfn-v1  Check DOS CP850 long filenames\n"
         "  --target-profile=cpm86-83  Project flat CP/M-86 uppercase 8.3 names\n");
+    fprintf(stderr,
+        "  --target-profile=linux-posix-v1  Check full Linux UTF-8 paths and limits\n"
+        "  --target-profile=linux-mini-v1  Check Linux mini UTF-8 paths and limits\n"
+        "  --target-profile=posix-utf8-v1  Check generic POSIX UTF-8 paths and limits\n"
+        "  --target-profile=plan9-utf8-v1  Check Plan 9 UTF-8 paths and limits\n"
+        "  --target-profile=haiku-bfs-v1  Check Haiku BFS UTF-8 paths and limits\n");
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
@@ -3794,6 +4105,15 @@ static void usage_advanced(void)
         "  --dry-run        Long-form alias for -n\n"
         "  --quiet          Long-form alias for -q\n"
         "  --silent         Long-form alias for -qq\n");
+}
+
+static void usage_targets(void)
+{
+    usage_basic();
+    fprintf(stderr,
+            "\nUse --target-profile=PROFILE on create or add. Auto-rename is create-only\n"
+            "and generates a name report; macos-modern-v1 does not yet support it.\n"
+            "The profile is not stored in the archive; select it again when adding.\n");
 }
 
 static void usage(void)
@@ -3820,7 +4140,13 @@ int main(int argc, char **argv)
     int atari_profile = 0;
     int ql_profile = 0;
     int riscos_profile = 0;
+    int x68000_profile = 0;
+    int target_profile_seen = 0;
     int dos_profile = MAC_DOS_PROFILE_NONE;
+    target_profile_t utf8_profile = TARGET_PROFILE_NONE;
+    target_profile_t auto_profile = TARGET_PROFILE_NONE;
+    int target_auto_rename = 0;
+    int target_name_report = 0;
     int codec_given = 0;
     int i;
 
@@ -3830,6 +4156,9 @@ int main(int argc, char **argv)
         strcmp(argv[1], "--help") == 0 ||
         strcmp(argv[1], "-h") == 0) {
         if (argc >= 3 &&
+            (strcmp(argv[2], "targets") == 0 || strcmp(argv[2], "--help-targets") == 0)) {
+            usage_targets();
+        } else if (argc >= 3 &&
             (strcmp(argv[2], "advanced") == 0 ||
              strcmp(argv[2], "--advanced") == 0 ||
              strcmp(argv[2], "--help-advanced") == 0)) {
@@ -3842,6 +4171,10 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--help-advanced") == 0) {
         usage_advanced();
+        return 0;
+    }
+    if (strcmp(argv[1], "--help-targets") == 0) {
+        usage_targets();
         return 0;
     }
 
@@ -3860,11 +4193,21 @@ int main(int argc, char **argv)
 
     i = 2;
     while (i < argc && argv[i][0] == '-') {
+        if (strncmp(argv[i], "--target-profile=", 17) == 0) {
+            if (target_profile_seen++) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            auto_profile = bp_target_profile_from_name(argv[i] + 17);
+        }
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage_basic();
             return 0;
         } else if (strcmp(argv[i], "--help-advanced") == 0) {
             usage_advanced();
+            return 0;
+        } else if (strcmp(argv[i], "--help-targets") == 0) {
+            usage_targets();
             return 0;
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1;
@@ -3927,6 +4270,23 @@ int main(int argc, char **argv)
             }
             riscos_profile = 1;
             i++;
+        } else if (strcmp(argv[i], "--target-profile=x68000-sjis-v1") == 0) {
+            x68000_profile = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-profile=linux-posix-v1") == 0 ||
+                   strcmp(argv[i], "--target-profile=posix-utf8-v1") == 0 ||
+                   strcmp(argv[i], "--target-profile=plan9-utf8-v1") == 0 ||
+                   strcmp(argv[i], "--target-profile=linux-mini-v1") == 0 ||
+                   strcmp(argv[i], "--target-profile=haiku-bfs-v1") == 0) {
+            if (macos_target_profile || classic_hfs_profile || amiga_profile ||
+                cpm86_profile || ql_profile || riscos_profile ||
+                atari_profile || x68000_profile ||
+                dos_profile != MAC_DOS_PROFILE_NONE) {
+                fprintf(stderr, "boltpack: select only one target profile\n");
+                return 1;
+            }
+            utf8_profile = bp_target_profile_from_name(argv[i] + 17);
+            i++;
         } else if (strcmp(argv[i], "--target-profile=cpm86-83") == 0) {
             if (macos_target_profile || classic_hfs_profile || amiga_profile ||
                 ql_profile || riscos_profile || atari_profile ||
@@ -3970,6 +4330,12 @@ int main(int argc, char **argv)
             fprintf(stderr, "boltpack: unknown target profile: %s\n",
                     argv[i] + 17);
             return 1;
+        } else if (strcmp(argv[i], "--target-auto-rename") == 0) {
+            target_auto_rename = 1;
+            i++;
+        } else if (strcmp(argv[i], "--target-name-report") == 0) {
+            target_name_report = 1;
+            i++;
         } else if (strcmp(argv[i], "-b") == 0 ||
                    strcmp(argv[i], "--block-size") == 0) {
             if (i + 1 >= argc) {
@@ -4116,6 +4482,46 @@ int main(int argc, char **argv)
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
     }
+    if (x68000_profile) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE && method != BP_METHOD_STORED) ||
+            opt_level != 0) {
+            fprintf(stderr, "boltpack: x68000-sjis-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED) method = BP_METHOD_BOLTLITE;
+    }
+    if (utf8_profile == TARGET_PROFILE_HAIKU_BFS) {
+        if ((command != 'c' && command != 'a') ||
+            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            (codec_given && method != BP_METHOD_BOLTLITE &&
+             method != BP_METHOD_STORED) || opt_level != 0) {
+            fprintf(stderr,
+                    "boltpack: haiku-bfs-v1 requires create/add, Stored or BoltLite, 16 KiB blocks, and no codec level\n");
+            return 1;
+        }
+        interchange_profile = 1;
+        block_size = BP_BLOCK_16K;
+        if (!codec_given || method != BP_METHOD_STORED)
+            method = BP_METHOD_BOLTLITE;
+    }
+    if (utf8_profile == TARGET_PROFILE_LINUX_MINI &&
+        ((command != 'c' && command != 'a') ||
+         (block_size != 0 && block_size > BP_BLOCK_32K) ||
+         method > BP_METHOD_BOLTLZ)) {
+        fprintf(stderr,
+                "boltpack: linux-mini-v1 requires create/add, Stored, BoltLite, or BoltLZ, and blocks no larger than 32 KiB\n");
+        return 1;
+    }
+    if (utf8_profile != TARGET_PROFILE_NONE &&
+        command != 'c' && command != 'a') {
+        fprintf(stderr,
+                "boltpack: the selected UTF-8 target profile requires create/add\n");
+        return 1;
+    }
     if (interchange_profile) {
         if ((command != 'c' && command != 'a') ||
             block_size > BP_BLOCK_32K ||
@@ -4174,7 +4580,7 @@ int main(int argc, char **argv)
     }
     if (cpm86_profile) {
         if ((command != 'c' && command != 'a') ||
-            (block_size != 0 && block_size != BP_BLOCK_16K) ||
+            block_size > BP_BLOCK_32K ||
             (codec_given && method != BP_METHOD_BOLTLITE &&
              method != BP_METHOD_STORED) || opt_level != 0) {
             fprintf(stderr,
@@ -4216,6 +4622,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "boltpack: cpm86-83 target profile requires create/add\n");
         return 1;
     }
+    if (target_auto_rename && (command != 'c' || auto_profile == TARGET_PROFILE_NONE)) {
+        fprintf(stderr, "boltpack: --target-auto-rename requires create and a supported --target-profile\n");
+        return 1;
+    }
+    if (target_name_report &&
+        (command != 'c' || auto_profile == TARGET_PROFILE_NONE ||
+         (!target_auto_rename && auto_profile != TARGET_PROFILE_ATARI_ST))) {
+        fprintf(stderr, "boltpack: --target-name-report requires Atari create or --target-auto-rename\n");
+        return 1;
+    }
+    if (target_auto_rename) g_mac_auto_profile = auto_profile;
+    if (target_auto_rename || target_name_report) g_mac_report_profile = auto_profile;
     if (command == 'x' && i + 1 < argc) {
         fprintf(stderr,
                 "boltpack: extract options must precede the archive name\n");
@@ -4233,6 +4651,8 @@ int main(int argc, char **argv)
     g_target_cpm86 = cpm86_profile;
     g_target_ql = ql_profile;
     g_target_riscos = riscos_profile;
+    g_target_x68000 = x68000_profile;
+    g_mac_utf8_profile = utf8_profile;
     g_target_dos_profile_label = g_target_dos_family
                                ? mac_dos_profile_name(dos_profile) : NULL;
 

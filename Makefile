@@ -218,6 +218,8 @@ POSIX_DIRFD_FRONTENDS = hurd solaris illumos freebsd netbsd openbsd aix zos
 POSIX_DIRFD_HOST_BINS = $(foreach frontend,$(POSIX_DIRFD_FRONTENDS),$(POSIX_DIRFD_HOST_DIR)/$(frontend)/boltpack)
 
 $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/linux/main.c \
+	    src/frontend/common/target_profiles.h src/frontend/common/target_auto.h \
+	    src/frontend/common/x68000_target_name.h src/frontend/common/target_utf8_preflight.h \
 	    src/frontend/posix/extract_paths.h \
 	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
@@ -231,6 +233,15 @@ $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/
 	    src/frontend/$*/main.c $(BOLTLZDIR)/boltlz.c -o $@
 
 .PHONY: posix-dirfd-host-test hurd-host-test solaris-host-test illumos-host-test
+.PHONY: posix-target-profile-host-test
+posix-target-profile-host-test: modern $(POSIX_DIRFD_HOST_BINS)
+	@set -e; for frontend in $(POSIX_DIRFD_FRONTENDS); do \
+	    binary="$(POSIX_DIRFD_HOST_DIR)/$$frontend/boltpack"; \
+	    python3 test/check_target_help.py --boltpack "$$binary"; \
+	    python3 test/check_target_auto_rename.py --boltpack "$$binary" \
+	        --reader build/linux/boltpack; \
+	done
+
 posix-dirfd-host-test: $(POSIX_DIRFD_HOST_BINS)
 	@set -e; for frontend in $(POSIX_DIRFD_FRONTENDS); do \
 	    binary="$(POSIX_DIRFD_HOST_DIR)/$$frontend/boltpack"; \
@@ -322,7 +333,11 @@ $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.conf
 	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
 $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
-	                          src/frontend/posix/archive_preflight.h
+	                          src/frontend/posix/archive_preflight.h \
+	                          src/frontend/common/target_profiles.h \
+	                          src/frontend/common/target_auto.h \
+	                          src/frontend/common/x68000_target_name.h \
+	                          src/frontend/common/target_utf8_preflight.h
 
 # boltlz vendored codec: compiled with warnings suppressed (lib code, strict
 # C89 port kept in src/core; the C89 port already suppresses the fallthrough
@@ -714,10 +729,16 @@ win64-target-profile-test: win64-exe modern
 	python3 test/check_windows_target_profile.py \
 	    --binary $(WIN64_BUILDDIR)/boltpack.exe \
 	    --linux-cli build/linux/boltpack --wine "$(WINE)"
+	python3 test/check_other_target_auto.py \
+	    --binary $(WIN64_BUILDDIR)/boltpack.exe \
+	    --linux-cli build/linux/boltpack --wine "$(WINE)"
 
 .PHONY: win32-target-profile-test
 win32-target-profile-test: win32-exe modern
 	python3 test/check_windows_target_profile.py \
+	    --binary $(WIN32_BUILDDIR)/boltpack.exe \
+	    --linux-cli build/linux/boltpack --wine "$(WINE32)"
+	python3 test/check_other_target_auto.py \
 	    --binary $(WIN32_BUILDDIR)/boltpack.exe \
 	    --linux-cli build/linux/boltpack --wine "$(WINE32)"
 
@@ -835,6 +856,7 @@ amiga-profile-host-test: modern
 	python3 test/check_target_amiga_profile.py --boltpack build/linux/boltpack
 
 target-profile-host-test: modern linuxmini cpm86-host-test riscos-profile-host-test x68k-host-test haiku-host-stage-test macosx-host-test win32-exe win64-target-profile-test win64-gui-profile-test win-gui-net-profile-host-test amiga-profile-host-test
+	python3 test/check_target_help.py --boltpack $(TARGET)
 	python3 test/check_target_auto_rename.py --boltpack $(TARGET)
 	python3 test/check_target_atari_profile.py --boltpack $(TARGET)
 	python3 test/check_target_dos_profiles.py --boltpack $(TARGET)
