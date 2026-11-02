@@ -2605,7 +2605,9 @@ When Fluff is selected in the create dialog, the GUI also exposes a
 `Use Multi-threaded Fluff` checkbox. That preference is stored in `gui.conf`
 as `fluff_mt`, and the standard `make linux-gui` build links the fast-fluff
 OpenMP path so the checkbox calls `bp_set_fast_fluff()` during archive
-creation instead of being a no-op.
+creation instead of being a no-op. The checkbox is selected by default when
+the CPU reports more than one hardware thread, and disabled on single-thread
+systems.
 
 The create dialog also offers Interchange Profile 1, stored in `gui.conf` as
 `interchange_profile`. It writes BoltLite archives with 16 KiB blocks under
@@ -2676,7 +2678,8 @@ Like the Linux FLTK frontend, the Windows create dialog exposes a
 `Use Multi-threaded Fluff` checkbox when Fluff is selected. The standard
 `win32-fltk-gui`, `win64-fltk-gui`, and installer targets compile and link the
 fast-fluff/OpenMP path, so the checkbox feeds `bp_set_fast_fluff()` rather
-than only changing GUI state.
+than only changing GUI state. It is selected by default on multi-threaded
+CPUs and disabled when only one thread is available.
 
 The create dialog offers a single **Compatibility Profile** dropdown with
 `None`, `Interchange Profile 1`, and the shared target profile set. The last

@@ -1311,7 +1311,15 @@ static int mkdirs_for_file(const char *path)
 
 static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1; /* 0=fast, 1=normal (default), 2=best */
-static int g_fluff_multithread  = 0;
+#ifdef BOLTPACK_FAST_FLUFF
+static int fast_fluff_thread_count();
+#endif
+static int g_fluff_multithread =
+#ifdef BOLTPACK_FAST_FLUFF
+    fast_fluff_thread_count() > 0 ? 1 : 0;
+#else
+    0;
+#endif
 static int g_interchange_profile = 0;
 static int g_target_profile = TARGET_PROFILE_NONE;
 static int g_target_auto_rename = 0;
@@ -1552,6 +1560,10 @@ static void load_prefs()
         }
     }
     fclose(f);
+#ifdef BOLTPACK_FAST_FLUFF
+    if (fast_fluff_thread_count() <= 0)
+        g_fluff_multithread = 0;
+#endif
 }
 
 static void save_prefs()
@@ -2017,9 +2029,14 @@ static int show_compression_dialog()
 
 #ifdef BOLTPACK_FAST_FLUFF
     s.fast_fluff_btn = new Fl_Check_Button(18, ff_y, W - 28, 22,
-                                           "Use multi-threaded Fluff (faster, slightly larger archives)");
+                                           "Use multi-threaded Fluff");
     s.fast_fluff_btn->callback(cdlg_fast_fluff_cb, &s);
     s.fast_fluff_btn->value(s.fast_fluff ? 1 : 0);
+    if (fast_fluff_thread_count() <= 0) {
+        s.fast_fluff = 0;
+        s.fast_fluff_btn->value(0);
+        s.fast_fluff_btn->deactivate();
+    }
 #else
     (void)ff_y;
 #endif
@@ -6049,7 +6066,11 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
 
     g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
+#ifdef BOLTPACK_FAST_FLUFF
+    g_fluff_multithread = fast_fluff_thread_count() > 0 ? 1 : 0;
+#else
     g_fluff_multithread = 0;
+#endif
     g_interchange_profile = 0;
 
     g_have_persisted_col_widths = false;
