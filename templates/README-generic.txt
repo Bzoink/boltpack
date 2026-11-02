@@ -11,7 +11,7 @@ platforms — from an 8088 PC running DOS to a modern x86-64 Linux box, includin
 AmigaOS, Atari TOS, Classic Mac OS, RISC OS, Haiku, Plan 9, and many more.
 
 Key features:
-  * Five compression methods where supported: Stored, BoltLite, boltlz, Fluff, zstd
+  * Four compression methods where supported: Stored, BoltLite, boltlz, Fluff
   * Cross-platform compatibility: strict ANSI C89 implementation
   * Small binaries: ~50 KB standalone executable
   * 64-bit file support and block-based compression
@@ -51,7 +51,6 @@ OPTIONS
 -F, --fluff           Use Fluff codec (best compression, 29%)
 -2, --boltlz          Use boltlz (fast, 47%)
 -1, --boltlite            Use BoltLite (small-memory)
--Z, --zstd            Use zstd (where supported)
 -0, --stored          No compression (stored)
 -r, --recursive       Include directories recursively
 -q, --quiet           Suppress progress messages
@@ -63,7 +62,6 @@ Stored (0):     No compression, instant speed
 BoltLite (1):       Small-memory compression
 boltlz (2):     Fast decompression, good compatibility
 Fluff (3):      Best ratio, modern systems
-zstd (4):       Best general-purpose ratio, modern systems
 
 Default: boltlz for maximum speed
 

@@ -37,7 +37,6 @@ Options:
   -F, --fluff         Best compression (29% ratio)
   -2, --boltlz        Fast decompression (47% ratio)
   -1, --boltlite          Small-memory compression
-  -Z, --zstd          Best general-purpose ratio
   -0, --stored        No compression
 
 Example:
@@ -50,7 +49,7 @@ FEATURES
 - No installation needed (portable)
 - Supports large files (64-bit)
 - Unicode file names (UTF-8)
-- Five compression methods
+- Four compression methods
 
 WINDOWS INTEGRATION
 -------------------

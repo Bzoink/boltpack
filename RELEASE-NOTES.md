@@ -8,6 +8,8 @@
   sequential path.
 - Parallel BoltLZ writes blocks in their original order and keeps the existing
   archive format and decoder compatibility.
+- Method 4 (zstd) has been removed. Use Fluff for maximum ratio. Readers
+  reject method-4 archives with `BP_ERR_UNSUPPORTED_METHOD`.
 - Windows installers leave long PATH values unchanged instead of risking
   truncation.
 - Bolt Mini remains at version 1.3.

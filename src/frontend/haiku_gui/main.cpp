@@ -236,7 +236,6 @@ static const char *method_name(int m)
         case BP_METHOD_BOLTLITE:   return "BoltLite";
         case BP_METHOD_BOLTLZ:  return "boltlz";
         case BP_METHOD_FLUFF:  return "fluff";
-        case BP_METHOD_ZSTD:   return "zstd";
     }
     return "?";
 }
@@ -244,12 +243,12 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
     buf[0] = '\0';
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 4; i++) {
         if (counts[i] == 0) continue;
         if (!first) { buf[pos++] = ','; buf[pos++] = ' '; }
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s (%lu)",

@@ -32,14 +32,3 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
-
----
-
-## Third-Party Software
-
-This distribution includes the following third-party components:
-
-**zstd 1.5.7**
-Copyright © Meta Platforms, Inc. / Yann Collet
-Source: `lib/zstd/`
-License: BSD 2-Clause "Simplified" License

@@ -574,7 +574,7 @@ def main():
      No format change needed.
 
   D. Optimal parser (significant effort, ~3-8% ratio gain vs current)
-     Replace greedy+lazy with full DP cost model (like zopfli or zstd).
+     Replace greedy+lazy with full DP cost model (like zopfli).
      Each position's choice considers the Huffman bit cost of each option.
      Requires a two-pass encode (first pass builds frequency table for costs,
      second pass finds optimal parse given those costs).

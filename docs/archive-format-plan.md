@@ -745,7 +745,7 @@ otherwise extracted file unusable.
 "BoltPack Interchange Profile 1" uses format 6. Readers support Stored and
 BoltLite; writers select either, use 16 KiB blocks by default, and never exceed
 32 KiB for any blocked entry, including Stored and supplementary entries.
-BoltLZ, Fluff, and zstd remain optional capabilities outside this profile.
+BoltLZ and Fluff remain optional capabilities outside this profile.
 
 For a mini-compatible archive, cap total serialized size at 2,147,483,647
 bytes and physical entry count at 65,535, including metadata and resource

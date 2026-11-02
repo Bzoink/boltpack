@@ -18,9 +18,6 @@
 #include "fluff.h"
 #include "compress.h"
 #include "boltlite.h"
-#ifdef BOLTPACK_ZSTD
-#include "zstd_wrap.h"
-#endif
 #if !defined(__PLAN9__)
 #include <errno.h>
 #include <stdio.h>
@@ -111,9 +108,6 @@ static int bp_method_is_supported(bp_uint8 method)
     if (method == BP_METHOD_BOLTLITE)   return 1;
     if (method == BP_METHOD_BOLTLZ) return 1;
     if (method == BP_METHOD_FLUFF)  return 1;
-#ifdef BOLTPACK_ZSTD
-    if (method == BP_METHOD_ZSTD)   return 1;
-#endif
     return 0;
 }
 
@@ -128,11 +122,6 @@ static bp_uint32 bp_method_compress_bound(bp_uint8 method, bp_uint32 src_len)
     if (method == BP_METHOD_FLUFF) {
         return fluff_compress_bound(src_len);
     }
-#ifdef BOLTPACK_ZSTD
-    if (method == BP_METHOD_ZSTD) {
-        return bp_zstd_compress_bound(src_len);
-    }
-#endif
     return src_len;
 }
 
@@ -1319,15 +1308,6 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
                                                   &comp_len, fctx);
                     if (rc != BP_OK) goto seq_done;
                 }
-#ifdef BOLTPACK_ZSTD
-                else if (actual_method == BP_METHOD_ZSTD) {
-                    bp_uint32 dst_cap = bp_zstd_compress_bound(chunk);
-                    comp_len = dst_cap;
-                    rc = bp_zstd_compress_block(in_buf, chunk, out_buf, &comp_len,
-                                                (int)ar->method_level);
-                    if (rc != BP_OK) goto seq_done;
-                }
-#endif /* BOLTPACK_ZSTD */
 
                 /* Fallback to stored if compression saves < 1% (favors decompression speed).
                  * Written as chunk - chunk/100 (not chunk*99/100) so it cannot
@@ -2641,19 +2621,6 @@ static int extract_entry_data(bp_io_t *io, bp_entry_t *entry,
                     return BP_ERR_CORRUPT;
                 }
             }
-#ifdef BOLTPACK_ZSTD
-            else if (entry->method == BP_METHOD_ZSTD) {
-                dec_len = orig_sz;
-                rc = bp_zstd_decompress_block(in_buf, comp_sz, dec_buf, &dec_len);
-                if (rc != BP_OK) {
-                    free(in_buf); free(dec_buf); return rc;
-                }
-                if (dec_len != orig_sz) {
-                    free(in_buf); free(dec_buf);
-                    return BP_ERR_CORRUPT;
-                }
-            }
-#endif /* BOLTPACK_ZSTD */
             else {
                 if (dfctx) { fluff_ctx_free(dfctx); dfctx = NULL; }
                 free(in_buf); free(dec_buf);

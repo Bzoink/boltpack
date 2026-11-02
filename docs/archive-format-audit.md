@@ -144,7 +144,7 @@ the format-6 behavior and present validation evidence.
 
 Compression-method support still varies by build. For exchange with vintage
 mini targets, Stored is the broadest baseline. BoltLite is supported by the
-mini writer and reader. Mini builds do not support Fluff or zstd, and 16-bit
+mini writer and reader. Mini builds do not support Fluff, and 16-bit
 mini builds decode BoltLZ but cannot encode it.
 
 ## Assessment

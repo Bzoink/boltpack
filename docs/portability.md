@@ -2,7 +2,7 @@
 
 BoltPack keeps a **strict ANSI C (C89/C90) portable baseline** for the archive
 core and baseline codecs. Optional modern components use C11/OpenMP for the
-parallel Fluff encoder and C99 for zstd. Frontends use C, C++, Objective-C, or
+parallel Fluff encoder. Frontends use C, C++, Objective-C, or
 C# according to the platform. A target can omit optional codecs when its
 compiler does not provide their requirements.
 
@@ -112,24 +112,15 @@ in those files:
 **Exception:** `bp_off_t` in `bp_types.h` uses `__int64` (MSVC) or `__extension__ long long` (GCC/Clang) on 32-bit hosts to support files larger than 2 GB. On LP64 hosts, `long` is already 64 bits. BoltLZ also uses guarded compiler intrinsics with portable fallbacks. The offset type is justified by the impossibility of expressing a 64-bit signed offset in portable C89 on ILP32 platforms.
 
 **Optional modern components:** `src/core/fluff_fast.c` is a separate C11 and
-OpenMP encoder used by enabled modern builds. The vendored `lib/zstd/` library
-is compiled as C99 behind `src/core/zstd_wrap.c`. The wrapper and the portable
-baseline remain usable without those optional components. Frontend source may
+OpenMP encoder used by enabled modern builds. The portable
+baseline remains usable without that optional component. Frontend source may
 use the language required by its platform, including C++, Objective-C, or C#;
 it is not subject to the C89 rule.
 
-The generic Makefile can omit both optional components with
-`ENABLE_FAST_FLUFF=0 ENABLE_ZSTD=0`. Some platform-specific recipes set feature
-flags directly and do not honor these generic switches; consult
+The generic Makefile can omit the optional component with
+`ENABLE_FAST_FLUFF=0`. Some platform-specific recipes set feature
+flags directly and do not honor this generic switch; consult
 [`BUILD.md`](BUILD.md) and the target recipe before using an older compiler.
-
-**Availability of method 4 (zstd):** The zstd codec (`lib/zstd/`) is linked only
-when the `BOLTPACK_ZSTD` preprocessor flag is set. The standard Linux and
-Windows CLI builds, dedicated Linux ARM64 build, and Linux/Windows FLTK GUI
-builds include it. The repository macOS CLI and native macOS source kits, the
-RISC-V and Haiku CLIs, and constrained vintage targets omit it. A frontend
-without the flag returns `BP_ERR_UNSUPPORTED_METHOD` for method-4 archives;
-build-aware CLI help hides the selector when supported by that frontend.
 
 ### Integer sizes
 

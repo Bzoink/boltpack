@@ -56,8 +56,6 @@ INTENTIONALLY_NOT_COPIED = {
     "fluff_simd.h",
     "fluff_trace.c",
     "fluff_trace.h",
-    "zstd_wrap.c",
-    "zstd_wrap.h",
 }
 
 

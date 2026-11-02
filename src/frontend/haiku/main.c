@@ -1614,12 +1614,12 @@ static const char *cpu_name(bp_uint8 cpu)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
     buf[0] = '\0';
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 4; i++) {
         if (counts[i] == 0) continue;
         if (!first) { buf[pos++] = ','; buf[pos++] = ' '; }
         pos += sprintf(buf + pos, "%s (%lu)", names[i], (unsigned long)counts[i]);
@@ -2268,10 +2268,10 @@ static void usage_basic(void)
         "  -1         BoltLite compression\n"
         "  -2         boltlz compression (default)\n"
         "  -F         Use Fluff compression\n"
-        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
-        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
-        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
-        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff 9)\n"
         "  --interchange-profile-1  Create/append a broadly portable archive\n"
         "  -o PATH    Output directory for extraction\n"
         "  -f         Force overwrite existing files\n"
@@ -2311,10 +2311,10 @@ static void usage_advanced(void)
         "  -1, --boltlite       Use BoltLite compression\n"
         "  -2, --boltlz    Use boltlz compression (default)\n"
         "  -F, --fluff      Use Fluff compression\n"
-        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff/zstd: 1-9)\n"
-        "  --light          Fast preset (BoltLZ 1; Fluff/zstd 1)\n"
-        "  --standard       Default quality preset (BoltLZ 2; Fluff 8; zstd 3)\n"
-        "  --best           Highest quality preset (BoltLZ 2; Fluff/zstd 9)\n"
+        "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9)\n"
+        "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
+        "  --standard       Default quality preset (BoltLZ 2; Fluff 8)\n"
+        "  --best           Highest quality preset (BoltLZ 2; Fluff 9)\n"
         "  --interchange-profile-1  Create/append a broadly portable archive\n"
         "  --block-size N   Long-form alias for -b\n"
         "  --output PATH    Long-form alias for -o\n");
@@ -2414,9 +2414,6 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-F") == 0 ||
                    strcmp(argv[i], "--fluff") == 0) {
             method = BP_METHOD_FLUFF; method_given = 1; i++;
-        } else if (strcmp(argv[i], "-Z") == 0 ||
-                   strcmp(argv[i], "--zstd") == 0) {
-            method = BP_METHOD_ZSTD; method_given = 1; i++;
         } else if (strcmp(argv[i], "--interchange-profile-1") == 0) {
             interchange_profile = 1; i++;
         } else if (strcmp(argv[i], "-l") == 0 ||
@@ -2474,12 +2471,10 @@ int main(int argc, char **argv)
             opt_level = (opt_level == -1) ? 1 : 2;
         else if (method == BP_METHOD_FLUFF)
             opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 8 : 9);
-        else if (method == BP_METHOD_ZSTD)
-            opt_level = (opt_level == -1) ? 1 : (opt_level == -2 ? 3 : 9);
     }
     if (opt_level < 0) {
         fprintf(stderr,
-                "boltpack: quality presets are only supported for BoltLZ, Fluff, and zstd\n");
+                "boltpack: quality presets are only supported for BoltLZ and Fluff\n");
         return 1;
     }
     if (opt_level > 0) {
@@ -2487,10 +2482,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "boltpack: BoltLZ level must be 1-2\n");
             return 1;
         }
-        if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF &&
-            method != BP_METHOD_ZSTD) {
+        if (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF) {
             fprintf(stderr,
-                    "boltpack: -l is only supported for BoltLZ, Fluff, and zstd\n");
+                    "boltpack: -l is only supported for BoltLZ and Fluff\n");
             return 1;
         }
     }
@@ -2513,8 +2507,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if ((method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD)
-        && block_size == 0) {
+    if (method == BP_METHOD_FLUFF && block_size == 0) {
         block_size = BP_BLOCK_256K;
     }
 

@@ -69,7 +69,7 @@ typedef struct {
     bp_uint32  dir_count;
     bp_uint64  total_original;
     bp_uint64  total_compressed;
-    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=BoltLite [2]=boltlz [3]=fluff [4]=zstd */
+    bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=BoltLite [2]=boltlz [3]=fluff [4]=reserved */
 } bp_mini_archive_info_t;
 
 /* ---- Utility ----------------------------------------------------------- */

@@ -448,7 +448,7 @@ def main():
         run([str(binary), "c", "--target-profile=macos-classic-hfs-v1",
              "classic-overlong-path.bolt", "longtree"], root, expected=1)
         run([str(binary), "c", "--target-profile=macos-classic-hfs-v1",
-             "-Z", "classic-bad-codec.bolt", classic_name], root,
+             "-F", "classic-bad-codec.bolt", classic_name], root,
             expected=1)
         old_mac_archive = root / "macos-metadata.bolt"
         run([str(binary), "c", str(old_mac_archive), classic_name], root)
@@ -479,7 +479,7 @@ def main():
         (atari_dir / "öong.txt").write_bytes(b"high-bit GEMDOS name\n")
         run([str(binary), "c", "--target-profile=atari-st",
              "atari-high-bit.bolt", "ATARISRC/öong.txt"], root, expected=1)
-        run([str(binary), "c", "--target-profile=atari-st", "-Z",
+        run([str(binary), "c", "--target-profile=atari-st", "-F",
              "atari-bad-codec.bolt", "ATARISRC/NORMAL.TXT"], root,
             expected=1)
         atari_added = atari_dir / "ADDED.TXT"
@@ -524,7 +524,7 @@ def main():
         run([str(binary), "c", "--target-profile=amigaos-68k-latin1",
              "amiga-colon.bolt", "AMIGASRC/bad:name.txt"],
             root, expected=1)
-        run([str(binary), "c", "-Z",
+        run([str(binary), "c", "-F",
              "--target-profile=amigaos-68k-latin1",
              "amiga-bad-codec.bolt", "AMIGASRC/" + amiga_name],
             root, expected=1)
@@ -623,7 +623,7 @@ def main():
              "dos-collision.bolt", invalid_dos_dir.name], root, expected=1)
         assert not (root / "dos-collision.bolt").exists(), \
             "DOS profile accepted a case-fold collision"
-        run([str(binary), "c", "-Z", "--target-profile=dos-cp850-83",
+        run([str(binary), "c", "-F", "--target-profile=dos-cp850-83",
              "dos-bad-codec.bolt", "DOSSRC/café.txt"], root, expected=1)
         run([str(binary), "c", "-b", "32k",
              "--target-profile=dos-cp850-83", "dos-bad-block.bolt",
@@ -731,8 +731,7 @@ def main():
         ql_link.symlink_to("QLSRC/café.txt")
         run([str(binary), "c", "--target-profile=sinclair-ql-latin1-v1",
              "ql-link.bolt", ql_link.name], root, expected=1)
-        for bad_args, label in ((("-Z",), "zstd"),
-                                (("-F",), "fluff"),
+        for bad_args, label in ((("-F",), "fluff"),
                                 (("-2",), "boltlz"),
                                 (("-b", "32k"), "32k blocks")):
             run([str(binary), "c", *bad_args,
@@ -810,8 +809,7 @@ def main():
         assert len(rel256.encode("latin-1")) == 256
         run([str(binary), "c", "--target-profile=riscos-latin1-v1",
              "riscos-path-256.bolt", rel256], root, expected=1)
-        for bad_args, label in ((("-Z",), "zstd"),
-                                (("-F",), "fluff"),
+        for bad_args, label in ((("-F",), "fluff"),
                                 (("-2",), "boltlz"),
                                 (("-b", "32k"), "32k-blocks")):
             run([str(binary), "c", *bad_args,

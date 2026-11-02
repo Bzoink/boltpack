@@ -25,7 +25,7 @@
 
 BP_EXPORT int   bp_dll_compress_init(void);
 
-/* Set the compression level (1-9) for Fluff and zstd on an archive context.
+/* Set the compression level (1-9) for Fluff on an archive context.
  * Must be called after bp_dll_archive_create and before bp_dll_archive_add_entry.
  * 0 or out-of-range values are treated as "use codec default". */
 BP_EXPORT void  bp_dll_archive_set_level(bp_archive_t *ar, int level);

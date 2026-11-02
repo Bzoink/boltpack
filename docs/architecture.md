@@ -49,9 +49,9 @@ int bp_decompress_block(const bp_uint8 *src, bp_uint32 src_len,
 bp_uint32 bp_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len);
 ```
 
-The current implementation supports five archive methods: stored raw blocks
-(method `0`), BoltLite (method `1`), boltlz (method `2`), Fluff (method `3`), and
-zstd (method `4`) on modern builds.
+The current implementation supports four archive methods: stored raw blocks
+(method `0`), BoltLite (method `1`), boltlz (method `2`), and Fluff (method `3`).
+Method `4` was zstd and is retired.
 The archiver core decides which codec to invoke for a block and may still store
 an individual block raw when a compressed method misses the 99% threshold.
 
@@ -257,8 +257,8 @@ The CLI frontend implements the `bp_io_t` callbacks using standard C file functi
 - **`-F`** (`c`, `a`): Use Fluff compression. When no `-b` is given, block size is automatically set to 256 KB to match Fluff's window size.
 - **`-1`** (`c`, `a`): Use BoltLite compression.
 - **`-2`** (`c`, `a`): Use boltlz compression. `-l 1` selects level 1; `-l 2` selects level 2; omitting `-l` selects Balanced.
-- **`-l N` / `--level N`** (`c`, `a`): Select an exact codec level: BoltLZ 1–2, Fluff 1–9, or zstd 1–9. Fluff defaults to 8 and zstd to 3.
-- **`--light`, `--standard`, `--best`** (`c`, `a`): Select quality presets. They map to BoltLZ 1/2/2, Fluff 1/8/9, and zstd 1/3/9 respectively. Standard matches each codec's normal default.
+- **`-l N` / `--level N`** (`c`, `a`): Select an exact codec level: BoltLZ 1–2 or Fluff 1–9. Fluff defaults to 8.
+- **`--light`, `--standard`, `--best`** (`c`, `a`): Select quality presets. They map to BoltLZ 1/2/2 and Fluff 1/8/9 respectively. Standard matches each codec's normal default.
 - **`-q`** (all): Quiet — show only progress.
 - **`-qq`** (all): Silent — suppress all output.
 - **`-o PATH`** (`x`): Output directory for extraction.
@@ -576,8 +576,6 @@ boltpack/
 ├── build/              Pre-built binaries per platform (one subdirectory per target)
 ├── dev/                Docker images and vendor setup scripts for cross-compilation
 ├── docs/               Documentation
-├── lib/
-│   └── zstd/             Third-party: zstd source
 ├── magic/              file(1) magic definition for .bolt files
 ├── src/
 │   ├── core/

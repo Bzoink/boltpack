@@ -1058,14 +1058,11 @@ fixture also mutates a valid archive into a checksum-correct `../x` name, then
 confirms the GUI rejects it while opening, does not enable extraction, and
 writes neither into the selected destination nor outside it.
 
-The Linux GUI's serial and parallel Zstd archive writers now use the format-6
+The Linux GUI's Fluff archive writers now use the format-6
 time-validity flag and keep negative or unrepresentable source times unknown.
 The Profile 1 creation flow sets its source to one second before the Unix epoch
-and checks the resulting table has a zero time with `MTIME_VALID` clear. The
-Xvfb fixture also launches the production GUI with Zstd multithreading enabled,
-selects two pre-epoch files, then verifies both unknown-time flags and exact
-Linux CLI extraction bytes. This exercises the GUI's actual parallel pack
-batch. The Windows CLI regression similarly covers serial and parallel Fluff
+and checks the resulting table has a zero time with `MTIME_VALID` clear.
+The Windows CLI regression similarly covers serial and parallel Fluff
 creation.
 
 The RISC OS CLI now uses the status-aware extraction completion API. It does

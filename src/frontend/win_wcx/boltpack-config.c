@@ -88,7 +88,6 @@ static const char *method_name(int method)
     case 1: return "BoltLite (small-memory LZ77)";
     case 2: return "boltlz (fast, good ratio)";
     case 3: return "Fluff (LZ77+FSE/tANS, best ratio)";
-    case 4: return "zstd (Zstandard, best ratio; modern 64-bit builds)";
     default: return "Unknown";
     }
 }
@@ -101,7 +100,6 @@ static const char *method_name(int method)
 #define IDC_BOLTLITE     101
 #define IDC_BOLTLZ  102
 #define IDC_FLUFF    103
-#define IDC_ZSTD     104
 #define IDC_OK       IDOK
 #define IDC_CANCEL   IDCANCEL
 
@@ -123,9 +121,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         case 3:
             SendDlgItemMessageA(hwnd, IDC_FLUFF, BM_SETCHECK, BST_CHECKED, 0);
             break;
-        case 4:
-            SendDlgItemMessageA(hwnd, IDC_ZSTD, BM_SETCHECK, BST_CHECKED, 0);
-            break;
         case 2:
         default:
             SendDlgItemMessageA(hwnd, IDC_BOLTLZ, BM_SETCHECK, BST_CHECKED, 0);
@@ -141,8 +136,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam,
                 method = 1;
             } else if (SendDlgItemMessageA(hwnd, IDC_FLUFF, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                 method = 3;
-            } else if (SendDlgItemMessageA(hwnd, IDC_ZSTD, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                method = 4;
             } else {
                 method = 2; /* boltlz default */
             }
@@ -183,8 +176,8 @@ int main(int argc, char *argv[])
             return 0;
         } else if (strcmp(argv[1], "--set") == 0 && argc > 2) {
             method = atoi(argv[2]);
-            if (method < 0 || method > 4) {
-                fprintf(stderr, "Error: compression method must be 0, 1, 2, 3, or 4\n");
+            if (method < 0 || method > 3) {
+                fprintf(stderr, "Error: compression method must be 0, 1, 2, or 3\n");
                 return 1;
             }
             if (set_compression_method(method) == 0) {
@@ -199,13 +192,12 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Usage:\n");
             fprintf(stderr, "  boltpack-config.exe              (open GUI)\n");
             fprintf(stderr, "  boltpack-config.exe --get       (print current setting)\n");
-            fprintf(stderr, "  boltpack-config.exe --set 0|1|2|3|4 (set method)\n");
+            fprintf(stderr, "  boltpack-config.exe --set 0|1|2|3 (set method)\n");
             fprintf(stderr, "\nCompression methods:\n");
             fprintf(stderr, "  0 = Stored (no compression)\n");
             fprintf(stderr, "  1 = BoltLite (small-memory LZ77)\n");
             fprintf(stderr, "  2 = boltlz (default, fast)\n");
             fprintf(stderr, "  3 = Fluff (best compression ratio)\n");
-            fprintf(stderr, "  4 = zstd (best ratio; modern 64-bit builds only)\n");
             return 1;
         }
     }

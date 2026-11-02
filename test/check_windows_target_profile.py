@@ -178,11 +178,11 @@ def main() -> int:
         if result.returncode == 0 or (root / "hfs-readonly.blt").exists():
             raise AssertionError("Windows HFS profile accepted a read-only source")
         result = run_windows(binary, args.wine, "create",
-                             "--target-profile=macos-classic-hfs-v1", "-Z",
+                             "--target-profile=macos-classic-hfs-v1", "-F",
                              "hfs-bad-codec.blt", "hfs-source/" + hfs_name,
                              cwd=root, check=False)
         if result.returncode == 0 or (root / "hfs-bad-codec.blt").exists():
-            raise AssertionError("Windows HFS profile accepted Zstandard")
+            raise AssertionError("Windows HFS profile accepted Fluff")
 
         ordinary_windows_archive = root / "windows-with-fat-meta.blt"
         run_windows(binary, args.wine, "create", ordinary_windows_archive.name,
@@ -258,7 +258,7 @@ def main() -> int:
             raise AssertionError("Windows Amiga profile accepted a read-only source")
 
         for bad_args, label in ((
-                ("-Z",), "Zstandard"),
+                ("-F",), "Fluff"),
                 (("-b", "32k"), "32 KiB blocks")):
             result = run_windows(
                 binary, args.wine, "create", *bad_args,
@@ -376,11 +376,11 @@ def main() -> int:
                 raise AssertionError(
                     f"Windows DOS LFN profile accepted {invalid_name!r}")
         result = run_windows(
-            binary, args.wine, "create", "-Z",
-            "--target-profile=dos-cp850-lfn-v1", "dos-lfn-zstd.blt",
+            binary, args.wine, "create", "-F",
+            "--target-profile=dos-cp850-lfn-v1", "dos-lfn-fluff.blt",
             lfn_name, cwd=root, check=False)
         if result.returncode == 0:
-            raise AssertionError("Windows DOS LFN profile accepted Zstandard")
+            raise AssertionError("Windows DOS LFN profile accepted Fluff")
 
         (dos_dir / "unmappable-漢.txt").write_bytes(b"unmappable\n")
         result = run_windows(
@@ -409,11 +409,11 @@ def main() -> int:
                 ("dos-cp850-83", "dos850-bad-codec.blt"),
                 ("dos-cp437-83", "dos437-bad-codec.blt")):
             result = run_windows(
-                binary, args.wine, "create", "-Z",
+                binary, args.wine, "create", "-F",
                 f"--target-profile={profile_name}", archive_name,
                 dos_dir.name, cwd=root, check=False)
             if result.returncode == 0:
-                raise AssertionError(f"Windows {profile_name} accepted Zstandard")
+                raise AssertionError(f"Windows {profile_name} accepted Fluff")
 
         # CP/M-86 uses a flat uppercase ASCII 8.3 namespace. The Windows
         # writer projects lowercase names and omits portable FAT attributes.
@@ -447,10 +447,10 @@ def main() -> int:
         if result.returncode == 0 or (root / "cpm-directory.blt").exists():
             raise AssertionError("Windows CP/M-86 accepted directory entries")
         result = run_windows(
-            binary, args.wine, "create", "-Z", "--target-profile=cpm86-83",
-            "cpm-zstd.blt", "mixed.txt", cwd=root, check=False)
-        if result.returncode == 0 or (root / "cpm-zstd.blt").exists():
-            raise AssertionError("Windows CP/M-86 accepted Zstandard")
+            binary, args.wine, "create", "-F", "--target-profile=cpm86-83",
+            "cpm-fluff.blt", "mixed.txt", cwd=root, check=False)
+        if result.returncode == 0 or (root / "cpm-fluff.blt").exists():
+            raise AssertionError("Windows CP/M-86 accepted Fluff")
         ordinary_cpm_archive = root / "cpm-existing-fat-meta.blt"
         run_windows(binary, args.wine, "create", ordinary_cpm_archive.name,
                     "mixed.txt", cwd=root)
@@ -494,14 +494,14 @@ def main() -> int:
             raise AssertionError("Windows Atari profile accepted a high-bit name")
 
         result = run_windows(
-            binary, args.wine, "create", "-Z", "--target-profile=atari-st",
-            "atari-zstd.blt", atari_source.name, cwd=root, check=False)
-        if result.returncode == 0 or (root / "atari-zstd.blt").exists():
-            raise AssertionError("Windows Atari profile accepted Zstandard")
+            binary, args.wine, "create", "-F", "--target-profile=atari-st",
+            "atari-fluff.blt", atari_source.name, cwd=root, check=False)
+        if result.returncode == 0 or (root / "atari-fluff.blt").exists():
+            raise AssertionError("Windows Atari profile accepted Fluff")
 
         # QDOS maps archive separators to underscores, so an ordinary file
         # name can alias a nested path even when the host filesystem allows
-        # both. Latin-1 names survive; foreign metadata and Zstandard do not.
+        # both. Latin-1 names survive; foreign metadata and Fluff do not.
         ql_source = root / "café.txt"
         ql_source.write_bytes(b"Sinclair QL payload\n")
         ql_archive = root / "sinclair-ql.blt"
@@ -542,11 +542,11 @@ def main() -> int:
             raise AssertionError("Windows QL profile accepted an unmappable name")
 
         result = run_windows(
-            binary, args.wine, "create", "-Z",
-            "--target-profile=sinclair-ql-latin1-v1", "ql-zstd.blt",
+            binary, args.wine, "create", "-F",
+            "--target-profile=sinclair-ql-latin1-v1", "ql-fluff.blt",
             ql_source.name, cwd=root, check=False)
-        if result.returncode == 0 or (root / "ql-zstd.blt").exists():
-            raise AssertionError("Windows QL profile accepted Zstandard")
+        if result.returncode == 0 or (root / "ql-fluff.blt").exists():
+            raise AssertionError("Windows QL profile accepted Fluff")
 
         # RISC OS FileCore uses ten-byte Latin-1 leaves and reserves dot as
         # directory syntax. The profile stores no portable Windows metadata.
@@ -594,11 +594,11 @@ def main() -> int:
             raise AssertionError("Windows RISC OS profile accepted existing case aliases")
 
         result = run_windows(
-            binary, args.wine, "create", "-Z",
-            "--target-profile=riscos-latin1-v1", "riscos-zstd.blt",
+            binary, args.wine, "create", "-F",
+            "--target-profile=riscos-latin1-v1", "riscos-fluff.blt",
             riscos_source.name, cwd=root, check=False)
-        if result.returncode == 0 or (root / "riscos-zstd.blt").exists():
-            raise AssertionError("Windows RISC OS profile accepted Zstandard")
+        if result.returncode == 0 or (root / "riscos-fluff.blt").exists():
+            raise AssertionError("Windows RISC OS profile accepted Fluff")
 
         # Human68k uses standard Shift-JIS 18.3 names, and a 0x5c trail byte
         # must remain data instead of becoming a path separator.
@@ -677,7 +677,7 @@ def main() -> int:
         if result.returncode == 0 or (root / "x68-overlong-path.blt").read_bytes() != x68_path_before:
             raise AssertionError("Windows X68000 profile accepted a path over 255 bytes")
 
-        for options in (("-F",), ("-b", "32k"), ("-Z",)):
+        for options in (("-F",), ("-b", "32k"), ("-F",)):
             result = run_windows(
                 binary, args.wine, "create", *options,
                 "--target-profile=x68000-sjis-v1", "x68-bad-limit.blt",
