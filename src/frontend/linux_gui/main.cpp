@@ -1018,45 +1018,61 @@ static int g_interchange_profile = 0;
 static int g_target_profile = TARGET_PROFILE_NONE;
 static int g_target_auto_rename = 0;
 
-/* Target profile menu. The order matches the CLI help listing. */
-struct TargetProfileChoice {
+/* Unified compatibility profile menu. Interchange Profile 1 is a
+ * format-level profile, not a target filesystem profile. */
+enum {
+    PROFILE_KIND_NONE = 0,
+    PROFILE_KIND_INTERCHANGE = 1,
+    PROFILE_KIND_TARGET = 2
+};
+
+struct ProfileChoice {
     const char     *label;
+    int             kind;
     target_profile_t profile;
 };
 
-static const TargetProfileChoice s_target_profiles[] = {
-    { "None (native)",                  TARGET_PROFILE_NONE },
-    { "Atari ST (GEMDOS 8.3)",          TARGET_PROFILE_ATARI_ST },
-    { "DOS CP850 8.3",                  TARGET_PROFILE_DOS_CP850_83 },
-    { "DOS CP437 8.3",                  TARGET_PROFILE_DOS_CP437_83 },
-    { "DOS CP850 long filenames",       TARGET_PROFILE_DOS_CP850_LFN },
-    { "DOS16 CP850 mini",               TARGET_PROFILE_DOS16_CP850_MINI },
-    { "Win16 CP437 mini",               TARGET_PROFILE_WIN16_CP437_MINI },
-    { "OS/2-16 CP850 mini",             TARGET_PROFILE_OS2_16_CP850_MINI },
-    { "OS/2 FAT CP850",                 TARGET_PROFILE_OS2_FAT_CP850 },
-    { "AmigaOS 68k (Latin-1)",          TARGET_PROFILE_AMIGAOS_68K_LATIN1 },
-    { "Classic Mac HFS (MacRoman)",     TARGET_PROFILE_MACOS_CLASSIC_HFS },
-    { "Sinclair QL (Latin-1)",          TARGET_PROFILE_SINCLAIR_QL_LATIN1 },
-    { "RISC OS (Latin-1)",              TARGET_PROFILE_RISCOS_LATIN1 },
-    { "X68000 (Shift-JIS 18.3)",        TARGET_PROFILE_X68000_SJIS },
-    { "CP/M-86 (flat 8.3)",             TARGET_PROFILE_CPM86_83 },
-    { "Linux full (UTF-8)",             TARGET_PROFILE_LINUX_POSIX },
-    { "Linux mini (UTF-8)",             TARGET_PROFILE_LINUX_MINI },
-    { "POSIX UTF-8",                    TARGET_PROFILE_POSIX_UTF8 },
-    { "Plan 9 (UTF-8)",                 TARGET_PROFILE_PLAN9_UTF8 },
-    { "Haiku BFS (UTF-8)",              TARGET_PROFILE_HAIKU_BFS }
+static const ProfileChoice s_profile_choices[] = {
+    { "None (native)",                  PROFILE_KIND_NONE,        TARGET_PROFILE_NONE },
+    { "Interchange Profile 1 (BoltLite, 16 KiB)", PROFILE_KIND_INTERCHANGE, TARGET_PROFILE_NONE },
+    { "Atari ST (GEMDOS 8.3)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_ATARI_ST },
+    { "DOS CP850 8.3",                  PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP850_83 },
+    { "DOS CP437 8.3",                  PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP437_83 },
+    { "DOS CP850 long filenames",       PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP850_LFN },
+    { "DOS16 CP850 mini",               PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS16_CP850_MINI },
+    { "Win16 CP437 mini",               PROFILE_KIND_TARGET,      TARGET_PROFILE_WIN16_CP437_MINI },
+    { "OS/2-16 CP850 mini",             PROFILE_KIND_TARGET,      TARGET_PROFILE_OS2_16_CP850_MINI },
+    { "OS/2 FAT CP850",                 PROFILE_KIND_TARGET,      TARGET_PROFILE_OS2_FAT_CP850 },
+    { "AmigaOS 68k (Latin-1)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_AMIGAOS_68K_LATIN1 },
+    { "Classic Mac HFS (MacRoman)",     PROFILE_KIND_TARGET,      TARGET_PROFILE_MACOS_CLASSIC_HFS },
+    { "Sinclair QL (Latin-1)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_SINCLAIR_QL_LATIN1 },
+    { "RISC OS (Latin-1)",              PROFILE_KIND_TARGET,      TARGET_PROFILE_RISCOS_LATIN1 },
+    { "X68000 (Shift-JIS 18.3)",        PROFILE_KIND_TARGET,      TARGET_PROFILE_X68000_SJIS },
+    { "CP/M-86 (flat 8.3)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_CPM86_83 },
+    { "Linux full (UTF-8)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_LINUX_POSIX },
+    { "Linux mini (UTF-8)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_LINUX_MINI },
+    { "POSIX UTF-8",                    PROFILE_KIND_TARGET,      TARGET_PROFILE_POSIX_UTF8 },
+    { "Plan 9 (UTF-8)",                 PROFILE_KIND_TARGET,      TARGET_PROFILE_PLAN9_UTF8 },
+    { "Haiku BFS (UTF-8)",              PROFILE_KIND_TARGET,      TARGET_PROFILE_HAIKU_BFS }
 };
 
-static int target_profile_choice_count()
+static int profile_choice_count()
 {
-    return (int)(sizeof(s_target_profiles) / sizeof(s_target_profiles[0]));
+    return (int)(sizeof(s_profile_choices) / sizeof(s_profile_choices[0]));
 }
 
-static int target_profile_choice_index(int profile)
+static int profile_choice_index(int interchange, int target)
 {
     int i;
-    for (i = 0; i < target_profile_choice_count(); i++)
-        if ((int)s_target_profiles[i].profile == profile) return i;
+    if (target != TARGET_PROFILE_NONE) {
+        for (i = 0; i < profile_choice_count(); i++)
+            if (s_profile_choices[i].kind == PROFILE_KIND_TARGET &&
+                (int)s_profile_choices[i].profile == target) return i;
+    }
+    if (interchange) {
+        for (i = 0; i < profile_choice_count(); i++)
+            if (s_profile_choices[i].kind == PROFILE_KIND_INTERCHANGE) return i;
+    }
     return 0;
 }
 
@@ -1402,8 +1418,7 @@ struct CompDlgState {
     int             n_methods;
     int             method_ids[5];
     Fl_Round_Button *method_btns[5];
-    Fl_Check_Button *interchange_btn;
-    Fl_Choice       *target_choice;
+    Fl_Choice       *profile_choice;
     Fl_Check_Button *auto_rename_btn;
     Fl_Box          *target_note;
 #ifdef BOLTPACK_FAST_FLUFF
@@ -1485,7 +1500,10 @@ static void cdlg_update_level_labels(CompDlgState *s)
         }
     }
     if (s->target_note) {
-        if (s->target_profile == TARGET_PROFILE_NONE)
+        if (s->interchange_profile)
+            s->target_note->copy_label(
+                "Interchange Profile 1: BoltLite, 16 KiB, mini-reader limits.");
+        else if (s->target_profile == TARGET_PROFILE_NONE)
             s->target_note->copy_label(
                 "Native archive: compression choices are unrestricted.");
         else if (target_profile_implies_interchange(s->target_profile))
@@ -1507,26 +1525,26 @@ static void cdlg_update_level_labels(CompDlgState *s)
     s->win->redraw();
 }
 
-static void cdlg_interchange_cb(Fl_Widget *w, void *data)
-{
-    CompDlgState *s = (CompDlgState *)data;
-    s->interchange_profile = ((Fl_Check_Button *)w)->value() ? 1 : 0;
-    if (s->interchange_profile) {
-        s->method = BP_METHOD_BOLTLITE;
-        s->level = 1;
-    }
-    cdlg_update_level_labels(s);
-}
-
-static void cdlg_target_cb(Fl_Widget *w, void *data)
+static void cdlg_profile_cb(Fl_Widget *w, void *data)
 {
     CompDlgState *s = (CompDlgState *)data;
     int idx = ((Fl_Choice *)w)->value();
-    if (idx < 0 || idx >= target_profile_choice_count()) idx = 0;
-    s->target_profile = (int)s_target_profiles[idx].profile;
-    if (target_profile_fixed_compression(s->target_profile)) {
+    if (idx < 0 || idx >= profile_choice_count()) idx = 0;
+    if (s_profile_choices[idx].kind == PROFILE_KIND_INTERCHANGE) {
+        s->interchange_profile = 1;
+        s->target_profile = TARGET_PROFILE_NONE;
         s->method = BP_METHOD_BOLTLITE;
-        s->level = s->target_profile == TARGET_PROFILE_CPM86_83 ? 2 : 1;
+        s->level = 1;
+    } else if (s_profile_choices[idx].kind == PROFILE_KIND_TARGET) {
+        s->interchange_profile = 0;
+        s->target_profile = (int)s_profile_choices[idx].profile;
+        if (target_profile_fixed_compression(s->target_profile)) {
+            s->method = BP_METHOD_BOLTLITE;
+            s->level = s->target_profile == TARGET_PROFILE_CPM86_83 ? 2 : 1;
+        }
+    } else {
+        s->interchange_profile = 0;
+        s->target_profile = TARGET_PROFILE_NONE;
     }
     cdlg_update_level_labels(s);
 }
@@ -1603,9 +1621,9 @@ static int show_compression_dialog()
 #ifdef BOLTPACK_FAST_FLUFF
     profile_y += 24;
 #endif
-    int target_label_y  = profile_y + 30;
-    int target_choice_y = target_label_y + 18;
-    int auto_y          = target_choice_y + 30;
+    int profile_label_y = profile_y;
+    int profile_choice_y = profile_label_y + 18;
+    int auto_y          = profile_choice_y + 30;
     int note_y          = auto_y + 26;
     int H = note_y + 76;
     int cx = g_main_window ? g_main_window->x() + (g_main_window->w() - W) / 2 : 200;
@@ -1622,6 +1640,8 @@ static int show_compression_dialog()
     s.interchange_profile = g_interchange_profile;
     s.target_profile = g_target_profile;
     s.target_auto_rename = g_target_auto_rename;
+    if (s.target_profile != TARGET_PROFILE_NONE)
+        s.interchange_profile = 0;
     if (s.interchange_profile) {
         s.method = BP_METHOD_BOLTLITE;
         s.level = 1;
@@ -1702,21 +1722,17 @@ static int show_compression_dialog()
     (void)ff_y;
 #endif
 
-    s.interchange_btn = new Fl_Check_Button(18, profile_y, W - 28, 22,
-        "Interchange Profile 1 (BoltLite, 16 KB; mini-reader compatible)");
-    s.interchange_btn->callback(cdlg_interchange_cb, &s);
-    s.interchange_btn->value(s.interchange_profile ? 1 : 0);
-
     {
-        Fl_Box *tl = new Fl_Box(10, target_label_y, W - 20, 18,
-                                "Target Profile");
-        tl->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        tl->labelfont(FL_HELVETICA_BOLD);
-        s.target_choice = new Fl_Choice(18, target_choice_y, W - 36, 24);
-        for (int i = 0; i < target_profile_choice_count(); i++)
-            s.target_choice->add(s_target_profiles[i].label);
-        s.target_choice->value(target_profile_choice_index(s.target_profile));
-        s.target_choice->callback(cdlg_target_cb, &s);
+        Fl_Box *pl = new Fl_Box(10, profile_label_y, W - 20, 18,
+                                "Compatibility Profile");
+        pl->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        pl->labelfont(FL_HELVETICA_BOLD);
+        s.profile_choice = new Fl_Choice(18, profile_choice_y, W - 36, 24);
+        for (int i = 0; i < profile_choice_count(); i++)
+            s.profile_choice->add(s_profile_choices[i].label);
+        s.profile_choice->value(profile_choice_index(s.interchange_profile,
+                                                     s.target_profile));
+        s.profile_choice->callback(cdlg_profile_cb, &s);
         s.auto_rename_btn = new Fl_Check_Button(18, auto_y, W - 28, 22,
             "Auto-rename for target and add BPNAMES.TXT");
         s.auto_rename_btn->callback(cdlg_auto_rename_cb, &s);

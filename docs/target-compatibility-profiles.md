@@ -66,18 +66,19 @@ they do not establish that a target filesystem can represent every path.
 Profiles should compose these format limits with the target reader and
 filesystem limits.
 
-## Linux FLTK GUI
+## FLTK GUIs
 
-The Create Archive dialog exposes a Target Profile menu with `None` plus the
-shared profile set and an automatic-alias checkbox. Selecting a legacy profile
-forces BoltLite with 16 KiB blocks (Interchange Profile 1); CP/M-86 forces
-BoltLite with 32 KiB blocks; Linux mini and Plan 9 retain the selected codec
-within their own ceilings. Create collects the complete source tree before
-publishing, runs the same preflight as the CLI, writes Plan 9 mode records
-where required, and adds `BPNAMES.TXT` when automatic aliases are selected.
-The selection is persisted in the GUI preferences. `make
-linux-gui-target-profile-test` drives the dialog under Xvfb and verifies an
-Atari ST alias/report archive and a Plan 9 archive through the Linux CLI.
+The Linux and Windows FLTK Create Archive dialogs expose a single
+**Compatibility Profile** dropdown containing `None`, `Interchange Profile 1`,
+and the shared target profile set, plus an automatic-alias checkbox. Selecting
+a legacy profile forces BoltLite with 16 KiB blocks (Interchange Profile 1);
+CP/M-86 forces BoltLite with 32 KiB blocks; Linux mini and Plan 9 retain the
+selected codec within their own ceilings. Create collects the complete source
+tree before publishing, runs the same preflight as the CLI, writes Plan 9 mode
+records where required, and adds `BPNAMES.TXT` when automatic aliases are
+selected. The last selection is persisted in the GUI preferences. `make
+linux-gui-target-profile-test` drives the Linux dialog under Xvfb and verifies
+an Atari ST alias/report archive and a Plan 9 archive through the Linux CLI.
 
 ## Implemented Linux POSIX and mini profiles
 

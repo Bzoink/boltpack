@@ -31,6 +31,14 @@ xdotool windowfocus --sync "$main"
 xdotool key --window "$main" ctrl+n
 create_dialog=$(xdotool search --sync --onlyvisible --name '^Create Archive$' | head -1)
 eval "$(xdotool getwindowgeometry --shell "$create_dialog")"
+if [ "${SELECT_ATARI:-0}" = "1" ]; then
+    xdotool mousemove --window "$create_dialog" 200 300 click 1
+    sleep 0.4
+    xdotool key Down Down Return
+    sleep 0.3
+    xdotool mousemove --window "$create_dialog" 200 330 click 1
+    sleep 0.2
+fi
 xdotool mousemove --window "$create_dialog" 105 "$((HEIGHT - 24))" click 1
 choice=$(xdotool search --sync --onlyvisible --name '^$' | tail -1)
 xdotool windowfocus --sync "$choice"
@@ -48,13 +56,14 @@ wait "$gui_pid" >/dev/null 2>&1 || true
 '''
 
 
-def run_gui(gui, source, out_dir, prefs_text, environment):
+def run_gui(gui, source, out_dir, prefs_text, environment, select_atari=False):
     config_home = out_dir.parent / ("config-" + out_dir.name)
     prefs = config_home / "boltpack"
     prefs.mkdir(parents=True, exist_ok=True)
     (prefs / "gui.conf").write_text(prefs_text, encoding="ascii")
     env = dict(environment)
     env["XDG_CONFIG_HOME"] = str(config_home)
+    env["SELECT_ATARI"] = "1" if select_atari else "0"
     command = ["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24",
                "sh", "-c", SCRIPT, "linux-gui-target-test", str(gui),
                str(source), str(out_dir)]
@@ -107,9 +116,14 @@ def main() -> int:
         atari_dir.mkdir()
         atari_archive = run_gui(
             gui, source, atari_dir,
-            "method=1\nlevel=1\ntarget_profile=1\ntarget_auto_rename=1\n",
-            environment)
+            "method=1\nlevel=1\ninterchange_profile=0\n"
+            "target_profile=0\ntarget_auto_rename=0\n",
+            environment, select_atari=True)
         check_report(cli, atari_archive, root / "atari-extract", name, payload)
+        saved_prefs = (atari_dir.parent / "config-atari" / "boltpack" /
+                       "gui.conf").read_text("ascii")
+        assert "target_profile=1" in saved_prefs, saved_prefs
+        assert "target_auto_rename=1" in saved_prefs, saved_prefs
 
         plan9_dir = root / "plan9"
         plan9_dir.mkdir()
