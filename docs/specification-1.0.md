@@ -1,7 +1,7 @@
 # BoltPack Specification v1.0
 
 **Format Version:** 6 (only)
-**Software Version:** 1.9
+**Software Version:** 1.10
 **Status:** Development
 **Last updated:** 2026-10-26
 

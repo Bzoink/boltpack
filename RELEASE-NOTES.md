@@ -1,5 +1,17 @@
 # Release Notes
 
+## 1.10 — Target profile parity and zstd removal
+
+- Windows and macOS CLIs now support the shared Linux full, Linux mini,
+  generic POSIX, Plan 9, and Haiku BFS target profiles, including automatic
+  aliases and name reports.
+- The Linux FLTK GUI exposes the target profile picker and automatic aliases
+  on create, using the same preflights as the CLI.
+- Method 4 (zstd) has been removed. Use Fluff for maximum ratio. Readers
+  reject method-4 archives with `BP_ERR_UNSUPPORTED_METHOD`.
+- Removing zstd substantially reduces the modern CLI and GUI binary sizes.
+- Bolt Mini remains at version 1.3; no mini codec or format changes.
+
 ## 1.9 — Parallel BoltLZ compression
 
 - OpenMP-enabled Linux and Windows CLI builds compress independent BoltLZ
@@ -8,8 +20,6 @@
   sequential path.
 - Parallel BoltLZ writes blocks in their original order and keeps the existing
   archive format and decoder compatibility.
-- Method 4 (zstd) has been removed. Use Fluff for maximum ratio. Readers
-  reject method-4 archives with `BP_ERR_UNSUPPORTED_METHOD`.
 - Windows installers leave long PATH values unchanged instead of risking
   truncation.
 - Bolt Mini remains at version 1.3.

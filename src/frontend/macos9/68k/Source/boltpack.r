@@ -39,10 +39,10 @@ resource 'SIZE' (-1) {
  * ============================================================ */
 
 resource 'vers' (1) {
-    0x01, 0x08, release, 0x00,
+    0x01, 0x0A, release, 0x00,
     verUS,
-    "1.9",
-    "BoltPack 1.9 \0xA9 2026 Tony Mattsson"
+    "1.10",
+    "BoltPack 1.10 \0xA9 2026 Tony Mattsson"
 };
 
 
@@ -236,7 +236,7 @@ resource 'DLOG' (130) {
 resource 'DITL' (133) {
     {
         /* 1 OK */         {  86, 136, 106, 216 }, Button     { enabled,  "OK" };
-        /* 2 name */       {   8,  20,  28, 332 }, StaticText { disabled, "BoltPack 1.9" };
+        /* 2 name */       {   8,  20,  28, 332 }, StaticText { disabled, "BoltPack 1.10" };
         /* 3 copyright */  {  32,  20,  52, 332 }, StaticText { disabled,
             "\0xA9 2026 Tony Mattsson" };
         /* 4 description */{  56,  20,  76, 332 }, StaticText { disabled,
