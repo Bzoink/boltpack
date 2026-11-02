@@ -90,6 +90,8 @@
 /* BoltPack core (C linkage) */
 extern "C" {
 #include "../../core/archiver.h"
+#include "../../core/archive_name.h"
+#include "../../core/bp_codepage.h"
 #include "../../core/bp_metadata.h"
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
@@ -98,6 +100,8 @@ extern "C" {
 #include "../linux/bp_net.h"
 #endif
 }
+
+#include "../common/target_profiles.h"
 
 #include "../gui_common/help_text.h"
 #include "../gui_common/logo_png.h"
@@ -1309,6 +1313,80 @@ static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1; /* 0=fast, 1=normal (default), 2=best */
 static int g_fluff_multithread  = 0;
 static int g_interchange_profile = 0;
+static int g_target_profile = TARGET_PROFILE_NONE;
+static int g_target_auto_rename = 0;
+
+enum {
+    PROFILE_KIND_NONE = 0,
+    PROFILE_KIND_INTERCHANGE = 1,
+    PROFILE_KIND_TARGET = 2
+};
+
+struct ProfileChoice {
+    const char     *label;
+    int             kind;
+    target_profile_t profile;
+};
+
+static const ProfileChoice s_profile_choices[] = {
+    { "None (native)",                  PROFILE_KIND_NONE,        TARGET_PROFILE_NONE },
+    { "Interchange Profile 1 (BoltLite, 16 KiB)", PROFILE_KIND_INTERCHANGE, TARGET_PROFILE_NONE },
+    { "Atari ST (GEMDOS 8.3)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_ATARI_ST },
+    { "DOS CP850 8.3",                  PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP850_83 },
+    { "DOS CP437 8.3",                  PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP437_83 },
+    { "DOS CP850 long filenames",       PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS_CP850_LFN },
+    { "DOS16 CP850 mini",               PROFILE_KIND_TARGET,      TARGET_PROFILE_DOS16_CP850_MINI },
+    { "Win16 CP437 mini",               PROFILE_KIND_TARGET,      TARGET_PROFILE_WIN16_CP437_MINI },
+    { "OS/2-16 CP850 mini",             PROFILE_KIND_TARGET,      TARGET_PROFILE_OS2_16_CP850_MINI },
+    { "OS/2 FAT CP850",                 PROFILE_KIND_TARGET,      TARGET_PROFILE_OS2_FAT_CP850 },
+    { "AmigaOS 68k (Latin-1)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_AMIGAOS_68K_LATIN1 },
+    { "Classic Mac HFS (MacRoman)",     PROFILE_KIND_TARGET,      TARGET_PROFILE_MACOS_CLASSIC_HFS },
+    { "Sinclair QL (Latin-1)",          PROFILE_KIND_TARGET,      TARGET_PROFILE_SINCLAIR_QL_LATIN1 },
+    { "RISC OS (Latin-1)",              PROFILE_KIND_TARGET,      TARGET_PROFILE_RISCOS_LATIN1 },
+    { "X68000 (Shift-JIS 18.3)",        PROFILE_KIND_TARGET,      TARGET_PROFILE_X68000_SJIS },
+    { "CP/M-86 (flat 8.3)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_CPM86_83 },
+    { "Linux full (UTF-8)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_LINUX_POSIX },
+    { "Linux mini (UTF-8)",             PROFILE_KIND_TARGET,      TARGET_PROFILE_LINUX_MINI },
+    { "POSIX UTF-8",                    PROFILE_KIND_TARGET,      TARGET_PROFILE_POSIX_UTF8 },
+    { "Plan 9 (UTF-8)",                 PROFILE_KIND_TARGET,      TARGET_PROFILE_PLAN9_UTF8 },
+    { "Haiku BFS (UTF-8)",              PROFILE_KIND_TARGET,      TARGET_PROFILE_HAIKU_BFS }
+};
+
+static int profile_choice_count()
+{
+    return (int)(sizeof(s_profile_choices) / sizeof(s_profile_choices[0]));
+}
+
+static int profile_choice_index(int interchange, int target)
+{
+    int i;
+    if (target != TARGET_PROFILE_NONE) {
+        for (i = 0; i < profile_choice_count(); i++)
+            if (s_profile_choices[i].kind == PROFILE_KIND_TARGET &&
+                (int)s_profile_choices[i].profile == target) return i;
+    }
+    if (interchange) {
+        for (i = 0; i < profile_choice_count(); i++)
+            if (s_profile_choices[i].kind == PROFILE_KIND_INTERCHANGE) return i;
+    }
+    return 0;
+}
+
+static int target_profile_implies_interchange(int profile)
+{
+    return profile != TARGET_PROFILE_NONE &&
+           profile != TARGET_PROFILE_CPM86_83 &&
+           profile != TARGET_PROFILE_LINUX_POSIX &&
+           profile != TARGET_PROFILE_POSIX_UTF8 &&
+           profile != TARGET_PROFILE_PLAN9_UTF8 &&
+           profile != TARGET_PROFILE_LINUX_MINI;
+}
+
+static int target_profile_fixed_compression(int profile)
+{
+    return target_profile_implies_interchange(profile) ||
+           profile == TARGET_PROFILE_CPM86_83;
+}
 
 #ifdef BOLTPACK_NET
 /* Create dialog action: Save to disk, or Send over the network. */
@@ -1451,6 +1529,11 @@ static void load_prefs()
             g_fluff_multithread = v ? 1 : 0;
         } else if (sscanf(line, "interchange_profile=%d", &v) == 1) {
             g_interchange_profile = v ? 1 : 0;
+        } else if (sscanf(line, "target_profile=%d", &v) == 1) {
+            if (v >= TARGET_PROFILE_NONE && v <= TARGET_PROFILE_CPM86_83)
+                g_target_profile = v;
+        } else if (sscanf(line, "target_auto_rename=%d", &v) == 1) {
+            g_target_auto_rename = v ? 1 : 0;
         } else if (sscanf(line, "col_widths=%d,%d,%d,%d,%d,%d",
                           &w0, &w1, &w2, &w3, &w4, &w5) == NUM_COLS) {
             g_persisted_col_widths[0] = w0;
@@ -1487,9 +1570,11 @@ static void save_prefs()
     FILE *f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "method=%d\nlevel=%d\nfluff_mt=%d\n"
-               "interchange_profile=%d\n",
+               "interchange_profile=%d\ntarget_profile=%d\n"
+               "target_auto_rename=%d\n",
             g_compression_method, g_compression_level, g_fluff_multithread,
-            g_interchange_profile);
+            g_interchange_profile, g_target_profile,
+            g_target_auto_rename);
     if (g_have_persisted_col_widths) {
         fprintf(f, "col_widths=%d,%d,%d,%d,%d,%d\n",
                 g_persisted_col_widths[0], g_persisted_col_widths[1],
@@ -1634,10 +1719,14 @@ struct CompDlgState {
     int             method;
     int             level;
     int             interchange_profile;
+    int             target_profile;
+    int             target_auto_rename;
     int             n_methods;
     int             method_ids[5];
     Fl_Round_Button *method_btns[5];
-    Fl_Check_Button *interchange_btn;
+    Fl_Choice       *profile_choice;
+    Fl_Check_Button *auto_rename_btn;
+    Fl_Box          *target_note;
 #ifdef BOLTPACK_FAST_FLUFF
     int             fast_fluff;
 #endif
@@ -1673,17 +1762,18 @@ static const int s_method_default_level[] = { 1, 1, 1, 2 }; /* Fluff defaults to
 static void cdlg_update_level_labels(CompDlgState *s)
 {
     int m = (s->method >= 0 && s->method <= 3) ? s->method : 2;
+    int fixed = target_profile_fixed_compression(s->target_profile);
     int i;
 
     for (i = 0; i < s->n_methods; i++) {
         s->method_btns[i]->value(s->method_ids[i] == s->method ? 1 : 0);
-        if (s->interchange_profile)
+        if (s->interchange_profile || fixed)
             s->method_btns[i]->deactivate();
         else
             s->method_btns[i]->activate();
     }
 
-    if (s->interchange_profile || s->method == BP_METHOD_STORED) {
+    if (s->interchange_profile || fixed || s->method == BP_METHOD_STORED) {
         s->level_sep->hide();
         s->level_title->hide();
         s->level_grp->hide();
@@ -1698,25 +1788,77 @@ static void cdlg_update_level_labels(CompDlgState *s)
         }
     }
 #ifdef BOLTPACK_FAST_FLUFF
-    if (!s->interchange_profile && s->method == BP_METHOD_FLUFF) {
+    if (!s->interchange_profile && !fixed && s->method == BP_METHOD_FLUFF) {
         s->fast_fluff_btn->value(s->fast_fluff ? 1 : 0);
         s->fast_fluff_btn->show();
     } else {
         s->fast_fluff_btn->hide();
     }
 #endif
+    if (s->auto_rename_btn) {
+        if (s->target_profile == TARGET_PROFILE_NONE) {
+            s->target_auto_rename = 0;
+            s->auto_rename_btn->value(0);
+            s->auto_rename_btn->deactivate();
+        } else {
+            s->auto_rename_btn->value(s->target_auto_rename ? 1 : 0);
+            s->auto_rename_btn->activate();
+        }
+    }
+    if (s->target_note) {
+        if (s->interchange_profile)
+            s->target_note->copy_label(
+                "Interchange Profile 1: BoltLite, 16 KiB, mini-reader limits.");
+        else if (s->target_profile == TARGET_PROFILE_NONE)
+            s->target_note->copy_label(
+                "Native archive: compression choices are unrestricted.");
+        else if (target_profile_implies_interchange(s->target_profile))
+            s->target_note->copy_label(
+                "Target profile forces BoltLite and 16 KiB blocks (Interchange Profile 1).");
+        else if (s->target_profile == TARGET_PROFILE_CPM86_83)
+            s->target_note->copy_label(
+                "CP/M-86 forces BoltLite and 32 KiB blocks; directories are flattened.");
+        else if (s->target_profile == TARGET_PROFILE_LINUX_MINI)
+            s->target_note->copy_label(
+                "Linux mini accepts Stored, BoltLite or BoltLZ up to 32 KiB.");
+        else if (s->target_profile == TARGET_PROFILE_PLAN9_UTF8)
+            s->target_note->copy_label(
+                "Plan 9 accepts Stored, BoltLite, BoltLZ or Fluff up to 256 KiB.");
+        else
+            s->target_note->copy_label(
+                "Target profile validates names and uses the selected compression.");
+    }
     s->win->redraw();
 }
 
-static void cdlg_interchange_cb(Fl_Widget *w, void *data)
+static void cdlg_profile_cb(Fl_Widget *w, void *data)
 {
     CompDlgState *s = (CompDlgState *)data;
-    s->interchange_profile = ((Fl_Check_Button *)w)->value() ? 1 : 0;
-    if (s->interchange_profile) {
+    int idx = ((Fl_Choice *)w)->value();
+    if (idx < 0 || idx >= profile_choice_count()) idx = 0;
+    if (s_profile_choices[idx].kind == PROFILE_KIND_INTERCHANGE) {
+        s->interchange_profile = 1;
+        s->target_profile = TARGET_PROFILE_NONE;
         s->method = BP_METHOD_BOLTLITE;
         s->level = 1;
+    } else if (s_profile_choices[idx].kind == PROFILE_KIND_TARGET) {
+        s->interchange_profile = 0;
+        s->target_profile = (int)s_profile_choices[idx].profile;
+        if (target_profile_fixed_compression(s->target_profile)) {
+            s->method = BP_METHOD_BOLTLITE;
+            s->level = s->target_profile == TARGET_PROFILE_CPM86_83 ? 2 : 1;
+        }
+    } else {
+        s->interchange_profile = 0;
+        s->target_profile = TARGET_PROFILE_NONE;
     }
     cdlg_update_level_labels(s);
+}
+
+static void cdlg_auto_rename_cb(Fl_Widget *w, void *data)
+{
+    CompDlgState *s = (CompDlgState *)data;
+    s->target_auto_rename = ((Fl_Check_Button *)w)->value() ? 1 : 0;
 }
 
 static void cdlg_method_cb(Fl_Widget *w, void *data)
@@ -1785,7 +1927,11 @@ static int show_compression_dialog()
 #ifdef BOLTPACK_FAST_FLUFF
     profile_y += 24;
 #endif
-    int H = profile_y + 72;
+    int profile_label_y = profile_y;
+    int profile_choice_y = profile_label_y + 18;
+    int auto_y          = profile_choice_y + 30;
+    int note_y          = auto_y + 26;
+    int H = note_y + 76;
     int cx = g_main_window ? g_main_window->x() + (g_main_window->w() - W) / 2 : 200;
     int cy = g_main_window ? g_main_window->y() + (g_main_window->h() - H) / 2 : 200;
 
@@ -1794,9 +1940,17 @@ static int show_compression_dialog()
     s.method = g_compression_method;
     s.level  = g_compression_level;
     s.interchange_profile = g_interchange_profile;
+    s.target_profile = g_target_profile;
+    s.target_auto_rename = g_target_auto_rename;
+    if (s.target_profile != TARGET_PROFILE_NONE)
+        s.interchange_profile = 0;
     if (s.interchange_profile) {
         s.method = BP_METHOD_BOLTLITE;
         s.level = 1;
+    }
+    if (target_profile_fixed_compression(s.target_profile)) {
+        s.method = BP_METHOD_BOLTLITE;
+        s.level = s.target_profile == TARGET_PROFILE_CPM86_83 ? 2 : 1;
     }
     s.n_methods = 0;
 #ifdef BOLTPACK_FAST_FLUFF
@@ -1870,10 +2024,25 @@ static int show_compression_dialog()
     (void)ff_y;
 #endif
 
-    s.interchange_btn = new Fl_Check_Button(18, profile_y, W - 28, 22,
-        "Interchange Profile 1 (BoltLite, 16 KB; mini-reader compatible)");
-    s.interchange_btn->callback(cdlg_interchange_cb, &s);
-    s.interchange_btn->value(s.interchange_profile ? 1 : 0);
+    {
+        Fl_Box *pl = new Fl_Box(10, profile_label_y, W - 20, 18,
+                                "Compatibility Profile");
+        pl->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        pl->labelfont(FL_HELVETICA_BOLD);
+        s.profile_choice = new Fl_Choice(18, profile_choice_y, W - 36, 24);
+        for (int i = 0; i < profile_choice_count(); i++)
+            s.profile_choice->add(s_profile_choices[i].label);
+        s.profile_choice->value(profile_choice_index(s.interchange_profile,
+                                                     s.target_profile));
+        s.profile_choice->callback(cdlg_profile_cb, &s);
+        s.auto_rename_btn = new Fl_Check_Button(18, auto_y, W - 28, 22,
+            "Auto-rename for target and add BPNAMES.TXT");
+        s.auto_rename_btn->callback(cdlg_auto_rename_cb, &s);
+        s.auto_rename_btn->value(s.target_auto_rename ? 1 : 0);
+        s.target_note = new Fl_Box(10, note_y, W - 20, 30, "");
+        s.target_note->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        s.target_note->labelsize(11);
+    }
 
     /* apply initial labels / visibility based on current method */
     cdlg_update_level_labels(&s);
@@ -1910,6 +2079,8 @@ static int show_compression_dialog()
         g_compression_method = s.method;
         g_compression_level  = s.level;
         g_interchange_profile = s.interchange_profile;
+        g_target_profile = s.target_profile;
+        g_target_auto_rename = s.target_auto_rename;
 #ifdef BOLTPACK_FAST_FLUFF
         g_fluff_multithread  = s.fast_fluff;
 #endif
@@ -3732,6 +3903,105 @@ static int add_win_fat_metadata(bp_archive_t *ar, const char *name,
 }
 #endif
 
+/* ---- target profile jobs and preflights -------------------------------- */
+
+#define BP_CREATOR_OS BP_OS_WINDOWS
+
+typedef struct {
+    char     *path;
+    char     *arcname;
+    char     *original_arcname;
+    char     *symlink_target;
+    bp_uint8  entry_type;
+    bp_uint64 file_size;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+#ifdef _WIN32
+    WinChildSnapshot snapshot;
+    int              has_snapshot;
+#endif
+} add_job_t;
+
+typedef struct {
+    add_job_t *items;
+    int        count;
+    int        cap;
+} add_job_list_t;
+
+static char *dup_string(const char *s)
+{
+    size_t n = strlen(s) + 1U;
+    char *copy = (char *)malloc(n);
+    if (copy != NULL) memcpy(copy, s, n);
+    return copy;
+}
+
+static void free_add_job(add_job_t *job)
+{
+    if (job == NULL) return;
+    free(job->path);
+    free(job->arcname);
+    free(job->original_arcname);
+    free(job->symlink_target);
+    memset(job, 0, sizeof(*job));
+}
+
+static void free_job_list(add_job_list_t *list)
+{
+    int i;
+    if (list == NULL) return;
+    for (i = 0; i < list->count; i++) free_add_job(&list->items[i]);
+    free(list->items);
+    memset(list, 0, sizeof(*list));
+}
+
+static int g_win_target_profile = TARGET_PROFILE_NONE;
+static int g_win_target_write_jobs = 0;
+static int g_win_target_use_job_meta = 0;
+static bp_uint16 g_win_target_job_flags = 0;
+static bp_uint64 g_win_target_job_mtime = {0, 0};
+
+#include "../atari/atari_path.h"
+#include "../cpm86/cpm86_path.h"
+#include "../x68k/x68k_path_index.h"
+#include "../common/target_legacy_preflight.h"
+#include "../common/target_auto.h"
+#include "../common/target_utf8_preflight.h"
+
+typedef struct {
+    unsigned char data[2];
+    unsigned      pos;
+} win_gui_plan9_source_t;
+
+static long win_gui_plan9_read(void *handle, void *buffer, bp_uint32 count)
+{
+    win_gui_plan9_source_t *source = (win_gui_plan9_source_t *)handle;
+    unsigned remaining = 2U - source->pos;
+    if (count > remaining) count = remaining;
+    memcpy(buffer, source->data + source->pos, count);
+    source->pos += count;
+    return (long)count;
+}
+
+static int add_win_gui_plan9_metadata(bp_archive_t *ar, const char *name,
+                                      bp_uint8 subject_type)
+{
+    win_gui_plan9_source_t source;
+    bp_io_t io;
+    bp_uint16 mode = subject_type == BP_TYPE_DIR ? 0755U : 0644U;
+    source.data[0] = (unsigned char)(mode & 0xffU);
+    source.data[1] = (unsigned char)((mode >> 8) & 0xffU);
+    source.pos = 0;
+    io.read = win_gui_plan9_read;
+    io.write = NULL;
+    io.seek = NULL;
+    io.tell = NULL;
+    io.handle = &source;
+    return bp_archive_add_entry_ex(ar, name, BP_TYPE_META, BP_OS_PLAN9,
+                                   &io, bp_u64_from_u32(2U),
+                                   bp_u64_from_u32(0), 0);
+}
+
 static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
                                const char *arc_name
 #ifdef _WIN32
@@ -3781,14 +4051,30 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
             dname += '/';
         bp_uint64 mtime;
         bp_uint16 flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+        if (g_win_target_use_job_meta) {
+            flags = g_win_target_job_flags;
+            mtime = g_win_target_job_mtime;
+        }
+        if (!g_win_target_use_job_meta &&
+            g_win_target_profile != TARGET_PROFILE_NONE)
+            flags |= BP_ENTRY_FLAG_MODE_VALID |
+                     (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
         int rc = bp_archive_add_entry_ex(ar, dname.c_str(), BP_TYPE_DIR,
                                          BP_OS_WINDOWS, NULL,
                                          bp_u64_from_u32(0), mtime, flags);
         if (rc != BP_OK) return rc;
+        if (g_win_target_profile != TARGET_PROFILE_NONE) {
+            if (g_win_target_profile == TARGET_PROFILE_PLAN9_UTF8) {
+                rc = add_win_gui_plan9_metadata(ar, dname.c_str(), BP_TYPE_DIR);
+                if (rc != BP_OK) return rc;
+            }
+        } else {
 #ifdef _WIN32
-        rc = add_win_fat_metadata(ar, dname.c_str(), BP_TYPE_DIR, attributes);
-        if (rc != BP_OK) return rc;
+            rc = add_win_fat_metadata(ar, dname.c_str(), BP_TYPE_DIR, attributes);
+            if (rc != BP_OK) return rc;
 #endif
+        }
+        if (g_win_target_write_jobs) return BP_OK;
         int child_rc = add_dir_recursive(ar, filepath, dname.c_str()
 #ifdef _WIN32
                                          , path_guard.handle
@@ -3816,12 +4102,27 @@ static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
     bp_uint64 fsize = bp_off_to_u64((bp_off_t)st.st_size);
     bp_uint64 mtime;
     bp_uint16 flags = win_gui_archive_mtime(st.st_mtime, &mtime);
+    if (g_win_target_use_job_meta) {
+        flags = g_win_target_job_flags;
+        mtime = g_win_target_job_mtime;
+    }
+    if (!g_win_target_use_job_meta &&
+        g_win_target_profile != TARGET_PROFILE_NONE)
+        flags |= BP_ENTRY_FLAG_MODE_VALID |
+                 (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
     int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
                                      BP_OS_WINDOWS, &fio, fsize, mtime, flags);
     if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
     if (rc != BP_OK) return rc;
 #ifdef _WIN32
     if (!path_guard.still_names(filepath)) return BP_ERR_IO;
+#endif
+    if (g_win_target_profile != TARGET_PROFILE_NONE) {
+        if (g_win_target_profile == TARGET_PROFILE_PLAN9_UTF8)
+            return add_win_gui_plan9_metadata(ar, arc_name, BP_TYPE_DATA);
+        return BP_OK;
+    }
+#ifdef _WIN32
     return add_win_fat_metadata(ar, arc_name, BP_TYPE_DATA, attributes);
 #else
     return BP_OK;
@@ -4125,6 +4426,8 @@ struct CreateWork {
     int                      method;
     int                      level;
     bool                     use_interchange_profile;
+    int                      target_profile;
+    bool                     target_auto_rename;
     bool                     use_fast_fluff;
     int                      result;
 };
@@ -4441,6 +4744,8 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
     work.method      = method;
     work.level       = level;
     work.use_interchange_profile = (g_interchange_profile != 0);
+    work.target_profile = g_target_profile;
+    work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
     work.result      = BP_OK;
 
@@ -4490,6 +4795,181 @@ static void do_create_with_inputs(const std::vector<std::string> &input_files,
     }
 }
 
+static int win_gui_append_target_job(add_job_list_t *list, const char *path,
+                                     const char *arcname, bp_uint8 entry_type,
+                                     bp_uint64 file_size, bp_uint64 mtime,
+                                     bp_uint16 flags
+#ifdef _WIN32
+                                     , const WinChildSnapshot *snapshot
+#endif
+                                     )
+{
+    add_job_t *job;
+    if (list->count == list->cap) {
+        int capacity = list->cap ? list->cap * 2 : 64;
+        add_job_t *grown = (add_job_t *)realloc(
+            list->items, (size_t)capacity * sizeof(*grown));
+        if (grown == NULL) return BP_ERR_NOMEM;
+        list->items = grown;
+        list->cap = capacity;
+    }
+    job = &list->items[list->count];
+    memset(job, 0, sizeof(*job));
+    job->path = dup_string(path);
+    job->arcname = dup_string(arcname);
+    job->original_arcname = dup_string(arcname);
+    job->entry_type = entry_type;
+    job->file_size = file_size;
+    job->mtime = mtime;
+    job->flags = flags;
+#ifdef _WIN32
+    if (snapshot != NULL) {
+        job->snapshot = *snapshot;
+        job->has_snapshot = 1;
+    }
+#endif
+    if (job->path == NULL || job->arcname == NULL ||
+        job->original_arcname == NULL) {
+        free_add_job(job);
+        return BP_ERR_NOMEM;
+    }
+    list->count++;
+    return BP_OK;
+}
+
+static int win_gui_collect_target_jobs(add_job_list_t *list, const char *path,
+                                       const char *arcname
+#ifdef _WIN32
+                                       , const WinChildSnapshot *snapshot
+#endif
+                                       )
+{
+    struct _stat64 st;
+    bp_uint64 mtime;
+    bp_uint16 flags;
+    int rc;
+
+    if (_stat64(path, &st) != 0) return BP_ERR_IO;
+    flags = BP_ENTRY_FLAG_MODE_VALID |
+            (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
+    if (win_gui_archive_mtime(st.st_mtime, &mtime) != 0)
+        flags |= BP_ENTRY_FLAG_MTIME_VALID;
+
+    if (S_ISDIR(st.st_mode)) {
+        std::string dname = arcname;
+        if (dname.empty() || dname[dname.size() - 1] != '/') dname += '/';
+        rc = win_gui_append_target_job(list, path, dname.c_str(), BP_TYPE_DIR,
+                                       bp_u64_from_u32(0), mtime, flags
+#ifdef _WIN32
+                                       , snapshot
+#endif
+                                       );
+        if (rc != BP_OK) return rc;
+        std::vector<std::string> names;
+#ifdef _WIN32
+        std::vector<WinChildSnapshot> snapshots;
+        WinSourcePathGuard dir_guard;
+        if (!dir_guard.open(path)) return BP_ERR_IO;
+        if (!dir_guard.open_directory(path)) return BP_ERR_IO;
+        rc = list_directory_names(path, names, &snapshots, dir_guard.handle);
+#else
+        rc = list_directory_names(path, names);
+#endif
+        if (rc != BP_OK) return rc;
+        for (size_t i = 0; i < names.size(); i++) {
+            std::string child_path = std::string(path) + "/" + names[i];
+            std::string child_arc  = dname + names[i];
+            rc = win_gui_collect_target_jobs(list, child_path.c_str(),
+                                             child_arc.c_str()
+#ifdef _WIN32
+                                             , &snapshots[i]
+#endif
+                                             );
+            if (rc != BP_OK) return rc;
+        }
+        return BP_OK;
+    }
+    if (S_ISREG(st.st_mode)) {
+        return win_gui_append_target_job(list, path, arcname, BP_TYPE_DATA,
+                                         bp_off_to_u64((bp_off_t)st.st_size),
+                                         mtime, flags
+#ifdef _WIN32
+                                         , snapshot
+#endif
+                                         );
+    }
+    return BP_OK;
+}
+
+static int win_gui_write_target_jobs(bp_archive_t *ar,
+                                     const add_job_list_t *jobs,
+                                     target_profile_t profile,
+                                     ProgressCtx *pctx)
+{
+    int i, rc = BP_OK;
+    g_win_target_profile = (int)profile;
+    g_win_target_write_jobs = 1;
+    for (i = 0; i < jobs->count; i++) {
+        const add_job_t *job = &jobs->items[i];
+        const WinChildSnapshot *snapshot = NULL;
+        if (pctx->cancelled.load()) { rc = BP_ERR_ABORTED; break; }
+#ifdef _WIN32
+        if (job->has_snapshot) snapshot = &job->snapshot;
+#endif
+        g_win_target_use_job_meta = 1;
+        g_win_target_job_flags = job->flags;
+        g_win_target_job_mtime = job->mtime;
+        rc = add_file_to_archive(ar, job->path, job->arcname, snapshot);
+        g_win_target_use_job_meta = 0;
+        if (rc != BP_OK) break;
+    }
+    g_win_target_write_jobs = 0;
+    g_win_target_profile = TARGET_PROFILE_NONE;
+    return rc;
+}
+
+static int win_gui_target_preflight(add_job_list_t *jobs, bp_archive_t *existing,
+                                    target_profile_t profile, bp_uint8 method,
+                                    bp_uint32 block_size, int auto_rename)
+{
+    switch (profile) {
+    case TARGET_PROFILE_ATARI_ST:
+        return atari_target_preflight(jobs, existing, auto_rename);
+    case TARGET_PROFILE_DOS_CP850_83:
+    case TARGET_PROFILE_DOS_CP437_83:
+    case TARGET_PROFILE_DOS16_CP850_MINI:
+    case TARGET_PROFILE_WIN16_CP437_MINI:
+    case TARGET_PROFILE_OS2_16_CP850_MINI:
+    case TARGET_PROFILE_OS2_FAT_CP850:
+        return dos_target_preflight(jobs, existing, profile);
+    case TARGET_PROFILE_DOS_CP850_LFN:
+        return dos_lfn_target_preflight(jobs, existing);
+    case TARGET_PROFILE_AMIGAOS_68K_LATIN1:
+        return amiga_target_preflight(jobs, existing);
+    case TARGET_PROFILE_MACOS_CLASSIC_HFS:
+        return macos_classic_target_preflight(jobs, existing);
+    case TARGET_PROFILE_SINCLAIR_QL_LATIN1:
+        return ql_target_preflight(jobs, existing);
+    case TARGET_PROFILE_RISCOS_LATIN1:
+        return riscos_target_preflight(jobs, existing);
+    case TARGET_PROFILE_X68000_SJIS:
+        return x68000_target_preflight(jobs, existing);
+    case TARGET_PROFILE_CPM86_83:
+        return cpm86_target_preflight(jobs, existing, method, block_size);
+    case TARGET_PROFILE_LINUX_POSIX:
+    case TARGET_PROFILE_POSIX_UTF8:
+    case TARGET_PROFILE_LINUX_MINI:
+        return linux_target_preflight(jobs, existing,
+                   profile == TARGET_PROFILE_LINUX_MINI, method, block_size);
+    case TARGET_PROFILE_PLAN9_UTF8:
+        return plan9_target_preflight(jobs, existing, method, block_size);
+    case TARGET_PROFILE_HAIKU_BFS:
+        return haiku_target_preflight(jobs, existing, method);
+    default:
+        return BP_OK;
+    }
+}
+
 static void create_worker(CreateWork *w)
 {
     FILE *fp = w->output_fp;
@@ -4503,18 +4983,43 @@ static void create_worker(CreateWork *w)
     bp_archive_t ar;
     memset(&ar, 0, sizeof(ar));
 
+    target_profile_t profile = (target_profile_t)w->target_profile;
+    bool auto_rename = w->target_auto_rename &&
+                       profile != TARGET_PROFILE_NONE;
     int method = w->use_interchange_profile ? BP_METHOD_BOLTLITE : w->method;
-    int rc;
-    if (w->use_interchange_profile)
-        rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
-    else
-        rc = bp_archive_create(&ar, &io, level_to_block_size(method, w->level),
-                               (bp_uint8)method);
+    bp_uint32 block_size = level_to_block_size(method, w->level);
+    bool interchange = w->use_interchange_profile;
+    int rc = BP_OK;
+
+    if (profile != TARGET_PROFILE_NONE) {
+        if (target_profile_implies_interchange((int)profile)) {
+            interchange = true;
+            method = BP_METHOD_BOLTLITE;
+            block_size = BP_BLOCK_16K;
+        } else if (profile == TARGET_PROFILE_CPM86_83) {
+            interchange = false;
+            method = BP_METHOD_BOLTLITE;
+            block_size = BP_BLOCK_32K;
+        } else if (profile == TARGET_PROFILE_LINUX_MINI) {
+            if (method > BP_METHOD_BOLTLZ) rc = BP_ERR_UNSUPPORTED_METHOD;
+            else if (block_size > BP_BLOCK_32K) block_size = BP_BLOCK_32K;
+        } else if (profile == TARGET_PROFILE_PLAN9_UTF8) {
+            if (method > BP_METHOD_FLUFF) rc = BP_ERR_UNSUPPORTED_METHOD;
+            else if (block_size > BP_BLOCK_256K) block_size = BP_BLOCK_256K;
+        }
+    }
+
+    if (rc == BP_OK) {
+        if (interchange)
+            rc = bp_archive_create_profile(&ar, &io, BP_PROFILE_INTERCHANGE_1);
+        else
+            rc = bp_archive_create(&ar, &io, block_size, (bp_uint8)method);
+    }
 
     /* Set progress callback and level AFTER bp_archive_create — it memsets the struct */
-    if (!w->use_interchange_profile && method == BP_METHOD_BOLTLZ)
+    if (!interchange && method == BP_METHOD_BOLTLZ)
         ar.method_level = (bp_uint8)(w->level == 0 ? 1 : 2);
-    else if (!w->use_interchange_profile && method == BP_METHOD_FLUFF)
+    else if (!interchange && method == BP_METHOD_FLUFF)
         ar.method_level = (bp_uint8)fluff_gui_level(w->level);
     ar.progress_fn   = progress_cb;
     ar.progress_data  = w->pctx;
@@ -4531,15 +5036,43 @@ static void create_worker(CreateWork *w)
                 bp_set_fast_boltlz(&ar, nthreads);
         }
 #endif
-        for (size_t i = 0; i < w->input_files.size() && !w->pctx->cancelled.load(); i++) {
-            const char *path = w->input_files[i].c_str();
-            /* find basename: last '/' or '\' */
-            const char *base = path;
-            for (const char *p = path; *p; p++) {
-                if (*p == '/' || *p == '\\') base = p + 1;
+        if (profile != TARGET_PROFILE_NONE) {
+            add_job_list_t jobs;
+            memset(&jobs, 0, sizeof(jobs));
+            for (size_t i = 0; i < w->input_files.size() && rc == BP_OK; i++) {
+                const char *path = w->input_files[i].c_str();
+                const char *base = path;
+                for (const char *p = path; *p; p++)
+                    if (*p == '/' || *p == '\\') base = p + 1;
+                if (*base == '\0') base = "archive";
+                rc = win_gui_collect_target_jobs(&jobs, path, base
+#ifdef _WIN32
+                                                 , NULL
+#endif
+                                                 );
             }
-            rc = add_file_to_archive(&ar, path, base);
-            if (rc != BP_OK) break;
+            if (rc == BP_OK && auto_rename)
+                rc = target_auto_rename_jobs(&jobs, profile);
+            if (rc == BP_OK)
+                rc = win_gui_target_preflight(&jobs, NULL, profile,
+                                              (bp_uint8)method, block_size,
+                                              auto_rename);
+            if (rc == BP_OK)
+                rc = win_gui_write_target_jobs(&ar, &jobs, profile, w->pctx);
+            if (rc == BP_OK && auto_rename)
+                rc = add_target_name_report(&ar, &jobs, profile);
+            free_job_list(&jobs);
+        } else {
+            for (size_t i = 0; i < w->input_files.size() && !w->pctx->cancelled.load(); i++) {
+                const char *path = w->input_files[i].c_str();
+                /* find basename: last '/' or '\' */
+                const char *base = path;
+                for (const char *p = path; *p; p++) {
+                    if (*p == '/' || *p == '\\') base = p + 1;
+                }
+                rc = add_file_to_archive(&ar, path, base);
+                if (rc != BP_OK) break;
+            }
         }
         if (rc == BP_OK && !w->pctx->cancelled.load())
             rc = bp_archive_finalize(&ar);
@@ -4862,6 +5395,8 @@ static void create_and_send(const std::vector<std::string> &input_files)
     work.method      = g_compression_method;
     work.level       = g_compression_level;
     work.use_interchange_profile = (g_interchange_profile != 0);
+    work.target_profile = g_target_profile;
+    work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
     work.result      = BP_OK;
 

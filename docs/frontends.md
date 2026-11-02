@@ -2595,6 +2595,12 @@ Compression defaults, window geometry, and custom column widths are stored in
 `Settings > Reset GUI Settings...` to restore the default window size,
 position, compression method, and file-list columns.
 
+The create dialog's **Compatibility Profile** dropdown contains `None`,
+`Interchange Profile 1`, and the shared target profile set. The last selection
+is stored in `gui.conf`. Target profiles run the same name, collision, path,
+and codec preflights as the CLI and can add automatic aliases and
+`BPNAMES.TXT`.
+
 When Fluff is selected in the create dialog, the GUI also exposes a
 `Use Multi-threaded Fluff` checkbox. That preference is stored in `gui.conf`
 as `fluff_mt`, and the standard `make linux-gui` build links the fast-fluff
@@ -2672,9 +2678,12 @@ Like the Linux FLTK frontend, the Windows create dialog exposes a
 fast-fluff/OpenMP path, so the checkbox feeds `bp_set_fast_fluff()` rather
 than only changing GUI state.
 
-The create dialog also offers Interchange Profile 1, stored in `gui.conf` as
-`interchange_profile`. It writes BoltLite archives with 16 KiB blocks under
-the mini-compatible entry-count, entry-size, and serialized-size limits.
+The create dialog offers a single **Compatibility Profile** dropdown with
+`None`, `Interchange Profile 1`, and the shared target profile set. The last
+selection is stored in `gui.conf`. Interchange Profile 1 writes BoltLite
+archives with 16 KiB blocks under the mini-compatible entry-count, entry-size,
+and serialized-size limits; target profiles apply their own name, collision,
+path, and codec rules and optionally add automatic aliases and `BPNAMES.TXT`.
 Archive creation writes a sibling stage and only replaces the selected file
 after finalization, flush, and close succeed. Existing destinations are
 rechecked before publication; Windows `ReplaceFile` preserves destination

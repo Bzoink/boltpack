@@ -5,8 +5,9 @@
 - Windows and macOS CLIs now support the shared Linux full, Linux mini,
   generic POSIX, Plan 9, and Haiku BFS target profiles, including automatic
   aliases and name reports.
-- The Linux FLTK GUI exposes the target profile picker and automatic aliases
-  on create, using the same preflights as the CLI.
+- The Linux and Windows FLTK GUIs expose a single Compatibility Profile
+  dropdown with `None`, `Interchange Profile 1`, and all target profiles,
+  plus automatic aliases; the last selection is remembered.
 - Method 4 (zstd) has been removed. Use Fluff for maximum ratio. Readers
   reject method-4 archives with `BP_ERR_UNSUPPORTED_METHOD`.
 - Removing zstd substantially reduces the modern CLI and GUI binary sizes.
