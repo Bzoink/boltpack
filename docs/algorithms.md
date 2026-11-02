@@ -1,7 +1,7 @@
 # BoltPack Compression Algorithms
 
 **Status:** Stable
-**Scope:** Current codec implementations shipped in BoltPack v1.9
+**Scope:** Current codec implementations shipped in BoltPack v1.10
 
 This document describes the algorithms that are actually implemented in the
 current codebase. It intentionally covers only the kept codecs and their
@@ -386,7 +386,7 @@ Relevant checks include:
 1. `test/check_boltpack.py` for end-to-end archive behavior.
 1. `make unit-test` for the C unit suites in `test/unit/`.
 
-This reference tracks the codecs shipped in BoltPack 1.9. Historical experiment
+This reference tracks the codecs shipped in BoltPack 1.10. Historical experiment
 reports remain separate from the implementation description.
 
 ## 9. References
