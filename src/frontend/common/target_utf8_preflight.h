@@ -527,7 +527,7 @@ static int haiku_target_preflight(const add_job_list_t *jobs,
     int i;
     memset(&paths, 0, sizeof(paths));
 
-    /* Haiku's standard CLI build has no zstd reader. Target profiles also
+    /* Haiku's standard CLI build has no Fluff reader. Target profiles also
      * select Interchange Profile 1, so creation is further limited to
      * Stored/BoltLite and its 16 KiB blocks. */
     if (method > BP_METHOD_BOLTLITE) {

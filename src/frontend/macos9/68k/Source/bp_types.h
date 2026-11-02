@@ -153,7 +153,7 @@ typedef struct {
 #define BP_METHOD_BOLTLITE     1
 #define BP_METHOD_BOLTLZ   2  /* BoltLZ format 2 */
 #define BP_METHOD_FLUFF    3
-#define BP_METHOD_ZSTD     4  /* Zstandard; modern targets only (BOLTPACK_ZSTD) */
+/* Method 4 was zstd and is retired. Archives using it are rejected. */
 
 /* Checksum types */
 #define BP_CKSUM_ADLER32   0

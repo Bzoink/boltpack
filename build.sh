@@ -221,7 +221,7 @@ do_dos_djgpp() {
             break
         fi
     done
-    build_target dos i586-pc-msdosdjgpp-gcc "" "" ".exe" dos "-std=gnu89" "ENABLE_ZSTD=0"
+    build_target dos i586-pc-msdosdjgpp-gcc "" "" ".exe" dos "-std=gnu89"
 }
 
 do_win32() {

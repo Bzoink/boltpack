@@ -16,7 +16,7 @@ need to seek through file data to recover these values.
 | 1      | BoltLite                               |
 | 2      | BoltLZ format 2; default Balanced  |
 | 3      | Fluff                              |
-| 4      | Zstandard on enabled modern builds |
+| 4      | Retired (was Zstandard)             |
 
 Data files are divided into independent blocks for BoltLZ, Stored and BoltLite.
 A block has a 12-byte header: encoded size, original size and CRC-32 of the

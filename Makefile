@@ -30,25 +30,7 @@ FAST_FLUFF_LDFLAGS  += -fopenmp
 FAST_FLUFF_CORE_OBJ += $(BUILDDIR)/core/fluff_fast.o
 endif
 
-# ---- zstd (Zstandard, method 4) ----------------------------------------
-# ENABLE_ZSTD=1 (default) compiles the zstd amalgamation and wrapper into
-# the native Linux and Windows builds.  Set ENABLE_ZSTD=0 to exclude it
-# (required for vintage/16-bit cross-compile targets).
-# lib/zstd/zstd.c is C99 and explicitly exempt from the C89 rule.
-ZSTDDIR           = lib/zstd
-ENABLE_ZSTD       ?= 1
-ZSTD_CPPFLAGS     =
-ZSTD_OBJS         =
-# ZSTD_STRIP_ERROR_STRINGS drops the human-readable error-name table;
-# BoltPack maps zstd errors to its own BP_ERR_* codes and never prints them.
-ZSTD_CC_FLAGS     = -std=c99 -O2 -Wall -Wno-unused-function \
-                    -ffunction-sections -fdata-sections \
-                    -DZSTD_STRIP_ERROR_STRINGS
-
-ifeq ($(ENABLE_ZSTD),1)
-ZSTD_CPPFLAGS     = -DBOLTPACK_ZSTD
-ZSTD_OBJS         = $(BUILDDIR)/zstd/zstd.o $(BUILDDIR)/core/zstd_wrap.o
-endif
+# ---- codecs -------------------------------------------------------------
 
 BOLTLZDIR      = src/core
 BOLTLZ_OBJS    = $(BUILDDIR)/boltlz/boltlz.o
@@ -103,7 +85,7 @@ CORE_OBJS  = $(BUILDDIR)/core/archiver.o \
 
 FRONT_OBJS = $(BUILDDIR)/frontend/main.o $(NET_OBJS)
 
-OBJS       = $(CORE_OBJS) $(FRONT_OBJS) $(BOLTLZ_OBJS) $(ZSTD_OBJS)
+OBJS       = $(CORE_OBJS) $(FRONT_OBJS) $(BOLTLZ_OBJS)
 TARGET     = $(BUILDDIR)/boltpack
 
 # Run all recipe lines for a target in a single shell invocation.
@@ -114,31 +96,31 @@ TARGET     = $(BUILDDIR)/boltpack
 
 # Configuration stamp: compiler flags and feature toggles are not ordinary
 # make prerequisites, so record them explicitly.  This prevents `make modern`
-# from reusing objects compiled without the fast-fluff or zstd defines.
+# from reusing objects compiled without the fast-fluff defines.
 .PHONY: FORCE_CONFIG
 FORCE_CONFIG:
 
 $(BUILDDIR)/.config: FORCE_CONFIG | $(BUILDDIR)
 	@printf '%s\n' \
 	    'CC=$(CC)' 'CFLAGS=$(CFLAGS)' 'LDFLAGS=$(LDFLAGS)' \
-	    'ENABLE_FAST_FLUFF=$(ENABLE_FAST_FLUFF)' 'ENABLE_ZSTD=$(ENABLE_ZSTD)' \
+	    'ENABLE_FAST_FLUFF=$(ENABLE_FAST_FLUFF)' \
 	    'ENABLE_NET=$(ENABLE_NET)' \
 	    'FAST_FLUFF_CPPFLAGS=$(FAST_FLUFF_CPPFLAGS)' \
 	    'FAST_FLUFF_LDFLAGS=$(FAST_FLUFF_LDFLAGS)' \
 	    'FLUFF_NATIVE_FLAGS=$(FLUFF_NATIVE_FLAGS)' \
 	    'FLUFF_FAST_FLAGS=$(FLUFF_FAST_FLAGS)' \
-	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
-	    'ZSTD_CPPFLAGS=$(ZSTD_CPPFLAGS)' 'NET_CPPFLAGS=$(NET_CPPFLAGS)' \
+	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' \
+	    'NET_CPPFLAGS=$(NET_CPPFLAGS)' \
 	    | cmp -s - $@ || printf '%s\n' \
 	    'CC=$(CC)' 'CFLAGS=$(CFLAGS)' 'LDFLAGS=$(LDFLAGS)' \
-	    'ENABLE_FAST_FLUFF=$(ENABLE_FAST_FLUFF)' 'ENABLE_ZSTD=$(ENABLE_ZSTD)' \
+	    'ENABLE_FAST_FLUFF=$(ENABLE_FAST_FLUFF)' \
 	    'ENABLE_NET=$(ENABLE_NET)' \
 	    'FAST_FLUFF_CPPFLAGS=$(FAST_FLUFF_CPPFLAGS)' \
 	    'FAST_FLUFF_LDFLAGS=$(FAST_FLUFF_LDFLAGS)' \
 	    'FLUFF_NATIVE_FLAGS=$(FLUFF_NATIVE_FLAGS)' \
 	    'FLUFF_FAST_FLAGS=$(FLUFF_FAST_FLAGS)' \
-	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' 'ZSTD_CC_FLAGS=$(ZSTD_CC_FLAGS)' \
-	    'ZSTD_CPPFLAGS=$(ZSTD_CPPFLAGS)' 'NET_CPPFLAGS=$(NET_CPPFLAGS)' > $@
+	    'BOLTLZ_CORE_CFLAGS=$(BOLTLZ_CORE_CFLAGS)' \
+	    'NET_CPPFLAGS=$(NET_CPPFLAGS)' > $@
 
 # Guard macro: skip a cross target gracefully if the toolchain cannot compile
 # and link a trivial C program.  Catches both "compiler not installed" and
@@ -166,10 +148,10 @@ all: $(TARGET)
 # This is not a DOS target build; it complements, but does not replace, a
 # DJGPP/DOSBox run.
 dos-host-test:
-	$(MAKE) FRONTEND=dos CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=dos CC=cc ENABLE_NET=0 \
 	    CFLAGS='$(CFLAGS) -DBP_DOS_TEST_ATTRIBUTES' \
 	    BUILDDIR=build/dos-host-test TARGET=build/dos-host-test/boltpack all
-	$(MAKE) FRONTEND=linux CC=cc ENABLE_NET=0 ENABLE_ZSTD=0 all
+	$(MAKE) FRONTEND=linux CC=cc ENABLE_NET=0 all
 	python3 test/check_dos_frontend_host.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 	python3 test/check_dos_profile.py \
@@ -181,21 +163,21 @@ dos-host-test:
 # output creation and dry-run remains available.
 .PHONY: posix-path-extract-refusal-host-test
 posix-path-extract-refusal-host-test:
-	$(MAKE) FRONTEND=qnx CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=qnx CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/qnx-host-test TARGET=build/qnx-host-test/boltpack all
-	$(MAKE) FRONTEND=aix CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=aix CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/aix-legacy-host-test TARGET=build/aix-legacy-host-test/boltpack all
-	$(MAKE) FRONTEND=hpux CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=hpux CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/hpux-host-test TARGET=build/hpux-host-test/boltpack all
-	$(MAKE) FRONTEND=irix CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=irix CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/irix-host-test TARGET=build/irix-host-test/boltpack all
-	$(MAKE) FRONTEND=nextstep CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=nextstep CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/nextstep-host-test TARGET=build/nextstep-host-test/boltpack all
-	$(MAKE) FRONTEND=sco CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=sco CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/sco-host-test TARGET=build/sco-host-test/boltpack all
-	$(MAKE) FRONTEND=tru64 CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=tru64 CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/tru64-host-test TARGET=build/tru64-host-test/boltpack all
-	$(MAKE) FRONTEND=linux CC=$(CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=linux CC=$(CC) ENABLE_NET=0 \
 	    BUILDDIR=build/linux-posix-refusal-host-test \
 	    TARGET=build/linux-posix-refusal-host-test/boltpack all
 	python3 test/check_qnx_extract_refusal.py \
@@ -273,14 +255,14 @@ illumos-host-test: $(POSIX_DIRFD_HOST_DIR)/illumos/boltpack
 DOS_CC ?= $(or $(wildcard /opt/djgpp/cross/bin/i586-pc-msdosdjgpp-gcc),i586-pc-msdosdjgpp-gcc)
 dos-djgpp:
 	$(call check_cc,$(DOS_CC),full DOS DJGPP)
-	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 \
 	    CFLAGS='$(CFLAGS) -U__STRICT_ANSI__' \
 	    BUILDDIR=build/dos-djgpp TARGET=build/dos-djgpp/boltpack.exe all
 
 .PHONY: dos-djgpp-parent-race
 dos-djgpp-parent-race:
 	$(call check_cc,$(DOS_CC),full DOS DJGPP parent-race probe)
-	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 ENABLE_ZSTD=0 \
+	$(MAKE) FRONTEND=dos CC=$(DOS_CC) ENABLE_NET=0 \
 	    CFLAGS='$(CFLAGS) -U__STRICT_ANSI__ -DBP_TEST_DOS_PARENT_SUBSTITUTION' \
 	    BUILDDIR=build/dos-djgpp-parent-race \
 	    TARGET=build/dos-djgpp-parent-race/boltpack-race.exe all
@@ -297,7 +279,7 @@ linux-i386:
 	$(MAKE) FRONTEND=linux CC=gcc \
 	    CFLAGS='$(CFLAGS) -m32' LDFLAGS='$(LDFLAGS) -m32' \
 	    BOLTLZ_CORE_CFLAGS='$(BOLTLZ_CORE_CFLAGS) -m32' \
-	    ZSTD_CC_FLAGS='$(ZSTD_CC_FLAGS) -m32' FLUFF_NATIVE_FLAGS= \
+	    FLUFF_NATIVE_FLAGS= \
 	    BUILDDIR=build/linux-x86 TARGET=build/linux-x86/boltpack all
 
 $(TARGET): $(OBJS)
@@ -310,7 +292,7 @@ $(BUILDDIR)/core/bp_codepage.o: $(COREDIR)/bp_sjis_table.h
 
 # archiver.c uses OpenMP for both parallel Fluff and BoltLZ batch paths.
 $(BUILDDIR)/core/archiver.o: $(COREDIR)/archiver.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
-	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
+	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) -I$(COREDIR) -c -o $@ $<
 
 # fluff.c is the hot decompression path: compile with -O3 and (on native
 # linux/x86-64 builds) -march=native so the compiler can exploit CMOV,
@@ -331,7 +313,7 @@ $(BUILDDIR)/core/fluff_fast.o: $(COREDIR)/fluff_fast.c $(BUILDDIR)/.config | $(B
 	    -I$(COREDIR) -c -o $@ $<
 
 $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/frontend
-	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(ZSTD_CPPFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
+	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) $(NET_CPPFLAGS) -I$(COREDIR) -c -o $@ $<
 
 $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 	                          src/frontend/posix/archive_preflight.h \
@@ -347,15 +329,7 @@ $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 $(BUILDDIR)/boltlz/boltlz.o: $(BOLTLZDIR)/boltlz.c $(BUILDDIR)/.config | $(BUILDDIR)/boltlz
 	$(CC) $(BOLTLZ_CORE_CFLAGS) -I$(BOLTLZDIR) -c -o $@ $<
 
-# zstd amalgamation: compiled as C99 (lib/zstd is exempt from the C89 rule).
-$(BUILDDIR)/zstd/zstd.o: $(ZSTDDIR)/zstd.c $(BUILDDIR)/.config | $(BUILDDIR)/zstd
-	$(CC) $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) -c -o $@ $<
-
-# zstd C89-compatible wrapper (compiled as C99 to include lib/zstd/zstd.h).
-$(BUILDDIR)/core/zstd_wrap.o: $(COREDIR)/zstd_wrap.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
-	$(CC) $(ZSTD_CC_FLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -I$(ZSTDDIR) -c -o $@ $<
-
-$(BUILDDIR)/core $(BUILDDIR)/frontend $(BUILDDIR)/boltlz $(BUILDDIR)/zstd:
+$(BUILDDIR)/core $(BUILDDIR)/frontend $(BUILDDIR)/boltlz:
 	mkdir -p $@
 
 clean:
@@ -449,7 +423,6 @@ WCX_SRCS   = $(WCX_SRCDIR)/boltpack_wcx.c \
              $(COREDIR)/bp_codepage.c \
 			 $(BOLTLZDIR)/boltlz.c
 WCX_RC     = $(WCX_SRCDIR)/boltpack_wcx.rc
-WCX_ZSTD_CPPFLAGS = -DBOLTPACK_ZSTD -I$(ZSTDDIR)
 
 WIN_SRCDIR = src/frontend/win
 WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -I$(COREDIR) -I$(BOLTLZDIR)
@@ -484,26 +457,16 @@ win64: win64-wcx win64-config win64-exe
 
 win32-wcx:
 	mkdir -p $(WIN32_BUILDDIR)
-	i686-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -m32 -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c -o $(WIN32_BUILDDIR)/wcx_zstd.o
-	i686-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -m32 $(WCX_ZSTD_CPPFLAGS) -I$(COREDIR) \
-	    -c $(COREDIR)/zstd_wrap.c -o $(WIN32_BUILDDIR)/wcx_zstd_wrap.o
-	i686-w64-mingw32-gcc $(WCX_FLAGS) $(WCX_ZSTD_CPPFLAGS) -m32 \
+	i686-w64-mingw32-gcc $(WCX_FLAGS) -m32 \
 	    $(WCX_SRCS) \
-	    $(WIN32_BUILDDIR)/wcx_zstd.o $(WIN32_BUILDDIR)/wcx_zstd_wrap.o \
 	    -shared -Wl,--kill-at \
 	    -o $(WIN32_BUILDDIR)/boltpack.wcx
 	@echo "  OK    $(WIN32_BUILDDIR)/boltpack.wcx"
 
 win64-wcx:
 	mkdir -p $(WIN64_BUILDDIR)
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c -o $(WIN64_BUILDDIR)/wcx_zstd.o
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) $(WCX_ZSTD_CPPFLAGS) -I$(COREDIR) \
-	    -c $(COREDIR)/zstd_wrap.c -o $(WIN64_BUILDDIR)/wcx_zstd_wrap.o
-	x86_64-w64-mingw32-gcc $(WCX_FLAGS) $(WCX_ZSTD_CPPFLAGS) \
+	x86_64-w64-mingw32-gcc $(WCX_FLAGS) \
 	    $(WCX_SRCS) \
-	    $(WIN64_BUILDDIR)/wcx_zstd.o $(WIN64_BUILDDIR)/wcx_zstd_wrap.o \
 	    -shared -Wl,--kill-at \
 	    -o $(WIN64_BUILDDIR)/boltpack.wcx64
 	@echo "  OK    $(WIN64_BUILDDIR)/boltpack.wcx64"
@@ -587,8 +550,8 @@ win64-fltk-wine-profile1-attributes-test: modern linuxmini win64-fltk-gui
 .PHONY: win64-fltk-wine-race-fixtures
 win64-fltk-wine-race-fixtures: modern linuxmini win64-fltk-gui
 	x86_64-w64-mingw32-g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) \
-	    -DBOLTPACK_ZSTD -DBOLTPACK_NET -DBP_TEST_WIN_FLTK_RACE_PAUSE \
-	    -I$(ZSTDDIR) -mwindows -I$(FLTK_WIN64_DIR)/include \
+	    -DBOLTPACK_NET -DBP_TEST_WIN_FLTK_RACE_PAUSE \
+	    -mwindows -I$(FLTK_WIN64_DIR)/include \
 	    $(WIN64_FLTK_GUI_CORE_OBJS) $(WIN64_FLTK_GUI_BUILDDIR)/resource.o \
 	    src/frontend/win_gui_fltk/main.cpp -L$(FLTK_WIN64_DIR)/lib \
 	    $(GUI_FAST_FLUFF_LDFLAGS) \
@@ -690,14 +653,9 @@ win32-exe:
 	    -o $(WIN32_BUILDDIR)/boltpack-res.o
 	i686-w64-mingw32-gcc $(WIN_FAST_FLUFF_CFLAGS) -m32 \
 	    -c $(COREDIR)/fluff_fast.c -o $(WIN32_BUILDDIR)/fluff_fast.o
-	i686-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -m32 -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c -o $(WIN32_BUILDDIR)/zstd.o
-	i686-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -m32 $(ZSTD_CPPFLAGS) -I$(COREDIR) -I$(ZSTDDIR) \
-	    -c $(COREDIR)/zstd_wrap.c -o $(WIN32_BUILDDIR)/zstd_wrap.o
-	i686-w64-mingw32-gcc $(WIN_FLAGS) $(WIN_FAST_FLUFF_CPPFLAGS) $(WIN_NET_CPPFLAGS) $(ZSTD_CPPFLAGS) -I$(ZSTDDIR) \
+	i686-w64-mingw32-gcc $(WIN_FLAGS) $(WIN_FAST_FLUFF_CPPFLAGS) $(WIN_NET_CPPFLAGS) \
 	    $(WIN_FAST_FLUFF_LDFLAGS) -m32 \
 	    $(WIN_SRCS) $(WIN32_BUILDDIR)/fluff_fast.o \
-	    $(WIN32_BUILDDIR)/zstd.o $(WIN32_BUILDDIR)/zstd_wrap.o \
 	    $(WIN32_BUILDDIR)/boltpack-res.o \
 	    $(WIN_NET_LIBS) \
 	    -lshell32 \
@@ -711,14 +669,9 @@ win64-exe:
 	    -o $(WIN64_BUILDDIR)/boltpack-res.o
 	x86_64-w64-mingw32-gcc $(WIN_FAST_FLUFF_CFLAGS) \
 	    -c $(COREDIR)/fluff_fast.c -o $(WIN64_BUILDDIR)/fluff_fast.o
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c -o $(WIN64_BUILDDIR)/zstd.o
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) $(ZSTD_CPPFLAGS) -I$(COREDIR) -I$(ZSTDDIR) \
-	    -c $(COREDIR)/zstd_wrap.c -o $(WIN64_BUILDDIR)/zstd_wrap.o
-	x86_64-w64-mingw32-gcc $(WIN_FLAGS) $(WIN_FAST_FLUFF_CPPFLAGS) $(WIN_NET_CPPFLAGS) $(ZSTD_CPPFLAGS) -I$(ZSTDDIR) \
+	x86_64-w64-mingw32-gcc $(WIN_FLAGS) $(WIN_FAST_FLUFF_CPPFLAGS) $(WIN_NET_CPPFLAGS) \
 	    $(WIN_FAST_FLUFF_LDFLAGS) \
 	    $(WIN_SRCS) $(WIN64_BUILDDIR)/fluff_fast.o \
-	    $(WIN64_BUILDDIR)/zstd.o $(WIN64_BUILDDIR)/zstd_wrap.o \
 	    $(WIN64_BUILDDIR)/boltpack-res.o \
 	    $(WIN_NET_LIBS) \
 	    -lshell32 \
@@ -1154,14 +1107,12 @@ ARM64_CORE_OBJS = \
 	$(ARM64_BUILDDIR)/bp_codepage.o \
 	$(ARM64_BUILDDIR)/main.o \
 	$(ARM64_BUILDDIR)/bp_net.o \
-	$(ARM64_BUILDDIR)/boltlz.o \
-	$(ARM64_BUILDDIR)/zstd.o \
-	$(ARM64_BUILDDIR)/zstd_wrap.o
+	$(ARM64_BUILDDIR)/boltlz.o
 
 .PHONY: arm64
 arm64:
 	mkdir -p $(ARM64_BUILDDIR)
-	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD \
+	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/archiver.c \
 	    -o $(ARM64_BUILDDIR)/archiver.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
@@ -1179,7 +1130,7 @@ arm64:
 	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/bp_codepage.c \
 	    -o $(ARM64_BUILDDIR)/bp_codepage.o
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) \
-	    -DBOLTPACK_ZSTD -DBOLTPACK_NET -I$(COREDIR) -I$(BOLTLZDIR) -c src/frontend/linux/main.c \
+	    -DBOLTPACK_NET -I$(COREDIR) -I$(BOLTLZDIR) -c src/frontend/linux/main.c \
 	    -o $(ARM64_BUILDDIR)/main.o
 	$(ARM64_CC) $(ARM64_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -c src/frontend/linux/bp_net.c \
@@ -1187,10 +1138,6 @@ arm64:
 	$(ARM64_CC) $(ARM64_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -O2 -c $(BOLTLZDIR)/boltlz.c \
 	    -o $(ARM64_BUILDDIR)/boltlz.o
-	$(ARM64_CC) $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c -o $(ARM64_BUILDDIR)/zstd.o
-	$(ARM64_CC) $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
-	    -c $(COREDIR)/zstd_wrap.c -o $(ARM64_BUILDDIR)/zstd_wrap.o
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) \
 	    -o $(ARM64_BUILDDIR)/boltpack $(ARM64_CORE_OBJS)
 
@@ -2428,14 +2375,12 @@ LINUX_GUI_CORE_OBJS = \
     $(LINUX_GUI_BUILDDIR)/fluff.o       \
 	$(LINUX_GUI_BUILDDIR)/fluff_fast.o  \
     $(LINUX_GUI_BUILDDIR)/bp_codepage.o \
-    $(LINUX_GUI_BUILDDIR)/boltlz.o     \
-    $(LINUX_GUI_BUILDDIR)/zstd.o        \
-    $(LINUX_GUI_BUILDDIR)/zstd_wrap.o
+    $(LINUX_GUI_BUILDDIR)/boltlz.o
 
 .PHONY: linux-gui
 linux-gui:
 	mkdir -p $(LINUX_GUI_BUILDDIR)
-	gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
+	gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
 	    -c $(COREDIR)/archiver.c    -o $(LINUX_GUI_BUILDDIR)/archiver.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/compress.c    -o $(LINUX_GUI_BUILDDIR)/compress.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/boltlite.c        -o $(LINUX_GUI_BUILDDIR)/boltlite.o
@@ -2443,13 +2388,9 @@ linux-gui:
 	gcc $(GUI_FAST_FLUFF_CFLAGS) -c $(COREDIR)/fluff_fast.c  -o $(LINUX_GUI_BUILDDIR)/fluff_fast.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/bp_codepage.c -o $(LINUX_GUI_BUILDDIR)/bp_codepage.o
 	gcc $(GUI_CORE_FLAGS) -O2 -c $(BOLTLZDIR)/boltlz.c      -o $(LINUX_GUI_BUILDDIR)/boltlz.o
-	gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c          -o $(LINUX_GUI_BUILDDIR)/zstd.o
-	gcc $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
-	    -c $(COREDIR)/zstd_wrap.c     -o $(LINUX_GUI_BUILDDIR)/zstd_wrap.o
 	gcc $(GUI_CORE_FLAGS) -DBOLTPACK_NET \
 	    -c src/frontend/linux/bp_net.c -o $(LINUX_GUI_BUILDDIR)/bp_net.o
-	g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD -DBOLTPACK_NET -I$(ZSTDDIR) \
+	g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_NET \
 	    $(LINUX_GUI_CORE_OBJS) \
 	    $(LINUX_GUI_BUILDDIR)/bp_net.o \
 	    src/frontend/linux_gui/main.cpp \
@@ -2647,8 +2588,6 @@ WIN64_FLTK_GUI_CORE_OBJS = \
 	$(WIN64_FLTK_GUI_BUILDDIR)/fluff_fast.o  \
     $(WIN64_FLTK_GUI_BUILDDIR)/bp_codepage.o \
     $(WIN64_FLTK_GUI_BUILDDIR)/boltlz.o     \
-    $(WIN64_FLTK_GUI_BUILDDIR)/zstd.o        \
-    $(WIN64_FLTK_GUI_BUILDDIR)/zstd_wrap.o   \
     $(WIN64_FLTK_GUI_BUILDDIR)/bp_net.o
 
 .PHONY: win64-fltk-gui
@@ -2665,7 +2604,7 @@ win64-fltk-gui:
 		fi; \
 	fi
 	mkdir -p $(WIN64_FLTK_GUI_BUILDDIR)
-	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -DBOLTPACK_ZSTD -I$(ZSTDDIR) \
+	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
 	    -c $(COREDIR)/archiver.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/archiver.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/compress.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/compress.o
@@ -2679,15 +2618,11 @@ win64-fltk-gui:
 	    -c $(COREDIR)/bp_codepage.c -o $(WIN64_FLTK_GUI_BUILDDIR)/bp_codepage.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
 	    -O2 -c $(BOLTLZDIR)/boltlz.c      -o $(WIN64_FLTK_GUI_BUILDDIR)/boltlz.o
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -I$(ZSTDDIR) \
-	    -c $(ZSTDDIR)/zstd.c        -o $(WIN64_FLTK_GUI_BUILDDIR)/zstd.o
-	x86_64-w64-mingw32-gcc $(ZSTD_CC_FLAGS) -DBOLTPACK_ZSTD -I$(COREDIR) -I$(ZSTDDIR) \
-	    -c $(COREDIR)/zstd_wrap.c   -o $(WIN64_FLTK_GUI_BUILDDIR)/zstd_wrap.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) -DBOLTPACK_NET -I$(COREDIR) \
 	    -c src/frontend/win/bp_net_win.c -o $(WIN64_FLTK_GUI_BUILDDIR)/bp_net.o
 	x86_64-w64-mingw32-windres $(GUI_RC_FLAGS) src/frontend/win_gui_fltk/resource.rc \
 	    -o $(WIN64_FLTK_GUI_BUILDDIR)/resource.o
-	x86_64-w64-mingw32-g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_ZSTD -DBOLTPACK_NET -I$(ZSTDDIR) \
+	x86_64-w64-mingw32-g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_NET \
 	    -mwindows \
 	    -I$(FLTK_WIN64_DIR)/include \
 	    $(WIN64_FLTK_GUI_CORE_OBJS) \

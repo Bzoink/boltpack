@@ -217,11 +217,11 @@ parallel-compression controls below.
 | ------ | ----------------------------------------------------------------------------------------- |
 | `-1`   | Use BoltLite compression                                                                      |
 | `-2`   | Use boltlz compression explicitly (the default method)                                    |
-| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9                                     |
-| `--light` | Fast preset: BoltLZ 1; Fluff/zstd 1                                                   |
-| `--standard` | Default preset: BoltLZ 2; Fluff 8; zstd 3                                          |
-| `--best` | Highest preset: BoltLZ 2; Fluff/zstd 9                                                 |
-| `-j N` | Use up to `N` worker threads for BoltLZ, Fluff, or zstd (OpenMP CLI builds only)            |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9                                     |
+| `--light` | Fast preset: BoltLZ 1; Fluff 1                                                   |
+| `--standard` | Default preset: BoltLZ 2; Fluff 8                                          |
+| `--best` | Highest preset: BoltLZ 2; Fluff 9                                                 |
+| `-j N` | Use up to `N` worker threads for BoltLZ or Fluff (OpenMP CLI builds only)            |
 | `-g N` | Group `N` Fluff blocks per shared-history batch before reset (fast-fluff CLI builds only) |
 
 `-j` and `-g` are exposed by OpenMP-enabled CLI builds such as
@@ -229,7 +229,7 @@ parallel-compression controls below.
 `make win32` / `make win64` builds. Builds without OpenMP reject those flags
 instead of silently ignoring them.
 
-On OpenMP-enabled Linux and Windows CLI builds, BoltLZ, Fluff, and Zstandard
+On OpenMP-enabled Linux and Windows CLI builds, BoltLZ and Fluff
 use an automatic multi-processor policy for larger workloads. BoltLZ
 parallelizes independent archive blocks without changing their encoded
 representation; a single file uses that path only when it has at least two
@@ -341,7 +341,7 @@ HIDDEN/SYSTEM survive successful append and delete. Wine does not expose host PO
 does not qualify native ACL/stream merging or recovery behavior; those still
 require native Windows testing.
 
-On OpenMP-enabled Windows CLI builds, BoltLZ, Fluff, and zstd use multiple
+On OpenMP-enabled Windows CLI builds, BoltLZ and Fluff use multiple
 workers automatically for sufficiently large workloads. Use
 `--single-thread` to force serial compression, or `-j N` to set the worker
 count. `-g N` tunes Fluff's grouped-block size. The build-aware help omits
@@ -1348,9 +1348,9 @@ For native PowerPC Mac OS X 10.4/10.5 builds, add
 `-DBP_CREATOR_CPU=BP_CPU_PPC32` and use a native compiler on the Mac.
 
 The repository's `make macosx` CLI target uses the portable C89 codecs and
-does not include OpenMP or zstd. It has no parallel compression controls and
+does not include OpenMP. It has no parallel compression controls and
 does not list `-Z` in its help, though generic level and preset descriptions
-still mention zstd. The modern Cocoa GUI has a separate OpenMP build path
+describe only the available codecs. The modern Cocoa GUI has a separate OpenMP build path
 described below.
 
 The macOS CLI also accepts `--target-profile=riscos-latin1-v1` for create and
@@ -1557,10 +1557,10 @@ macOS CLI surface.
 | `--target-profile=os2-16-cp850-mini` | Require OS/2-16 mini-reader limits |
 | `--target-profile=os2-fat-cp850` | Require OS/2 FAT CP850 8.3 names and limits |
 | `--target-profile=cpm86-83` | Project flat ASCII 8.3 names to uppercase; enforce CP/M-86 entry, codec, and size limits |
-| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
-| `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
-| `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
-| `--best`            | Highest preset: BoltLZ 2; Fluff/zstd 9 |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9 |
+| `--light`           | Fast preset: BoltLZ 1; Fluff 1    |
+| `--standard`        | Default preset: BoltLZ 2; Fluff 8 |
+| `--best`            | Highest preset: BoltLZ 2; Fluff 9 |
 | `--store`           | Long-form alias for `-0`               |
 | `--fluff`           | Long-form alias for `-F`               |
 | `--block-size N`    | Long-form alias for `-b`               |
@@ -1657,9 +1657,7 @@ x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
     -o boltpack
 ```
 
-The standard `make haiku` CLI target uses the serial C89 Fluff path and omits
-zstd. Its help does not show the unavailable method-4 selector, though generic
-level and preset descriptions still mention zstd.
+The standard `make haiku` CLI target uses the serial C89 Fluff path.
 
 ### Haiku: bp_io_t Implementation
 
@@ -1749,10 +1747,10 @@ Haiku CLI surface.
 | ------------------- | -------------------------------------- |
 | `-1`, `--boltlite`      | Use BoltLite compression                   |
 | `-2`, `--boltlz`    | Use boltlz compression explicitly      |
-| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff/zstd 1-9 |
-| `--light`           | Fast preset: BoltLZ 1; Fluff/zstd 1    |
-| `--standard`        | Default preset: BoltLZ 2; Fluff 8; zstd 3 |
-| `--best`            | Highest preset: BoltLZ 2; Fluff/zstd 9 |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9 |
+| `--light`           | Fast preset: BoltLZ 1; Fluff 1    |
+| `--standard`        | Default preset: BoltLZ 2; Fluff 8 |
+| `--best`            | Highest preset: BoltLZ 2; Fluff 9 |
 | `--store`           | Long-form alias for `-0`               |
 | `--fluff`           | Long-form alias for `-F`               |
 | `--block-size N`    | Long-form alias for `-b`               |

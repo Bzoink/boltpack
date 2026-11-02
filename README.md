@@ -11,8 +11,8 @@ running DOS to a modern x86-64 Linux box, including AmigaOS, Atari TOS,
 Classic Mac OS, RISC OS, Haiku, Plan 9, z/OS, and many more.
 
 The portable archive core and baseline codecs use strict ANSI C89. Optional
-modern builds add the C11/OpenMP Fluff encoder and the C99 zstd library;
-frontends use the language and system APIs of each platform.
+modern builds add the C11/OpenMP Fluff encoder; frontends use the language and
+system APIs of each platform.
 
 BoltPack is intended to run on real vintage hardware as well as modern systems,
 to ease data transfer and archival between platforms.
@@ -89,13 +89,12 @@ expert tuning switches.
 | `-0` | Stored | 0   | No compression; raw byte copy                             |
 | `-1` | BoltLite   | 1   | Small-memory LZ77; suited for 16-bit targets              |
 | `-F` | Fluff  | 3   | High compression ratio; LZ77 + FSE/tANS                   |
-| `-Z` | zstd   | 4   | Best compression ratio; modern 32/64-bit only; zstd 1.5.7 |
 
 BoltLZ defaults to Balanced; `-l 1` selects Fast and `-l 2` selects Balanced.
-Fluff and zstd support levels 1–9. When `-F` or `-Z` is used without `-b`, block
-size is set to 256 KB automatically.
+Fluff supports levels 1–9. When `-F` is used without `-b`, block size is set to
+256 KB automatically.
 
-On OpenMP-enabled Linux and Windows CLI builds, BoltLZ, Fluff, and zstd
+On OpenMP-enabled Linux and Windows CLI builds, BoltLZ and Fluff
 automatically use multiple processors for sufficiently large workloads. Use
 `--single-thread` to force serial compression, `-j N` to set the worker count,
 and `-g N` to tune Fluff grouping (see `boltpack help advanced`). Linux FLTK,
@@ -161,10 +160,9 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 ## Repository Layout
 
 ```text
-src/core/        Portable C89 core; optional Fluff C11/OpenMP and zstd C99
+src/core/        Portable C89 core; optional Fluff C11/OpenMP
 src/core/mini/   16-bit mini variant core
 src/frontend/    One frontend per platform
-lib/             Vendored zstd 1.5.7
 docs/            Full documentation set
 test/            Unit tests, integration tests, and fixtures
 scripts/         Build, packaging, and release scripts
@@ -192,6 +190,3 @@ for the third-party algorithms and libraries incorporated into BoltPack.
 
 BoltPack is licensed under the **BSD 2-Clause "Simplified" License** — see
 [LICENSE.md](LICENSE.md).
-
-This distribution includes **zstd 1.5.7** by Meta Platforms /
-Yann Collet under the BSD 2-Clause license (`lib/zstd/`).

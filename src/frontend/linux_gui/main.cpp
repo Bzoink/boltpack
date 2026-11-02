@@ -69,9 +69,6 @@ extern "C" {
 #include "../../core/bp_codepage.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
-#ifdef BOLTPACK_ZSTD
-#include "../../core/zstd_wrap.h"
-#endif
 #ifdef BOLTPACK_NET
 #include "../linux/bp_net.h"
 #endif
@@ -85,7 +82,7 @@ extern "C" {
 #include "../gui_common/help_text.h"
 #include "../gui_common/logo_png.h"
 
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
+#if defined(BOLTPACK_FAST_FLUFF)
 #include <omp.h>
 #endif
 
@@ -224,7 +221,6 @@ static const char *method_name(int m)
     case BP_METHOD_BOLTLITE:   return "BoltLite";
     case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
-    case BP_METHOD_ZSTD:   return "zstd";
     default:               return "?";
     }
 }
@@ -232,12 +228,12 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
     buf[0] = '\0';
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 4; i++) {
         if (counts[i] == 0) continue;
         if (!first) { buf[pos++] = ','; buf[pos++] = ' '; }
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s (%lu)",
@@ -1018,7 +1014,6 @@ static int mkdirs_for_file(const char *path)
 static int g_compression_method = BP_METHOD_BOLTLZ;
 static int g_compression_level  = 1; /* 0=fast, 1=normal (default), 2=best */
 static int g_fluff_multithread  = 0;
-static int g_zstd_multithread   = 0;
 static int g_interchange_profile = 0;
 static int g_target_profile = TARGET_PROFILE_NONE;
 static int g_target_auto_rename = 0;
@@ -1095,8 +1090,7 @@ enum { CREATE_CANCEL = 0, CREATE_SAVE = 1 };
 /* Block sizes vary per method:
  *   BoltLite   (16-bit): 8K / 16K / 32K  -- ring buffer is only 2 KB
  *   boltlz(32-bit): 16K / 32K / 64K -- fast codec, default is 32K
- *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size
- *   zstd   (64-bit): always 256K -- level controls zstd compression level */
+ *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size */
 static bp_uint32 level_to_block_size(int method, int level)
 {
     if (method == BP_METHOD_BOLTLITE) {
@@ -1105,7 +1099,7 @@ static bp_uint32 level_to_block_size(int method, int level)
         case 2: return BP_BLOCK_32K;
         default: return BP_BLOCK_16K;
         }
-    } else if (method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD) {
+    } else if (method == BP_METHOD_FLUFF) {
         (void)level;
         return BP_BLOCK_256K; /* level controls compression quality, not block size */
     } else {
@@ -1127,18 +1121,6 @@ static int fluff_gui_level(int level)
     default: return 6;
     }
 }
-
-#ifdef BOLTPACK_ZSTD
-/* Map GUI level (0=fast, 1=normal, 2=best) to zstd native level (1-19). */
-static int zstd_gui_level(int level)
-{
-    switch (level) {
-    case 0: return 1; /* Fast */
-    case 2: return 9; /* Best */
-    default: return 3; /* Normal (default) */
-    }
-}
-#endif
 
 #ifdef BOLTPACK_FAST_FLUFF
 static int fast_fluff_thread_count()
@@ -1220,15 +1202,13 @@ static void load_prefs()
         int w0, w1, w2, w3, w4, w5;
         int wx, wy, ww, wh;
         if (sscanf(line, "method=%d", &v) == 1) {
-            if (v >= BP_METHOD_STORED && v <= BP_METHOD_ZSTD)
+            if (v >= BP_METHOD_STORED && v <= BP_METHOD_FLUFF)
                 g_compression_method = v;
         } else if (sscanf(line, "level=%d", &v) == 1) {
             if (v >= 0 && v <= 2)
                 g_compression_level = v;
         } else if (sscanf(line, "fluff_mt=%d", &v) == 1) {
             g_fluff_multithread = v ? 1 : 0;
-        } else if (sscanf(line, "zstd_mt=%d", &v) == 1) {
-            g_zstd_multithread = v ? 1 : 0;
         } else if (sscanf(line, "interchange_profile=%d", &v) == 1) {
             g_interchange_profile = v ? 1 : 0;
         } else if (sscanf(line, "target_profile=%d", &v) == 1) {
@@ -1267,11 +1247,11 @@ static void save_prefs()
     if (slash) { *slash = '\0'; mkdirs(dir); }
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "method=%d\nlevel=%d\nfluff_mt=%d\nzstd_mt=%d\n"
+    fprintf(f, "method=%d\nlevel=%d\nfluff_mt=%d\n"
                "interchange_profile=%d\ntarget_profile=%d\n"
                "target_auto_rename=%d\n",
             g_compression_method, g_compression_level, g_fluff_multithread,
-            g_zstd_multithread, g_interchange_profile, g_target_profile,
+            g_interchange_profile, g_target_profile,
             g_target_auto_rename);
     if (g_have_persisted_col_widths) {
         fprintf(f, "col_widths=%d,%d,%d,%d,%d,%d\n",
@@ -1429,9 +1409,6 @@ struct CompDlgState {
 #ifdef BOLTPACK_FAST_FLUFF
     int             fast_fluff;
 #endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    int             zstd_multithread;
-#endif
     Fl_Window      *win;
     Fl_Box         *level_sep;   /* separator line above level section */
     Fl_Box         *level_title; /* section heading */
@@ -1440,35 +1417,30 @@ struct CompDlgState {
 #ifdef BOLTPACK_FAST_FLUFF
     Fl_Check_Button *fast_fluff_btn;
 #endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    Fl_Check_Button *zstd_mt_btn;
-#endif
 };
 
 /* Radio labels per method (indices 0=fast 1=normal 2=best) */
-static const char * const s_level_labels[5][3] = {
+static const char * const s_level_labels[4][3] = {
     /* Stored  */ { "",                                    "",                                    ""                                       },
     /* BoltLite    */ { "Fast \xe2\x80\x94 8 KB blocks",      "Normal \xe2\x80\x94 16 KB blocks",    "Best \xe2\x80\x94 32 KB blocks"         },
     /* boltlz */ { "Fast \xe2\x80\x94 16 KB blocks",     "Normal \xe2\x80\x94 32 KB blocks",    "Best \xe2\x80\x94 64 KB blocks"         },
-    /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       },
-    /* zstd    */ { "Fast \xe2\x80\x94 level 1",          "Normal \xe2\x80\x94 level 3 (default)","Best \xe2\x80\x94 level 9 (ultra)"      }
+    /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       }
 };
 
 /* Section heading per method */
-static const char * const s_level_title[5] = {
+static const char * const s_level_title[4] = {
     /* Stored  */ "",
     /* BoltLite    */ "Block Size",
     /* boltlz */ "Block Size",
-    /* Fluff   */ "Compression Level (block size fixed at 256 KB)",
-    /* zstd    */ "Compression Level (block size fixed at 256 KB)"
+    /* Fluff   */ "Compression Level (block size fixed at 256 KB)"
 };
 
 /* Default level (0/1/2) when switching to a method */
-static const int s_method_default_level[] = { 1, 1, 1, 2, 1 }; /* Fluff defaults to Best; zstd defaults to Normal */
+static const int s_method_default_level[] = { 1, 1, 1, 2 }; /* Fluff defaults to Best */
 
 static void cdlg_update_level_labels(CompDlgState *s)
 {
-    int m = (s->method >= 0 && s->method <= 4) ? s->method : 2;
+    int m = (s->method >= 0 && s->method <= 3) ? s->method : 2;
     int fixed = target_profile_fixed_compression(s->target_profile);
     int i;
 
@@ -1500,14 +1472,6 @@ static void cdlg_update_level_labels(CompDlgState *s)
         s->fast_fluff_btn->show();
     } else {
         s->fast_fluff_btn->hide();
-    }
-#endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    if (!s->interchange_profile && !fixed && s->method == BP_METHOD_ZSTD) {
-        s->zstd_mt_btn->value(s->zstd_multithread ? 1 : 0);
-        s->zstd_mt_btn->show();
-    } else {
-        s->zstd_mt_btn->hide();
     }
 #endif
     if (s->auto_rename_btn) {
@@ -1581,7 +1545,6 @@ static void cdlg_method_cb(Fl_Widget *w, void *data)
     else if (strncmp(lbl, "BoltLite",    4) == 0) s->method = BP_METHOD_BOLTLITE;
     else if (strncmp(lbl, "boltlz", 6) == 0) s->method = BP_METHOD_BOLTLZ;
     else if (strncmp(lbl, "Fluff",   5) == 0) s->method = BP_METHOD_FLUFF;
-    else if (strncmp(lbl, "zstd",    4) == 0) s->method = BP_METHOD_ZSTD;
     /* reset to per-method default level */
     s->level = s_method_default_level[s->method];
     cdlg_update_level_labels(s);
@@ -1604,14 +1567,6 @@ static void cdlg_fast_fluff_cb(Fl_Widget *w, void *data)
 {
     CompDlgState *s = (CompDlgState *)data;
     s->fast_fluff = ((Fl_Check_Button *)w)->value() ? 1 : 0;
-}
-#endif
-
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-static void cdlg_zstd_mt_cb(Fl_Widget *w, void *data)
-{
-    CompDlgState *s = (CompDlgState *)data;
-    s->zstd_multithread = ((Fl_Check_Button *)w)->value() ? 1 : 0;
 }
 #endif
 
@@ -1642,17 +1597,10 @@ static void cdlg_cancel_cb(Fl_Widget *, void *data)
 static int show_compression_dialog()
 {
     int W = 460;
-#ifdef BOLTPACK_ZSTD
-    int n_methods = 5;
-#else
     int n_methods = 4;
-#endif
     int ff_y_for_height = (32 + n_methods * 24 + 6) + 6 + 8 + 20 + 80;
     int profile_y = ff_y_for_height;
 #ifdef BOLTPACK_FAST_FLUFF
-    profile_y += 24;
-#endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
     profile_y += 24;
 #endif
     int target_label_y  = profile_y + 30;
@@ -1662,6 +1610,10 @@ static int show_compression_dialog()
     int H = note_y + 76;
     int cx = g_main_window ? g_main_window->x() + (g_main_window->w() - W) / 2 : 200;
     int cy = g_main_window ? g_main_window->y() + (g_main_window->h() - H) / 2 : 200;
+    if (cx + W > Fl::w()) cx = Fl::w() - W;
+    if (cy + H > Fl::h()) cy = Fl::h() - H;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
 
     CompDlgState s;
     s.action = CREATE_CANCEL;
@@ -1682,9 +1634,6 @@ static int show_compression_dialog()
 #ifdef BOLTPACK_FAST_FLUFF
     s.fast_fluff = g_fluff_multithread;
 #endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    s.zstd_multithread = g_zstd_multithread;
-#endif
 
     s.win = new Fl_Window(cx, cy, W, H, "Create Archive");
     s.win->set_modal();
@@ -1699,15 +1648,9 @@ static int show_compression_dialog()
         "BoltLite \xe2\x80\x94 Lighter compression \xe2\x80\x94 16-bit systems and up",
         "boltlz \xe2\x80\x94 Fast, light compression \xe2\x80\x94 32-bit / 64-bit",
         "Fluff \xe2\x80\x94 Medium compression \xe2\x80\x94 32-bit / 64-bit"
-#ifdef BOLTPACK_ZSTD
-       ,"zstd \xe2\x80\x94 Best compression \xe2\x80\x94 64-bit"
-#endif
     };
     static const int method_ids[] = {
         BP_METHOD_STORED, BP_METHOD_BOLTLITE, BP_METHOD_BOLTLZ, BP_METHOD_FLUFF
-#ifdef BOLTPACK_ZSTD
-       ,BP_METHOD_ZSTD
-#endif
     };
     n_methods = (int)(sizeof(method_ids) / sizeof(method_ids[0]));
     s.n_methods = n_methods;
@@ -1757,12 +1700,6 @@ static int show_compression_dialog()
     s.fast_fluff_btn->value(s.fast_fluff ? 1 : 0);
 #else
     (void)ff_y;
-#endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-    s.zstd_mt_btn = new Fl_Check_Button(18, ff_y + 24, W - 28, 22,
-                                        "Use multi-threaded zstd (parallel file compression)");
-    s.zstd_mt_btn->callback(cdlg_zstd_mt_cb, &s);
-    s.zstd_mt_btn->value(s.zstd_multithread ? 1 : 0);
 #endif
 
     s.interchange_btn = new Fl_Check_Button(18, profile_y, W - 28, 22,
@@ -1828,9 +1765,6 @@ static int show_compression_dialog()
         g_target_auto_rename = s.target_auto_rename;
 #ifdef BOLTPACK_FAST_FLUFF
         g_fluff_multithread  = s.fast_fluff;
-#endif
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-        g_zstd_multithread   = s.zstd_multithread;
 #endif
         save_prefs();
     }
@@ -3020,130 +2954,9 @@ struct CreateWork {
     int                      target_profile;
     bool                     target_auto_rename;
     bool                     use_fast_fluff;
-    bool                     use_fast_zstd;
     int                      result;
 };
 
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-/* Job descriptor for parallel zstd file collection */
-struct GuiDataJob {
-    std::string path;
-    std::string arcname;
-    bool        is_dir;
-    bp_uint64   file_size;
-    bp_uint64   mtime;
-    bp_uint16   mtime_flags;
-};
-
-static void gui_collect_jobs(const std::string &fpath, const std::string &arcname,
-                              std::vector<GuiDataJob> &jobs)
-{
-    struct stat st;
-    if (lstat(fpath.c_str(), &st) != 0) return;
-
-    if (S_ISDIR(st.st_mode)) {
-        std::string dname = arcname;
-        if (dname.empty() || dname[dname.size() - 1] != '/') dname += '/';
-        GuiDataJob dj;
-        dj.path = fpath; dj.arcname = dname; dj.is_dir = true;
-        dj.file_size = bp_u64_from_u32(0);
-        dj.mtime_flags = gui_archive_mtime(st.st_mtime, &dj.mtime)
-                       ? BP_ENTRY_FLAG_MTIME_VALID : 0;
-        jobs.push_back(dj);
-        DIR *d = opendir(fpath.c_str());
-        if (!d) return;
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-                continue;
-            gui_collect_jobs(fpath + "/" + ent->d_name, dname + ent->d_name, jobs);
-        }
-        closedir(d);
-        return;
-    }
-    if (S_ISREG(st.st_mode)) {
-        GuiDataJob j;
-        j.path = fpath; j.arcname = arcname; j.is_dir = false;
-        j.file_size = bp_off_to_u64((bp_off_t)st.st_size);
-        j.mtime_flags = gui_archive_mtime(st.st_mtime, &j.mtime)
-                      ? BP_ENTRY_FLAG_MTIME_VALID : 0;
-        jobs.push_back(j);
-    }
-}
-
-/* Compress a batch of data files to temp files in parallel, then commit them. */
-static int gui_zstd_batch(bp_archive_t *ar, const std::vector<GuiDataJob> &jobs,
-                           int start, int batch_n)
-{
-    std::vector<FILE *>            tmp_fps(batch_n, nullptr);
-    std::vector<bp_io_t>           tmp_ios(batch_n);
-    std::vector<bp_packed_entry_t> packed(batch_n);
-    std::vector<int>               rcs(batch_n, BP_OK);
-
-    memset(tmp_ios.data(), 0, (size_t)batch_n * sizeof(bp_io_t));
-    memset(packed.data(), 0, (size_t)batch_n * sizeof(bp_packed_entry_t));
-
-#pragma omp parallel for schedule(dynamic) num_threads(batch_n)
-    for (int j = 0; j < batch_n; j++) {
-        const GuiDataJob &job = jobs[(size_t)(start + j)];
-        bp_archive_t worker_ar;
-        memset(&worker_ar, 0, sizeof(worker_ar));
-        worker_ar.block_size   = ar->block_size;
-        worker_ar.method       = ar->method;
-        worker_ar.method_level = ar->method_level;
-        worker_ar.creator_os   = ar->creator_os;
-        worker_ar.creator_cpu  = ar->creator_cpu;
-
-        FILE *src_fp = fopen(job.path.c_str(), "rb");
-        FILE *tmp_fp = tmpfile();
-        if (!src_fp || !tmp_fp) {
-            if (src_fp) fclose(src_fp);
-            if (tmp_fp) fclose(tmp_fp);
-            rcs[(size_t)j] = BP_ERR_IO;
-        } else {
-            bp_io_t src_io;
-            bp_io_from_file(&src_io, src_fp);
-            bp_io_from_file(&tmp_ios[(size_t)j], tmp_fp);
-            rcs[(size_t)j] = bp_archive_pack_entry_ex(
-                &worker_ar, job.arcname.c_str(), BP_TYPE_DATA,
-                BP_OS_LINUX, &src_io, job.file_size, job.mtime,
-                &tmp_ios[(size_t)j], &packed[(size_t)j], job.mtime_flags);
-            fclose(src_fp);
-            bp_archive_close(&worker_ar);
-            if (rcs[(size_t)j] == BP_OK) {
-                rewind(tmp_fp);
-                tmp_fps[(size_t)j] = tmp_fp;
-            } else {
-                fclose(tmp_fp);
-            }
-        }
-    }
-
-    /* sequential commit */
-    int rc = BP_OK;
-    for (int j = 0; j < batch_n; j++) {
-        if (rcs[(size_t)j] != BP_OK) {
-            rc = rcs[(size_t)j];
-            for (int k = j; k < batch_n; k++) {
-                bp_packed_entry_dispose(&packed[(size_t)k]);
-                if (tmp_fps[(size_t)k]) { fclose(tmp_fps[(size_t)k]); tmp_fps[(size_t)k] = nullptr; }
-            }
-            return rc;
-        }
-        rc = bp_archive_commit_packed_entry(ar, &tmp_ios[(size_t)j], &packed[(size_t)j]);
-        bp_packed_entry_dispose(&packed[(size_t)j]);
-        if (tmp_fps[(size_t)j]) { fclose(tmp_fps[(size_t)j]); tmp_fps[(size_t)j] = nullptr; }
-        if (rc != BP_OK) {
-            for (int k = j + 1; k < batch_n; k++) {
-                bp_packed_entry_dispose(&packed[(size_t)k]);
-                if (tmp_fps[(size_t)k]) { fclose(tmp_fps[(size_t)k]); tmp_fps[(size_t)k] = nullptr; }
-            }
-            return rc;
-        }
-    }
-    return BP_OK;
-}
-#endif /* BOLTPACK_FAST_FLUFF && BOLTPACK_ZSTD */
 
 static bool choose_create_inputs(std::vector<std::string> &input_files)
 {
@@ -3422,10 +3235,6 @@ static void create_worker(CreateWork *w)
         ar.method_level = (bp_uint8)(w->level == 0 ? 1 : 2);
     else if (!interchange && method == BP_METHOD_FLUFF)
         ar.method_level = (bp_uint8)fluff_gui_level(w->level);
-#ifdef BOLTPACK_ZSTD
-    else if (!interchange && method == BP_METHOD_ZSTD)
-        ar.method_level = (bp_uint8)zstd_gui_level(w->level);
-#endif
     ar.progress_fn   = progress_cb;
     ar.progress_data  = w->pctx;
 
@@ -3463,41 +3272,8 @@ static void create_worker(CreateWork *w)
         }
 #endif
 
-#if defined(BOLTPACK_FAST_FLUFF) && defined(BOLTPACK_ZSTD)
-        if (method == BP_METHOD_ZSTD && w->use_fast_zstd) {
-            /* Collect all leaf files, compress batches in parallel, commit. */
-            std::vector<GuiDataJob> jobs;
-            for (size_t i = 0; i < w->input_files.size(); i++) {
-                std::string base = leaf_name(w->input_files[i]);
-                if (base.empty()) base = "archive";
-                gui_collect_jobs(w->input_files[i], base, jobs);
-            }
-            int nthreads = fast_fluff_thread_count();
-            int ji = 0;
-            while (ji < (int)jobs.size() && !w->pctx->cancelled.load() && rc == BP_OK) {
-                if (jobs[(size_t)ji].is_dir) {
-                    rc = bp_archive_add_entry_ex(
-                        &ar, jobs[(size_t)ji].arcname.c_str(), BP_TYPE_DIR,
-                        BP_OS_LINUX, nullptr, bp_u64_from_u32(0),
-                        jobs[(size_t)ji].mtime, jobs[(size_t)ji].mtime_flags);
-                    ji++;
-                    continue;
-                }
-                /* batch of up to nthreads data files */
-                int batch_n = 0;
-                while (ji + batch_n < (int)jobs.size() &&
-                       !jobs[(size_t)(ji + batch_n)].is_dir &&
-                       batch_n < nthreads)
-                    batch_n++;
-                if (batch_n <= 0) break;
-                rc = gui_zstd_batch(&ar, jobs, ji, batch_n);
-                ji += batch_n;
-            }
-            if (w->pctx->cancelled.load() && rc == BP_OK) rc = BP_ERR_ABORTED;
-        } else
-#endif
         {
-            /* sequential path for all other methods and single-threaded zstd */
+            /* sequential compression path */
             for (size_t i = 0; i < w->input_files.size() && !w->pctx->cancelled.load(); i++) {
                 const char *path = w->input_files[i].c_str();
                 std::string base_str = leaf_name(std::string(path));
@@ -3811,7 +3587,6 @@ static void create_and_send(const std::vector<std::string> &input_files)
     work.target_profile = g_target_profile;
     work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
-    work.use_fast_zstd  = (g_zstd_multithread != 0);
     work.result      = BP_OK;
 
     std::thread worker(create_worker, &work);
@@ -4047,7 +3822,6 @@ static void create_to_save(const std::vector<std::string> &input_files)
     work.target_profile = g_target_profile;
     work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
-    work.use_fast_zstd  = (g_zstd_multithread != 0);
     work.result      = BP_OK;
 
     std::thread worker(create_worker, &work);
@@ -4628,7 +4402,7 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
 {
     int choice = fl_choice("Reset GUI settings to defaults?\n"
                            "This restores the default compression mode,\n"
-                           "compression profile, Fluff and zstd threading,\n"
+                           "compression profile, Fluff threading,\n"
                            "window size and position,\n"
                            "and file-list columns.",
                            "Cancel", "Reset", NULL);
@@ -4637,7 +4411,6 @@ static void menu_reset_gui_settings_cb(Fl_Widget *, void *)
     g_compression_method = BP_METHOD_BOLTLZ;
     g_compression_level = 1;
     g_fluff_multithread = 0;
-    g_zstd_multithread  = 0;
     g_interchange_profile = 0;
 
     g_have_persisted_col_widths = false;

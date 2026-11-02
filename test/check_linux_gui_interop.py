@@ -129,68 +129,6 @@ wait "$gui_pid" >/dev/null 2>&1 || true
 '''
 
 
-ZSTD_CREATE_SCRIPT = r'''set -eu
-"$1" &
-gui_pid=$!
-trap 'kill "$gui_pid" 2>/dev/null || true' EXIT
-main=$(xdotool search --sync --onlyvisible --name '^BoltPack$' | head -1)
-choose_path() {
-    title=$1
-    path=$2
-    dialog=$(xdotool search --sync --onlyvisible --name "^$title$" | head -1)
-    xdotool windowfocus --sync "$dialog"
-    xdotool key ctrl+l
-    sleep 0.3
-    xdotool type --clearmodifiers "$path"
-    xdotool key Return
-    sleep 0.5
-    eval "$(xdotool getwindowgeometry --shell "$dialog")"
-    xdotool mousemove --window "$dialog" "$((WIDTH - 55))" \
-        "$((HEIGHT - 28))" click 1
-}
-xdotool windowfocus --sync "$main"
-xdotool key --window "$main" ctrl+n
-create_dialog=$(xdotool search --sync --onlyvisible --name '^Create Archive$' | head -1)
-eval "$(xdotool getwindowgeometry --shell "$create_dialog")"
-xdotool mousemove --window "$create_dialog" 105 "$((HEIGHT - 24))" click 1
-choice=$(xdotool search --sync --onlyvisible --name '^$' | tail -1)
-xdotool windowfocus --sync "$choice"
-xdotool key Tab Tab Return
-files_dialog=$(xdotool search --sync --onlyvisible --name '^Select files to archive$' | head -1)
-xdotool windowfocus --sync "$files_dialog"
-xdotool key ctrl+l
-sleep 0.3
-xdotool type --clearmodifiers "$2"
-xdotool key Return
-sleep 0.5
-for attempt in $(seq 1 8); do
-    if ! xdotool search --onlyvisible --name '^Select files to archive$' \
-         >/dev/null 2>&1; then
-        break
-    fi
-    xdotool mousemove --window "$files_dialog" 250 180 click 1
-    xdotool key ctrl+a
-    sleep 0.3
-    eval "$(xdotool getwindowgeometry --shell "$files_dialog")"
-    xdotool mousemove --window "$files_dialog" "$((WIDTH - 55))" \
-        "$((HEIGHT - 28))" click 1
-    sleep 0.4
-done
-if xdotool search --onlyvisible --name '^Select files to archive$' \
-   >/dev/null 2>&1; then
-    echo "multi-file source chooser did not close" >&2
-    exit 1
-fi
-choose_path 'Save archive as' "$3/zstd-created"
-for attempt in $(seq 1 100); do
-    test -s "$3/zstd-created.blt" && break
-    sleep 0.1
-done
-test -s "$3/zstd-created.blt"
-kill -TERM "$gui_pid"
-trap - EXIT
-wait "$gui_pid" >/dev/null 2>&1 || true
-'''
 
 EXTRACTION_FAILURE_SCRIPT = r'''set -eu
 case "$4" in
@@ -433,22 +371,6 @@ def main() -> int:
             raise SystemExit("GUI Profile 1 fixture does not match its reference manifest")
         profile_source.write_bytes(profile_payload)
         os.utime(profile_source, (-1, -1))
-        zstd_source = root / "zstd-source"
-        zstd_source.mkdir()
-        zstd_payloads = {
-            "first.bin": bytes(range(256)) * 129,
-            "second.bin": bytes(reversed(range(256))) * 131,
-        }
-        for name, data in zstd_payloads.items():
-            (zstd_source / name).write_bytes(data)
-            os.utime(zstd_source / name, (-1, -1))
-        os.utime(zstd_source, (-1, -1))
-        zstd_config_home = root / "zstd-config"
-        zstd_prefs = zstd_config_home / "boltpack"
-        zstd_prefs.mkdir(parents=True)
-        (zstd_prefs / "gui.conf").write_text(
-            "method=4\nlevel=1\nzstd_mt=1\ninterchange_profile=0\n",
-            encoding="ascii")
         flatten_entries = manifest["flattened_collision"]["entries"]
         existing_output = manifest["flattened_collision"]["existing_output"]
         (flatten_output / existing_output["name"]).write_text(
@@ -470,7 +392,6 @@ def main() -> int:
         prefix_archive = root / "prefix-conflict.bolt"
         unsafe_archive = root / "unsafe-name.bolt"
         created_archive = create_output / manifest["created_archive_name"]
-        zstd_archive = create_output / "zstd-created.blt"
         subprocess.run([str(cli), "c", str(archive),
                         relative_name.parent.as_posix()],
                        cwd=root / "source", check=True,
@@ -511,51 +432,6 @@ def main() -> int:
                         str(metadata_shim)], check=True)
         subprocess.run(command, check=True, timeout=120, env=environment,
                        cwd=flatten_output)
-        zstd_environment = environment.copy()
-        zstd_environment["XDG_CONFIG_HOME"] = str(zstd_config_home)
-        zstd_create_command = [
-            "xvfb-run", "-a", "-s", "-screen 0 1280x1024x24",
-            "sh", "-c", ZSTD_CREATE_SCRIPT, "linux-gui-zstd-create",
-            str(gui), str(zstd_source), str(create_output)]
-        subprocess.run(zstd_create_command, check=True, timeout=120,
-                       env=zstd_environment, cwd=flatten_output)
-        if not zstd_archive.is_file():
-            raise SystemExit("GUI parallel Zstd creation did not publish an archive")
-        subprocess.run([str(cli), "t", str(zstd_archive)], check=True,
-                       stdout=subprocess.DEVNULL)
-        zstd_bytes = zstd_archive.read_bytes()
-        zstd_table_offset = struct.unpack_from(
-            "<Q", zstd_bytes, len(zstd_bytes) - 20)[0]
-        zstd_entry_count = struct.unpack_from(
-            "<I", zstd_bytes, zstd_table_offset + 4)[0]
-        zstd_entries = {}
-        zstd_record = zstd_table_offset + 16
-        for _ in range(zstd_entry_count):
-            zstd_name_length = struct.unpack_from("<H", zstd_bytes,
-                                                  zstd_record)[0]
-            zstd_name = zstd_bytes[zstd_record + 2:
-                                   zstd_record + 2 + zstd_name_length].decode("utf-8")
-            zstd_fields = zstd_record + 2 + zstd_name_length
-            zstd_mtime = struct.unpack_from("<Q", zstd_bytes,
-                                            zstd_fields + 18)[0]
-            zstd_flags = struct.unpack_from("<H", zstd_bytes,
-                                            zstd_fields + 41)[0]
-            zstd_entries[zstd_name] = (zstd_mtime, zstd_flags)
-            zstd_record = zstd_fields + 43
-        if set(zstd_entries) != {"first.bin", "second.bin"}:
-            raise SystemExit(
-                "GUI parallel Zstd archive has unexpected entries: " +
-                repr(sorted(zstd_entries)))
-        if any(mtime != 0 or flags & 0x4000
-               for mtime, flags in zstd_entries.values()):
-            raise SystemExit("GUI parallel Zstd creation marked pre-epoch times known")
-        zstd_output = root / "zstd-extract"
-        subprocess.run([str(cli), "x", "-o", str(zstd_output),
-                        str(zstd_archive)], check=True,
-                       stdout=subprocess.DEVNULL)
-        for name, expected_data in zstd_payloads.items():
-            if (zstd_output / name).read_bytes() != expected_data:
-                raise SystemExit("GUI parallel Zstd payload differs after extraction")
         extraction_failure_command = [
             "xvfb-run", "-a", "-s", "-screen 0 1280x1024x24",
             "sh", "-c", EXTRACTION_FAILURE_SCRIPT,

@@ -117,7 +117,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
 | 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
 | 20+N   | 4    | `checksum`        | u32 LE | Checksum of uncompressed payload, per `checksum_type`                     |
-| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff, 4=zstd)          |
+| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff; 4 retired)      |
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
@@ -341,7 +341,7 @@ The conservative encoder output bound is `n + floor(n / 63) + 16` bytes.
 **Codec:** Fluff
 **Decompressor complexity:** Moderate (~1000 lines of C89)
 **Speed:** ~467 MB/s decompression (modern 64-bit system)
-**Compression ratio:** ~29% on curated corpus (best ratio among the non-zstd
+**Compression ratio:** ~29% on curated corpus (best ratio among the
 methods)
 
 #### 3.4.1 Overview
@@ -903,51 +903,11 @@ The reference implementation is `src/core/fluff.c` (`fluff_decompress_block_ctx`
 
 ---
 
-### 3.5 Method 4: zstd (Zstandard)
+### 3.5 Method 4 (retired)
 
-**ID:** `4`
-**Codec:** Zstandard 1.5.x (Meta Platforms / Yann Collet)
-**Library:** `lib/zstd/zstd.c` (single-file amalgamation, C99)
-**Availability:** Modern 32/64-bit targets only (`BOLTPACK_ZSTD` build flag)
-**Speed:** ~1700 MB/s decompression (modern 64-bit system)
-**Compression ratio:** ~27% on curated corpus (best ratio codec in BoltPack)
-
-#### 3.5.1 Overview
-
-Method 4 stores each block as a self-contained zstd **frame** produced by
-`ZSTD_compressCCtx()`. Each block is independent — no cross-block dictionary
-state is maintained at the BoltPack level. The block size is fixed at 256 KB
-for zstd archives.
-
-Compression levels map from the BoltPack GUI/CLI 1–9 scale to zstd native
-levels as follows:
-
-| BP level | zstd native level | Notes             |
-| -------- | ----------------- | ----------------- |
-| 1        | 1                 | Fastest           |
-| 2        | 2                 |                   |
-| 3        | 3                 | Default           |
-| 4        | 5                 |                   |
-| 5        | 7                 |                   |
-| 6        | 9                 |                   |
-| 7        | 12                |                   |
-| 8        | 15                |                   |
-| 9        | 19                | Maximum (slowest) |
-
-#### 3.5.2 Decompression Requirements
-
-- Each block MUST be decompressed with `ZSTD_decompressDCtx()` (or equivalent).
-- Decompressed size MUST equal `block_orig_size`; mismatch → `ERR_CORRUPT`.
-- Implementations on vintage/16-bit targets that do not link `lib/zstd/`
-  MUST return `ERR_UNSUPPORTED_METHOD` when encountering method 4.
-
-#### 3.5.3 Compatibility
-
-Method 4 archives are readable by any modern build of BoltPack (Linux, macOS,
-Windows 32/64-bit, ARM64, RISC-V). Vintage targets (DOS 16-bit, Win16, Amiga,
-Atari ST, Classic Mac 68 K) return `ERR_UNSUPPORTED_METHOD`.
-
-The zstd frame format is documented at <https://github.com/facebook/zstd/blob/dev/doc/zstd_compression_format.md>.
+Method 4 was Zstandard (zstd). It has been removed. Readers MUST return
+`ERR_UNSUPPORTED_METHOD` when encountering method 4; no zstd encoder or
+decoder is built.
 
 ---
 
@@ -1255,7 +1215,6 @@ Full v1.0 implementations SHOULD support all compressed methods:
 1. **Method 1** — BoltLite
 2. **Method 2** — BoltLZ
 3. **Method 3** — Fluff
-4. **Method 4** — zstd (modern 32/64-bit targets only; return `BP_ERR_UNSUPPORTED_METHOD` on vintage/16-bit builds)
 
 ### 9.2 Encoder Conformance
 
@@ -1309,7 +1268,7 @@ smallest mini readers. A profile-conforming archive:
    may support a smaller subset and MUST report an unrepresentable or
    colliding name before extracting that entry.
 
-BoltLZ, Fluff, and zstd are optional extensions outside this profile. A target
+BoltLZ and Fluff are optional extensions outside this profile. A target
 that implements only the profile MUST return `BP_ERR_UNSUPPORTED_METHOD` for
 those codecs. The mini core enforces the entry count, block size, per-entry
 size, and serialized archive-size limits. The full writer API exposes

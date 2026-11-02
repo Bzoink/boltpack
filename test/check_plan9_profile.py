@@ -118,11 +118,6 @@ def main():
         assert result.returncode != 0 and unprofiled.read_bytes() == unprofiled_bytes, \
             "Plan 9 target append accepted existing data without native mode metadata"
 
-        result = run(full, "create", "--target-profile=plan9-utf8-v1", "-Z",
-                     "unsupported-zstd.blt", "first.bin", cwd=root)
-        assert result.returncode != 0 and not (root / "unsupported-zstd.blt").exists(), \
-            "Plan 9 target profile accepted Zstandard"
-
         for invalid_name in ("control-\x01", "c1-\u0080"):
             bad_source = root / invalid_name
             bad_source.write_bytes(b"must be rejected\n")

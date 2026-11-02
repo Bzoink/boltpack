@@ -27,12 +27,3 @@ underlying the Finite State Entropy (FSE) component of the Fluff codec in
 
 - Reference: J. Duda, "Asymmetric numeral systems," arXiv:0902.0271, 2009.
   <https://arxiv.org/abs/0902.0271>
-
-### Meta Platforms, Inc. / Yann Collet
-
-**zstd 1.5.7** — Zstandard real-time data compression algorithm.
-Vendored as a single-file amalgamation in `lib/zstd/`. Licensed under the
-BSD 2-Clause "Simplified" License.
-
-- Home page: <https://github.com/facebook/zstd>
-- Reference: Y. Collet, "Zstandard Compression Algorithm," RFC 8878, 2021.

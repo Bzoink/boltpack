@@ -22,8 +22,7 @@ make
 
 On Linux hosts with OpenMP available, these targets enable the optional
 parallel compression paths. The `BOLTPACK_FAST_FLUFF` build switch controls
-parallel Fluff and BoltLZ; supported CLI builds can also parallelize independent
-zstd files:
+parallel Fluff and BoltLZ:
 
 ```bash
 make modern
@@ -39,7 +38,7 @@ make macosx-gui
 
 `make modern` builds the Linux x86-64 CLI with OpenMP enabled. `make arm64`
 does the same for the dedicated Linux ARM64 CLI build. On supported Linux and
-Windows CLI builds, BoltLZ, Fluff, and zstd automatically use multiple workers
+Windows CLI builds, BoltLZ and Fluff automatically use multiple workers
 for sufficiently large workloads. `--single-thread` forces serial compression;
 `boltpack help advanced` lists `-j N` for the worker count and `-g N` for Fluff
 grouping.
@@ -55,10 +54,9 @@ requires an osxcross or native macOS toolchain with OpenMP support, and
 `make haiku-gui` still requires the Haiku cross SDK.
 
 For the generic Makefile build, set `ENABLE_FAST_FLUFF=0` to omit the C11/
-OpenMP encoder and `ENABLE_ZSTD=0` to omit the C99 zstd library. These switches
-do not apply to target-specific recipes that explicitly set their feature
-flags; check the target recipe when building outside the generic Linux CLI
-target.
+OpenMP encoder. This switch does not apply to target-specific recipes that
+explicitly set their feature flags; check the target recipe when building
+outside the generic Linux CLI target.
 
 ### Other platforms
 

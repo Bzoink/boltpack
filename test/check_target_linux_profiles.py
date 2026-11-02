@@ -64,12 +64,12 @@ def main() -> int:
         posix_source.mkdir()
         (posix_source / "payload.txt").write_bytes(b"POSIX profile payload\n")
         (posix_source / "payload-link").symlink_to("payload.txt")
-        posix_full_archive = "generic-posix-zstd.blt"
+        posix_full_archive = "generic-posix-fluff.blt"
         run(
             boltpack,
             "create",
             "--target-profile=posix-utf8-v1",
-            "--zstd",
+            "-F",
             posix_full_archive,
             posix_source.name,
             cwd=root,

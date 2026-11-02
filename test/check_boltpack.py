@@ -202,7 +202,6 @@ def test_roundtrip_per_method() -> None:
         ("-1", "BoltLite"),
         ("-2", "boltlz"),
         ("-F", "Fluff"),
-        ("-Z", "zstd"),
     ]
     for flag, name in methods:
         with tempfile.TemporaryDirectory(prefix=f"bp_rt_{name}_") as tmp:
@@ -854,39 +853,6 @@ def test_interchange_profile() -> None:
               "profile: refuses extended-codec append without changing archive bytes")
 
 
-def test_zstd_levels() -> None:
-    section("zstd compression levels (-Z -l 1 vs -Z -l 9)")
-
-    with tempfile.TemporaryDirectory(prefix="bp_zstd_") as tmp:
-        src = os.path.join(tmp, "src")
-        arc1 = os.path.join(tmp, "zstd_level1.bolt")
-        arc9 = os.path.join(tmp, "zstd_level9.bolt")
-        os.makedirs(src)
-        # Use repetitive data so higher levels produce smaller output
-        make_file(os.path.join(src, "data.bin"), 65536, "text", 70)
-
-        r1 = run_bp("c", "-Z", "-l", "1", "zstd_level1.bolt", "src", cwd=tmp)
-        check(r1.returncode == 0, "zstd level 1: create exit 0")
-
-        r9 = run_bp("c", "-Z", "-l", "9", "zstd_level9.bolt", "src", cwd=tmp)
-        check(r9.returncode == 0, "zstd level 9: create exit 0")
-
-        if r1.returncode == 0 and r9.returncode == 0:
-            size1 = os.path.getsize(arc1)
-            size9 = os.path.getsize(arc9)
-            check(size9 <= size1,
-                  f"zstd level 9 ({size9}) <= level 1 ({size1})")
-
-        # integrity
-        r = run_bp("t", "zstd_level9.bolt", cwd=tmp)
-        check(r.returncode == 0, "zstd level 9: test integrity exit 0")
-
-        # info should show method = zstd
-        r = run_bp("i", "zstd_level9.bolt", cwd=tmp)
-        check(r.returncode == 0, "zstd level 9: info exit 0")
-        check(b"zstd" in r.stdout, "zstd level 9: method name 'zstd' in info output")
-
-
 def test_fluff_levels() -> None:
     section("Fluff compression levels (-l 1 vs -l 9)")
 
@@ -1141,7 +1107,6 @@ def main() -> int:
         test_append,
         test_interchange_profile,
         test_fluff_levels,
-        test_zstd_levels,
         test_fast_fluff_threaded_roundtrip,
         test_fast_boltlz_threaded_roundtrip,
         test_format6_metadata_roundtrip,

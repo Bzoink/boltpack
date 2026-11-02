@@ -217,7 +217,6 @@ def main():
                                "-Wno-unused-function", "-O2", "-ffunction-sections",
                                "-fdata-sections", "-U__STRICT_ANSI__"],
             "network": "disabled",
-            "zstd": "disabled",
             "dos_executable_sha256": sha256(executable),
             "linux_executable_sha256": sha256(linux),
         },

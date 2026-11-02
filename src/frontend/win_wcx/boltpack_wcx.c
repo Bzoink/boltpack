@@ -14,7 +14,6 @@
  *   1 = BoltLite (small-memory LZ77)
  *   2 = boltlz (default if not set)
  *   3 = Fluff (LZ77+FSE/tANS, best ratio on all targets)
- *   4 = zstd (Zstandard, best ratio on modern 64-bit; BOLTPACK_ZSTD builds only)
  *
  * Use boltpack-config.exe to configure the registry setting interactively.
  *
@@ -43,9 +42,6 @@
 #include "../../core/archiver.h"
 #include "../../core/compress.h"
 #include "../../core/bp_metadata.h"
-#ifdef BOLTPACK_ZSTD
-#include "../../core/zstd_wrap.h"
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -782,7 +778,7 @@ typedef struct wcx_entry {
     bp_uint16 flags;
     bp_uint8  entry_type;
     int       is_dir;
-    int       method;               /* 0=stored, 1=BoltLite, 2=boltlz, 3=fluff, 4=zstd */
+    int       method;               /* 0=stored, 1=BoltLite, 2=boltlz, 3=fluff */
     int       extracted;
     int       directory_finalized;
     int       portable_meta_present;
@@ -1362,8 +1358,7 @@ static tProcessDataProcW g_proc_cb_w;
 
 /*
  * Get the configured compression method from the registry.
- * Returns: 0 (stored), 1 (BoltLite), 2 (boltlz -- default), 3 (fluff),
- *          or 4 (zstd, modern builds only)
+ * Returns: 0 (stored), 1 (BoltLite), 2 (boltlz -- default), 3 (fluff)
  */
 static int get_compression_method(void)
 {
@@ -1388,16 +1383,10 @@ static int get_compression_method(void)
         return 2;  /* value doesn't exist, use default */
     }
 
-    /* Validate: accept 0-4; fall back to boltlz for unknown values */
-    if (method > 4) {
+    /* Validate: accept 0-3; fall back to boltlz for unknown values */
+    if (method > 3) {
         return 2;
     }
-    /* method 4 (zstd) requires a BOLTPACK_ZSTD build */
-#ifndef BOLTPACK_ZSTD
-    if (method == 4) {
-        return 2;
-    }
-#endif
 
     return (int)method;
 }

@@ -31,7 +31,7 @@ priority issues are in the read path:
 ### In scope
 
 - Memory-safety bugs in the archive parser or any decompressor (`archiver.c`,
-  `compress.c`, `fluff.c`, `boltlite.c`, `zstd_wrap.c`, and the `mini/` variants):
+  `compress.c`, `fluff.c`, `boltlite.c`, and the `mini/` variants):
   buffer overflows, out-of-bounds reads, integer overflow leading to bad
   allocation or bad bounds, use-after-free
 - Path traversal on extraction — an archive entry that writes outside the
@@ -47,9 +47,6 @@ priority issues are in the read path:
 - Crashes only reachable with a debug/sanitizer build and deliberately invalid
   API arguments from a caller you control
 - Missing hardening flags in a build you configured yourself
-- Vulnerabilities in vendored third-party code that are already public upstream
-  — report those to zstd; do tell us so we can update the vendored
-  copy
 - Archive corruption that is detected and reported correctly (`BP_ERR_CHECKSUM`,
   `BP_ERR_CORRUPT`, `BP_ERR_TRUNCATED`) — that is the format working as designed
 

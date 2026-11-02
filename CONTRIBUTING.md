@@ -5,7 +5,7 @@ platform frontends are all welcome.
 
 BoltPack keeps a **strict ANSI C89 portable baseline** for its archive core and
 baseline codecs. Optional modern components have separate requirements: the
-parallel Fluff encoder uses C11/OpenMP, and zstd uses C99. Please read
+parallel Fluff encoder uses C11/OpenMP. Please read
 [Core Language Rules](#core-language-rules) before changing core code.
 
 ## Reporting Bugs
@@ -83,9 +83,9 @@ platforms.
 
 The `bp_off_t` definition in `bp_types.h` uses `__extension__ typedef long
 long` (GCC/Clang) and `__int64` (MSVC) to express a 64-bit file offset on ILP32
-platforms. The separate `src/core/fluff_fast.c` module uses C11 and OpenMP;
-`lib/zstd/` uses C99. Those optional components have their own build flags and
-must not become requirements for the portable baseline. See
+platforms. The separate `src/core/fluff_fast.c` module uses C11 and OpenMP.
+That optional component has its own build flags and must not become a
+requirement for the portable baseline. See
 [docs/portability.md](docs/portability.md) for details.
 
 Frontend code under `src/frontend/<platform>/` may use its platform APIs and

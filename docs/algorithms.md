@@ -18,10 +18,10 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 | 1      | BoltLite   | `src/core/boltlite.c`              | Small-memory LZ77, especially for mini builds   |
 | 2      | boltlz | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
 | 3      | Fluff  | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
-| 4      | zstd   | `src/core/zstd_wrap.c` wrapper | Best-ratio codec; modern 32/64-bit targets only |
+| 4      | retired | —                             | Former zstd method; readers reject it           |
 
-The full archiver can read and write all five methods on modern targets.
-Constrained frontends (DOS 16-bit, Win16, Amiga, Atari, Classic Mac 68 K) may
+The full archiver can read and write methods 0–3. Constrained frontends
+(DOS 16-bit, Win16, Amiga, Atari, Classic Mac 68 K) may
 reject methods they do not ship and return `BP_ERR_UNSUPPORTED_METHOD`.
 
 ## 2. Method 0: Stored
@@ -65,7 +65,7 @@ Its defining traits are:
 
 BoltLite has a fixed encoder configuration and exposes no compression levels
 or quality presets. Select it with `-1` / `--boltlite`; level options apply to
-BoltLZ, Fluff, and zstd instead.
+BoltLZ and Fluff instead.
 
 ### 3.2 Format-Fixed Parameters
 
@@ -359,56 +359,10 @@ for orientation, not as a wire-format guarantee. Fast-fluff modern builds trade
 a small amount of ratio for much higher compression throughput, but they still
 write method `3` archives rather than introducing a separate archive method.
 
-## 6. Method 4: zstd (Zstandard)
+## 6. Method 4 (retired)
 
-zstd is BoltPack’s highest-ratio codec and a good choice on modern targets that
-include method 4.
-
-### 6.1 Overview
-
-zstd is vendored as a single-file amalgamation in `lib/zstd/zstd.c` (zstd 1.5.7,
-BSD 2-Clause). The thin C89-compatible wrapper is `src/core/zstd_wrap.c` /
-`src/core/zstd_wrap.h`. The amalgamation is compiled with `-std=c99`; the wrapper
-calls it through opaque `ZSTD_CCtx *` / `ZSTD_DCtx *` contexts, keeping the
-C99 requirement entirely inside `lib/` and `src/core/zstd_wrap.c`.
-
-Each block is a self-contained zstd frame. No cross-block dictionary state is
-maintained; all blocks use the same compression level set by `bp_zstd_set_level()`.
-
-### 6.2 Compression Level Mapping
-
-| BP level (1–9) | zstd native level | GUI label        |
-| -------------- | ----------------- | ---------------- |
-| 1              | 1                 | Fast             |
-| 2              | 2                 |                  |
-| 3              | 3                 | Normal (default) |
-| 4              | 5                 |                  |
-| 5              | 7                 |                  |
-| 6              | 9                 |                  |
-| 7              | 12                |                  |
-| 8              | 15                |                  |
-| 9              | 19                | Best / Ultra     |
-
-The default block size for zstd archives is 256 KB (same as Fluff).
-
-### 6.3 Availability
-
-Method 4 requires the `BOLTPACK_ZSTD` compile-time flag. The standard Linux
-and Windows CLI builds, the dedicated Linux ARM64 build, and Linux/Windows
-FLTK GUI builds include it. The repository macOS CLI and native macOS source
-kits, the RISC-V and Haiku CLIs, and constrained vintage targets currently omit
-it. A frontend built without the flag rejects method 4 with
-`BP_ERR_UNSUPPORTED_METHOD`; its CLI help omits the unavailable selector where
-the frontend has build-aware help.
-
-### 6.4 Memory Profile
-
-| Side          | Working memory                                         |
-| ------------- | ------------------------------------------------------ |
-| Compression   | `ZSTD_CCtx` heap context (∼ few hundred KB at level 3) |
-| Decompression | `ZSTD_DCtx` heap context (∼ 128 KB)                    |
-
-Both contexts are created lazily on first use and released by `bp_zstd_cleanup()`.
+Method 4 was Zstandard (zstd). It has been removed. Readers reject method 4
+with `BP_ERR_UNSUPPORTED_METHOD`; no zstd encoder or decoder is built.
 
 ## 7. Memory Profile
 
@@ -418,7 +372,6 @@ Both contexts are created lazily on first use and released by `bp_zstd_cleanup()
 | 1      | 18,432-byte hash-chain workspace                             | No decoder scratch                                               |
 | 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
 | 3      | About 2.52 MiB internally at 256 KiB blocks, per encoder | About 276 KiB context plus 5.4 KiB temporary table scratch |
-| 4      | `ZSTD_CCtx` heap context (∼ few hundred KB, level-dependent) | `ZSTD_DCtx` heap context (∼ 128 KB)                       |
 
 Fluff's encoder total includes its context, match tables and reusable scratch;
 it excludes caller buffers, allocator overhead and stack. The
@@ -441,8 +394,6 @@ reports remain separate from the implementation description.
 1. Haruhiko Okumura, original BoltLite design and binary-search-tree matcher.
 1. J. Duda, “Asymmetric numeral systems,” arXiv:0902.0271, 2009 — theoretical
    basis for the FSE/tANS entropy coder in Fluff.
-1. zstd 1.5.7, vendored in `lib/zstd/`; by Meta Platforms / Yann Collet;
-   BSD 2-Clause license.
 1. [specification-1.0.md](specification-1.0.md) for the exact BoltPack wire
    format.
 

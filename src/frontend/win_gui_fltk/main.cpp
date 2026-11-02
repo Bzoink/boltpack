@@ -94,9 +94,6 @@ extern "C" {
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
-#ifdef BOLTPACK_ZSTD
-#include "../../core/zstd_wrap.h"
-#endif
 #ifdef BOLTPACK_NET
 #include "../linux/bp_net.h"
 #endif
@@ -356,7 +353,6 @@ static const char *method_name(int m)
     case BP_METHOD_BOLTLITE:   return "BoltLite";
     case BP_METHOD_BOLTLZ:  return "boltlz";
     case BP_METHOD_FLUFF:  return "fluff";
-    case BP_METHOD_ZSTD:   return "zstd";
     default:               return "?";
     }
 }
@@ -364,12 +360,12 @@ static const char *method_name(int m)
 static const char *format_methods(const bp_uint32 *counts)
 {
     static char buf[128];
-    static const char * const names[5] = {"Stored", "BoltLite", "boltlz", "Fluff", "zstd"};
+    static const char * const names[4] = {"Stored", "BoltLite", "boltlz", "Fluff"};
     int pos = 0;
     int first = 1;
     int i;
     buf[0] = '\0';
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 4; i++) {
         if (counts[i] == 0) continue;
         if (!first) { buf[pos++] = ','; buf[pos++] = ' '; }
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s (%lu)",
@@ -1326,8 +1322,7 @@ enum { CREATE_CANCEL = 0, CREATE_SAVE = 1 };
 /* Block sizes vary per method:
  *   BoltLite   (16-bit): 8K / 16K / 32K  -- ring buffer is only 2 KB
  *   boltlz(32-bit): 16K / 32K / 64K -- fast codec, default is 32K
- *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size
- *   zstd   (64-bit): always 256K -- level controls zstd compression level */
+ *   Fluff  (32-bit): always 256K -- level controls chain depth, not block size */
 static bp_uint32 level_to_block_size(int method, int level)
 {
     if (method == BP_METHOD_BOLTLITE) {
@@ -1336,7 +1331,7 @@ static bp_uint32 level_to_block_size(int method, int level)
         case 2: return BP_BLOCK_32K;
         default: return BP_BLOCK_16K;
         }
-    } else if (method == BP_METHOD_FLUFF || method == BP_METHOD_ZSTD) {
+    } else if (method == BP_METHOD_FLUFF) {
         (void)level;
         return BP_BLOCK_256K; /* level controls compression quality, not block size */
     } else {
@@ -1358,17 +1353,6 @@ static int fluff_gui_level(int level)
     default: return 6;
     }
 }
-
-#ifdef BOLTPACK_ZSTD
-static int zstd_gui_level(int level)
-{
-    switch (level) {
-    case 0: return 1; /* Fast */
-    case 2: return 9; /* Best */
-    default: return 3; /* Normal (default) */
-    }
-}
-#endif
 
 #ifdef BOLTPACK_FAST_FLUFF
 static int fast_fluff_thread_count()
@@ -1668,29 +1652,27 @@ struct CompDlgState {
 };
 
 /* Radio labels per method (indices 0=fast 1=normal 2=best) */
-static const char * const s_level_labels[5][3] = {
+static const char * const s_level_labels[4][3] = {
     /* Stored  */ { "",                                    "",                                    ""                                       },
     /* BoltLite    */ { "Fast \xe2\x80\x94 8 KB blocks",      "Normal \xe2\x80\x94 16 KB blocks",    "Best \xe2\x80\x94 32 KB blocks"         },
     /* boltlz */ { "Fast \xe2\x80\x94 16 KB blocks",     "Normal \xe2\x80\x94 32 KB blocks",    "Best \xe2\x80\x94 64 KB blocks"         },
-    /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       },
-    /* zstd    */ { "Fast \xe2\x80\x94 level 1",          "Normal \xe2\x80\x94 level 3 (default)","Best \xe2\x80\x94 level 9 (ultra)"      }
+    /* Fluff   */ { "Fast \xe2\x80\x94 level 3 (quick)",  "Normal \xe2\x80\x94 level 6",          "Best \xe2\x80\x94 level 9 (slow)"       }
 };
 
 /* Section heading per method */
-static const char * const s_level_title[5] = {
+static const char * const s_level_title[4] = {
     /* Stored  */ "",
     /* BoltLite    */ "Block Size",
     /* boltlz */ "Block Size",
-    /* Fluff   */ "Compression Level (block size fixed at 256 KB)",
-    /* zstd    */ "Compression Level (block size fixed at 256 KB)"
+    /* Fluff   */ "Compression Level (block size fixed at 256 KB)"
 };
 
 /* Default level (0/1/2) when switching to a method */
-static const int s_method_default_level[] = { 1, 1, 1, 2, 1 }; /* Fluff defaults to Best; zstd defaults to Normal */
+static const int s_method_default_level[] = { 1, 1, 1, 2 }; /* Fluff defaults to Best */
 
 static void cdlg_update_level_labels(CompDlgState *s)
 {
-    int m = (s->method >= 0 && s->method <= 4) ? s->method : 2;
+    int m = (s->method >= 0 && s->method <= 3) ? s->method : 2;
     int i;
 
     for (i = 0; i < s->n_methods; i++) {
@@ -1745,7 +1727,6 @@ static void cdlg_method_cb(Fl_Widget *w, void *data)
     else if (strncmp(lbl, "BoltLite",    4) == 0) s->method = BP_METHOD_BOLTLITE;
     else if (strncmp(lbl, "boltlz", 6) == 0) s->method = BP_METHOD_BOLTLZ;
     else if (strncmp(lbl, "Fluff",   5) == 0) s->method = BP_METHOD_FLUFF;
-    else if (strncmp(lbl, "zstd",    4) == 0) s->method = BP_METHOD_ZSTD;
     /* reset to per-method default level */
     s->level = s_method_default_level[s->method];
     cdlg_update_level_labels(s);
@@ -1797,11 +1778,7 @@ static void cdlg_cancel_cb(Fl_Widget *, void *data)
 /* Returns the chosen action (CREATE_*); updates compression settings. */
 static int show_compression_dialog()
 {
-#ifdef BOLTPACK_ZSTD
-    int n_methods_for_height = 5;
-#else
     int n_methods_for_height = 4;
-#endif
     int W = 460;
     int ff_y_for_height = (32 + n_methods_for_height * 24 + 6) + 6 + 8 + 20 + 80;
     int profile_y = ff_y_for_height;
@@ -1839,15 +1816,9 @@ static int show_compression_dialog()
         "BoltLite \xe2\x80\x94 Lighter compression \xe2\x80\x94 16-bit systems and up",
         "boltlz \xe2\x80\x94 Fast, light compression \xe2\x80\x94 32-bit / 64-bit",
         "Fluff \xe2\x80\x94 Medium compression \xe2\x80\x94 32-bit / 64-bit"
-#ifdef BOLTPACK_ZSTD
-       ,"zstd \xe2\x80\x94 Best compression \xe2\x80\x94 64-bit"
-#endif
     };
     static const int method_ids[] = {
         BP_METHOD_STORED, BP_METHOD_BOLTLITE, BP_METHOD_BOLTLZ, BP_METHOD_FLUFF
-#ifdef BOLTPACK_ZSTD
-       ,BP_METHOD_ZSTD
-#endif
     };
     int n_methods = (int)(sizeof(method_ids) / sizeof(method_ids[0]));
     s.n_methods = n_methods;
@@ -4545,10 +4516,6 @@ static void create_worker(CreateWork *w)
         ar.method_level = (bp_uint8)(w->level == 0 ? 1 : 2);
     else if (!w->use_interchange_profile && method == BP_METHOD_FLUFF)
         ar.method_level = (bp_uint8)fluff_gui_level(w->level);
-#ifdef BOLTPACK_ZSTD
-    else if (!w->use_interchange_profile && method == BP_METHOD_ZSTD)
-        ar.method_level = (bp_uint8)zstd_gui_level(w->level);
-#endif
     ar.progress_fn   = progress_cb;
     ar.progress_data  = w->pctx;
 
