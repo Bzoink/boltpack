@@ -61,6 +61,15 @@ if [ "$1" = "--verbose" ] || [ "$1" = "-v" ]; then
     shift
 fi
 
+# build_target passes CFLAGS on the make command line, which overrides the
+# Makefile's CFLAGS += $(BP_VER_DEFS) assignment. Carry the version defines
+# explicitly so those builds report the release version.
+BP_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]')
+[ -n "$BP_VERSION" ] || BP_VERSION=1.0
+BP_VERSION_MAJOR=${BP_VERSION%%.*}
+BP_VERSION_MINOR=${BP_VERSION#*.}
+BP_VERSION_DEFS="-DBP_VERSION_MAJOR=$BP_VERSION_MAJOR -DBP_VERSION_MINOR=$BP_VERSION_MINOR"
+
 # ---- target definitions -------------------------------------------------
 # Each target: frontend directory name, CC, CFLAGS additions, LDFLAGS, binary suffix
 
@@ -89,7 +98,7 @@ build_target() {
     echo "  BUILD $target_name ($compiler)"
     if [ -n "$VERBOSE" ]; then
         if make FRONTEND="$frontend" CC="$compiler" \
-             CFLAGS="$base_cflags $extra_cflags" \
+             CFLAGS="$base_cflags $extra_cflags $BP_VERSION_DEFS" \
              LDFLAGS="$extra_ldflags" \
              BUILDDIR="build/$target_name" \
              TARGET="build/$target_name/boltpack$suffix" \
@@ -103,7 +112,7 @@ build_target() {
         fi
     else
         if make FRONTEND="$frontend" CC="$compiler" \
-             CFLAGS="$base_cflags $extra_cflags" \
+             CFLAGS="$base_cflags $extra_cflags $BP_VERSION_DEFS" \
              LDFLAGS="$extra_ldflags" \
              BUILDDIR="build/$target_name" \
              TARGET="build/$target_name/boltpack$suffix" \
