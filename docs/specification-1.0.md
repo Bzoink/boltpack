@@ -121,7 +121,7 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 | 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
 | 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
 | 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
-| 31+N   | 1    | `platform`        | u8     | OS code or, for portable metadata only, namespace `0xFE`                  |
+| 31+N   | 1    | `platform`        | u8     | OS code or, for metadata only, namespace `0xFE` (portable) or `0xFD` (native attributes) |
 | 32+N   | 8    | `mtime`           | u64 LE | Modification time (unsigned Unix epoch seconds, UTC), when valid         |
 | 40+N   | 2    | `flags`           | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently.          |
 
@@ -163,7 +163,7 @@ field. Extractors MUST report times their destination API cannot represent.
 
 - **`0` (data):** Regular file or stream. Payload contains file content.
 - **`1` (rsrc):** Mac OS resource fork. Payload contains Classic Mac resource data. Ignore on non-Mac platforms.
-- **`2` (metadata):** Metadata entry. Payload is platform-specific or a portable envelope as defined below. Extractors report unsupported metadata.
+- **`2` (metadata):** Metadata entry. Payload is platform-specific, a portable envelope, or a native attribute container as defined below. Extractors report unsupported metadata.
 - **`3` (symlink):** Symbolic link. Payload contains the link target path (UTF-8, forward-slash separated, max 65535 bytes).
 - **`4` (directory):** Directory record. `original_size` and `compressed_size` MUST be zero. Payload is absent. Platform-specific creation code applies (e.g., NTFS ACL, POSIX mode bits extracted from `mtime` / `flags`).
 
@@ -197,6 +197,58 @@ subject was successfully extracted. A subject has at most one portable
 envelope. When both native and portable values exist,
 native values for the matching platform take precedence per attribute; portable
 values are fallback for attributes not supplied by native metadata.
+
+#### 2.3.1.2 Native attribute container
+
+The `platform` value `0xFD` is reserved, like `0xFE`, as a `BP_TYPE_META`
+namespace rather than a creator OS. A metadata entry in this namespace carries
+named attribute values that exist only on the creating platform (the first user
+is macOS extended attributes). The format only recognises the container; the
+frontend of the origin platform interprets and restores the items. Every other
+reader skips it and reports it as unsupported metadata, and archive edits
+(add, delete, copy) preserve it, so an archive can pass through readers that do
+not understand it without losing the data. Format 6 does not change: a reader
+that predates the container already treats an unknown metadata platform this
+way.
+
+The payload is at most 65,536 bytes and uses little-endian integers:
+
+| Offset | Size | Field |
+| ------ | ---- | ----- |
+| 0 | 4 | ASCII `BPNA` |
+| 4 | 1 | Container version, currently `1` |
+| 5 | 1 | Origin platform, a creator OS code (macOS is `0x03`) |
+| 6 | 1 | Subject entry type: `0` (file) or `4` (directory) |
+| 7 | 1 | Reserved; writers store `0`, readers ignore it |
+| 8 | 2 | Item count, 0 to 64 |
+| 10 | variable | Items: name length `u16` (1 to 255), value length `u32` (0 to 32,768), name bytes, value bytes |
+
+Names are opaque byte strings without NUL bytes (UTF-8 on macOS) and are unique
+within a container. The entry follows its subject, and any resource fork, with
+the exact same archive name, and must not be applied unless that subject was
+extracted. A subject has at most one container per origin platform.
+
+A reader applies nothing from a container unless it validates in full. An
+unknown version is unsupported and is reported; bad magic, a count above 64, a
+truncated or oversized item, a NUL in a name, a duplicate name, an invalid
+subject type, or trailing bytes make the container malformed. The macOS reader
+reports a malformed or unsupported container, still extracts the subject, and
+counts the item as partial; it does not treat the container as archive
+corruption because the entry's own checksum has already been verified.
+
+Writers do not store attributes that have their own entries or are managed by
+the system. The macOS writer omits `com.apple.ResourceFork` and
+`com.apple.FinderInfo` (carried by the resource fork and Classic Mac metadata
+entries) and `com.apple.system.*`, `com.apple.rootless`, `com.apple.macl` and
+`com.apple.provenance`; the macOS reader refuses to apply those names even if
+an archive contains them. Values over 32,768 bytes and attributes past the
+64-item or 64 KiB limit are not stored; the writer reports each one. Target
+profiles and Interchange Profile 1 do not carry the container.
+
+Applying attributes is a policy decision of the reading frontend, not of the
+format. The container makes no claim that a name or value means the same thing
+on another system, and extracting then repacking on a system that cannot hold
+the attributes loses them.
 
 #### 2.3.2 Compressed Data Layout
 

@@ -126,7 +126,7 @@ build_cli() {
 
     echo "Building $label CLI with $COMPILER..."
 
-    "$COMPILER" $CLI_CFLAGS \
+    "$COMPILER" $CLI_CFLAGS $EXTRA_CLI_DEFS \
         -arch "$arch_flag" \
         -DBP_CREATOR_CPU=$creator_cpu \
         -Isrc/core  \
@@ -251,8 +251,12 @@ build_legacy_gui() {
 build_target() {
     case "$1" in
         ppc)
+            # PowerPC Macs run at most Mac OS X 10.5, which has no openat()
+            # family; legacy_at.h emulates it (see src/frontend/posix).
+            EXTRA_CLI_DEFS="-DBP_FORCE_LEGACY_AT"
             build_cli ppc BP_CPU_PPC32 "${PPC_OUTDIR:-build/macosx-ppc}" \
                 "PowerPC Mac OS X"
+            EXTRA_CLI_DEFS=""
             ;;
         legacy-ppc)
             build_legacy_gui ppc BP_CPU_PPC32 \
@@ -292,6 +296,7 @@ build_target() {
 COMPILER=$(find_c_compiler)
 OBJC_COMPILER=$(find_objc_compiler)
 CLI_CFLAGS="${CFLAGS:--ansi -pedantic -Wall -Wextra -O2}"
+EXTRA_CLI_DEFS="${EXTRA_CLI_DEFS:-}"
 GUI_CFLAGS="${GUI_CFLAGS:--ObjC -fobjc-arc -Wall -Wextra -Wno-unused-function -O2}"
 LEGACY_GUI_CFLAGS="${LEGACY_GUI_CFLAGS:--ObjC -Wall -Wextra -Wno-unused-function -O2 -mmacosx-version-min=10.5}"
 LEGACY_INTEL_ARCH="${LEGACY_INTEL_ARCH:-i386}"

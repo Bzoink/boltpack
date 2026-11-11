@@ -5,7 +5,7 @@
 set -eo pipefail
 
 PROJROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DISTDIR="$PROJROOT/dist"
+DISTDIR="${BOLTPACK_DIST_DIR:-$PROJROOT/dist}"
 TMPROOT="$(mktemp -d)"
 
 cleanup() {
@@ -58,7 +58,7 @@ write_build_notes() {
             build_cmd="sh scripts/macos/build-native.sh ppc"
             requirements="- Apple Developer Tools or Xcode with a native PowerPC C compiler installed.\n- One of clang, cc, or gcc available in PATH."
             outputs="- CLI: build/macosx-ppc/boltpack"
-            notes="- This kit is CLI only; it does not include a GUI frontend.\n- The separate source-macosx-legacy-gui kit carries the pre-10.9 Cocoa GUI sources for PowerPC 10.5 and Intel 10.5-10.8.\n- Override the compiler with CC=... if the default tool lookup is not correct.\n- Add extra compiler flags with CFLAGS=... if your local setup needs them."
+            notes="- This kit is CLI only; it does not include a GUI frontend.\n- The separate source-macosx-legacy-gui kit carries the pre-10.9 Cocoa GUI sources for PowerPC 10.5 and Intel 10.5-10.8.\n- Override the compiler with CC=... if the default tool lookup is not correct.\n- Add extra compiler flags with CFLAGS=... if your local setup needs them.\n- Mac OS X 10.5 and earlier have no openat(); this kit builds with -DBP_FORCE_LEGACY_AT, which emulates it. 10.4 or later is needed for extended attributes.\n- To report a problem, send the full output of the failing command. Run it again with BOLTPACK_DEBUG=1 in the environment for a per-attribute trace, and send the output of 'build/macosx-ppc/boltpack l archive'."
             ;;
         macosx-legacy-gui)
             target_label="PowerPC Mac OS X 10.5 and Intel Mac OS X 10.5-10.8"
@@ -122,6 +122,17 @@ stage_common() {
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/macosx" "$kitdir/src/frontend/macosx"
+    # The CLI includes shared headers from sibling frontend directories.  The
+    # kit must carry every one of them or the native build stops at the first
+    # #include (test/check_macos_source_kits.py compiles each kit to catch this).
+    copy_tree "$PROJROOT/src/frontend/common" "$kitdir/src/frontend/common"
+    copy_tree "$PROJROOT/src/frontend/posix" "$kitdir/src/frontend/posix"
+    copy_file "$PROJROOT/src/frontend/cpm86/cpm86_path.h" \
+        "$kitdir/src/frontend/cpm86/cpm86_path.h"
+    copy_file "$PROJROOT/src/frontend/atari/atari_path.h" \
+        "$kitdir/src/frontend/atari/atari_path.h"
+    copy_file "$PROJROOT/src/frontend/x68k/x68k_path_index.h" \
+        "$kitdir/src/frontend/x68k/x68k_path_index.h"
     copy_file "$PROJROOT/resources/pics/boltpack_icon.png" \
         "$kitdir/resources/pics/boltpack_icon.png"
     if [ -f "$PROJROOT/resources/pics/boltpack_icon.icns" ]; then
@@ -138,7 +149,6 @@ stage_modern_gui() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/frontend/macosx_gui" "$kitdir/src/frontend/macosx_gui"
-    copy_tree "$PROJROOT/src/frontend/posix" "$kitdir/src/frontend/posix"
     copy_file "$PROJROOT/src/frontend/gui_common/help_text.h" \
         "$kitdir/src/frontend/gui_common/help_text.h"
 }
@@ -150,7 +160,6 @@ stage_legacy_gui() {
         "$kitdir/src/frontend/macosx_legacy_gui"
     copy_tree "$PROJROOT/src/frontend/macosx_gui" \
         "$kitdir/src/frontend/macosx_gui"
-    copy_tree "$PROJROOT/src/frontend/posix" "$kitdir/src/frontend/posix"
     copy_file "$PROJROOT/src/frontend/gui_common/help_text.h" \
         "$kitdir/src/frontend/gui_common/help_text.h"
 }

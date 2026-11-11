@@ -13,6 +13,7 @@
 #define XATTR_NOFOLLOW 1
 #define XATTR_RESOURCEFORK_NAME "com.apple.ResourceFork"
 
+ssize_t listxattr(const char *path, char *namebuf, size_t size, int options);
 ssize_t getxattr(const char *path, const char *name, void *value,
                  size_t size, uint32_t position, int options);
 int setxattr(const char *path, const char *name, const void *value,

@@ -1369,6 +1369,63 @@ directory-only entries, metadata omission/refusal, and Stored/BoltLite with
 16 KiB blocks. This host evidence does not qualify native macOS filesystem or
 RISC OS behavior; see the [target profile](target-compatibility-profiles.md#implemented-risc-os-profile).
 
+### macOS: Extended attributes and testing notes
+
+Besides the Unix mode, the resource fork and the Finder info, the macOS CLI
+stores a file's or directory's other extended attributes (Finder tags,
+"where from" URLs, comments) in one native attribute container entry
+(`list` shows it as `ATTR`). Extraction on macOS applies them. The container
+format is in the [specification](specification-1.0.md); other readers skip it,
+and `add`/`delete` keep it. It is written only for plain macOS archives, not
+with Interchange Profile 1 or any target profile. Not stored: attributes over
+32 KiB, attributes past 64 per item or 64 KiB per item, system-managed names,
+ACLs and ownership.
+
+Problems are reported on stderr with the item, the attribute, the reason and
+`errno`, and a one-line summary follows create and extract
+(`native attributes: N stored` / `N restored`, or a warning count). A partial
+extraction exits 1 with the data intact. When reporting a problem, run the
+command again with `BOLTPACK_DEBUG=1` to trace every attribute, and include
+the output of `boltpack l archive.bp`.
+
+The container is verified on a Linux host with `make native-attrs-test` (codec
+unit tests) and `make macosx-xattr-test`, which runs the macOS CLI against a
+shim that maps the Apple attribute calls onto Linux `user.*` attributes. That
+covers BoltPack's own logic, limits, error reporting and interaction with the
+Linux reader and archive edits. It does not cover macOS itself: real resource
+forks, HFS+ and APFS behaviour and attribute size limits need a Mac.
+
+**Mac OS X 10.5 and earlier.** The CLI's extraction code uses the
+descriptor-relative calls `openat`, `fstatat`, `mkdirat`, `unlinkat`,
+`renameat`, `symlinkat` and `linkat`, plus `futimens`/`utimensat`, which the
+macOS SDK provides only from 10.10 (the last two, to the best of current
+knowledge, from 10.13). For older systems `src/frontend/posix/legacy_at.h`
+emulates them: each call does `fchdir()` to the held directory descriptor,
+performs the plain call on a single path component, and returns to the previous
+working directory. Resolution stays anchored to descriptors the extractor
+already holds, and the emulation refuses names with a `/`, `.` or `..` and
+renames or links across two different directories, so it cannot quietly lose
+that property; it is only for a single-threaded process. It is selected by the
+Apple compiler's deployment target, forced by `-DBP_FORCE_LEGACY_AT` (the
+`ppc` build in `scripts/macos/build-native.sh` does this), and disabled by
+`-DBP_NO_LEGACY_AT`. It relies on `fchdir`, `lutimes` and `futimes`, which Mac
+OS X 10.5 provides. `make macosx-xattr-test` runs the whole check suite against
+both the native calls and the emulation on a Linux host. It has not been built
+or run on a PowerPC Mac; Mac OS X 10.4 and earlier are untried, and 10.3 has no
+extended attribute calls at all.
+
+**Sharing Finder info with Mac OS 9.** The `BP_OS_MACOS9` metadata record is 10
+bytes: type, creator and big-endian Finder flags. That is what the Mac OS 9
+frontend writes and the only size it reads, so the macOS CLI now writes the same
+record (earlier versions wrote an 18-byte variant that Mac OS 9 skipped, losing
+type and creator). The macOS reader accepts both, and the older variant's dates
+are still ignored. The macOS CLI also writes a `BP_OS_MACOSX` Unix-mode record
+for every item; Mac OS 9 cannot apply it and reports the extraction as partial.
+Resource forks travel as `BP_TYPE_RSRC` entries in both directions. Names are
+stored as the macOS filesystem returns them (decomposed Unicode on HFS+), so use
+plain ASCII names of at most 31 characters when moving files to Mac OS 9; the
+Mac OS 9 side refuses names it cannot represent in MacRoman.
+
 ### macOS: Native Compile Packages
 
 To prepare portable source packages for native compilation on Macs without

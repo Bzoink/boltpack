@@ -28,14 +28,15 @@
  *     Offset  Size  Field
  *     0       2     mode  Unix permissions (low 9 bits of mode_t)
  *
- *   Classic Mac meta (platform = BP_OS_MACOS9 = 0x02):
+ *   Classic Mac meta (platform = BP_OS_MACOS9 = 0x02), shared with the
+ *   Mac OS 9 frontend:
  *     Offset  Size  Field
  *     0       4     type         Finder Type code
  *     4       4     creator      Finder Creator code
- *     8       2     finder_flags Finder flags (uint16 LE)
- *     10      4     crdate       Creation date (Mac epoch = since 1904-01-01)
- *     14      4     mdate        Modification date (Mac epoch)
- *     Total: 18 bytes
+ *     8       2     finder_flags Finder flags (big-endian, as in FinderInfo)
+ *     Total: 10 bytes
+ *   Older versions of this tool wrote 18 bytes (flags little-endian, then a
+ *   creation and a modification date); those records are still read.
  *
  * For Intel Mac builds: -DBP_CREATOR_CPU=BP_CPU_X86_64
  *
@@ -69,6 +70,18 @@
 #include "../../core/bp_codepage.h"
 #include "../../core/archive_name.h"
 #include "../common/target_profiles.h"
+#include "../common/native_attrs.h"
+/* Mac OS X before 10.10 lacks the openat() family and, before 10.13,
+ * futimens()/utimensat().  Emulate them with fchdir() on one path component so
+ * extraction stays anchored to held directory descriptors; see legacy_at.h.
+ * Define BP_FORCE_LEGACY_AT to use it on any host, BP_NO_LEGACY_AT to opt out. */
+#if defined(BP_FORCE_LEGACY_AT) || \
+    (defined(__APPLE__) && !defined(BP_NO_LEGACY_AT) && \
+     defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && \
+     __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ < 101000)
+#define BP_MACOS_LEGACY_AT 1
+#include "../posix/legacy_at.h"
+#endif
 #include "../posix/extract_paths.h"
 #include "../posix/archive_preflight.h"
 #include "../cpm86/cpm86_path.h"
@@ -90,6 +103,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <utime.h>
 #include <fcntl.h>
 #ifdef __APPLE__
@@ -120,11 +134,17 @@ extern int mkstemp(char *template_path);
 /* Unix-family mode meta: 2 bytes */
 #define MACOS_MODE_META_SIZE  2
 
-/* Classic Mac meta: Type(4) + Creator(4) + flags(2) + crdate(4) + mdate(4) */
-#define MACOS_CLASSIC_META_SIZE  18
+/* Classic Mac meta (platform BP_OS_MACOS9): Type(4) + Creator(4) + Finder
+ * flags(2, big-endian).  This is the record the Mac OS 9 frontend writes and
+ * the only size it reads, so this tool writes the same 10 bytes. */
+#define MACOS_CLASSIC_META_SIZE  10
+
+/* Older versions of this tool wrote Type(4) + Creator(4) + flags(2, little
+ * endian) + crdate(4) + mdate(4).  They are still read. */
+#define MACOS_CLASSIC_META_SIZE_DATED  18
 
 /* Buffer large enough for Classic Mac meta */
-#define MACOS_META_BUF_SIZE      (MACOS_CLASSIC_META_SIZE + 4)
+#define MACOS_META_BUF_SIZE      (MACOS_CLASSIC_META_SIZE_DATED + 4)
 
 /* macOS Finder info xattr name and size */
 #define APPLE_FINDERINFO_XATTR  "com.apple.FinderInfo"
@@ -152,6 +172,48 @@ static target_profile_t g_mac_auto_profile = TARGET_PROFILE_NONE;
 static target_profile_t g_mac_report_profile = TARGET_PROFILE_NONE;
 static target_profile_t g_mac_utf8_profile = TARGET_PROFILE_NONE;
 static int g_mac_auto_write_jobs;
+
+/* ---- native attribute container state --------------------------------- */
+
+/* BOLTPACK_DEBUG=1 traces every extended attribute seen, stored, skipped or
+ * restored.  The counters feed the end-of-run summaries. */
+static int g_nattr_debug;
+static unsigned long g_nattr_subjects_stored;   /* containers written */
+static unsigned long g_nattr_items_stored;      /* attributes written */
+static unsigned long g_nattr_items_skipped;     /* not stored (see messages) */
+static unsigned long g_nattr_items_restored;    /* attributes applied */
+static unsigned long g_nattr_items_failed;      /* could not be applied */
+static unsigned long g_classic_date_partial;    /* partial only for dates */
+
+/* Trace one line when BOLTPACK_DEBUG is set. */
+static void nattr_trace(const char *fmt, ...)
+{
+    va_list ap;
+    if (!g_nattr_debug) return;
+    fputs("boltpack[debug]: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+/* Attributes that never travel in the container: the resource fork and Finder
+ * info have their own entries, and the rest are managed by the system (an
+ * ACL blob, kernel-set provenance records) and cannot be meaningfully copied.
+ * Returns 0 for an ordinary attribute, 1 when another entry carries it, 2 for
+ * a system-managed name. */
+static int nattr_reserved_name(const char *name)
+{
+    if (strcmp(name, "com.apple.ResourceFork") == 0 ||
+        strcmp(name, "com.apple.FinderInfo") == 0)
+        return 1;
+    if (strncmp(name, "com.apple.system.", 17) == 0 ||
+        strcmp(name, "com.apple.rootless") == 0 ||
+        strcmp(name, "com.apple.macl") == 0 ||
+        strcmp(name, "com.apple.provenance") == 0)
+        return 2;
+    return 0;
+}
 static const char *g_target_dos_profile_label;
 
 static const char *mac_legacy_target_label(void)
@@ -356,7 +418,7 @@ static bp_off_t wbuf_tell_fn(void *handle)
  * meta_extract_t: captures metadata payload bytes during extraction.
  * io MUST be first so that (meta_extract_t *)out_io is valid.
  */
-#define META_EXTRACT_BUF  (MACOS_CLASSIC_META_SIZE + 4)
+#define META_EXTRACT_BUF  (MACOS_CLASSIC_META_SIZE_DATED + 4)
 
 typedef struct {
     bp_io_t       io;                      /* MUST be first */
@@ -617,41 +679,25 @@ static void macos_encode_mode_meta(unsigned char *buf, bp_uint16 mode)
 }
 
 /*
- * macos_encode_classic_meta: encode Classic Mac 18-byte metadata payload.
- *   buf[0..3]   = type code (4 bytes, big-endian as text, stored as-is)
+ * macos_encode_classic_meta: encode the 10-byte Classic Mac record shared with
+ * the Mac OS 9 frontend.
+ *   buf[0..3]   = type code (four bytes as stored in the Finder info)
  *   buf[4..7]   = creator code
- *   buf[8..9]   = finder_flags (uint16 LE)
- *   buf[10..13] = crdate (uint32 LE, Mac epoch)
- *   buf[14..17] = mdate  (uint32 LE, Mac epoch)
+ *   buf[8..9]   = Finder flags, big-endian (the same bytes as FinderInfo[8..9])
+ * Creation and modification dates are not stored: no reader restores them (the
+ * modification time travels in the entry header).
  */
 static void macos_encode_classic_meta(unsigned char *buf,
                                       const unsigned char *fi_raw,
                                       bp_uint32 crdate_mac,
                                       bp_uint32 mdate_mac)
 {
-    /* Copy Type (4 bytes at fi_raw[0..3]) */
+    (void)crdate_mac; (void)mdate_mac;
     buf[0] = fi_raw[0]; buf[1] = fi_raw[1];
     buf[2] = fi_raw[2]; buf[3] = fi_raw[3];
-    /* Copy Creator (4 bytes at fi_raw[4..7]) */
     buf[4] = fi_raw[4]; buf[5] = fi_raw[5];
     buf[6] = fi_raw[6]; buf[7] = fi_raw[7];
-    /* Finder flags (2 bytes at fi_raw[8..9] — already uint16 big-endian;
-       store as little-endian per format.md) */
-    {
-        unsigned int flags = ((unsigned int)fi_raw[8] << 8) | fi_raw[9];
-        buf[8] = (unsigned char)(flags & 0xFF);
-        buf[9] = (unsigned char)((flags >> 8) & 0xFF);
-    }
-    /* crdate uint32 LE */
-    buf[10] = (unsigned char)(crdate_mac & 0xFF);
-    buf[11] = (unsigned char)((crdate_mac >>  8) & 0xFF);
-    buf[12] = (unsigned char)((crdate_mac >> 16) & 0xFF);
-    buf[13] = (unsigned char)((crdate_mac >> 24) & 0xFF);
-    /* mdate uint32 LE */
-    buf[14] = (unsigned char)(mdate_mac & 0xFF);
-    buf[15] = (unsigned char)((mdate_mac >>  8) & 0xFF);
-    buf[16] = (unsigned char)((mdate_mac >> 16) & 0xFF);
-    buf[17] = (unsigned char)((mdate_mac >> 24) & 0xFF);
+    buf[8] = fi_raw[8]; buf[9] = fi_raw[9];
 }
 
 /*
@@ -664,7 +710,8 @@ static bp_uint16 macos_decode_mode_meta(const unsigned char *buf, int len)
 }
 
 /*
- * macos_decode_classic_meta: extract Finder info from 18-byte buffer.
+ * macos_decode_classic_meta: extract Finder info from a 10-byte (Mac OS 9
+ * layout) or 18-byte (older layout) record.
  * fi_out must be at least APPLE_FINDERINFO_SIZE (32) bytes; unused bytes
  * are zeroed so setxattr() doesn't leave garbage.
  */
@@ -672,21 +719,26 @@ static int macos_decode_classic_meta(const unsigned char *buf, int len,
                                      unsigned char *fi_out)
 {
     unsigned int flags;
-    bp_uint32 crdate_mac, mdate_mac;
-    if (len < MACOS_CLASSIC_META_SIZE) return -1;
+    if (len != MACOS_CLASSIC_META_SIZE && len < MACOS_CLASSIC_META_SIZE_DATED)
+        return -1;
     memset(fi_out, 0, APPLE_FINDERINFO_SIZE);
-    /* Type at fi_out[0..3] */
+    /* Type at fi_out[0..3], creator at fi_out[4..7] */
     fi_out[0] = buf[0]; fi_out[1] = buf[1];
     fi_out[2] = buf[2]; fi_out[3] = buf[3];
-    /* Creator at fi_out[4..7] */
     fi_out[4] = buf[4]; fi_out[5] = buf[5];
     fi_out[6] = buf[6]; fi_out[7] = buf[7];
-    /* Flags at fi_out[8..9] — stored LE, Finder wants big-endian */
+    if (len == MACOS_CLASSIC_META_SIZE) {
+        /* 10-byte record (Mac OS 9 and this tool): flags are big-endian, as
+         * the Finder wants them. */
+        fi_out[8] = buf[8];
+        fi_out[9] = buf[9];
+        return 0;
+    }
+    /* Older 18-byte record: flags little-endian, then dates, which are not
+     * written back into the FinderInfo xattr (the Finder manages them). */
     flags = (unsigned int)buf[8] | ((unsigned int)buf[9] << 8);
     fi_out[8] = (unsigned char)((flags >> 8) & 0xFF);
     fi_out[9] = (unsigned char)(flags & 0xFF);
-    /* Dates not written back into FinderInfo xattr — Finder manages them */
-    (void)crdate_mac; (void)mdate_mac;
     return 0;
 }
 
@@ -839,6 +891,183 @@ static int add_classic_meta_entry(bp_archive_t *ar, const char *arcname,
                                 &meta_io,
                                 bp_u64_from_u32(MACOS_CLASSIC_META_SIZE),
                                 bp_u64_from_u32(0), 0);
+}
+
+/* ---- native attribute container: create side ------------------------- */
+
+/* The container is only written for plain macOS archives: target profiles and
+ * Interchange Profile 1 describe other readers and keep their own metadata
+ * rules. */
+static int nattr_create_enabled(const bp_archive_t *ar)
+{
+    return ar->profile == BP_PROFILE_NONE &&
+           !g_target_classic_hfs && !g_target_amiga_68k && !g_target_atari &&
+           !g_target_ql && !g_target_riscos && !g_target_x68000 &&
+           !g_target_cpm86 && !g_target_dos_family &&
+           g_mac_utf8_profile == TARGET_PROFILE_NONE;
+}
+
+#ifdef __APPLE__
+/* Store the extended attributes of path (other than the resource fork and
+ * Finder info, which have their own entries) as one BPNA container entry
+ * right after the subject.  Problems with individual attributes are reported
+ * on stderr and counted; they never abort the archive.  Only a failure to
+ * write the entry itself is returned as an error. */
+static int add_native_attrs_entry(bp_archive_t *ar, const char *path,
+                                  const char *arcname,
+                                  unsigned char subject_type)
+{
+    ssize_t list_size, got, value_size;
+    char *names = NULL;
+    unsigned char *payload = NULL;
+    unsigned char *value = NULL;
+    bp_nattr_builder_t builder;
+    char *cursor, *end;
+    int rc = BP_OK;
+    int tries;
+
+    if (!nattr_create_enabled(ar)) return BP_OK;
+
+    /* Size the name list; a change between the two calls reports ERANGE. */
+    list_size = -1;
+    for (tries = 0; tries < 3; tries++) {
+        list_size = listxattr(path, NULL, 0, XATTR_NOFOLLOW);
+        if (list_size <= 0) break;
+        names = (char *)malloc((size_t)list_size + 1);
+        if (names == NULL) return BP_ERR_NOMEM;
+        got = listxattr(path, names, (size_t)list_size, XATTR_NOFOLLOW);
+        if (got >= 0) { list_size = got; break; }
+        free(names); names = NULL;
+        if (errno != ERANGE) { list_size = -1; break; }
+        list_size = -1;
+    }
+    if (list_size < 0) {
+        /* ENOTSUP/ENOATTR: the volume has no extended attributes. */
+        if (errno != ENOATTR && errno != ENOTSUP && errno != EPERM) {
+            fprintf(stderr,
+                    "boltpack: warning: cannot list extended attributes of %s: %s\n",
+                    path, strerror(errno));
+            g_nattr_items_skipped++;
+        } else {
+            nattr_trace("%s: no extended attribute support (%s)", path,
+                        strerror(errno));
+        }
+        free(names);
+        return BP_OK;
+    }
+    if (list_size == 0) { free(names); return BP_OK; }
+    names[list_size] = '\0';
+
+    payload = (unsigned char *)malloc(BP_NATTR_MAX_PAYLOAD);
+    value = (unsigned char *)malloc(BP_NATTR_MAX_VALUE + 1UL);
+    if (payload == NULL || value == NULL) {
+        free(names); free(payload); free(value);
+        return BP_ERR_NOMEM;
+    }
+    bp_nattr_begin(&builder, payload, BP_OS_MACOSX, subject_type);
+
+    end = names + list_size;
+    for (cursor = names; cursor < end; cursor += strlen(cursor) + 1) {
+        int reserved = nattr_reserved_name(cursor);
+        int add_rc;
+
+        if (reserved == 1) {
+            nattr_trace("%s: '%s' is carried by its own entry", path, cursor);
+            continue;
+        }
+        if (reserved == 2) {
+            nattr_trace("%s: '%s' is system managed, not stored", path, cursor);
+            continue;
+        }
+        value_size = getxattr(path, cursor, NULL, 0, 0, XATTR_NOFOLLOW);
+        if (value_size < 0) {
+            fprintf(stderr,
+                    "boltpack: warning: cannot read attribute '%s' of %s: %s\n",
+                    cursor, path, strerror(errno));
+            g_nattr_items_skipped++;
+            continue;
+        }
+        if ((unsigned long)value_size > BP_NATTR_MAX_VALUE) {
+            fprintf(stderr,
+                    "boltpack: warning: attribute '%s' of %s is %lu bytes; "
+                    "values over %lu bytes are not stored\n",
+                    cursor, path, (unsigned long)value_size,
+                    BP_NATTR_MAX_VALUE);
+            g_nattr_items_skipped++;
+            continue;
+        }
+        got = value_size == 0 ? 0 :
+              getxattr(path, cursor, value, (size_t)value_size, 0,
+                       XATTR_NOFOLLOW);
+        if (got != value_size) {
+            fprintf(stderr,
+                    "boltpack: warning: attribute '%s' of %s changed while "
+                    "reading (%ld of %ld bytes): %s\n",
+                    cursor, path, (long)got, (long)value_size,
+                    got < 0 ? strerror(errno) : "size mismatch");
+            g_nattr_items_skipped++;
+            continue;
+        }
+        add_rc = bp_nattr_add(&builder, cursor, (unsigned long)strlen(cursor),
+                              value, (unsigned long)value_size);
+        if (add_rc != BP_NATTR_OK) {
+            fprintf(stderr,
+                    "boltpack: warning: attribute '%s' of %s not stored: %s\n",
+                    cursor, path, bp_nattr_strerror(add_rc));
+            g_nattr_items_skipped++;
+            continue;
+        }
+        nattr_trace("%s: stored '%s' (%ld bytes)", path, cursor,
+                    (long)value_size);
+    }
+
+    if (builder.count > 0) {
+        unsigned long length = bp_nattr_finish(&builder);
+        bp_io_t io;
+        rbuf_ctx_t rctx;
+        rctx.buf = payload;
+        rctx.size = (bp_uint32)length;
+        rctx.pos = 0;
+        bp_io_from_rbuf(&io, &rctx);
+        rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META,
+                                     BP_META_NATIVE_ATTRS, &io,
+                                     bp_u64_from_u32((bp_uint32)length),
+                                     bp_u64_from_u32(0), 0);
+        if (rc != BP_OK) {
+            fprintf(stderr,
+                    "boltpack: error storing attributes of %s: %s\n", path,
+                    bp_strerror(rc));
+        } else {
+            g_nattr_subjects_stored++;
+            g_nattr_items_stored += builder.count;
+        }
+    }
+    free(names); free(payload); free(value);
+    return rc;
+}
+#else
+static int add_native_attrs_entry(bp_archive_t *ar, const char *path,
+                                  const char *arcname,
+                                  unsigned char subject_type)
+{
+    (void)ar; (void)path; (void)arcname; (void)subject_type;
+    return BP_OK;
+}
+#endif /* __APPLE__ */
+
+/* One-line summary after create/add so that dropped attributes are visible. */
+static void nattr_report_create(void)
+{
+    if (g_nattr_items_stored > 0 && g_verbosity == VERB_DEFAULT)
+        printf("native attributes: %lu stored on %lu item%s\n",
+               g_nattr_items_stored, g_nattr_subjects_stored,
+               g_nattr_subjects_stored == 1 ? "" : "s");
+    if (g_nattr_items_skipped > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu native attribute%s could not be stored "
+                "(see the messages above); the archive is otherwise complete\n",
+                g_nattr_items_skipped,
+                g_nattr_items_skipped == 1 ? "" : "s");
 }
 
 /* ---- recursive add ----------------------------------------------------- */
@@ -1046,6 +1275,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             if (rc != BP_OK) return rc;
         }
 
+        rc = add_native_attrs_entry(ar, path, dir_arc, BP_TYPE_DIR);
+        if (rc != BP_OK) return rc;
+
         return g_mac_auto_write_jobs ? BP_OK : add_directory(ar, path, dir_arc);
 
     } else if (S_ISREG(st.st_mode)) {
@@ -1221,7 +1453,9 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
             }
         }
 #endif /* __APPLE__ */
-        return BP_OK;
+
+        /* -- Other extended attributes (native attribute container) ----- */
+        return add_native_attrs_entry(ar, path, arcname, BP_TYPE_DATA);
 
     } else if (S_ISLNK(st.st_mode)) {
         char target[4096];
@@ -1279,7 +1513,9 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     switch (entry->entry_type) {
     case BP_TYPE_DATA:    type_str = "DATA"; break;
     case BP_TYPE_RSRC:    type_str = "RSRC"; break;
-    case BP_TYPE_META:    type_str = "META"; break;
+    case BP_TYPE_META:
+        type_str = entry->platform == BP_META_NATIVE_ATTRS ? "ATTR" : "META";
+        break;
     case BP_TYPE_SYMLINK: type_str = "LINK"; break;
     case BP_TYPE_DIR:     type_str = "DIR "; break;
     default:              type_str = "??? "; break;
@@ -2656,6 +2892,39 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         return NULL;
     }
 
+    /* --- Native attribute container (extended attributes) ------------- */
+    if (entry->entry_type == BP_TYPE_META &&
+        entry->platform == BP_META_NATIVE_ATTRS) {
+        bp_uint32 payload_size;
+
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        if (entry->original_size.hi != 0 ||
+            entry->original_size.lo < BP_NATTR_HEADER_SIZE ||
+            entry->original_size.lo > BP_NATTR_MAX_PAYLOAD) {
+            fprintf(stderr,
+                    "boltpack: skipping attributes of %s: container size %lu "
+                    "is outside %lu..%lu bytes\n", entry->name,
+                    (unsigned long)entry->original_size.lo,
+                    BP_NATTR_HEADER_SIZE, BP_NATTR_MAX_PAYLOAD);
+            ctx->partial_count++;
+            return NULL;
+        }
+        payload_size = entry->original_size.lo;
+        rex = (rsrc_extract_t *)malloc(sizeof(rsrc_extract_t));
+        if (!rex) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        rex->buf = (unsigned char *)malloc(payload_size);
+        if (!rex->buf) { free(rex); ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        rex->cap = payload_size;
+        rex->len = 0;
+        rex->pos = 0;
+        rex->io.read   = rsrc_read_fn;
+        rex->io.write  = rsrc_write_fn;
+        rex->io.seek   = rsrc_seek_fn;
+        rex->io.tell   = rsrc_tell_fn;
+        rex->io.handle = rex;
+        return &rex->io;
+    }
+
     /* --- Metadata ----------------------------------------------------- */
     if (entry->entry_type == BP_TYPE_META) {
         if (entry->platform != BP_OS_MACOSX &&
@@ -2807,6 +3076,189 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     return &output->io;
 }
 
+/* ---- native attribute container: extract side ------------------------- */
+
+#ifdef __APPLE__
+/* Reach the extracted subject for fsetxattr.  A file uses the staged
+ * descriptor the extractor still holds; a directory is reopened no-follow
+ * through its parent.  Both are checked against the identity recorded when
+ * the subject was created.  Returns a descriptor, or -1 with *why set.
+ * *own_fd and *parent_fd tell the caller what to close afterwards. */
+static int nattr_subject_fd(extract_ctx_t *ctx, const char *name,
+                            int *own_fd, int *parent_fd, const char **why)
+{
+    char leaf[4096];
+    char bare[4096];
+    size_t bare_len;
+    int fd = -1;
+
+    *own_fd = 0;
+    *parent_fd = -1;
+    *why = NULL;
+    if (ctx->subject_type == BP_TYPE_DATA) {
+        fd = ctx->subject_fd;
+        if (fd < 0) { *why = "the extracted file is no longer open"; return -1; }
+        if (!ctx->subject_identity_valid ||
+            !extract_fd_matches_identity(fd, ctx->subject_device,
+                                         ctx->subject_inode)) {
+            *why = "the extracted file changed identity";
+            return -1;
+        }
+        return fd;
+    }
+    if (ctx->subject_type == BP_TYPE_DIR) {
+        mac_dir_restore_t *d = extract_find_directory(ctx, name);
+        /* Directory names end in '/'; the parent lookup wants the bare path. */
+        bare_len = strlen(name);
+        if (bare_len >= sizeof(bare)) { *why = "the path is too long"; return -1; }
+        memcpy(bare, name, bare_len + 1);
+        while (bare_len > 0 && bare[bare_len - 1] == '/') bare[--bare_len] = '\0';
+        *parent_fd = bare_len == 0 ? -1 :
+                     extract_open_parent(ctx->root_fd, bare, leaf,
+                                         sizeof(leaf));
+        if (*parent_fd < 0) { *why = "cannot open the parent directory"; return -1; }
+        fd = openat(*parent_fd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0) {
+            *why = "cannot reopen the directory";
+            close(*parent_fd); *parent_fd = -1;
+            return -1;
+        }
+        if (d == NULL || !d->identity_valid ||
+            !extract_fd_matches_identity(fd, d->device, d->inode)) {
+            *why = "the directory changed identity";
+            close(fd); close(*parent_fd); *parent_fd = -1;
+            return -1;
+        }
+        *own_fd = 1;
+        return fd;
+    }
+    *why = "the subject is not a file or directory";
+    return -1;
+}
+#endif /* __APPLE__ */
+
+/* Apply a BPNA container to the subject that was just extracted.  Every
+ * refusal and failure is reported with the item name and the reason so that
+ * a problem can be traced from the message alone.  Returns BP_OK when every
+ * attribute was applied, BP_ERR_PARTIAL otherwise (never a fatal error: the
+ * file data is already safely written). */
+static int nattr_apply(extract_ctx_t *ctx, const bp_entry_t *entry,
+                       const char *name, const unsigned char *data,
+                       unsigned long size)
+{
+    bp_nattr_info_t info;
+    bp_nattr_iter_t it;
+    const char *aname;
+    const unsigned char *avalue;
+    unsigned long aname_len, avalue_len;
+    int parse_rc, rc = BP_OK;
+#ifdef __APPLE__
+    int fd, own_fd, parent_fd;
+    const char *why;
+#endif
+
+    if (!ctx->subject_succeeded || strcmp(name, ctx->subject_name) != 0) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: the item itself was "
+                "not extracted\n", entry->name);
+        return BP_ERR_PARTIAL;
+    }
+    parse_rc = bp_nattr_parse(data, size, &info);
+    if (parse_rc == BP_NATTR_UNSUPPORTED) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: container version "
+                "%u is newer than this boltpack understands\n",
+                entry->name, (unsigned)info.version);
+        return BP_ERR_PARTIAL;
+    }
+    if (parse_rc != BP_NATTR_OK) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: malformed container "
+                "(%lu bytes)\n", entry->name, size);
+        return BP_ERR_PARTIAL;
+    }
+    if (info.origin != BP_OS_MACOSX) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: they come from "
+                "platform 0x%02X, not macOS\n", entry->name,
+                (unsigned)info.origin);
+        return BP_ERR_PARTIAL;
+    }
+    if ((info.subject_type == 0 && ctx->subject_type != BP_TYPE_DATA) ||
+        (info.subject_type == 4 && ctx->subject_type != BP_TYPE_DIR)) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: container is for a "
+                "%s but the item is a %s\n", entry->name,
+                info.subject_type == 0 ? "file" : "directory",
+                ctx->subject_type == BP_TYPE_DATA ? "file" : "directory");
+        return BP_ERR_PARTIAL;
+    }
+
+#ifdef __APPLE__
+    fd = nattr_subject_fd(ctx, name, &own_fd, &parent_fd, &why);
+    if (fd < 0) {
+        fprintf(stderr, "boltpack: attributes for %s not applied: %s\n",
+                entry->name, why);
+        g_nattr_items_failed += info.count;
+        return BP_ERR_PARTIAL;
+    }
+    bp_nattr_iter_begin(&info, &it);
+    while (bp_nattr_iter_next(&it, &aname, &aname_len, &avalue, &avalue_len)) {
+        char attr[BP_NATTR_MAX_NAME + 1];
+        memcpy(attr, aname, (size_t)aname_len);
+        attr[aname_len] = '\0';
+        if (nattr_reserved_name(attr) != 0) {
+            fprintf(stderr,
+                    "boltpack: attribute '%s' of %s not applied: the name is "
+                    "reserved or system managed\n", attr, entry->name);
+            g_nattr_items_failed++;
+            rc = BP_ERR_PARTIAL;
+            continue;
+        }
+        if (fsetxattr(fd, attr, avalue, (size_t)avalue_len, 0, 0) != 0) {
+            fprintf(stderr,
+                    "boltpack: cannot set attribute '%s' (%lu bytes) on %s: "
+                    "%s (errno %d)\n", attr, avalue_len, entry->name,
+                    strerror(errno), errno);
+            g_nattr_items_failed++;
+            rc = BP_ERR_PARTIAL;
+            continue;
+        }
+        g_nattr_items_restored++;
+        nattr_trace("%s: restored '%s' (%lu bytes)", entry->name, attr,
+                    avalue_len);
+    }
+    if (own_fd) close(fd);
+    if (parent_fd >= 0) close(parent_fd);
+#else
+    (void)it; (void)aname; (void)avalue; (void)aname_len; (void)avalue_len;
+    fprintf(stderr,
+            "boltpack: attributes for %s (%u item%s) not applied: extended "
+            "attributes can only be restored by the macOS build\n",
+            entry->name, info.count, info.count == 1 ? "" : "s");
+    g_nattr_items_failed += info.count;
+    rc = BP_ERR_PARTIAL;
+#endif /* __APPLE__ */
+    return rc;
+}
+
+/* End-of-run summary for extraction. */
+static void nattr_report_extract(void)
+{
+    if (g_nattr_items_restored > 0 && g_verbosity == VERB_DEFAULT)
+        printf("native attributes: %lu restored\n", g_nattr_items_restored);
+    if (g_nattr_items_failed > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu native attribute%s could not be "
+                "restored (see the messages above)\n", g_nattr_items_failed,
+                g_nattr_items_failed == 1 ? "" : "s");
+    if (g_classic_date_partial > 0)
+        fprintf(stderr,
+                "boltpack: note: %lu item%s counted as partial only because "
+                "the Classic creation date is not restored\n",
+                g_classic_date_partial, g_classic_date_partial == 1 ? "" : "s");
+}
+
 static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                         void *user_data)
 {
@@ -2815,7 +3267,12 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     int rc = BP_OK;
 
     if (status != BP_OK) {
-        if (entry->entry_type == BP_TYPE_META) free((meta_extract_t *)out);
+        if (entry->entry_type == BP_TYPE_META &&
+            entry->platform == BP_META_NATIVE_ATTRS) {
+            rsrc_extract_t *rex = (rsrc_extract_t *)out;
+            free(rex->buf);
+            free(rex);
+        } else if (entry->entry_type == BP_TYPE_META) free((meta_extract_t *)out);
         else if (entry->entry_type == BP_TYPE_RSRC) {
             rsrc_extract_t *rex = (rsrc_extract_t *)out;
             free(rex->buf);
@@ -2830,6 +3287,17 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         }
         ctx->subject_succeeded = 0;
         return BP_OK;
+    }
+
+    /* --- Native attribute container ----------------------------------- */
+    if (entry->entry_type == BP_TYPE_META &&
+        entry->platform == BP_META_NATIVE_ATTRS) {
+        rsrc_extract_t *nex = (rsrc_extract_t *)out;
+        rc = nattr_apply(ctx, entry, name, nex->buf, (unsigned long)nex->len);
+        free(nex->buf);
+        free(nex);
+        if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
+        return rc;
     }
 
     /* --- macOS / Classic Mac metadata --------------------------------- */
@@ -2860,37 +3328,38 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                 }
             }
         } else if (entry->platform == BP_OS_MACOS9) {
-            /* Classic Mac 18-byte meta -> Finder info xattr. */
+            /* Classic Mac meta (10 or 18 bytes) -> Finder info xattr. */
 #ifdef __APPLE__
             unsigned char fi_out[APPLE_FINDERINFO_SIZE];
-            char leaf[4096];
-            mac_dir_restore_t *d = NULL;
-            int parent_fd = -1, fd = -1, close_fd = 0;
-            int identity_ok = 0;
-            if (ctx->subject_type == BP_TYPE_DATA) {
-                fd = ctx->subject_fd;
-                identity_ok = ctx->subject_identity_valid &&
-                    extract_fd_matches_identity(fd, ctx->subject_device,
-                                                ctx->subject_inode);
-            } else if (ctx->subject_type == BP_TYPE_DIR) {
-                d = extract_find_directory(ctx, name);
-                parent_fd = extract_open_parent(ctx->root_fd, name,
-                                                leaf, sizeof(leaf));
-                fd = parent_fd >= 0
-                   ? openat(parent_fd, leaf,
-                            O_RDONLY | O_NOFOLLOW | O_CLOEXEC) : -1;
-                close_fd = 1;
-                identity_ok = d != NULL && d->identity_valid &&
-                    extract_fd_matches_identity(fd, d->device, d->inode);
-            }
+            int parent_fd = -1, fd, own_fd = 0;
+            const char *why = NULL;
+            int identity_ok;
+            fd = nattr_subject_fd(ctx, name, &own_fd, &parent_fd, &why);
+            identity_ok = fd >= 0;
             if (macos_decode_classic_meta(mex->wctx.buf,
                                           (int)mex->wctx.len,
-                                          fi_out) != 0 ||
-                !identity_ok || fsetxattr(fd, APPLE_FINDERINFO_XATTR, fi_out,
-                                    APPLE_FINDERINFO_SIZE, 0, 0) != 0)
+                                          fi_out) != 0) {
+                fprintf(stderr,
+                        "boltpack: Finder info for %s not applied: malformed "
+                        "record\n", entry->name);
                 rc = BP_ERR_PARTIAL;
-            else rc = BP_ERR_PARTIAL; /* Classic dates are not restored. */
-            if (close_fd && fd >= 0) close(fd);
+            } else if (!identity_ok) {
+                fprintf(stderr,
+                        "boltpack: Finder info for %s not applied: %s\n",
+                        entry->name, why != NULL ? why : "item unavailable");
+                rc = BP_ERR_PARTIAL;
+            } else if (fsetxattr(fd, APPLE_FINDERINFO_XATTR, fi_out,
+                                 APPLE_FINDERINFO_SIZE, 0, 0) != 0) {
+                fprintf(stderr,
+                        "boltpack: cannot set Finder info on %s: %s "
+                        "(errno %d)\n", entry->name, strerror(errno), errno);
+                rc = BP_ERR_PARTIAL;
+            } else if (mex->wctx.len >= MACOS_CLASSIC_META_SIZE_DATED) {
+                /* Restored; an older archive's creation date is not. */
+                g_classic_date_partial++;
+                rc = BP_ERR_PARTIAL;
+            }
+            if (own_fd && fd >= 0) close(fd);
             if (parent_fd >= 0) close(parent_fd);
 #else
             rc = BP_ERR_PARTIAL;
@@ -2912,11 +3381,25 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
             int fd = ctx->subject_fd;
             if (fd < 0 || !ctx->subject_identity_valid ||
                 !extract_fd_matches_identity(fd, ctx->subject_device,
-                                             ctx->subject_inode) ||
-                fsetxattr(fd, XATTR_RESOURCEFORK_NAME, rex->buf,
-                                    (size_t)rex->len, 0, 0) != 0)
+                                             ctx->subject_inode)) {
+                fprintf(stderr,
+                        "boltpack: resource fork for %s not applied: the "
+                        "extracted file is not available or changed identity\n",
+                        entry->name);
                 rc = BP_ERR_PARTIAL;
+            } else if (fsetxattr(fd, XATTR_RESOURCEFORK_NAME, rex->buf,
+                                 (size_t)rex->len, 0, 0) != 0) {
+                fprintf(stderr,
+                        "boltpack: cannot set resource fork (%lu bytes) on "
+                        "%s: %s (errno %d)\n", (unsigned long)rex->len,
+                        entry->name, strerror(errno), errno);
+                rc = BP_ERR_PARTIAL;
+            }
 #else
+            fprintf(stderr,
+                    "boltpack: resource fork for %s not applied: resource "
+                    "forks can only be restored by the macOS build\n",
+                    entry->name);
             rc = BP_ERR_PARTIAL;
 #endif /* __APPLE__ */
         }
@@ -3538,6 +4021,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
         ar_open = 0;
         goto add_failed;
     }
+    nattr_report_create();
     ar_open = 0;
     rc = BP_OK;
     if (fchmod(fileno(fp), stage_mode) != 0) rc = BP_ERR_IO;
@@ -3753,6 +4237,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
         bp_archive_close(&ar); fclose(fp); unlink(tmp_name); return 1;
     }
+    nattr_report_create();
 
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
 
@@ -3907,6 +4392,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         extract_finish_directories(&ctx);
     }
     if (rc == BP_OK && ctx.partial_count != 0) rc = BP_ERR_PARTIAL;
+    nattr_report_extract();
     if (rc != BP_OK) {
         if (rc == BP_ERR_PARTIAL)
             fprintf(stderr, "boltpack: extraction completed with partial preservation (%lu item%s affected)\n",
@@ -4138,6 +4624,7 @@ int main(int argc, char **argv)
     char command;
     bp_uint32 block_size = 0;
     bp_uint8  method     = BP_DEFAULT_METHOD;
+    const char *debug_env = getenv("BOLTPACK_DEBUG");
     int opt_level = 0;
     const char *out_dir  = NULL;
     int force   = 0;
@@ -4161,6 +4648,9 @@ int main(int argc, char **argv)
     int i;
 
     if (argc < 2) { usage(); return 1; }
+
+    if (debug_env != NULL && debug_env[0] != '\0' && debug_env[0] != '0')
+        g_nattr_debug = 1;
 
     if (strcmp(argv[1], "help") == 0 ||
         strcmp(argv[1], "--help") == 0 ||

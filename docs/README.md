@@ -38,6 +38,7 @@ make
 | [interoperability-completion-plan.md](interoperability-completion-plan.md) | Ordered completion backlog, target environments, and exit criteria |
 | [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) | Phase 0–3 and basic Profile 1 acceptance mapped to every frontend/build |
 | [emulator-setup.md](emulator-setup.md) | Verified local Atari and Amiga emulator startup settings |
+| [hardware-testing.md](hardware-testing.md) | How to test on real machines and report results; per-system test steps |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
 | `RELEASES.md`          | Release workflow (maintainer reference)                |

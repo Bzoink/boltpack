@@ -1027,6 +1027,28 @@ macosx-host-test: modern
 	    --output-root build/macosx-host/runs \
 	    --manifest test/reference/interoperability/macosx-host.json
 
+# Native attribute container (BPNA): codec unit test, then the macOS CLI run
+# against a Linux-backed extended-attribute shim.  Neither needs a Mac; see
+# docs/specification-1.0.md section 2.3.1.2 for what they do and do not prove.
+.PHONY: native-attrs-test macosx-xattr-test macos-source-kit-test
+native-attrs-test:
+	mkdir -p build/native-attrs-test
+	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+	    -Itest/unit -o build/native-attrs-test/test_native_attrs \
+	    test/unit/test_native_attrs.c
+	build/native-attrs-test/test_native_attrs
+
+macosx-xattr-test: modern
+	python3 test/check_macosx_xattr_roundtrip.py --cc "$(CC)" \
+	    --linux-boltpack build/linux/boltpack \
+	    --workdir build/macosx-xattr-test
+	python3 test/check_macosx_xattr_roundtrip.py --cc "$(CC)" --legacy-at \
+	    --linux-boltpack build/linux/boltpack \
+	    --workdir build/macosx-xattr-test-legacy
+
+macos-source-kit-test:
+	CC="$(CC)" python3 test/check_macos_source_kits.py
+
 # Haiku / BeOS (x86_64)
 HAIKU_CC      = x86_64-unknown-haiku-gcc
 HAIKU_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
@@ -1967,7 +1989,7 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="

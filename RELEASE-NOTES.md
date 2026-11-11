@@ -1,5 +1,34 @@
 # Release Notes
 
+## Unreleased
+
+- 64-bit Linux, Windows, macOS, Haiku and Plan 9 CLI builds, and the POSIX
+  wrappers built on the Linux frontend, now default to Fluff with 256 KiB
+  blocks. 32-bit builds keep BoltLZ. `-2` selects BoltLZ and `-b` sets the block
+  size. Target profiles that exclude Fluff keep their own codec rules.
+- New native attribute container (metadata namespace `0xFD`, see the
+  specification section 2.3.1.2). The macOS CLI stores extended attributes
+  other than the resource fork and Finder info, such as Finder tags and
+  download URLs, and restores them on macOS. Other readers skip the entry and
+  report it as unsupported metadata; archive edits keep it. Archive format 6 is
+  unchanged. The container has been exercised only on a Linux host with a
+  shim, not on a Mac.
+- The macOS CLI reports every attribute, resource fork and Finder info it
+  cannot store or restore, with the item, the reason and `errno`, plus a
+  one-line summary. `BOLTPACK_DEBUG=1` traces each attribute. Directory Finder
+  info is now restored, and a partial result caused only by the Classic
+  creation date not being restored is explained.
+- The macOS source kits now include the shared headers the CLI needs; the
+  previous kits stopped at the first `#include`.
+- The macOS CLI now builds for Mac OS X 10.5 and earlier PowerPC systems in
+  principle: `src/frontend/posix/legacy_at.h` emulates the `openat()` family
+  and `futimens()` with `fchdir()` on single path components, keeping
+  extraction anchored to held directory descriptors. The `ppc` kit build
+  enables it. It is verified on a Linux host only, not yet on a PowerPC Mac.
+- Finder info records written by the macOS CLI now use the same 10-byte layout
+  as the Mac OS 9 frontend, so type and creator codes transfer between the two.
+  The macOS reader still accepts the older 18-byte records.
+
 ## 1.10 — Target profile parity and zstd removal
 
 - Windows and macOS CLIs now support the shared Linux full, Linux mini,
