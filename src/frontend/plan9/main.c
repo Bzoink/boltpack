@@ -39,6 +39,16 @@
 #include "../../core/bp_codepage.h"
 #include "p9_path.h"
 
+/* 64-bit builds (amd64/arm64) default to Fluff with 256 KiB blocks; 32-bit
+ * builds keep BoltLZ.  Plan 9 compilers do not define __LP64__. */
+#if defined(__amd64__) || defined(__aarch64__) || defined(__LP64__)
+#define BP_DEFAULT_METHOD BP_METHOD_FLUFF
+#define BP_USAGE_CODECS "  -0        store only  -2 boltlz  -F fluff (default)  -q quiet  -qq silent\n"
+#else
+#define BP_DEFAULT_METHOD BP_METHOD_BOLTLZ
+#define BP_USAGE_CODECS "  -0        store only  -2 boltlz (default)  -F fluff  -q quiet  -qq silent\n"
+#endif
+
 /* Plan 9 uses UTF-8 natively; archive names are already UTF-8 */
 #define P9_CP  BP_CP_UTF8
 
@@ -811,7 +821,7 @@ static void usage(void)
         "  l  list     t  test    i  info    d  delete\n"
         "\noptions:\n"
         "  -b SIZE   block size: 8k 16k 32k 64k 256k\n"
-        "  -0        store only  -F fluff  -q quiet  -qq silent\n"
+        BP_USAGE_CODECS
         "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output dir for extraction\n"
         "  -f        force overwrite  -n dry run\n",
@@ -1251,7 +1261,7 @@ main(int argc, char *argv[])
 {
     char       command;
     bp_uint32  block_size = 0;
-    bp_uint8   method     = BP_METHOD_BOLTLZ;
+    bp_uint8   method     = BP_DEFAULT_METHOD;
     const char *out_dir   = nil;
     int        force = 0, dry_run = 0, i, r;
     int        interchange_profile = 0, codec_given = 0;
@@ -1271,6 +1281,7 @@ main(int argc, char *argv[])
         } else if (!strcmp(argv[i], "--interchange-profile-1")) {
             interchange_profile = 1; i++;
         } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; codec_given = 1; i++; }
+        else if (!strcmp(argv[i], "-2"))  { method = BP_METHOD_BOLTLZ; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-F"))  { method = BP_METHOD_FLUFF; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-qq"))  { g_verbosity = VERB_SILENT; i++; }
         else if (!strcmp(argv[i], "-q"))   { g_verbosity = VERB_QUIET;  i++; }

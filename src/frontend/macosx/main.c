@@ -96,6 +96,19 @@
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 
+/* 64-bit builds default to Fluff (256 KiB blocks); 32-bit keeps BoltLZ. */
+#if defined(__LP64__) || defined(_LP64)
+#define BP_DEFAULT_METHOD BP_METHOD_FLUFF
+#define BP_TAG_BOLTLZ_DEFAULT ""
+#define BP_TAG_FLUFF_DEFAULT " (default)"
+#define BP_TAG_BLOCK_DEFAULT "256k with Fluff, otherwise 32k"
+#else
+#define BP_DEFAULT_METHOD BP_METHOD_BOLTLZ
+#define BP_TAG_BOLTLZ_DEFAULT " (default)"
+#define BP_TAG_FLUFF_DEFAULT ""
+#define BP_TAG_BLOCK_DEFAULT "32k, 256k with -F"
+#endif
+
 /* Some C library headers hide this POSIX declaration under strict C89 mode. */
 extern int mkstemp(char *template_path);
 
@@ -4015,8 +4028,8 @@ static void usage_basic(void)
     fprintf(stderr,
         "  -0         Store only (no compression)\n"
         "  -1         BoltLite compression\n"
-        "  -2         boltlz compression (default)\n"
-        "  -F         Use Fluff compression\n");
+        "  -2         boltlz compression" BP_TAG_BOLTLZ_DEFAULT "\n"
+        "  -F         Use Fluff compression" BP_TAG_FLUFF_DEFAULT "\n");
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
@@ -4055,14 +4068,14 @@ static void usage_advanced(void)
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
     fprintf(stderr,
         "\nOptions:\n"
-        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n"
+        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: " BP_TAG_BLOCK_DEFAULT ")\n"
         "  --interchange-profile-1  Mini-compatible limits for create/add\n"
         "  --target-profile=macos-modern-v1  Reject names unsafe on macOS volumes (create/add)\n"
         "  -0, --store      Store only (no compression)\n");
     fprintf(stderr,
         "  -1, --boltlite       Use BoltLite compression\n"
-        "  -2, --boltlz    Use boltlz compression (default)\n"
-        "  -F, --fluff      Use Fluff compression\n");
+        "  -2, --boltlz    Use boltlz compression" BP_TAG_BOLTLZ_DEFAULT "\n"
+        "  -F, --fluff      Use Fluff compression" BP_TAG_FLUFF_DEFAULT "\n");
     fprintf(stderr,
         "  --target-auto-rename  Generate target-safe aliases and name report (create)\n"
         "  --target-name-report  Add a target name mapping report (create)\n"
@@ -4124,7 +4137,7 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
-    bp_uint8  method     = BP_METHOD_BOLTLZ;
+    bp_uint8  method     = BP_DEFAULT_METHOD;
     int opt_level = 0;
     const char *out_dir  = NULL;
     int force   = 0;
@@ -4499,6 +4512,8 @@ int main(int argc, char **argv)
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
     }
+    if (utf8_profile == TARGET_PROFILE_LINUX_MINI && !codec_given)
+        method = BP_METHOD_BOLTLZ; /* mini profile excludes Fluff */
     if (utf8_profile == TARGET_PROFILE_LINUX_MINI &&
         ((command != 'c' && command != 'a') ||
          (block_size != 0 && block_size > BP_BLOCK_32K) ||

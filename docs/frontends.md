@@ -21,7 +21,9 @@ Every frontend must:
 The current CLI frontends follow one method-selection convention unless a
 platform explicitly documents a smaller subset:
 
-- no compression flag: boltlz default
+- no compression flag: boltlz default; the 64-bit Linux, Windows, macOS,
+  Haiku and Plan 9 CLIs default to Fluff with 256 KiB blocks instead
+  (`-2` selects boltlz, `-b` overrides the block size)
 - `-0`: stored
 - `-1`: BoltLite
 - `-F`: Fluff
@@ -265,6 +267,13 @@ surface used by the Linux-family frontends: long-form commands such as
 `create`, `add`, `extract`, `list`, `test`, `info`, and `delete`, plus a
 basic `boltpack help` page that hides expert compression tuning. Run
 `boltpack help advanced` to show the full Windows CLI surface.
+
+Windows 64-bit builds (`make win64`) default to Fluff with 256 KiB blocks when
+no codec flag is given; `-b` still overrides the block size and `-0`, `-1` and
+`-2` select Stored, BoltLite and BoltLZ. Windows 32-bit builds keep BoltLZ with
+32 KiB blocks. Target profiles that exclude Fluff (the Interchange, DOS-family,
+Atari, Amiga, QL, RISC OS, X68000, CP/M-86, Haiku and `linux-mini-v1` profiles)
+keep their own codec and block-size rules.
 
 `--interchange-profile-1` is available for `create` and `add`. It selects
 BoltLite with 16 KiB blocks by default, or Stored with `-0`, and enforces the

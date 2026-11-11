@@ -2742,8 +2742,13 @@ static void usage_basic(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
+#if defined(__LP64__) || defined(_LP64)
+        "  -2               boltlz compression\n"
+        "  -F               Use fluff compression (default)\n");
+#else
         "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression\n");
+#endif
     fprintf(stderr,
         "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n"
         "  --target-profile=PROFILE  Select a target compatibility profile\n"
@@ -2795,12 +2800,21 @@ static void usage_advanced(void)
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr,
+#if defined(__LP64__) || defined(_LP64)
+        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 256k with Fluff, otherwise 32k)\n");
+#else
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n");
+#endif
     fprintf(stderr,
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
+#if defined(__LP64__) || defined(_LP64)
         "  -2               boltlz compression\n"
+        "  -F               Use fluff compression (default; 256k blocks)\n");
+#else
+        "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression (defaults to 256k blocks)\n");
+#endif
     fprintf(stderr,
         "  --interchange-profile-1  BoltLite default (or -0 Stored), 16 KiB, mini limits\n"
         "  --target-profile=PROFILE  Select a target compatibility profile\n"
@@ -4537,7 +4551,12 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
+#if defined(__LP64__) || defined(_LP64)
+    /* 64-bit builds default to Fluff (256 KiB blocks); 32-bit keeps BoltLZ. */
+    bp_uint8 method = BP_METHOD_FLUFF;
+#else
     bp_uint8 method = BP_METHOD_BOLTLZ;
+#endif
     int opt_level = 0; /* 0 = use default (no -l flag given) */
     const char *out_dir = NULL;
     int force = 0;
@@ -4858,6 +4877,8 @@ int main(int argc, char **argv)
         target_profile != TARGET_PROFILE_LINUX_MINI &&
         target_profile != TARGET_PROFILE_CPM86_83)
         interchange_profile = 1;
+    if (target_profile == TARGET_PROFILE_LINUX_MINI && !codec_given)
+        method = BP_METHOD_BOLTLZ; /* mini profile excludes Fluff */
     if (target_profile == TARGET_PROFILE_LINUX_MINI &&
         ((command != 'c' && command != 'a') ||
          (block_size != 0 && block_size > BP_BLOCK_32K) ||

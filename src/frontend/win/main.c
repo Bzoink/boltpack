@@ -4391,8 +4391,13 @@ static void usage_basic(void)
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k\n"
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
+#ifdef _WIN64
+        "  -2               boltlz compression\n"
+        "  -F               Use fluff compression (default)\n");
+#else
         "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression\n");
+#endif
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
@@ -4462,12 +4467,21 @@ static void usage_advanced(void)
         BP_VERSION_MAJOR, BP_VERSION_MINOR, AUTHOR_MESSAGE);
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr,
+#ifdef _WIN64
+        "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 256k with Fluff, otherwise 32k)\n");
+#else
         "  -b SIZE          Block size: 8k, 16k, 32k, 64k, 256k (default: 32k, 256k with -F)\n");
+#endif
     fprintf(stderr,
         "  -0               Store only (no compression)\n"
         "  -1               BoltLite compression\n"
+#ifdef _WIN64
+        "  -2               boltlz compression\n"
+        "  -F               Use fluff compression (default; 256k blocks)\n");
+#else
         "  -2               boltlz compression (default)\n"
         "  -F               Use fluff compression (defaults to 256k blocks)\n");
+#endif
     fprintf(stderr,
         "  -l N, --level N  Exact codec level (BoltLZ: 1-2; Fluff: 1-9, 8=default)\n"
         "  --light          Fast preset (BoltLZ 1; Fluff 1)\n"
@@ -5545,7 +5559,12 @@ int main(int argc, char **argv)
 {
     char command;
     bp_uint32 block_size = 0;
+#ifdef _WIN64
+    /* 64-bit builds default to Fluff (256 KiB blocks); 32-bit keeps BoltLZ. */
+    bp_uint8 method = BP_METHOD_FLUFF;
+#else
     bp_uint8 method = BP_METHOD_BOLTLZ;
+#endif
     int opt_level = 0; /* 0 = use default (no -l flag given) */
     const char *out_dir = NULL;
     int force = 0;
@@ -6023,6 +6042,8 @@ int main(int argc, char **argv)
         if (!codec_given || method != BP_METHOD_STORED)
             method = BP_METHOD_BOLTLITE;
     }
+    if (utf8_profile == TARGET_PROFILE_LINUX_MINI && !codec_given)
+        method = BP_METHOD_BOLTLZ; /* mini profile excludes Fluff */
     if (utf8_profile == TARGET_PROFILE_LINUX_MINI &&
         ((command != 'c' && command != 'a') ||
          (block_size != 0 && block_size > BP_BLOCK_32K) ||
