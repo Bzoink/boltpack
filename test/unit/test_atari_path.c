@@ -35,6 +35,25 @@ static int project_rejects(const char *name, int is_directory)
                                  &length) != BP_OK;
 }
 
+static int native_equals(const char *name, int is_directory,
+                         const char *expected)
+{
+    char key[BP_ATARI_GEMDOS_PATH_MAX + 2];
+    unsigned int length = 0;
+    int rc = bp_atari_project_name_native(name, is_directory, key, sizeof(key),
+                                          &length);
+    return rc == BP_OK && length == strlen(expected) &&
+           strcmp(key, expected) == 0;
+}
+
+static int native_rejects(const char *name, int is_directory)
+{
+    char key[BP_ATARI_GEMDOS_PATH_MAX + 2];
+    unsigned int length = 0;
+    return bp_atari_project_name_native(name, is_directory, key, sizeof(key),
+                                        &length) != BP_OK;
+}
+
 static void make_deep_name(char *name, size_t final_component_length)
 {
     static const char component[] = "ABCDEFGH.XYZ";
@@ -186,6 +205,39 @@ int main(void)
 
     printf("BoltPack Atari path projection tests\n\n");
     test_tree_collisions();
+    printf("\nStrict base-GEMDOS rule (names other systems produce)\n");
+    check(project_rejects("caf\x82.txt", 0),
+          "strict: an Atari ST accented letter is refused");
+    check(project_rejects("a b.txt", 0), "strict: a space is refused");
+    printf("\nNative rule (names an Atari extracts)\n");
+    check(native_equals("caf\x82.txt", 0, "CAF\x82.TXT"),
+          "native: accented ST letter kept, ASCII letters uppercased");
+    check(native_equals("\x8e" "pfel.txt", 0, "\x8e" "PFEL.TXT"),
+          "native: an accented capital in the first position is kept");
+    check(native_equals("\x84.txt", 0, "\x84.TXT") &&
+          !native_equals("\x84.txt", 0, "\x8e.TXT"),
+          "native: high bytes are not case folded");
+    check(native_rejects("a b.txt", 0),
+          "native: a space is still refused (TOS tools cut names at a space)");
+    check(native_equals("na\xA4o.dat", 0, "NA\xA4O.DAT"),
+          "native: high byte in the middle of a base name");
+    check(native_equals("\xFF\xFE.\x80\x81", 0, "\xFF\xFE.\x80\x81"),
+          "native: high bytes in an extension");
+    check(native_rejects("\xE5" "name.txt", 0),
+          "native: a first byte of 0xE5 (deleted-entry marker) refused");
+    check(native_equals("n\xE5me.txt", 0, "N\xE5ME.TXT"),
+          "native: 0xE5 later in a name is fine");
+    check(native_rejects("bad\x01.txt", 0), "native: control character refused");
+    check(native_rejects("bad\x7f.txt", 0), "native: DEL refused");
+    check(native_rejects("bad?.txt", 0) && native_rejects("bad*.txt", 0) &&
+          native_rejects("bad:name.txt", 0) && native_rejects("bad\\name.txt", 0),
+          "native: path and wildcard characters still refused");
+    check(native_rejects("longfilename.txt", 0) &&
+          native_rejects("name.toolong", 0) && native_rejects("a..b", 0),
+          "native: the 8.3 shape still applies");
+    check(native_rejects("caf\x82" "caf\x82" "x.txt", 0),
+          "native: high bytes count toward the eight-character limit");
+    printf("\nShared behavior\n");
     check(project_equals("readme.txt", 0, "README.TXT"),
           "ASCII filename is uppercased");
     check(project_equals("folder/subdir/file.bin", 0,

@@ -863,6 +863,18 @@ atari-hatari-fat-test: all atari-cli
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
 	    --output "$(ATARI_HATARI_FAT_OUTPUT)"
 
+# Native Atari name rule on real TOS: Atari ST accented letters, nested accented
+# directories, implicit parent directories, and an extract/create/test/extract
+# round trip on a FAT12 floppy, with the directory entries read back from the
+# image.  Run it once per ROM, for example:
+#   make atari-hatari-names-test HATARI_TOS=~/images/Atari/tos162se.img
+.PHONY: atari-hatari-names-test
+atari-hatari-names-test: all atari-cli
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	python3 test/check_hatari_names.py --tos "$(HATARI_TOS)" \
+	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
+	    --keep build/atari-names
+
 ATARI_AMIGA_RUN_TAG ?= $(shell date +%Y%m%d-%H%M%S)
 ATARI_AMIGA_OUTPUT ?= build/atari-amiga-interoperability-$(ATARI_AMIGA_RUN_TAG)
 atari-amiga-interoperability-test: modern atari-cli amiga68k

@@ -18,6 +18,15 @@
   one-line summary. `BOLTPACK_DEBUG=1` traces each attribute. Directory Finder
   info is now restored, and a partial result caused only by the Classic
   creation date not being restored is explained.
+- The Atari CLI and GEM GUI now accept Atari ST accented letters in names (for
+  example `café.txt`), which TOS stores as exact bytes; before, extraction refused
+  them, so a file with an accented name archived on one Atari could not be
+  extracted on another. Names other systems produce for an Atari keep the
+  stricter ASCII rule. Spaces remain refused because the Atari C library cuts
+  names at a space. Checked on TOS 1.06, 1.62 and 2.05 in Hatari.
+- The Atari CLI now extracts archives that lack explicit directory entries, such
+  as `boltpack c a.blt dir/file` made on Linux; it used to fail with "cannot
+  inspect destination".
 - QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64 and pre-7.3 AIX can extract again.
   Their wrappers extract by pathname, which cannot be made race-safe, so they
   only write into a new directory they create private to the user (`-o DIR`,

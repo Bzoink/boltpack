@@ -142,11 +142,34 @@ static int bp_atari_name_char_allowed(unsigned char c)
     return 1;
 }
 
-/* Convert a local Atari byte path to its exact base-GEMDOS key.
- * TOS folds ASCII letters to uppercase and stores 8.3 path components. */
-static int bp_atari_project_name(const char *local_name, int is_directory,
-                                char *key, size_t capacity,
-                                unsigned int *key_length)
+/* Characters an Atari accepts in a name it created itself.  TOS stores the raw
+ * bytes of the Atari ST character set (0x80-0xFF, for example the accented
+ * letters); everything else is as strict as the base rule.  Spaces are refused
+ * on purpose: the C library's directory reader on plain TOS cuts a name at its
+ * first space and paths containing one fail to open (found on TOS 1.62 in
+ * Hatari, see test/check_hatari_names.py).  Used only by the native Atari
+ * frontends: names that other systems are asked to produce for an Atari keep
+ * the strict ASCII rule above. */
+static int bp_atari_native_char_allowed(unsigned char c)
+{
+    if (c >= 0x80U) return 1;
+    return bp_atari_name_char_allowed(c);
+}
+
+static int bp_atari_char_ok(unsigned char c, int native)
+{
+    return native ? bp_atari_native_char_allowed(c)
+                  : bp_atari_name_char_allowed(c);
+}
+
+/* Convert a local Atari byte path to its exact GEMDOS key.
+ * TOS folds ASCII letters to uppercase and stores 8.3 path components.  With
+ * native set, also accept Atari ST characters (bytes 0x80-0xFF) but refuse a
+ * component that starts with 0xE5 (the FAT marker for a deleted entry); with
+ * native clear, apply the strict base-GEMDOS ASCII rule. */
+static int bp_atari_project_name_mode(const char *local_name, int is_directory,
+                                      char *key, size_t capacity,
+                                      unsigned int *key_length, int native)
 {
     size_t length, pos = 0, component_start = 0, i;
     if (local_name == NULL || key == NULL || key_length == NULL)
@@ -163,13 +186,17 @@ static int bp_atari_project_name(const char *local_name, int is_directory,
             size_t j, base_length = 0, extension_length = 0;
             int in_extension = 0;
             if (component_length == 0) return BP_ERR_INVALID_ARG;
+            if (native) {
+                unsigned char first = (unsigned char)local_name[component_start];
+                if (first == 0xE5U) return BP_ERR_INVALID_ARG;
+            }
             for (j = component_start; j < i; j++) {
                 c = (unsigned char)local_name[j];
                 if (c == '.') {
                     if (in_extension || base_length == 0) return BP_ERR_INVALID_ARG;
                     in_extension = 1;
                 } else {
-                    if (!bp_atari_name_char_allowed(c)) return BP_ERR_INVALID_ARG;
+                    if (!bp_atari_char_ok(c, native)) return BP_ERR_INVALID_ARG;
                     if (in_extension) extension_length++;
                     else base_length++;
                 }
@@ -180,7 +207,7 @@ static int bp_atari_project_name(const char *local_name, int is_directory,
             if (i < length) key[pos++] = '\\';
             component_start = i + 1;
         } else {
-            if (!bp_atari_name_char_allowed(c)) return BP_ERR_INVALID_ARG;
+            if (!bp_atari_char_ok(c, native)) return BP_ERR_INVALID_ARG;
             if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
             key[pos++] = (char)c;
         }
@@ -188,6 +215,26 @@ static int bp_atari_project_name(const char *local_name, int is_directory,
     key[pos] = '\0';
     *key_length = (unsigned int)pos;
     return BP_OK;
+}
+
+/* Strict base-GEMDOS projection: the rule for names other systems produce for
+ * an Atari target. */
+static int bp_atari_project_name(const char *local_name, int is_directory,
+                                 char *key, size_t capacity,
+                                 unsigned int *key_length)
+{
+    return bp_atari_project_name_mode(local_name, is_directory, key, capacity,
+                                      key_length, 0);
+}
+
+/* Native projection: the rule for names an Atari extracts. */
+static int bp_atari_project_name_native(const char *local_name,
+                                        int is_directory, char *key,
+                                        size_t capacity,
+                                        unsigned int *key_length)
+{
+    return bp_atari_project_name_mode(local_name, is_directory, key, capacity,
+                                      key_length, 1);
 }
 
 static void bp_atari_name_set_init(bp_atari_name_set_t *set)

@@ -1467,7 +1467,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
             ctx->skip_errors++;
             return NULL;
         }
-        project_rc = bp_atari_project_name(local_name,
+        project_rc = bp_atari_project_name_native(local_name,
                                            entry->entry_type == BP_TYPE_DIR,
                                            projected_name, sizeof(projected_name),
                                            &projected_length);
@@ -1596,6 +1596,16 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         return bp_archive_dry_run_stream();
     }
 
+    /* Create the parents first.  On TOS, asking about a file inside a directory
+     * that does not exist yet fails with an error other than ENOENT, so an
+     * archive without explicit directory entries (for example one made on Linux
+     * from "dir/file") could not otherwise be extracted. */
+    if (mkdirs_for_file(path) != 0) {
+        fprintf(stderr, "boltpack: cannot create parent directories for: %s\n",
+                path);
+        ctx->skip_errors++;
+        return NULL;
+    }
     if (!ctx->force) {
         struct stat st_buf;
         if (lstat(path, &st_buf) == 0) {
@@ -1611,12 +1621,6 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         }
     }
 
-    if (mkdirs_for_file(path) != 0) {
-        fprintf(stderr, "boltpack: cannot create parent directories for: %s\n",
-                path);
-        ctx->skip_errors++;
-        return NULL;
-    }
     staged = (atari_staged_output_t *)calloc(1, sizeof(*staged));
     if (staged == NULL) {
         ctx->skip_errors++;
@@ -2149,7 +2153,7 @@ static int atari_preflight_entry(const bp_entry_t *entry, void *user_data)
     if (entry->entry_type == BP_TYPE_DIR && path_length &&
         (path[path_length - 1] == '/' || path[path_length - 1] == '\\')) path_length--;
     if (path_length > BP_ATARI_GEMDOS_PATH_MAX ||
-        bp_atari_project_name(local, entry->entry_type == BP_TYPE_DIR,
+        bp_atari_project_name_native(local, entry->entry_type == BP_TYPE_DIR,
                               projected, sizeof(projected), &length) != BP_OK) {
         fprintf(stderr, "boltpack: name is outside the Atari 8.3 profile: %s\n", local);
         return 1;

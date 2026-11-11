@@ -910,6 +910,29 @@ A 1 MB ST typically has ~600 KB free and gets 256 KB blocks. A stock 512 KB ST g
 ### Atari: Path Handling
 
 Drive prefixes (`C:\`, `C:`) are stripped when computing archive entry names. Backslashes are normalised to forward slashes.
+
+**Names the Atari accepts on extraction.** Each path component must fit 8.3, with
+ASCII letters folded to uppercase as TOS does. Atari ST characters (bytes
+0x80-0xFF in the Atari ST character set, such as the accented letters) are
+accepted and stored as those exact bytes, so a file called `café.txt` or a folder
+called `übung` created on an Atari survives a round trip. Not accepted: control
+characters, `: / \ ? *`, spaces (the C library's directory reader on plain TOS
+cuts a name at its first space and paths containing one fail to open), a
+component starting with byte 0xE5 (FAT's deleted-entry marker), and anything
+that is not representable in the Atari ST character set. This is checked by
+`make atari-hatari-names-test` on TOS 1.06, 1.62 and 2.05: the accented names are
+stored as exact raw bytes and `ä`/`Ä` stay distinct (TOS does not fold accented
+letters). EmuTOS and FreeMiNT have not been checked and may fold them.
+
+The stricter ASCII-only rule remains for names another system is asked to produce
+for an Atari (`--target-profile=atari-st`), where nothing has been run on the
+destination.
+
+An archive without explicit directory entries (for example one made on Linux
+from `dir/file`) extracts: parent directories are created before the file is
+checked, because TOS reports a missing parent with an error other than "not
+found".
+
 Create, add, and delete operate on exclusive sibling staging files. Add copies
 existing entries into a new staged archive before appending; the original is
 replaced only after successful finalization and close. Publication keeps a

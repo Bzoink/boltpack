@@ -388,7 +388,11 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
 - **Stored and restored:** file data, directories, TOS attributes (read-only,
   hidden, system and archive; the volume-label and directory bits are never
   stored), and two-second modification times with a time zone from `BP_TZ_OFFSET`.
-- **Names:** strict ASCII 8.3 names for the base GEMDOS projection.
+- **Names:** 8.3 components. Atari ST accented letters are accepted and stored as
+  exact bytes (checked on TOS 1.06, 1.62 and 2.05 in Hatari, including a round
+  trip made on TOS); spaces, control characters, `: / \ ? *` and a leading byte
+  0xE5 are refused, and long names (FreeMiNT) do not fit 8.3. EmuTOS and FreeMiNT
+  have not been checked and may fold accented letters.
 - **Limits:** GEMDOS paths are limited to 125 bytes.
 - **TOS version differences:** the hidden and system flags on **directories** are
   not applied by TOS 1.06, 1.62 or 2.05 (reported partial); directory times are

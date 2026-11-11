@@ -1515,7 +1515,7 @@ static int atari_gui_index_projected_name(atari_gui_name_index_t *index,
     char key[BP_MAX_PATH];
     unsigned int key_len;
     int rc;
-    rc = bp_atari_project_name(local, is_dir, key, sizeof(key), &key_len);
+    rc = bp_atari_project_name_native(local, is_dir, key, sizeof(key), &key_len);
     if (rc != BP_OK) {
         index->error = "Name is outside Atari's 8.3 filename profile";
         return rc;
