@@ -18,6 +18,13 @@
   one-line summary. `BOLTPACK_DEBUG=1` traces each attribute. Directory Finder
   info is now restored, and a partial result caused only by the Classic
   creation date not being restored is explained.
+- QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64 and pre-7.3 AIX can extract again.
+  Their wrappers extract by pathname, which cannot be made race-safe, so they
+  only write into a new directory they create private to the user (`-o DIR`,
+  which must not exist) and open it to its normal permissions afterwards. The
+  shared source also no longer needs the `openat()` family to compile in that
+  mode. Verified on a Linux host only; none of these systems has been built or
+  run.
 - The macOS source kits now include the shared headers the CLI needs; the
   previous kits stopped at the first `#include`.
 - The macOS CLI now builds for Mac OS X 10.5 and earlier PowerPC systems in

@@ -157,38 +157,18 @@ dos-host-test:
 	python3 test/check_dos_profile.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 
-# QNX, unidentified/pre-7.3 AIX, HP-UX, IRIX, NeXTSTEP, SCO, and Tru64 builds
-# cannot currently guarantee race-safe multi-component traversal. Their
-# wrappers refuse real extraction; host builds verify refusal happens before
-# output creation and dry-run remains available.
-.PHONY: posix-path-extract-refusal-host-test
-posix-path-extract-refusal-host-test:
-	$(MAKE) FRONTEND=qnx CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/qnx-host-test TARGET=build/qnx-host-test/boltpack all
-	$(MAKE) FRONTEND=aix CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/aix-legacy-host-test TARGET=build/aix-legacy-host-test/boltpack all
-	$(MAKE) FRONTEND=hpux CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/hpux-host-test TARGET=build/hpux-host-test/boltpack all
-	$(MAKE) FRONTEND=irix CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/irix-host-test TARGET=build/irix-host-test/boltpack all
-	$(MAKE) FRONTEND=nextstep CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/nextstep-host-test TARGET=build/nextstep-host-test/boltpack all
-	$(MAKE) FRONTEND=sco CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/sco-host-test TARGET=build/sco-host-test/boltpack all
-	$(MAKE) FRONTEND=tru64 CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/tru64-host-test TARGET=build/tru64-host-test/boltpack all
-	$(MAKE) FRONTEND=linux CC=$(CC) ENABLE_NET=0 \
-	    BUILDDIR=build/linux-posix-refusal-host-test \
-	    TARGET=build/linux-posix-refusal-host-test/boltpack all
-	python3 test/check_qnx_extract_refusal.py \
-	    --refusing-boltpack build/qnx-host-test/boltpack \
-	    --refusing-boltpack build/aix-legacy-host-test/boltpack \
-	    --refusing-boltpack build/hpux-host-test/boltpack \
-	    --refusing-boltpack build/irix-host-test/boltpack \
-	    --refusing-boltpack build/nextstep-host-test/boltpack \
-	    --refusing-boltpack build/sco-host-test/boltpack \
-	    --refusing-boltpack build/tru64-host-test/boltpack \
-	    --linux-boltpack build/linux-posix-refusal-host-test/boltpack
+# QNX, unidentified/pre-7.3 AIX, HP-UX, IRIX, NeXTSTEP, SCO, and Tru64 have no
+# openat() family, so they extract by pathname, which cannot stop another
+# process from swapping a directory mid-extraction.  Their wrappers therefore
+# extract only into a new directory they create private to the user (mode 0700)
+# and open it up afterwards.  The test builds every wrapper on the host with
+# __linux__ undefined (the pathname branch those systems compile), then checks
+# create/list/test/append/delete, the refusals, private-root extraction, and
+# that a failed extraction stays private.  It does not run those systems.
+.PHONY: posix-path-extract-host-test
+posix-path-extract-host-test: all
+	python3 test/check_posix_path_extract.py --cc "$(CC)" \
+	    --linux-boltpack build/linux/boltpack
 
 # Build selected POSIX wrappers against the host libc with Linux-only feature
 # branches disabled, then exercise directory-relative extraction. These host
@@ -1989,7 +1969,7 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-refusal-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="

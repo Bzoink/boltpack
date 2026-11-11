@@ -71,6 +71,35 @@
 #include <sys/syscall.h>
 #endif
 
+#ifndef BP_USE_DIRFD_EXTRACTION
+/* Pathname builds (systems without the POSIX.1-2008 openat() family) never
+ * hold a directory descriptor for the source or the output: every
+ * descriptor-relative branch below is guarded by parent_fd >= 0 and parent_fd
+ * is always -1.  The source still names those functions, so give the names
+ * inert definitions that fail with ENOSYS.  That keeps the file compiling and
+ * linking on systems that lack them without changing behavior anywhere. */
+#ifndef O_DIRECTORY
+#define O_DIRECTORY 0
+#endif
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+#ifndef AT_SYMLINK_NOFOLLOW
+#define AT_SYMLINK_NOFOLLOW 0
+#endif
+#undef openat
+#undef readlinkat
+#undef fstatat
+#undef fdopendir
+#define openat(dirfd, path, flags) \
+    (errno = ENOSYS, (void)(path), (void)(flags), -1)
+#define readlinkat(dirfd, path, buf, size) \
+    (errno = ENOSYS, (void)(path), (void)(buf), (void)(size), (ssize_t)-1)
+#define fstatat(dirfd, path, st, flags) \
+    (errno = ENOSYS, (void)(path), (void)(st), (void)(flags), -1)
+#define fdopendir(fd)                       (errno = ENOSYS, (DIR *)NULL)
+#endif
+
 #ifdef BOLTPACK_FAST_FLUFF
 #include "../../core/fluff_fast.h"
 #include <omp.h>
@@ -3345,6 +3374,95 @@ static int cmd_list(const char *archive_name)
     return 0;
 }
 
+#if defined(BP_PRIVATE_ROOT_EXTRACTION) && defined(BP_USE_DIRFD_EXTRACTION)
+/* Directory-relative extraction needs no private root. */
+#undef BP_PRIVATE_ROOT_EXTRACTION
+#endif
+
+#ifdef BP_PRIVATE_ROOT_EXTRACTION
+/* Extraction by pathname cannot stop another process from replacing a
+ * directory between a check and its use.  On platforms without directory
+ * descriptor operations the output directory is therefore created here, new
+ * and private to the current user (mode 0700), and given its normal
+ * permissions only after extraction has finished.  While files are being
+ * written, no other unprivileged user can enter or change anything beneath
+ * it, which is the only party that race needs.  Processes running as the same
+ * user or as the superuser are already inside the trust boundary.  The parent
+ * of the output directory must be trustworthy (for example the current
+ * directory or the user's own folder): it decides where the new directory
+ * lands. */
+static int private_root_create(const char *out_dir, struct stat *created)
+{
+    struct stat st;
+
+    if (out_dir == NULL || out_dir[0] == '\0') {
+        fprintf(stderr,
+                "boltpack: on this platform extraction needs -o DIR, naming a "
+                "directory that does not exist yet; it is created private "
+                "(mode 0700) so no other user can alter it while files are "
+                "written\n");
+        return -1;
+    }
+    if (mkdir(out_dir, 0700) != 0) {
+        if (errno == EEXIST)
+            fprintf(stderr,
+                    "boltpack: %s already exists; extraction on this platform "
+                    "only writes into a new directory that it creates itself "
+                    "(choose a name that does not exist)\n", out_dir);
+        else
+            fprintf(stderr,
+                    "boltpack: cannot create output directory %s: %s (its "
+                    "parent directory must already exist)\n", out_dir,
+                    strerror(errno));
+        return -1;
+    }
+    /* The umask may have removed bits; set the mode explicitly and confirm
+     * that we own what we created before trusting it. */
+    if (chmod(out_dir, 0700) != 0 || lstat(out_dir, &st) != 0 ||
+        !S_ISDIR(st.st_mode) || st.st_uid != geteuid() ||
+        (st.st_mode & 0777) != 0700) {
+        fprintf(stderr,
+                "boltpack: cannot make the output directory %s private\n",
+                out_dir);
+        (void)rmdir(out_dir);
+        return -1;
+    }
+    *created = st;
+    if (g_verbosity == VERB_DEFAULT)
+        printf("extracting into new private directory: %s\n", out_dir);
+    return 0;
+}
+
+/* Give the output directory its normal permissions (the umask default) once
+ * extraction is complete, or leave it private if extraction did not finish. */
+static void private_root_open(const char *out_dir, const struct stat *created,
+                              int finished)
+{
+    struct stat st;
+    mode_t mask;
+
+    if (!finished) {
+        fprintf(stderr,
+                "boltpack: %s is left private (mode 0700) because extraction "
+                "did not finish\n", out_dir);
+        return;
+    }
+    if (lstat(out_dir, &st) != 0 || st.st_dev != created->st_dev ||
+        st.st_ino != created->st_ino) {
+        fprintf(stderr,
+                "boltpack: %s changed during extraction; its permissions were "
+                "not touched\n", out_dir);
+        return;
+    }
+    mask = umask(0);
+    (void)umask(mask);
+    if (chmod(out_dir, (mode_t)(0777 & ~mask)) != 0)
+        fprintf(stderr,
+                "boltpack: cannot set the final permissions of %s: %s (it "
+                "remains private, mode 0700)\n", out_dir, strerror(errno));
+}
+#endif /* BP_PRIVATE_ROOT_EXTRACTION */
+
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
@@ -3354,6 +3472,9 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     int rc, dir_rc;
     double start;
     double elapsed;
+#ifdef BP_PRIVATE_ROOT_EXTRACTION
+    struct stat private_root;
+#endif
 
     fp = fopen(archive_name, "rb");
     if (fp == NULL) {
@@ -3378,7 +3499,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         return 1;
     }
 
-#ifdef BP_REFUSE_PATH_RACE_EXTRACTION
+#if defined(BP_REFUSE_PATH_RACE_EXTRACTION) && \
+    !defined(BP_PRIVATE_ROOT_EXTRACTION)
     if (!dry_run) {
         fprintf(stderr,
                 "boltpack: extraction is disabled because this platform cannot anchor output paths safely\n");
@@ -3387,6 +3509,12 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     }
 #endif
 
+#ifdef BP_PRIVATE_ROOT_EXTRACTION
+    if (!dry_run && private_root_create(out_dir, &private_root) != 0) {
+        fclose(fp);
+        return 1;
+    }
+#else
     if (out_dir && !dry_run) {
         if (mkdirs(out_dir) != 0) {
             fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
@@ -3394,6 +3522,7 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
             return 1;
         }
     }
+#endif
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
@@ -3427,6 +3556,11 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
 #ifdef BP_USE_DIRFD_EXTRACTION
     if (ctx.root_fd >= 0) close(ctx.root_fd);
+#endif
+#ifdef BP_PRIVATE_ROOT_EXTRACTION
+    if (!dry_run)
+        private_root_open(out_dir, &private_root,
+                          rc == BP_OK || rc == BP_ERR_PARTIAL);
 #endif
 
     if (rc != BP_OK) {
@@ -3848,10 +3982,14 @@ static int same_archive_file(const struct stat *left,
         left->st_ctimespec.tv_sec != right->st_ctimespec.tv_sec ||
         left->st_ctimespec.tv_nsec != right->st_ctimespec.tv_nsec)
         return 0;
-#else
+#elif defined(BP_STAT_HAS_NSEC)
     if (left->st_mtim.tv_nsec != right->st_mtim.tv_nsec ||
         left->st_ctim.tv_sec != right->st_ctim.tv_sec ||
         left->st_ctim.tv_nsec != right->st_ctim.tv_nsec)
+        return 0;
+#else
+    /* No nanosecond timestamps: whole seconds are the best this system gives. */
+    if (left->st_ctime != right->st_ctime)
         return 0;
 #endif
     return 1;

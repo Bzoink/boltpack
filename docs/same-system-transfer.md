@@ -104,7 +104,7 @@ These are deliberately outside the format and are never carried on any system:
 | Linux (CLI, FLTK GUI) | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | no | host + QEMU |
 | Linux mini (32-bit) | yes | yes | yes | mode | not checked | n/a | no | host + QEMU/native 32-bit |
 | BSDs, Solaris, illumos, Hurd, AIX 7.3, z/OS | yes | yes | yes | mode | yes | n/a | no | host shim only |
-| QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, older AIX | create and list only | | | | | | | host shim only |
+| QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, older AIX | yes, into a new private directory | yes | yes (symlink times reported partial) | mode | yes | n/a | no | host shim only |
 | macOS CLI | yes | yes | yes | rwx mode | yes | resource fork, Finder info | extended attributes | host shim only |
 | macOS Cocoa GUI | yes | yes | yes | mode (set-ID bits dropped) | no | no | no | build only |
 | Windows (CLI, FLTK, Win32, .NET, WCX) | yes | yes | yes | FAT attributes | no | n/a | no | emulator (Wine) |
@@ -121,9 +121,8 @@ These are deliberately outside the format and are never carried on any system:
 | Plan 9 | yes | yes | yes | rwx mode | n/a | n/a | no | host shim (native run historical) |
 | Haiku / BeOS | yes | yes | yes | mode | yes | n/a | MIME type only | host shim only |
 
-A blank cell in the QNX row means the same as the cell to its left does not
-apply: those wrappers can create, list and test archives and run a dry-run
-extraction, but real extraction is refused (see below).
+The QNX row extracts differently from the others: see "Which systems can
+extract" below.
 
 ## Unix-like systems
 
@@ -171,15 +170,19 @@ the user is permitted to.
 | Wrapper | Real extraction | Notes |
 | ------- | --------------- | ----- |
 | Linux, FreeBSD, NetBSD, OpenBSD, GNU Hurd, Solaris 11, illumos | yes | Directory-relative, no-follow extraction. |
-| AIX | only when built for AIX 7.3 (`_AIX73`) | Older or unidentified AIX builds refuse extraction before creating any output. |
+| AIX | directory-relative when built for AIX 7.3 (`_AIX73`) | Older or unidentified AIX builds use the private-directory rule below. |
 | z/OS | z/OS 3.1 (June 2024 refresh) or later | Filename encoding has not been qualified; do not rely on non-ASCII names. |
-| QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64 | **no** | They refuse to extract because their path handling cannot prevent an attacker from swapping a parent directory during extraction. Listing, integrity tests and dry-run work. |
+| QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, older AIX | yes, with a restriction | They have no `openat()` family, so extraction is by pathname and cannot stop another process from swapping a directory mid-extraction. They therefore extract only into a new directory they create themselves (`-o DIR`, which must not exist) private to the user (mode 0700), and open it to its normal permissions afterwards. A failed extraction leaves it private. Symlinks are recreated, but their own modification times cannot be set, so an archive containing symlinks reports partial. |
 
 **Verification.** Linux is tested on the host, in user-mode QEMU for i386 and ARM,
 and as a native 32-bit process for the mini build. The other wrappers have only
 been built and exercised on a Linux host against shims of their directory-relative
-calls; no native run has been recorded. 64-bit builds default to Fluff compression;
-the extraction rules above are the same for every codec.
+calls; no native run has been recorded. The seven pathname-extraction wrappers are
+built on the host in the same pathname mode those systems use, and checked for
+create, edit, the refusals and private-directory extraction. Whether the shared
+source compiles with those systems' own compilers and headers has not been tried.
+64-bit builds default to Fluff compression; the extraction rules above are the same
+for every codec.
 
 ## macOS
 

@@ -22,6 +22,7 @@ the machine. When a result differs, the difference is the useful finding.
 | ------ | ------- | ----------- |
 | PowerPC Mac OS X 10.5 (G4) | [Mac OS X 10.5](#powerpc-mac-os-x-105) | not run |
 | Mac OS 9 (PowerPC) | [Mac OS 9](#mac-os-9-powerpc) | not run |
+| QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, AIX < 7.3 | [Unix systems without `openat()`](#unix-systems-without-openat-qnx-hp-ux-irix-nextstep-sco-tru64-aix-before-73) | not run |
 
 ## How to report
 
@@ -306,6 +307,70 @@ here is informative either way.
 **M3 – names.** Repeat M1 with one file named with a space and a long name of
 exactly 31 characters, and one of 40 characters. The 40-character name cannot
 exist on Mac OS 9; report what the program does with it.
+
+## Unix systems without `openat()` (QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, AIX before 7.3)
+
+**Target:** the real system, built natively. These wrappers extract by pathname,
+so `extract` only writes into a new directory it creates itself, private to the
+user (mode 0700), and opens it to its normal permissions afterwards. Whether the
+shared source compiles at all with each system's own compiler and headers has
+not been tried: that is the first thing to find out.
+
+**What this tests:** that the tool builds, that archives round-trip, and that the
+private-directory rule behaves.
+
+### Build
+
+```sh
+make FRONTEND=qnx    # or hpux, irix, nextstep, sco, tru64, aix
+```
+
+Use the wrapper's native compiler (`make CC=cc ...` if the default is wrong) and
+send the whole output of a failing build. Likely problem spots: a missing header
+(`<sys/statvfs.h>` is included unconditionally), a missing function the compiler
+reports as undeclared, or an old compiler rejecting something. The tool is built
+as `build/<frontend>/boltpack`.
+
+**T0 – build and run.** Expected: it builds, and `boltpack help` prints usage.
+
+### Tests
+
+Make a small tree: a few files (one empty, one over 64 KiB), a nested directory,
+an empty directory, a file with the execute bit, and one relative symlink.
+
+**T1 – create, list, test.** `boltpack c t.bp tree`, `boltpack l t.bp`,
+`boltpack t t.bp`. Expected: exit 0, every entry listed, every entry OK.
+
+**T2 – the refusals.** Each must fail with a message and write nothing:
+
+```sh
+boltpack x t.bp                    # no -o: asks for -o DIR
+mkdir existing; boltpack x -o existing t.bp   # existing directory: refused
+boltpack x -o nope/deeper t.bp     # parent missing: refused, nothing created
+```
+
+**T3 – extract into a new directory.** `boltpack x -o out t.bp`, then
+`ls -ld out`. Expected: the data matches the original (`cmp` each file), the
+execute bit is kept, file and directory times match, `out` has the normal
+permissions for your umask (for example `drwxr-xr-x` with umask 022), and the
+symlink exists. An archive with a symlink is reported as partial because a
+symlink's own time cannot be set; that is expected.
+
+**T4 – a failed extraction stays private.** Corrupt one byte in the middle of an
+archive made with `boltpack c -0`, extract it, and check that it fails with a
+checksum message, that the message says the directory is left private, and that
+`ls -ld` shows `drwx------`.
+
+**T5 – edits.** `boltpack a t.bp newfile`, `boltpack d t.bp name`, `boltpack l t.bp`.
+
+### Known assumptions
+
+| Assumption | Where | How a failure would look |
+| ---------- | ----- | ------------------------ |
+| The source compiles with the native compiler and headers | `src/frontend/linux/main.c` | Build error |
+| `mkdir`, `chmod`, `lstat`, `umask`, `geteuid` behave as in POSIX.1 | `private_root_create` | T2 or T3 messages saying the directory cannot be made private |
+| The filesystem honors mode 0700 for other users | `private_root_create` | Not detectable from a single-user test; relevant on shared machines |
+| `fopen`/`fseeko` handle archives over 2 GiB | shared | Large-archive failures only |
 
 ## Known assumptions to confirm
 

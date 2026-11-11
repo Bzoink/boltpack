@@ -2487,11 +2487,28 @@ These frontends define `BP_CREATOR_OS` and `BP_CREATOR_CPU`, then `#include "../
 
 Extraction uses directory-relative no-follow operations on Linux, FreeBSD,
 NetBSD, OpenBSD, GNU Hurd, Solaris 11, illumos, and z/OS builds. The AIX wrapper
-selects that path when the target compiler defines `_AIX73`; older or
-unidentified AIX builds refuse extraction before output creation. QNX also
-refuses extraction because its resource-manager model cannot guarantee safe
-multi-component traversal. Other thin wrappers retain path-based checks and
-require native build/runtime qualification.
+selects that path when the target compiler defines `_AIX73`.
+
+QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64 and older or unidentified AIX builds have
+no `openat()` family, so they extract by pathname, which cannot stop another
+process from swapping a directory between a check and its use. Their wrappers
+define `BP_PRIVATE_ROOT_EXTRACTION`: `extract` requires `-o DIR`, where `DIR` does
+not exist yet and its parent does. The directory is created with mode 0700,
+confirmed to be owned by the current user, filled, and only then given its normal
+permissions (the umask default). While it is being filled no other unprivileged
+user can enter or change anything beneath it, which is the only party that race
+needs; processes running as the same user or as root are already trusted. The
+parent of `DIR` must be a trustworthy place, such as the current directory or the
+user's own folder, because it decides where the new directory lands. If
+extraction fails, the directory is left private (0700) and the message says so.
+Pathname extraction cannot set a symlink's own modification time, so an archive
+with symlinks extracts completely but reports that as partial.
+
+Create, add, delete, list and test were unaffected by the refusal that preceded
+this, but the shared source named the `openat()` family in its create path too;
+pathname builds now give those names inert definitions so the source compiles and
+links on systems without them. Nothing here has been built or run on the real
+systems: see [hardware-testing.md](hardware-testing.md).
 
 | Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
 | ------------ | ------------------------------ | ---------------- | --------------- | ---------------------------- | ----------------------------------------------------- |

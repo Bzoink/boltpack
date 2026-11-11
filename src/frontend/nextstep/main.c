@@ -17,7 +17,15 @@
  * Licensed under the BSD 2-Clause License
  */
 
+/* Extraction: this system has no openat() family, so extraction is by pathname,
+ * which cannot stop another process from swapping a directory mid-extraction.
+ * Extraction therefore only writes into a new directory that boltpack creates
+ * itself (-o DIR, which must not exist) private to the user (mode 0700), and
+ * gives it normal permissions when finished (see BP_PRIVATE_ROOT_EXTRACTION in
+ * linux/main.c).  Listing, testing, dry-run, create, add and delete are
+ * unaffected.  Not yet run on the real system. */
+
 #define BP_CREATOR_OS  BP_OS_NEXTSTEP
 #define BP_CREATOR_CPU BP_CPU_M68K
-#define BP_REFUSE_PATH_RACE_EXTRACTION 1
+#define BP_PRIVATE_ROOT_EXTRACTION 1
 #include "../linux/main.c"
