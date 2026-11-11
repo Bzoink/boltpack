@@ -71,6 +71,21 @@ def build(cc, outdir):
                            capture_output=True, text=True)
         check(r.returncode == 0 and r.stderr == "",
               "%s: builds in pathname mode without warnings" % wrapper, r.stderr[:300])
+        if wrapper == "nextstep":
+            # NeXTSTEP has no <sys/statvfs.h>: building with that header
+            # replaced by an #error proves the wrapper does not need it.
+            fake = outdir / "nostatvfs/sys"
+            fake.mkdir(parents=True, exist_ok=True)
+            (fake / "statvfs.h").write_text('#error "sys/statvfs.h must not be included"\n')
+            r = subprocess.run([cc, "-ansi", "-pedantic", "-Wall", "-Wextra",
+                                "-Wno-unused-function", "-O2", "-U__linux__",
+                                "-I" + str(outdir / "nostatvfs"),
+                                "-DBP_VERSION_MAJOR=1", "-DBP_VERSION_MINOR=10",
+                                "-Isrc/core", "-fsyntax-only",
+                                "src/frontend/nextstep/main.c"], cwd=ROOT,
+                               capture_output=True, text=True)
+            check(r.returncode == 0,
+                  "nextstep: builds without <sys/statvfs.h>", r.stderr[:300])
         exe = outdir / ("boltpack_" + wrapper)
         subprocess.run([cc, "-o", exe, obj] + objs, check=True)
         bins[wrapper] = exe

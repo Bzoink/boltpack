@@ -327,8 +327,10 @@ make FRONTEND=qnx    # or hpux, irix, nextstep, sco, tru64, aix
 
 Use the wrapper's native compiler (`make CC=cc ...` if the default is wrong) and
 send the whole output of a failing build. Likely problem spots: a missing header
-(`<sys/statvfs.h>` is included unconditionally), a missing function the compiler
-reports as undeclared, or an old compiler rejecting something. The tool is built
+(`<sys/statvfs.h>` is used for a free-space check; the NeXTSTEP wrapper skips it
+with `BP_NO_STATVFS`, and any other system lacking it can add `-DBP_NO_STATVFS`),
+a missing function the compiler reports as undeclared, or an old compiler
+rejecting something. The tool is built
 as `build/<frontend>/boltpack`.
 
 **T0 – build and run.** Expected: it builds, and `boltpack help` prints usage.

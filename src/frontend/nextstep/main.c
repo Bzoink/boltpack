@@ -28,4 +28,5 @@
 #define BP_CREATOR_OS  BP_OS_NEXTSTEP
 #define BP_CREATOR_CPU BP_CPU_M68K
 #define BP_PRIVATE_ROOT_EXTRACTION 1
+#define BP_NO_STATVFS 1 /* NeXTSTEP has no <sys/statvfs.h> (to the best of our knowledge) */
 #include "../linux/main.c"

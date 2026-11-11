@@ -60,7 +60,9 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <sys/stat.h>
+#ifndef BP_NO_STATVFS
 #include <sys/statvfs.h>
+#endif
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -1894,11 +1896,18 @@ static int add_data_job_batch(bp_archive_t *ar, add_job_t *jobs,
  */
 static int tmp_fits_in_ram(double hint_bytes)
 {
+#ifdef BP_NO_STATVFS
+    /* No statvfs() on this system (for example NeXTSTEP): same answer as when
+     * the call fails. */
+    (void)hint_bytes;
+    return 1;
+#else
     struct statvfs st;
     if (hint_bytes <= 0.0) return 1;
     if (statvfs("/tmp", &st) != 0) return 1; /* can't tell -- assume yes */
     return hint_bytes + 256.0 * 1024.0 * 1024.0 <=
            (double)st.f_bavail * (double)st.f_frsize;
+#endif
 }
 
 static int add_job_list_parallel(bp_archive_t *ar, add_job_list_t *list)
