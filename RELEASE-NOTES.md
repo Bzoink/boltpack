@@ -25,6 +25,11 @@
   cannot be archived (FIFOs, sockets, devices) are now named in a warning instead of
   being skipped silently. Target profiles and Interchange Profile 1 carry none of
   this.
+- Sinclair QL: a file's QDOS type and dataspace (what an executable needs to run)
+  are now stored in a small `BP_OS_QL` metadata entry and restored on extraction.
+  The QL tool also could not archive any file that has a header on sQLux (its size
+  check counted the host file's header bytes and the create aborted); that is fixed.
+  Verified in sQLux, not on a real QL.
 - Windows CLI: directory symlinks and junctions are no longer followed. A link
   that pointed back up the tree made the whole create fail, and a link to a folder
   outside the tree archived that folder's files. Each link is now reported and

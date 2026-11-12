@@ -53,6 +53,8 @@ extern long _io_open(const char *, long);
 extern int _fs_date(long, short, char, long *);
 extern int _io_close(long);
 extern int _io_fstrg(long, short, void *, short);
+extern int _fs_headr(long, short, void *, short);
+extern int _fs_heads(long, short, void *, short);
 #endif
 
 /* QDOS unistd.h maps these names to OS calls; keep bp_io_t member names
@@ -285,6 +287,150 @@ static int ql_set_archive_time(const char *path, bp_uint64 mtime)
         return result == 0 ? BP_OK : BP_ERR_PARTIAL;
     }
 #endif
+}
+
+/* ---- QDOS file header (type and dataspace) ------------------------------ */
+
+/* Every QDOS file has a header with an access byte, a type byte and a dataspace
+ * long.  An executable (type 1) needs its dataspace to run, and a type-2 file is
+ * a relocatable program; neither is part of the file's data.  They travel in a
+ * small BP_OS_QL metadata entry after the file: the type byte, then the dataspace
+ * as a little-endian 32-bit value (5 bytes). */
+#define QL_HDR_META_SIZE 5U
+
+/* Read the header of a file.  Returns 1 and fills type and dataspace when the
+ * header could be read, 0 otherwise (the host-test build has no QDOS headers). */
+static int ql_read_header(const char *path, unsigned char *type,
+                          unsigned long *dataspace)
+{
+#ifdef BP_QL_HOST_TEST
+    (void)path; (void)type; (void)dataspace;
+    return 0;
+#else
+    unsigned char h[64];
+    long channel;
+    int result, i;
+    for (i = 0; i < 64; i++) h[i] = 0;
+    channel = _io_open(path, 0);
+    if (channel < 0) return 0;
+    result = _fs_headr(channel, -1, h, 64);
+    _io_close(channel);
+    if (result < 0) return 0;
+    *type = h[5];
+    *dataspace = ((unsigned long)h[6] << 24) | ((unsigned long)h[7] << 16) |
+                 ((unsigned long)h[8] << 8) | (unsigned long)h[9];
+    return 1;
+#endif
+}
+
+/* Set type and dataspace on an existing file.  Returns BP_OK or a message
+ * saying why not (so a failure can be traced from the output alone). */
+static int ql_write_header(const char *path, unsigned char type,
+                           unsigned long dataspace, const char **why)
+{
+#ifdef BP_QL_HOST_TEST
+    (void)path; (void)type; (void)dataspace;
+    *why = "this build has no QDOS file headers";
+    return BP_ERR_PARTIAL;
+#else
+    unsigned char h[14];
+    long channel;
+    int result, i;
+    for (i = 0; i < 14; i++) h[i] = 0;
+    h[5] = type;
+    h[6] = (unsigned char)((dataspace >> 24) & 0xFFUL);
+    h[7] = (unsigned char)((dataspace >> 16) & 0xFFUL);
+    h[8] = (unsigned char)((dataspace >> 8) & 0xFFUL);
+    h[9] = (unsigned char)(dataspace & 0xFFUL);
+    channel = _io_open(path, 1);
+    if (channel < 0) { *why = "cannot open the file to set its header"; return BP_ERR_PARTIAL; }
+    result = _fs_heads(channel, -1, h, 14);
+    if (_io_close(channel) != 0 && result >= 0) result = -1;
+    if (result < 0) { *why = "the filing system refused the header"; return BP_ERR_PARTIAL; }
+    return BP_OK;
+#endif
+}
+
+/* Count the bytes of a file by reading it.  A file with a header cannot be
+ * measured with fseek/ftell: on sQLux the end position includes the host file's
+ * own header bytes, which the stream never returns, so the entry would be
+ * declared longer than the data and creation would fail. */
+static long ql_count_bytes(FILE *fp)
+{
+    unsigned char buffer[512];
+    long total = 0;
+    size_t n;
+    fseek(fp, 0L, SEEK_SET);
+    while ((n = fread(buffer, 1, sizeof(buffer), fp)) > 0) total += (long)n;
+    fseek(fp, 0L, SEEK_SET);
+    return total;
+}
+
+/* A read-only in-memory stream, for the small metadata entry. */
+typedef struct {
+    const unsigned char *buf;
+    bp_uint32 size;
+    bp_uint32 pos;
+} ql_mem_t;
+
+static long ql_mem_read(void *handle, void *buffer, bp_uint32 count)
+{
+    ql_mem_t *m = (ql_mem_t *)handle;
+    bp_uint32 left = m->size - m->pos;
+    if (count > left) count = left;
+    if (count == 0) return 0;
+    memcpy(buffer, m->buf + m->pos, count);
+    m->pos += count;
+    return (long)count;
+}
+
+static long ql_mem_write(void *handle, const void *buffer, bp_uint32 count)
+{
+    (void)handle; (void)buffer; (void)count;
+    return -1L;
+}
+
+static int ql_mem_seek(void *handle, bp_off_t offset, int origin)
+{
+    ql_mem_t *m = (ql_mem_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)m->pos + (long)offset;
+    else if (origin == SEEK_END) position = (long)m->size + (long)offset;
+    else return -1;
+    if (position < 0 || position > (long)m->size) return -1;
+    m->pos = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t ql_mem_tell(void *handle)
+{
+    return (bp_off_t)((ql_mem_t *)handle)->pos;
+}
+
+/* Write the header record after the file entry just added. */
+static int ql_add_header_meta(bp_archive_t *ar, const char *arcname,
+                              unsigned char type, unsigned long dataspace)
+{
+    unsigned char payload[QL_HDR_META_SIZE];
+    ql_mem_t mem;
+    bp_io_t io;
+    payload[0] = type;
+    payload[1] = (unsigned char)(dataspace & 0xFFUL);
+    payload[2] = (unsigned char)((dataspace >> 8) & 0xFFUL);
+    payload[3] = (unsigned char)((dataspace >> 16) & 0xFFUL);
+    payload[4] = (unsigned char)((dataspace >> 24) & 0xFFUL);
+    mem.buf = payload;
+    mem.size = QL_HDR_META_SIZE;
+    mem.pos = 0;
+    io.read = ql_mem_read;
+    io.write = ql_mem_write;
+    io.seek = ql_mem_seek;
+    io.tell = ql_mem_tell;
+    io.handle = &mem;
+    return bp_archive_add_entry_ex(ar, arcname, BP_TYPE_META, BP_OS_QL, &io,
+                                   bp_u64_from_u32(QL_HDR_META_SIZE),
+                                   bp_u64_from_u32(0), 0);
 }
 
 /* ---- QDOS path utilities ----------------------------------------------- */
@@ -595,8 +741,16 @@ static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
     bp_uint64  mtime;
     bp_uint16  mtime_flags;
     int        rc;
+    unsigned char qtype = 0;
+    unsigned long qspace = 0;
+    int        has_header;
     /* Get file size and mtime via reading a directory entry.
      * QDOS C rt provides fopen/fseek/ftell for regular files. */
+
+    /* Read the header before opening the stream: the file may refuse a second
+     * opening while the stream holds it. */
+    has_header = ql_read_header(qdos_path, &qtype, &qspace) &&
+                 (qtype != 0 || qspace != 0UL);
 
     fp = fopen(qdos_path, "rb");
     if (!fp) {
@@ -604,9 +758,13 @@ static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
         return BP_ERR_IO;
     }
 
-    fseek(fp, 0L, SEEK_END);
-    sz = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
+    if (has_header) {
+        sz = ql_count_bytes(fp);
+    } else {
+        fseek(fp, 0L, SEEK_END);
+        sz = ftell(fp);
+        fseek(fp, 0L, SEEK_SET);
+    }
     fsize = bp_u64_from_ulong((unsigned long)sz);
 
     /* A direct file argument has no parent qdirect record, so its timestamp
@@ -625,6 +783,12 @@ static int add_path_qdos(bp_archive_t *ar, const char *qdos_path,
     rc = bp_archive_add_entry_ex(ar, arcname, BP_TYPE_DATA, BP_OS_QL,
                                  &fio, fsize, mtime, mtime_flags);
     fclose(fp);
+    if (rc == BP_OK && has_header) {
+        rc = ql_add_header_meta(ar, arcname, qtype, qspace);
+        if (rc != BP_OK)
+            fprintf(stderr, "boltpack: cannot store the QDOS header of %s: %s\n",
+                    qdos_path, bp_strerror(rc));
+    }
 
     if (rc == BP_OK && g_verbosity == VERB_DEFAULT) {
         bp_entry_t *e = &ar->entry_list[ar->entries_written - 1];
@@ -725,7 +889,47 @@ typedef struct {
     char        backup[BP_MAX_PATH];
     bp_uint32   file_count;
     bp_uint32   dir_count;
+    /* The file published last, for the header record that follows it. */
+    int         last_ok;
+    char        last_name[BP_MAX_PATH];
+    char        last_path[BP_MAX_PATH];
+    bp_uint64   last_mtime;
+    bp_uint16   last_flags;
+    int         header_partial;
 } extract_ctx_t;
+
+/* A header record being received. */
+typedef struct {
+    bp_io_t io; /* first member */
+    unsigned char buf[8];
+    bp_uint32 len;
+} ql_hdr_sink_t;
+
+static long ql_hdr_sink_write(void *handle, const void *data, bp_uint32 count)
+{
+    ql_hdr_sink_t *k = (ql_hdr_sink_t *)handle;
+    if (count > sizeof(k->buf) - k->len) return -1;
+    memcpy(k->buf + k->len, data, count);
+    k->len += count;
+    return (long)count;
+}
+
+static long ql_hdr_sink_read(void *handle, void *data, bp_uint32 count)
+{
+    (void)handle; (void)data; (void)count;
+    return -1;
+}
+
+static int ql_hdr_sink_seek(void *handle, bp_off_t offset, int origin)
+{
+    (void)handle; (void)offset; (void)origin;
+    return -1;
+}
+
+static bp_off_t ql_hdr_sink_tell(void *handle)
+{
+    return (bp_off_t)((ql_hdr_sink_t *)handle)->len;
+}
 
 typedef struct {
     char path[QDOS_NAME_MAX + 1];
@@ -1004,6 +1208,22 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         return NULL;
     }
 
+    /* The QDOS header record of the file just before it. */
+    if (entry->entry_type == BP_TYPE_META && entry->platform == BP_OS_QL &&
+        entry->original_size.hi == 0 &&
+        entry->original_size.lo == QL_HDR_META_SIZE) {
+        ql_hdr_sink_t *sink;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        sink = (ql_hdr_sink_t *)calloc(1, sizeof(*sink));
+        if (sink == NULL) { ctx->failed = 1; return NULL; }
+        sink->io.read = ql_hdr_sink_read;
+        sink->io.write = ql_hdr_sink_write;
+        sink->io.seek = ql_hdr_sink_seek;
+        sink->io.tell = ql_hdr_sink_tell;
+        sink->io.handle = sink;
+        return &sink->io;
+    }
+
     /* Skip META, RSRC, SYMLINK on QL */
     if (entry->entry_type != BP_TYPE_DATA) {
         if (g_verbosity == VERB_DEFAULT)
@@ -1012,6 +1232,7 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
     }
 
     ctx->file_count++;
+    ctx->last_ok = 0;
     if (g_verbosity == VERB_DEFAULT) printf(" extracting: %s\n", local_name);
     if (ctx->dry_run) return bp_archive_dry_run_stream();
 
@@ -1100,6 +1321,47 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     int rc = BP_OK;
     int had_target = 0;
+    if (entry->entry_type == BP_TYPE_META && entry->platform == BP_OS_QL) {
+        ql_hdr_sink_t *sink = (ql_hdr_sink_t *)out;
+        const char *why = "";
+        unsigned long space;
+        if (status == BP_OK) {
+            if (!ctx->last_ok || strcmp(entry->name, ctx->last_name) != 0) {
+                fprintf(stderr,
+                        "boltpack: QDOS header for %s not applied: the file "
+                        "itself was not extracted\n", entry->name);
+                rc = BP_ERR_PARTIAL;
+            } else if (sink->len != QL_HDR_META_SIZE) {
+                fprintf(stderr,
+                        "boltpack: QDOS header for %s not applied: malformed "
+                        "record\n", entry->name);
+                rc = BP_ERR_PARTIAL;
+            } else {
+                space = (unsigned long)sink->buf[1] |
+                        ((unsigned long)sink->buf[2] << 8) |
+                        ((unsigned long)sink->buf[3] << 16) |
+                        ((unsigned long)sink->buf[4] << 24);
+                if (ql_write_header(ctx->last_path, sink->buf[0], space,
+                                    &why) != BP_OK) {
+                    fprintf(stderr,
+                            "boltpack: cannot set the QDOS header of %s (type "
+                            "%u, dataspace %lu): %s\n", entry->name,
+                            (unsigned)sink->buf[0], space, why);
+                    rc = BP_ERR_PARTIAL;
+                } else if ((ctx->last_flags & BP_ENTRY_FLAG_MTIME_VALID) &&
+                           ql_set_archive_time(ctx->last_path,
+                                               ctx->last_mtime) != BP_OK) {
+                    /* Setting the header may touch the file date; put it back. */
+                    fprintf(stderr,
+                            "boltpack: cannot restore QDOS file date after "
+                            "setting the header: %s\n", entry->name);
+                    rc = BP_ERR_PARTIAL;
+                }
+            }
+        }
+        free(sink);
+        return rc;
+    }
     if (out) {
         FILE *fp = (FILE *)out->handle;
         if (fclose(fp) != 0) status = BP_ERR_IO;
@@ -1171,6 +1433,14 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         fprintf(stderr, "boltpack: cannot restore QDOS file date: %s\n",
                 entry->name);
         rc = BP_ERR_PARTIAL;
+    }
+    if (strlen(entry->name) < sizeof(ctx->last_name) &&
+        strlen(ctx->target) < sizeof(ctx->last_path)) {
+        strcpy(ctx->last_name, entry->name);
+        strcpy(ctx->last_path, ctx->target);
+        ctx->last_mtime = entry->mtime;
+        ctx->last_flags = entry->flags;
+        ctx->last_ok = 1;
     }
     return rc;
 }

@@ -107,6 +107,42 @@ and [HFS tree listing](../build/macos-classic-qemu/resource-package-20261101/hfs
 
 ## Sinclair QL: XTC68/C68 and sQLux
 
+### Rebuilding the toolchain (verified 2026-11-12)
+
+Everything lives under the ignored `build/ql-sdk/` and needs no root, except an
+optional system-wide install. Build tools: `git`, `cmake`, `meson`, `ninja`, a C
+compiler, `bison`, `flex`, and SDL2 development files (`libsdl2-dev`).
+
+```sh
+mkdir -p build/ql-sdk/source && cd build/ql-sdk/source
+git clone --depth 1 https://github.com/stronnag/xtc68
+git clone --depth 1 https://github.com/SinclairQL/sQLux sqlux
+(cd sqlux && git submodule update --init --depth 1)
+
+# XTC68, the cross compiler (install prefix build/ql-sdk/prefix, or /opt/ql)
+(cd xtc68 && meson setup build --prefix="$PWD/../../prefix" --strip \
+   && ninja -C build install)
+
+# sQLux, the emulator (the Makefile expects build/ql-sdk/sqlux-build3/sqlux)
+mkdir -p ../sqlux-build3 && (cd ../sqlux-build3 && cmake ../source/sqlux \
+   -DCMAKE_BUILD_TYPE=Release && make -j8)
+```
+
+XTC68 is only the compiler. The QL C headers and libraries come from the C68 runtime,
+a separate freeware package. Its home is now Dilwyn Jones's pages (the old
+`dilwyn.qlforums.co.uk` address no longer resolves): download `424frun1.zip`
+("Runtimes disk 1") from `https://sinclairql.net/djw/c/`, unzip it into an empty
+folder, and run XTC68's `sdk-install.sh <prefix>` from there. That copies the
+`INCLUDE_*` and `LIB_*` files to `<prefix>/share/qdos/include` and `lib`. The
+headers include `SYS/types.h`, so add `ln -s sys <prefix>/share/qdos/include/SYS`.
+`qcc` finds its helper tools through `PATH`, so put `<prefix>/bin` on it. With a
+system-wide install (for example `/opt/ql`), copy the prepared `include` and `lib`
+folders into `/opt/ql/share/qdos/` with `cp -a`, and `make ql QL_CC=qcc` then uses it.
+`make ql-sqlux-interoperability-test` and `make ql-sqlux-header-test` check the
+whole chain; both pass with the runtime and toolchain above.
+
+### Earlier setup notes
+
 An XTC68/C68 SDK was installed under the ignored `build/ql-sdk/` directory on
 2026-10-29. The source is [XTC68](https://github.com/stronnag/xtc68); its
 `sdk-install.sh` setup requires the C68 runtime package. With the SDK's `bin`

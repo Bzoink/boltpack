@@ -2272,6 +2272,18 @@ qcc -O \
 If your SDK exposes `m68k-qdos-gcc` directly instead of `qcc`, substitute that
 driver in the same command.
 
+### QL: file header record
+
+A QDOS file has a header with a type byte and a dataspace long that are not part of
+its data; an executable needs its dataspace to run. The QL tool reads them with
+`_fs_headr` and, for a file whose type or dataspace is not zero, writes a 5-byte
+`BP_OS_QL` metadata entry after the file: the type byte, then the dataspace as a
+little-endian 32-bit value. Extraction sets them again with `_fs_heads` and then
+reapplies the file date. Such a file is sized by reading it, because `fseek`/`ftell`
+on sQLux include the host file's own header bytes that the stream never returns.
+Other readers skip the record and report it as unsupported.
+`make ql-sqlux-header-test` runs this in sQLux.
+
 ### QL: bp_io_t Implementation
 
 Standard ANSI C `<stdio.h>` wrappers (`fopen`, `fread`, `fwrite`, `fseek`, `ftell`).

@@ -117,7 +117,7 @@ These are deliberately outside the format and are never carried on any system:
 | Mac OS 9 (PowerPC, 68k) | yes | yes | yes (1904-2040) | Finder flags | n/a | resource fork, type/creator | no | build only |
 | Amiga (OS 2.x/3.x CLI, GUI) | yes | yes | yes | protection bits | no | n/a | file comment | emulator (FS-UAE) |
 | Atari (TOS CLI, GEM GUI) | yes | yes | yes (2 s) | TOS attributes | n/a | n/a | no | emulator (Hatari) |
-| Sinclair QL | yes | yes | yes | no | n/a | no | no | emulator (sQLux host FS) |
+| Sinclair QL | yes | yes | yes | no | n/a | file type and dataspace | no | emulator (sQLux host FS) |
 | X68000 | yes | yes | files only | FAT attributes | n/a | n/a | no | host shim only |
 | RISC OS | yes | yes | yes | RISC OS attributes | n/a | filetype, load/exec | no | host shim only |
 | Plan 9 | yes | yes | yes | rwx mode | n/a | n/a | no | host shim (native run historical) |
@@ -435,12 +435,21 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
   since 1961, local time; set the offset with `--tz-offset MINUTES`; no daylight
   saving logic). Directory times are restored deepest-first where the system
   allows.
-- **Not carried:** the QDOS protection bits, and the file type and data-space
-  header of executable files (the frontend reads the type only to recognise
-  directories). An executable that needs its data-space header should be checked
-  after a round trip.
+- **Stored and restored:** each file's QDOS **type and dataspace** (what an
+  executable needs to run), in a 5-byte header record after the file, put back
+  with the filing system's set-header call. The QL tool previously could not
+  archive such a file at all: it sized files with `fseek`/`ftell`, which on sQLux
+  count the host file's own header bytes that the stream never returns, so the
+  create aborted with "error adding". Files with a header are now sized by
+  reading them.
+- **Not carried:** the QDOS protection bits and a header's extra-information
+  field. Another system's reader gets the data without the header and reports the
+  record as unsupported.
 - **Verification:** sQLux with a host-directory volume, including recursive
-  enumeration and exact times. Physical QDOS filing systems have not been tested.
+  enumeration, exact times and, for headers, two executables with different
+  dataspaces that come back byte-identical, plus a header record written by another
+  tool (`make ql-sqlux-header-test`). Physical QDOS filing systems have not been
+  tested, so how `_fs_headr`/`_fs_heads` behave on a real QL is not verified.
 
 ### X68000 (Human68k)
 
@@ -516,7 +525,7 @@ verified without the target system. Status as of 2026-11-12.
 | 1 | Skipped items not reported (Unix special files; Windows links, junctions, special files) | **Done.** Linux names each skipped FIFO, socket or device and counts them. The Windows CLI turned out to *follow* directory links, which made a looping link fail the whole create and a link to an outside folder pull its files in; it now reports and skips them. Verified on a Linux host and, for Windows, under Wine (`make linux-native-attrs-test`, `make win-links-test`). |
 | 2 | Linux extended attributes, POSIX ACLs, file capabilities | **Done** for `user.*` and ACLs (verified on tmpfs, including a read-only file and a directory's default ACL). `security.*`/`trusted.*` are carried and applied only with `--security-attrs`; that gate is verified, but actually restoring a capability needs root and was not run. |
 | 3 | Hard links duplicated | **Done**, with the limit that the archive still holds every name's data. Recreation is refused unless the target is a file this run extracted with the same size and checksum, so a hostile record cannot join unrelated or pre-existing files. Verified including readers that do not know the record. |
-| 4 | QDOS file type and data-space header not stored (QL) | **Not done.** It needs the QL toolchain and sQLux, which are not in this environment, and whether sQLux's host-file mode exposes the header was never established. No code was written rather than code that could not be run. |
+| 4 | QDOS file type and data-space header not stored (QL) | **Done**, and the gap was larger than documented: the QL tool could not archive a file with a header at all on sQLux. Verified in sQLux (two executables with different dataspaces round trip byte-identical; a record from another writer is applied). Not verified on a real QL or QDOS filing system. |
 | 5 | Native attributes on Haiku, OS/2 and Windows | **Not done.** None of the three runs natively here, so the code could only be checked against stand-ins that cannot show how the real system behaves. The container and the Linux code are the template when one of them is available. |
 
 Also worth doing when cheap:

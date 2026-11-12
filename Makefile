@@ -1478,6 +1478,13 @@ ql-sqlux-interoperability-test: ql all linuxmini
 	    --linux-binary build/linux/boltpack \
 	    --mini-binary build/linux32mini/bpmini
 
+# QDOS file headers (type and dataspace) through the QL tool in sQLux.
+.PHONY: ql-sqlux-header-test
+ql-sqlux-header-test: ql all
+	python3 test/check_sqlux_header.py --sqlux "$(QL_SQLUX)" \
+	    --rom "$(QL_ROM)" --ql-binary build/ql/boltpack \
+	    --linux-binary build/linux/boltpack --cc "$(CC)"
+
 ql-sqlux-qdirect-diagnostic: ql all linuxmini
 	@test -n "$(QL_CC_EXEC)" || { echo "Set QL_CC to the working qcc compiler" >&2; exit 2; }
 	mkdir -p $(QL_BUILDDIR)
