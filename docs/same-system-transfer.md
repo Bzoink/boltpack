@@ -2,6 +2,8 @@
 
 **Created:** 2026-11-11
 **Archive format:** 6
+**Source review:** 2026-11-12 (create and extract paths; Linux GUI preservation
+subsequently checked with `make linux-gui-native-attrs-test`)
 
 This document answers one question for every supported system: if an archive is
 created on one machine and extracted on another machine **of the same type**
@@ -37,12 +39,20 @@ results are collected in [hardware-testing.md](hardware-testing.md).
 
 ## Reading this document
 
-**CPU architecture does not matter.** The archive is byte-order neutral (all
+**CPU architecture does not change the format.** The archive is byte-order neutral (all
 integers are little-endian) and a creating machine's CPU is recorded only for
 information. Linux on x86-64, ARM and 32-bit x86, or macOS on PowerPC, Intel and
 Apple Silicon, behave the same way for the same operating system. Where a CPU
 matters at all it is for limits, such as 16-bit memory ceilings, and those are
 noted.
+
+**The frontend and archive settings matter.** Same-system transfer requires a
+reader that supports the archive's codec, block size and size limits, and both
+frontends must capture and restore the properties wanted. The GUI and mini
+builds do not necessarily preserve what their system's full CLI preserves.
+Linux native attributes and hard-link records are omitted when creating with
+a target profile or Interchange Profile 1. Use normal full-CLI creation for
+the broadest same-system preservation.
 
 **Names need no mapping within one system.** A name that exists on the source
 system is by construction legal on the destination of the same type, so same-type
@@ -65,63 +75,68 @@ destination folder.
 
 | Word | Meaning |
 | ---- | ------- |
-| native | Run on the real system. Nothing has reached this level for any system in the matrix as of this writing, except where a row says otherwise. |
+| native | Run on the target operating system itself. Linux host runs qualify for Linux; other systems need their own runtime evidence. |
 | emulator | Run in an emulator with a real guest filesystem (FS-UAE, Hatari, DOSBox-X, sQLux, Wine). |
-| host | Run on Linux against shims or stubs of the target's system calls. |
+| host | Run on Linux, directly for Linux or against shims/stubs for another system. |
 | build | Cross-built or syntax-checked only. |
 
-**Reporting contract.** Everywhere, a property that cannot be restored is
-reported, not dropped silently. The tool finishes extracting the data, says which
-items were affected, and exits non-zero (`partial`). The one exception worth
-knowing about is in [Things that are easy to miss](#things-that-are-easy-to-miss).
+**Reporting limits.** Unsupported metadata present in an archive is generally
+reported as partial on extraction. This does not prove the source was captured
+completely: properties omitted during creation may leave no record for the
+reader to detect. GUI permission and link omissions below are examples. Some
+create-time warnings still return success, and mini readers can refuse an
+archive containing symlinks before extracting any data.
 
 ## What every system carries
 
-These hold on every frontend, because they are in the shared core:
+The shared format supports the following. Actual capture and restoration depend
+on the frontend, as the summary table shows (CP/M-86, for example, is data-only):
 
-- **File contents.** Exact bytes, checked with a CRC-32 on extraction. A bad
-  checksum fails the entry and leaves no output behind. Files are written to a
-  temporary name next to the destination and renamed into place only after the
-  checksum and close succeed.
+- **File contents.** Exact bytes, checked with a CRC-32 on extraction. Regular
+  file extraction uses temporary files before publication; native forks have
+  their own frontend-specific restoration paths.
 - **Directories**, including empty ones, as their own entries.
 - **Names** as canonical UTF-8 relative paths, in the order encountered.
 - **Modification time** as UTC seconds since 1970, with a flag saying whether the
   time is known. A time before 1970 or one the source cannot represent is
   written as unknown, and a time of exactly zero is a real time, not an absence.
 - **A permission-bit field** (a 12-bit Unix mode) where the writer has one.
-- **Symbolic links** as an entry type, on the systems that have them.
+- **Symbolic links** as an entry type, where the frontend implements them.
 - **Platform records**: extra metadata entries tagged with the creating system,
-  such as Amiga protection bits or Mac Finder info. A reader of the same system
-  applies them; any other reader skips them and reports them as unsupported.
+  such as Amiga protection bits or Mac Finder info. A reader must implement the
+  particular record to restore it; even another frontend on the same OS may not.
 
-These are deliberately outside the format and are never carried on any system:
-**owner and group**, **ACLs**, **hard-link identity**, **device nodes**,
-**sparse-file layout**, and **timestamps other than modification time**.
+These are not preserved by the reviewed same-system round trips:
+**owner and group**, **device nodes**, **sparse-file layout**, and
+**timestamps other than modification time**. Linux POSIX ACLs and hard-link
+identity are carried in native attribute records, as described below; other
+systems' ACLs are not captured.
 
 ## Summary table
 
 | System | File data | Empty dirs | Modification time | Permissions / attributes | Symlinks | Forks / type codes | Other native metadata | Verified |
 | ------ | --------- | ---------- | ----------------- | ------------------------ | -------- | ------------------ | --------------------- | -------- |
 | Linux CLI | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | extended attributes, POSIX ACLs, hard links | host + QEMU |
-| Linux FLTK GUI | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | no (reports partial when reading them) | host |
-| Linux mini (32-bit) | yes | yes | yes | mode | not checked | n/a | no | host + QEMU/native 32-bit |
-| BSDs, Solaris, illumos, Hurd, AIX 7.3, z/OS | yes | yes | yes | mode | yes | n/a | hard links (extended attributes are Linux-only) | host shim only |
+| Linux FLTK GUI | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | extended attributes, POSIX ACLs, hard links | host |
+| Linux mini (32-bit) | yes | yes | yes | mode (set-ID bits dropped) | no; follows on create, refuses on extract | n/a | no | host + QEMU/native 32-bit |
+| BSDs, Solaris, illumos, Hurd, AIX 7.3, z/OS | yes | yes | yes | mode | yes | n/a | hard-link code shared, but non-Linux attribute handler reports partial | host shim only |
 | QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, older AIX | yes, into a new private directory | yes | yes (symlink times reported partial) | mode | yes | n/a | no | host shim only |
 | macOS CLI | yes | yes | yes | rwx mode | yes | resource fork, Finder info | extended attributes | host shim only |
-| macOS Cocoa GUI | yes | yes | yes | mode (set-ID bits dropped) | no | no | no | build only |
+| macOS Cocoa GUI | yes | yes | yes | not stored on create | no (follows on create) | no | no | build only |
 | Windows (CLI, FLTK, Win32, .NET, WCX) | yes | yes | yes | FAT attributes | no | n/a | no | emulator (Wine) |
-| DOS (full, DJGPP) | yes | yes | yes (2 s) | FAT attributes | n/a | n/a | no | emulator |
+| DOS (full, DJGPP) | yes | yes | files: 2 s; zone depends on libc | FAT attributes | n/a | n/a | no | emulator |
 | DOS16, Win16, OS/2-16 mini | yes | yes | yes (2 s) | FAT attributes | n/a | n/a | no | emulator (DOS16) |
 | OS/2 | yes | yes | yes (2 s) | FAT/HPFS attributes | n/a | no (HPFS EAs lost) | no | build only |
 | CP/M-86 mini | yes | no | no | no | n/a | n/a | no | host shim only |
-| Mac OS 9 (PowerPC, 68k) | yes | yes | yes (1904-2040) | Finder flags | n/a | resource fork, type/creator | no | build only |
+| Mac OS 9 (PowerPC, 68k) | yes | yes | yes (1970-2040) | Finder flags | n/a | resource fork, type/creator | no | build only |
 | Amiga (OS 2.x/3.x CLI, GUI) | yes | yes | yes | protection bits | no | n/a | file comment | emulator (FS-UAE) |
 | Atari (TOS CLI, GEM GUI) | yes | yes | yes (2 s) | TOS attributes | n/a | n/a | no | emulator (Hatari) |
 | Sinclair QL | yes | yes | yes | no | n/a | file type and dataspace | no | emulator (sQLux host FS) |
 | X68000 | yes | yes | files only | FAT attributes | n/a | n/a | no | host shim only |
 | RISC OS | yes | yes | yes | RISC OS attributes | n/a | filetype, load/exec | no | host shim only |
 | Plan 9 | yes | yes | yes | rwx mode | n/a | n/a | no | host shim (native run historical) |
-| Haiku / BeOS | yes | yes | yes | mode | yes | n/a | MIME type only | host shim only |
+| Haiku / BeOS CLI | yes | yes | yes | mode | yes | n/a | MIME type only | host shim only |
+| Haiku / BeOS GUI | yes | yes | yes | rwx mode in native metadata | no (follows on create) | n/a | MIME type only | host shim only |
 
 The QNX row extracts differently from the others: see "Which systems can
 extract" below.
@@ -151,7 +166,7 @@ wrappers. Linux itself has the CLI, a 32-bit mini CLI and an FLTK GUI.
 - File data, directories and symlinks. A symlink whose target is absolute, or
   climbs out of the extraction folder, is refused with a message and counted as
   partial. Links that stay inside the extracted tree are recreated.
-- Permission bits. Set-user-ID, set-group-ID and sticky bits are not restored;
+- Permission bits, including sticky. Set-user-ID and set-group-ID are not restored;
   the item gets its ordinary permissions and is reported partial.
 - Modification times, including a symlink's own time (set without following the
   link). Directory modes and times are applied after the directory's children,
@@ -205,6 +220,35 @@ source compiles with those systems' own compilers and headers has not been tried
 64-bit builds default to Fluff compression; the extraction rules above are the same
 for every codec.
 
+**Linux FLTK GUI.** Normal creation and extraction preserve modes, modification
+times, symbolic links, extended attributes, POSIX ACLs and hard-link identity,
+using the CLI's shared native metadata helpers. Links are recorded without
+following their targets; extraction applies the same safe-target rules. Special
+files are skipped with warnings. Attribute or special-file capture failures
+produce a GUI warning; failed or refused restoration reports partial.
+`Settings > Preserve security attributes (this session)` enables the CLI's
+`--security-attrs` policy for creation and extraction; it is off at each launch
+and does not grant privileges. Native containers are omitted for target profiles
+and Interchange Profile 1. Selected extraction restores the selected subjects'
+metadata; flattened extraction maps hard-link targets to their actual output
+names and only joins files this run extracted. A missing target leaves a separate
+copy and reports partial. `make linux-gui-native-attrs-test` checks GUI/CLI
+cross-reading, modes, sticky directories, timestamps, safe/unsafe links, hard
+links, binary attributes, ACLs, read-only files, selected/flattened extraction,
+profile omissions and security-attribute policy through production worker paths.
+
+**Linux mini differences.** Creation uses `stat()` and follows symbolic links;
+its shared mini reader refuses archives containing symbolic links. It captures
+neither extended attributes, ACLs nor hard-link identity.
+
+**Non-Linux hard-link qualification.** The Unix wrappers share hard-link
+collection and, when directory-relative extraction is enabled, recreation code.
+However, the non-Linux `bp_lxa_apply()` stub marks every native-container item
+unsupported, including a hard-link record, before recreation is attempted. Thus
+even a recreated hard link reports partial on those builds. Pathname extraction
+skips native containers entirely and leaves independent copies. Linux-host shim
+evidence does not establish native hard-link preservation on these systems.
+
 ## macOS
 
 **Frontend:** `src/frontend/macosx/main.c` (CLI) and `src/frontend/macosx_gui`
@@ -246,11 +290,12 @@ reason and the system error number, and ends with a summary count. The partial
 exit status is used when anything could not be restored. `BOLTPACK_DEBUG=1` traces
 every attribute.
 
-**Cocoa GUI.** It preserves permissions and modification times and nothing else:
-it does not capture resource forks, Finder info or extended attributes, reports
-them as partial when reading an archive that contains them, and does not store
-symlinks. Use the CLI when those matter. Extraction in the GUI is refused on
-macOS older than 10.10.
+**Cocoa GUI.** Creation stores file data, directories and modification times,
+but no permission modes, resource forks, Finder info or extended attributes.
+It follows symlinks through `stat()`, archiving their referents instead of link
+identity. Its reader can apply permission modes from another writer, and reports
+unsupported native metadata as partial. Use the CLI when these properties
+matter. Extraction in the GUI is refused on macOS older than 10.10.
 
 **Older systems.** The CLI builds for Mac OS X 10.5 PowerPC using an emulation of
 the directory-relative calls (see `src/frontend/posix/legacy_at.h`); Mac OS X
@@ -314,10 +359,12 @@ lacks its 32-bit runtime).
   two-second resolution of FAT, and the read-only, hidden, system and archive
   attributes (on DJGPP builds). Directory attributes are applied after the
   directory's contents.
-- **Time zone:** DOS stores local time. The 16-bit mini builds and OS/2 take the
-  zone from `BP_TZ_OFFSET` (minutes east of UTC) and report times as unknown
-  when it is missing. How the full DOS build chooses its zone was not checked
-  for this document.
+- **Time zone:** full DOS copies `stat().st_mtime` into the archive and restores
+  it through `utime()`. Conversion between DOS local time and epoch seconds is
+  delegated to DJGPP libc; this frontend neither reads `BP_TZ_OFFSET` nor applies
+  its own offset. The library's zone selection and behavior with missing zone
+  settings remain unqualified. The 16-bit mini builds and OS/2 instead require
+  `BP_TZ_OFFSET` (minutes east of UTC).
 - **Directory times** are not supported on plain DOS (reported partial).
 - **Names:** names go through code page 850. Without long file name support the
   names must fit 8.3; a name that would need a generated short alias is refused
@@ -367,9 +414,10 @@ lacks its 32-bit runtime).
   own entry when it is not empty), and the **Finder type, creator and flags** as a
   10-byte record. The flags are the Finder's own flag word (for example the
   invisible and label bits).
-- **Modification times** are converted between the archive's Unix epoch and the
-  Classic Mac 32-bit date range (1904 to 2040); a time outside that range is
-  reported partial. Directory times are applied after the directory's contents.
+- **Modification times** round-trip from 1970 to the Classic Mac 32-bit date
+  limit in 2040. Source dates before 1970 are stored as unknown; archive dates
+  beyond the Mac limit report partial on restoration. Directory times are
+  applied after the directory's contents.
 - **Names** are converted between MacRoman and UTF-8 with a strict mapping and
   must be at most 31 characters. A name that cannot be mapped is refused or
   reported.
@@ -489,9 +537,13 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
   extended attributes. No Haiku run is recorded; native Haiku qualification is
   deferred.
 
+The above describes the CLI. The Haiku GUI stores rwx mode and MIME type in its
+native metadata, but uses `stat()` during creation and follows symlinks. Its
+reader skips link entries as partial, so it cannot perform a symlink round trip.
+
 ## Things that are easy to miss
 
-1. **Special files are not archived, but are now reported.** FIFOs, sockets and
+1. **Full Linux and Windows CLI skipped-item reporting.** FIFOs, sockets and
    device nodes (and on Windows links, junctions and special files) get a warning
    per item and a summary count; creation still exits 0, as `tar` does, so a
    script that must not lose them has to read stderr.
@@ -505,13 +557,14 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
    attribute and is extracted and re-archived there, that data is gone. Copying the
    archive file itself, or editing it with `add` and `delete`, keeps every record.
 5. **Time zones matter on systems that store local time** (DOS, OS/2, Amiga,
-   Atari, QL, X68000). Set the offset on both machines or times shift.
+   Atari, QL, X68000). Configure time conversion on both machines or times shift;
+   full DJGPP DOS delegates this to libc rather than `BP_TZ_OFFSET`.
 6. **Partial exit status is routine on some pairs.** Mac OS 9 reports partial for
    archives from macOS because of the Unix permission record it cannot apply; DOS
    reports partial for directory times. Read the messages before treating it as a
    failure.
-7. **Verification is thin.** No system has a recorded native round trip, so every
-   statement above is what the code and the host or emulator tests establish. The
+7. **Verification is thin outside Linux.** Linux has host runtime evidence;
+   most other systems have only host shims, cross-builds or emulator runs. The
    table in [hardware-testing.md](hardware-testing.md) tracks the first real
    machines.
 
@@ -524,23 +577,28 @@ verified without the target system. Status as of 2026-11-12.
 | - | --- | ------ |
 | 1 | Skipped items not reported (Unix special files; Windows links, junctions, special files) | **Done.** Linux names each skipped FIFO, socket or device and counts them. The Windows CLI turned out to *follow* directory links, which made a looping link fail the whole create and a link to an outside folder pull its files in; it now reports and skips them. Verified on a Linux host and, for Windows, under Wine (`make linux-native-attrs-test`, `make win-links-test`). |
 | 2 | Linux extended attributes, POSIX ACLs, file capabilities | **Done** for `user.*` and ACLs (verified on tmpfs, including a read-only file and a directory's default ACL). `security.*`/`trusted.*` are carried and applied only with `--security-attrs`; that gate is verified, but actually restoring a capability needs root and was not run. |
-| 3 | Hard links duplicated | **Done**, with the limit that the archive still holds every name's data. Recreation is refused unless the target is a file this run extracted with the same size and checksum, so a hostile record cannot join unrelated or pre-existing files. Verified including readers that do not know the record. |
+| 3 | Hard links duplicated | **Done for the Linux CLI**, with the limit that the archive still holds every name's data. Recreation is refused unless the target is a file this run extracted with the same size and checksum, so a hostile record cannot join unrelated or pre-existing files. Verified including readers that do not know the record. Non-Linux wrapper limitations are described above. |
 | 4 | QDOS file type and data-space header not stored (QL) | **Done**, and the gap was larger than documented: the QL tool could not archive a file with a header at all on sQLux. Verified in sQLux (two executables with different dataspaces round trip byte-identical; a record from another writer is applied). Not verified on a real QL or QDOS filing system. |
 | 5 | Native attributes on Haiku, OS/2 and Windows | **Not done.** None of the three runs natively here, so the code could only be checked against stand-ins that cannot show how the real system behaves. The container and the Linux code are the template when one of them is available. |
 
 Also worth doing when cheap:
 
-- **Cocoa GUI parity with the macOS CLI.** The GUI stores no resource forks,
-  Finder info or extended attributes and does not tell you. Using the CLI's code
-  would fix that; it cannot be built or run here.
-- **Full DOS time zone.** How the full DOS build picks its zone was not checked
-  for this document; confirm it before relying on DOS times.
+- **Cocoa GUI parity with the macOS CLI.** Ordinary creation loses permission
+  modes, follows symbolic links, and omits forks, Finder info and extended
+  attributes. Haiku GUI also needs link capture and restoration. Linux FLTK
+  preservation parity is implemented and checked on the host.
+- **Linux mini symbolic links.** Creation follows them; extraction refuses them.
+- **Non-Linux Unix hard links.** Fix native-container handling before claiming
+  complete preservation, then qualify it on the destination OS.
+- **Full DOS time zone.** The frontend delegates to DJGPP `stat()`/`utime()`;
+  qualify the library's zone selection and missing-zone behavior.
 - **FreeMiNT and EmuTOS name behavior** on Atari: the accented-letter rule is only
   verified on TOS 1.06, 1.62 and 2.05.
 
 Left alone on purpose:
 
-- **CP/M-86** carries file data only because the system offers nothing else.
+- **CP/M-86 mini** implements file-data transfer only; its frontend does not
+  capture filesystem attributes.
 - **Mac OS 9 reports partial for archives from macOS** because the Unix permission
   record cannot be applied there; that is accurate.
 - **Atari long names** (FreeMiNT) until someone needs them; the base rule is 8.3.

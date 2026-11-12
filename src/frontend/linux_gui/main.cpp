@@ -78,6 +78,25 @@ extern "C" {
 #include "../cpm86/cpm86_path.h"
 #include "../x68k/x68k_path_index.h"
 #include "../common/target_profiles.h"
+#include "../posix/linux_xattr.h"
+
+/* Each worker has its own metadata counters and policy. */
+static thread_local bp_lxa_stats_t g_lxa;
+static thread_local int g_security_attrs;
+static thread_local int g_nattr_debug;
+static thread_local int g_nattr_enabled;
+static thread_local unsigned long g_skipped_special;
+static std::atomic<bool> g_security_attrs_setting(false); /* session-only */
+
+static void gui_native_begin(bool security, bool enabled = true)
+{
+    memset(&g_lxa, 0, sizeof(g_lxa));
+    g_skipped_special = 0;
+    g_security_attrs = security;
+    g_nattr_enabled = enabled;
+    const char *debug = getenv("BOLTPACK_DEBUG");
+    g_nattr_debug = debug && *debug && *debug != '0';
+}
 
 #include "../gui_common/help_text.h"
 #include "../gui_common/logo_png.h"
@@ -146,6 +165,10 @@ typedef struct {
     bp_uint64 file_size;
     bp_uint64 mtime;
     bp_uint16 flags;
+    dev_t source_dev;
+    ino_t source_ino;
+    unsigned long source_nlink;
+    const char *hardlink_to;
 } add_job_t;
 
 typedef struct {
@@ -183,6 +206,8 @@ static void free_job_list(add_job_list_t *list)
 
 static const char *bp_strerror(int code);
 
+#include "../posix/linux_native_create.h"
+
 #include "../common/target_legacy_preflight.h"
 #include "../common/target_auto.h"
 #include "../common/target_utf8_preflight.h"
@@ -208,6 +233,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:            return "operation aborted";
     case BP_ERR_NOT_FOUND:          return "entry not found";
     case BP_ERR_INVALID_ARG:        return "invalid argument";
+    case BP_ERR_PARTIAL:            return "Some filesystem properties could not be preserved.";
     default:                        return "unknown error";
     }
 }
@@ -2180,13 +2206,40 @@ struct ExtractCtx {
     int force;
     int open_error;
     unsigned int partial_count;
+    bool security_attrs;
+    bool subject_ignored;
+    char subject_name[4096];
+    int subject_type, subject_ok;
+    dev_t subject_dev;
+    ino_t subject_ino;
+    bp_uint32 subject_size, subject_checksum;
+    struct lxa_extracted_s *extracted;
+    unsigned long extracted_count, extracted_cap;
+    std::string subject_archive_name;
+    std::map<std::string, std::string> published_names;
 
     ExtractCtx()
         : progress(NULL), mode(EXTRACT_KEEP_FOLDERS), root_fd(-1), force(1),
-          open_error(BP_OK), partial_count(0)
+          open_error(BP_OK), partial_count(0), security_attrs(false), subject_ignored(false),
+          subject_type(0), subject_ok(0), subject_dev(0), subject_ino(0),
+          subject_size(0), subject_checksum(0), extracted(NULL),
+          extracted_count(0), extracted_cap(0)
     {
+        subject_name[0] = '\0';
     }
 };
+
+static const char *gui_hardlink_target(ExtractCtx *ctx, const char *target)
+{
+    auto it = ctx->published_names.find(target);
+    return it == ctx->published_names.end() ? NULL : it->second.c_str();
+}
+
+#define BP_LXA_CONTEXT ExtractCtx
+#define BP_LXA_TARGET_NAME(ctx, target) gui_hardlink_target(ctx, target)
+#include "../posix/linux_native_extract.h"
+#undef BP_LXA_TARGET_NAME
+#undef BP_LXA_CONTEXT
 
 static bool selection_needs_extract_mode_choice(const std::vector<std::string> &names)
 {
@@ -2452,6 +2505,41 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
         return NULL;
     }
 
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->subject_ok = 0;
+        ctx->subject_archive_name = ename;
+        ctx->subject_ignored = !extract_filter_matches(ctx, ename) ||
+            (entry->entry_type == BP_TYPE_DIR && !ctx->filter.empty() &&
+             ctx->mode == EXTRACT_FILES_ONLY);
+    }
+
+    /* A deliberate selection skip still validates the entry's data. Returning
+       the core's discard stream avoids marking unselected metadata as lost. */
+    if (!extract_filter_matches(ctx, ename) ||
+        (entry->entry_type == BP_TYPE_META && ctx->subject_ignored))
+        return bp_archive_dry_run_stream();
+
+    if (entry->entry_type == BP_TYPE_META && entry->platform == BP_META_NATIVE_ATTRS) {
+        if (!extract_filter_matches(ctx, ename)) return NULL;
+        if (!ctx->subject_ok || ctx->subject_archive_name != ename ||
+            entry->original_size.hi != 0 ||
+            entry->original_size.lo < BP_NATTR_HEADER_SIZE ||
+            entry->original_size.lo > BP_NATTR_MAX_PAYLOAD) {
+            ctx->partial_count++;
+            return NULL;
+        }
+        lxa_sink_t *sink = (lxa_sink_t *)calloc(1, sizeof(*sink));
+        if (!sink) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        sink->buf = (unsigned char *)malloc(entry->original_size.lo);
+        if (!sink->buf) {
+            free(sink); ctx->open_error = BP_ERR_NOMEM; return NULL;
+        }
+        sink->cap = entry->original_size.lo;
+        sink->io = {lxa_sink_read, lxa_sink_write, lxa_sink_seek, lxa_sink_tell, sink};
+        return &sink->io;
+    }
+
     if (entry->entry_type == BP_TYPE_DIR) {
         if (!ctx->filter.empty() &&
             (ctx->mode == EXTRACT_FILES_ONLY ||
@@ -2462,6 +2550,9 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
             ctx->open_error = BP_ERR_IO;
             return NULL;
         }
+        struct stat st;
+        if (fstat(fd, &st) == 0)
+            lxa_set_subject(ctx, ename.c_str(), BP_TYPE_DIR, &st);
         close(fd);
         int rc = extract_queue_directory(ctx, entry);
         if (rc != BP_OK && ctx->open_error == BP_OK) ctx->open_error = rc;
@@ -2554,6 +2645,14 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
                            void *user_data)
 {
     ExtractCtx *ctx = (ExtractCtx *)user_data;
+    if (entry->entry_type == BP_TYPE_META && entry->platform == BP_META_NATIVE_ATTRS) {
+        lxa_sink_t *sink = (lxa_sink_t *)out;
+        if (status == BP_OK && lxa_apply_entry(ctx, entry, ctx->subject_name,
+                                               sink->buf, sink->len) != BP_OK)
+            ctx->partial_count++;
+        lxa_sink_free(sink);
+        return BP_OK;
+    }
     ExtractOutput *output = (ExtractOutput *)out;
     FILE *fp = (FILE *)out->handle;
 
@@ -2648,6 +2747,8 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
     if (rc == BP_OK)
         rc = extract_restore_fd(fileno(fp), output->destination, entry->flags,
                                 entry->mtime, ctx);
+    struct stat published_st;
+    bool have_identity = rc == BP_OK && fstat(fileno(fp), &published_st) == 0;
     if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
     if (rc == BP_OK) {
         if (ctx->force) {
@@ -2660,6 +2761,17 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
             rc = BP_ERR_IO;
         }
     }
+    if (rc == BP_OK && have_identity) {
+        std::string name = ctx->subject_archive_name;
+        if (!ctx->filter.empty() && ctx->mode == EXTRACT_FILES_ONLY)
+            name = output->destination;
+        lxa_set_subject(ctx, name.c_str(), BP_TYPE_DATA, &published_st);
+        ctx->subject_size = entry->original_size.lo;
+        ctx->subject_checksum = entry->checksum;
+        ctx->published_names[entry->name] = name;
+        if (lxa_extracted_add(ctx, &published_st, entry) != 0)
+            ctx->partial_count++;
+    }
     extract_dispose_output(output, NULL, rc != BP_OK);
     return rc;
 }
@@ -2667,6 +2779,7 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
 static int extract_run(bp_io_t *archive_io, ExtractCtx *ctx,
                        bp_progress_fn progress_fn)
 {
+    gui_native_begin(ctx->security_attrs);
     int rc, dir_rc;
     struct GuiExtractPreflight {
         bp_posix_preflight_t names;
@@ -2712,6 +2825,7 @@ static int extract_run(bp_io_t *archive_io, ExtractCtx *ctx,
     if (rc == BP_OK && ctx->partial_count != 0) rc = BP_ERR_PARTIAL;
     close(ctx->root_fd);
     ctx->root_fd = -1;
+    lxa_extracted_free(ctx);
     return rc;
 }
 
@@ -2732,6 +2846,7 @@ static int gui_extract_io(bp_io_t *aio, const char *out_dir, int force,
     ctx.progress = NULL;
     ctx.mode     = EXTRACT_KEEP_FOLDERS;
     ctx.force    = force;
+    ctx.security_attrs = g_security_attrs_setting.load();
     return extract_run(aio, &ctx, NULL);
 }
 #endif
@@ -2778,6 +2893,7 @@ static void do_extract()
     work.ectx.dest_dir      = dest;
     work.ectx.progress      = create_progress_window("Extracting...");
     work.ectx.force         = 1;
+    work.ectx.security_attrs = g_security_attrs_setting != 0;
     work.result              = BP_OK;
 
     std::thread worker(extract_worker, &work);
@@ -2835,6 +2951,7 @@ static void do_extract_selected()
     work.ectx.dest_dir = dest;
     work.ectx.progress = create_progress_window("Extracting...");
     work.ectx.mode     = mode;
+    work.ectx.security_attrs = g_security_attrs_setting != 0;
     work.result        = BP_OK;
 
     /* populate filter from current selection */
@@ -2865,11 +2982,6 @@ static void do_extract_selected()
 
 /* ---- create archive ---------------------------------------------------- */
 
-static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
-                               const char *arc_name);
-static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
-                             const char *prefix);
-
 /* Format 6 encodes only nonnegative Unix seconds. Preserve an unknown source
  * time explicitly rather than wrapping a pre-epoch time into an unsigned u64. */
 static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
@@ -2883,71 +2995,11 @@ static int gui_archive_mtime(time_t source, bp_uint64 *mtime)
     return 1;
 }
 
-static int add_file_to_archive(bp_archive_t *ar, const char *filepath,
-                               const char *arc_name)
-{
-    struct stat st;
-    if (stat(filepath, &st) != 0) return BP_ERR_IO;
-
-    if (S_ISDIR(st.st_mode)) {
-        /* add directory entry */
-        std::string dname = std::string(arc_name);
-        if (dname.empty() || dname[dname.size()-1] != '/')
-            dname += '/';
-        bp_uint64 mtime;
-        bp_uint16 mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
-                              ? BP_ENTRY_FLAG_MTIME_VALID : 0;
-        int rc = bp_archive_add_entry_ex(ar, dname.c_str(), BP_TYPE_DIR,
-                                         BP_OS_LINUX, NULL,
-                                         bp_u64_from_u32(0), mtime,
-                                         mtime_flags);
-        if (rc != BP_OK) return rc;
-        return add_dir_recursive(ar, filepath, dname.c_str());
-    }
-
-    FILE *fp = fopen(filepath, "rb");
-    if (!fp) return BP_ERR_IO;
-
-    bp_io_t fio;
-    bp_io_from_file(&fio, fp);
-
-    bp_uint64 fsize = bp_off_to_u64((bp_off_t)st.st_size);
-    bp_uint64 mtime;
-    bp_uint16 mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
-                          ? BP_ENTRY_FLAG_MTIME_VALID : 0;
-    int rc = bp_archive_add_entry_ex(ar, arc_name, BP_TYPE_DATA,
-                                     BP_OS_LINUX, &fio, fsize, mtime,
-                                     mtime_flags);
-    fclose(fp);
-    return rc;
-}
-
-static int add_dir_recursive(bp_archive_t *ar, const char *dirpath,
-                             const char *prefix)
-{
-    DIR *d = opendir(dirpath);
-    if (!d) return BP_ERR_IO;
-
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-
-        std::string full = std::string(dirpath) + "/" + ent->d_name;
-        std::string arc  = std::string(prefix) + ent->d_name;
-
-        int rc = add_file_to_archive(ar, full.c_str(), arc.c_str());
-        if (rc != BP_OK) { closedir(d); return rc; }
-    }
-    closedir(d);
-    return BP_OK;
-}
-
 /* recursively sum input bytes and count archive entries for progress */
 static void count_input_recursive(const char *path, double &bytes, unsigned long &count)
 {
     struct stat st;
-    if (stat(path, &st) != 0) return;
+    if (lstat(path, &st) != 0) return;
     if (S_ISDIR(st.st_mode)) {
         count++;
         DIR *d = opendir(path);
@@ -2960,7 +3012,7 @@ static void count_input_recursive(const char *path, double &bytes, unsigned long
             count_input_recursive(full.c_str(), bytes, count);
         }
         closedir(d);
-    } else {
+    } else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
         bytes += (double)st.st_size;
         count++;
     }
@@ -2987,6 +3039,8 @@ struct CreateWork {
     int                      target_profile;
     bool                     target_auto_rename;
     bool                     use_fast_fluff;
+    bool                     security_attrs = false;
+    unsigned long            preservation_warnings = 0;
     int                      result;
 };
 
@@ -3075,6 +3129,11 @@ static int gui_append_target_job(add_job_list_t *list, const char *path,
         free_add_job(job);
         return BP_ERR_NOMEM;
     }
+    struct stat st;
+    if (lstat(path, &st) != 0) { free_add_job(job); return BP_ERR_IO; }
+    job->source_dev = st.st_dev;
+    job->source_ino = st.st_ino;
+    job->source_nlink = (unsigned long)st.st_nlink;
     list->count++;
     return BP_OK;
 }
@@ -3087,7 +3146,7 @@ static int gui_collect_target_jobs(add_job_list_t *list, const char *path,
     bp_uint16 flags;
     int rc;
 
-    if (stat(path, &st) != 0) return BP_ERR_IO;
+    if (lstat(path, &st) != 0) return BP_ERR_IO;
     flags = BP_ENTRY_FLAG_MODE_VALID |
             (bp_uint16)(st.st_mode & BP_ENTRY_FLAG_MODE_MASK);
     if (gui_archive_mtime(st.st_mtime, &mtime))
@@ -3119,6 +3178,19 @@ static int gui_collect_target_jobs(add_job_list_t *list, const char *path,
                                      bp_off_to_u64((bp_off_t)st.st_size),
                                      mtime, flags);
     }
+    if (S_ISLNK(st.st_mode)) {
+        char target[4096];
+        ssize_t length = readlink(path, target, sizeof(target));
+        if (length < 0 || length >= (ssize_t)sizeof(target)) return BP_ERR_IO;
+        target[length] = '\0';
+        rc = gui_append_target_job(list, path, arcname, BP_TYPE_SYMLINK,
+                                   bp_u64_from_u32((bp_uint32)length), mtime, flags);
+        if (rc != BP_OK) return rc;
+        list->items[list->count - 1].symlink_target = dup_string(target);
+        return list->items[list->count - 1].symlink_target ? BP_OK : BP_ERR_NOMEM;
+    }
+    fprintf(stderr, "boltpack: warning: special file not archived: %s\n", path);
+    g_skipped_special++;
     return BP_OK;
 }
 
@@ -3156,19 +3228,35 @@ static int gui_write_target_jobs(bp_archive_t *ar, const add_job_list_t *jobs,
                 rc = gui_add_plan9_mode_meta(ar, job->arcname,
                                              (bp_uint16)(job->flags & 0x01ffU));
         } else if (job->entry_type == BP_TYPE_DATA) {
-            FILE *fp = fopen(job->path, "rb");
+            int fd = open(job->path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+            struct stat st;
+            if (fd < 0) { rc = BP_ERR_IO; break; }
+            if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+                st.st_dev != job->source_dev || st.st_ino != job->source_ino ||
+                bp_u64_cmp(bp_off_to_u64(st.st_size), job->file_size) != 0) {
+                close(fd); rc = BP_ERR_IO; break;
+            }
+            FILE *fp = fdopen(fd, "rb");
             bp_io_t fio;
-            if (fp == NULL) { rc = BP_ERR_IO; break; }
+            if (fp == NULL) { close(fd); rc = BP_ERR_IO; break; }
             bp_io_from_file(&fio, fp);
             rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_DATA,
                                          BP_OS_LINUX, &fio, job->file_size,
                                          job->mtime, job->flags);
-            fclose(fp);
+            if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
             if (rc == BP_OK && profile == TARGET_PROFILE_PLAN9_UTF8 &&
                 (job->flags & BP_ENTRY_FLAG_MODE_VALID))
                 rc = gui_add_plan9_mode_meta(ar, job->arcname,
                                              (bp_uint16)(job->flags & 0x01ffU));
+        } else if (job->entry_type == BP_TYPE_SYMLINK) {
+            lxa_mem_t mem = {(const unsigned char *)job->symlink_target,
+                             (bp_uint32)strlen(job->symlink_target), 0};
+            bp_io_t io = {lxa_mem_read, lxa_mem_write, lxa_mem_seek, lxa_mem_tell, &mem};
+            rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_SYMLINK,
+                                         BP_OS_LINUX, &io, job->file_size,
+                                         job->mtime, job->flags);
         }
+        if (rc == BP_OK) rc = add_native_attrs_metadata(ar, job);
         if (rc != BP_OK) break;
     }
     return rc;
@@ -3218,6 +3306,8 @@ static int gui_target_preflight(add_job_list_t *jobs, bp_archive_t *existing,
 
 static void create_worker(CreateWork *w)
 {
+    gui_native_begin(w->security_attrs,
+        w->target_profile == TARGET_PROFILE_NONE && !w->use_interchange_profile);
     FILE *fp = w->output_fp;
     w->output_fp = NULL;
     if (!fp)
@@ -3306,15 +3396,18 @@ static void create_worker(CreateWork *w)
 #endif
 
         {
-            /* sequential compression path */
-            for (size_t i = 0; i < w->input_files.size() && !w->pctx->cancelled.load(); i++) {
-                const char *path = w->input_files[i].c_str();
-                std::string base_str = leaf_name(std::string(path));
-                if (base_str.empty()) base_str = "archive";
-                rc = add_file_to_archive(&ar, path, base_str.c_str());
-                if (rc != BP_OK) break;
+            add_job_list_t jobs = {};
+            for (size_t i = 0; i < w->input_files.size() && rc == BP_OK; i++) {
+                if (w->pctx->cancelled.load()) { rc = BP_ERR_ABORTED; break; }
+                std::string base = leaf_name(w->input_files[i]);
+                if (base.empty()) base = "archive";
+                rc = gui_collect_target_jobs(&jobs, w->input_files[i].c_str(), base.c_str());
             }
-            if (w->pctx->cancelled.load() && rc == BP_OK) rc = BP_ERR_ABORTED;
+            if (rc == BP_OK) {
+                mark_hard_links(&jobs);
+                rc = gui_write_target_jobs(&ar, &jobs, TARGET_PROFILE_NONE, w->pctx);
+            }
+            free_job_list(&jobs);
         }
         }
 
@@ -3340,6 +3433,7 @@ static void create_worker(CreateWork *w)
         rc = BP_ERR_IO;
     if (fclose(fp) != 0 && rc == BP_OK)
         rc = BP_ERR_IO;
+    w->preservation_warnings = g_lxa.skipped + g_skipped_special;
     w->result = rc;
     w->pctx->finished.store(true);
 }
@@ -3620,6 +3714,7 @@ static void create_and_send(const std::vector<std::string> &input_files)
     work.target_profile = g_target_profile;
     work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
+    work.security_attrs = g_security_attrs_setting != 0;
     work.result      = BP_OK;
 
     std::thread worker(create_worker, &work);
@@ -3635,8 +3730,12 @@ static void create_and_send(const std::vector<std::string> &input_files)
         fl_message("Archive creation cancelled.");
     else if (rc != BP_OK)
         fl_alert("Error creating archive:\n%s", bp_strerror(rc));
-    else
+    else {
+        if (work.preservation_warnings)
+            fl_alert("Archive created.\n%lu attributes or special files could not be stored.",
+                     work.preservation_warnings);
         do_send_archive(out_path, target);
+    }
 
     unlink(out_path.c_str());
     rmdir(d);
@@ -3855,6 +3954,7 @@ static void create_to_save(const std::vector<std::string> &input_files)
     work.target_profile = g_target_profile;
     work.target_auto_rename = (g_target_auto_rename != 0);
     work.use_fast_fluff = (g_fluff_multithread != 0);
+    work.security_attrs = g_security_attrs_setting != 0;
     work.result      = BP_OK;
 
     std::thread worker(create_worker, &work);
@@ -3882,6 +3982,9 @@ static void create_to_save(const std::vector<std::string> &input_files)
                                                        target_exists ? &target_stat : NULL);
         if (publish_rc == 0) {
             do_open_archive(out_path.c_str());
+            if (work.preservation_warnings)
+                fl_alert("Archive created.\n%lu attributes or special files could not be stored.",
+                         work.preservation_warnings);
         } else if (publish_rc == -2) {
             fl_alert("Archive was created, but the previous destination could not be "
                      "restored after a concurrent change. The displaced file is at:\n%s",
@@ -4669,6 +4772,10 @@ int main(int argc, char **argv)
 #ifdef BOLTPACK_NET
     g_menu->add("Network/Receive (Listen)...", FL_CTRL + 'r', menu_listen_cb);
 #endif
+    g_menu->add("Settings/Preserve security attributes (this session)", 0,
+        [](Fl_Widget *w, void *) {
+            g_security_attrs_setting = ((Fl_Menu_ *)w)->mvalue()->value() ? 1 : 0;
+        }, NULL, FL_MENU_TOGGLE);
     g_menu->add("Settings/Reset GUI Settings...", 0, menu_reset_gui_settings_cb);
     g_menu->add("Help/Documentation",       0, menu_doc_cb);
     g_menu->add("Help/About BoltPack",      0, menu_about_cb);

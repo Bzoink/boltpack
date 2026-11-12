@@ -297,6 +297,10 @@ $(BUILDDIR)/frontend/%.o: $(FRONTDIR)/%.c $(BUILDDIR)/.version $(BUILDDIR)/.conf
 
 $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 	                          src/frontend/posix/archive_preflight.h \
+	                          src/frontend/posix/linux_xattr.h \
+	                          src/frontend/posix/linux_native_create.h \
+	                          src/frontend/posix/linux_native_extract.h \
+	                          src/frontend/common/native_attrs.h \
 	                          src/frontend/common/target_profiles.h \
 	                          src/frontend/common/target_auto.h \
 	                          src/frontend/common/target_legacy_preflight.h \
@@ -2436,6 +2440,21 @@ linux-gui-target-profile-test: modern linux-gui
 	python3 test/check_linux_gui_target_profile.py \
 	    --gui $(LINUX_GUI_BUILDDIR)/boltpack-gui \
 	    --cli build/linux/boltpack
+
+.PHONY: linux-gui-native-attrs-test
+linux-gui-native-attrs-test: modern linux-gui
+	g++ $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) -DBOLTPACK_NET \
+	    test/linux_gui_native_fixture.cpp $(LINUX_GUI_CORE_OBJS) \
+	    $(LINUX_GUI_BUILDDIR)/bp_net.o \
+	    $$(fltk-config --use-images --cxxflags --ldflags) \
+	    $(GUI_FAST_FLUFF_LDFLAGS) -o $(LINUX_GUI_BUILDDIR)/native-fixture
+	$(CC) $(GUI_CORE_FLAGS) test/macosx_shim/make_attr_archive.c \
+	    $(LINUX_GUI_CORE_OBJS) $(GUI_FAST_FLUFF_LDFLAGS) \
+	    -o $(LINUX_GUI_BUILDDIR)/native-attr-writer
+	python3 test/check_linux_gui_native_attrs.py \
+	    --fixture $(LINUX_GUI_BUILDDIR)/native-fixture \
+	    --cli build/linux/boltpack \
+	    --attr-writer $(LINUX_GUI_BUILDDIR)/native-attr-writer
 
 .PHONY: linux-gui-interoperability-test
 LINUX_GUI_PREFIX_FIXTURE = $(LINUX_GUI_BUILDDIR)/prefix-conflict-fixture

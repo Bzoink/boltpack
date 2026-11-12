@@ -2711,6 +2711,23 @@ The resulting `BoltPack.exe` expects `boltpack_core.dll` in the same directory.
 
 The Linux GUI uses FLTK 1.4 for a lightweight, dependency-minimal interface.
 
+Normal archives preserve Linux file and directory modes, modification times,
+symbolic links, hard-link identity, extended attributes and POSIX ACLs. Native
+metadata capture and restoration share helpers with the Linux CLI. Link targets
+are not followed during creation; unsafe link targets are refused on extraction.
+Special files are skipped with a warning, and preservation failures are surfaced
+in the GUI. Ownership, set-ID bits, device nodes and sparse layout have the same
+limits as the CLI. Selected and flattened extraction retain native metadata,
+with hard links limited to identical files extracted by this run.
+
+Enable `Settings > Preserve security attributes (this session)` to include and
+restore `security.*` and `trusted.*` attributes. The setting defaults off at
+launch, is not saved, and still requires the relevant filesystem privileges.
+Target profiles and Interchange Profile 1 omit native attribute containers.
+`make linux-gui-native-attrs-test` exercises the production GUI workers without
+a display, cross-reads with the CLI, and checks modes, times, links, attributes,
+ACLs, selection, profiles and security policy.
+
 | Feature            | Implementation                                           |
 | ------------------ | -------------------------------------------------------- |
 | File list          | Custom `FileTable` widget (Fl_Widget subclass)           |
