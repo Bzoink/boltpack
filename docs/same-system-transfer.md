@@ -33,6 +33,7 @@ results are collected in [hardware-testing.md](hardware-testing.md).
 - [Atari](#atari)
 - [Sinclair QL, X68000, RISC OS, Plan 9, Haiku/BeOS](#other-systems)
 - [Things that are easy to miss](#things-that-are-easy-to-miss)
+- [Gaps worth fixing, in priority order](#gaps-worth-fixing-in-priority-order)
 
 ## Reading this document
 
@@ -101,9 +102,10 @@ These are deliberately outside the format and are never carried on any system:
 
 | System | File data | Empty dirs | Modification time | Permissions / attributes | Symlinks | Forks / type codes | Other native metadata | Verified |
 | ------ | --------- | ---------- | ----------------- | ------------------------ | -------- | ------------------ | --------------------- | -------- |
-| Linux (CLI, FLTK GUI) | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | no | host + QEMU |
+| Linux CLI | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | extended attributes, POSIX ACLs, hard links | host + QEMU |
+| Linux FLTK GUI | yes | yes | yes (seconds) | mode (set-ID bits dropped) | yes | n/a | no (reports partial when reading them) | host |
 | Linux mini (32-bit) | yes | yes | yes | mode | not checked | n/a | no | host + QEMU/native 32-bit |
-| BSDs, Solaris, illumos, Hurd, AIX 7.3, z/OS | yes | yes | yes | mode | yes | n/a | no | host shim only |
+| BSDs, Solaris, illumos, Hurd, AIX 7.3, z/OS | yes | yes | yes | mode | yes | n/a | hard links (extended attributes are Linux-only) | host shim only |
 | QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, older AIX | yes, into a new private directory | yes | yes (symlink times reported partial) | mode | yes | n/a | no | host shim only |
 | macOS CLI | yes | yes | yes | rwx mode | yes | resource fork, Finder info | extended attributes | host shim only |
 | macOS Cocoa GUI | yes | yes | yes | mode (set-ID bits dropped) | no | no | no | build only |
@@ -135,6 +137,14 @@ wrappers. Linux itself has the CLI, a 32-bit mini CLI and an FLTK GUI.
 - File data, directories, and symbolic links (the link's target text).
 - Modification time of files, directories and symlinks in whole seconds.
 - The permission bits of each item.
+- On Linux, extended attributes and POSIX ACLs: `user.*` and
+  `system.posix_acl_access`/`system.posix_acl_default` always; `security.*` and
+  `trusted.*` (file capabilities, SELinux labels) only with `--security-attrs`.
+  They travel in a native attribute container (`ATTR` in `boltpack l`), at most
+  64 per item and 32 KiB per value.
+- A record for each file that is another name for an earlier file (a hard link).
+  The data is still archived for every name, so a reader that does not know the
+  record gets an independent copy.
 
 **Restored**
 
@@ -146,14 +156,25 @@ wrappers. Linux itself has the CLI, a 32-bit mini CLI and an FLTK GUI.
 - Modification times, including a symlink's own time (set without following the
   link). Directory modes and times are applied after the directory's children,
   so extracting files into a read-only directory works.
+- On Linux, extended attributes and ACLs, applied to the file just extracted
+  (a read-only file is made writable for an instant to take its attribute, then
+  put back). `security.*` and `trusted.*` are refused unless `--security-attrs` is
+  given, and even then need the privilege the kernel demands; a refusal or failure
+  names the item and attribute and ends with a count.
+- Hard links, recreated by replacing the extracted copy with a link to the first
+  name. The link is made only to a regular file this run extracted with the same
+  size and checksum; anything else (a missing, pre-existing, differing or
+  out-of-tree target) is refused with a message and the copy stays.
 
 **Not carried**
 
-- Owner and group, ACLs, SELinux or other security labels, and extended
-  attributes. A file extracted by a user belongs to that user.
-- Hard links: each name is archived as its own full copy of the data, so a
-  hard-linked pair becomes two independent files.
-- Device nodes, FIFOs and sockets: they are not archived.
+- Owner and group. A file extracted by a user belongs to that user.
+- On systems other than Linux, extended attributes and ACLs (the wrappers record
+  hard links but not attributes).
+- The space saving of hard links: every name still carries its data in the
+  archive; only the sharing is restored.
+- Device nodes, FIFOs and sockets: they are not archived. Each one is named in a
+  warning and counted in a summary, and creation still succeeds (like `tar`).
 - Sparse layout: holes are archived and restored as ordinary zero bytes.
 - Access, change and birth times, and the sub-second part of modification times.
 
@@ -258,8 +279,14 @@ rules.
 
 - NTFS ACLs and ownership, alternate data streams, compression and encryption
   flags, and short (8.3) names.
-- Symbolic links, junctions and other reparse points: they are not archived, and
-  an archive's symlink entries are skipped on extraction with a message.
+- Symbolic links and junctions to directories: they are no longer followed.
+  Earlier versions followed them, so a link that pointed back up the tree
+  recursed until the path limit and the whole create failed, and a link to a
+  folder outside the tree pulled that folder's files into the archive. Each one is
+  now named in a warning and counted, and the rest is archived. Other reparse
+  points (cloud placeholders, deduplicated files) are ordinary files and are
+  archived. A symlink to a file is archived as the file it points to, and an
+  archive's symlink entries are skipped on extraction with a message.
 - Hard links, and creation and access times.
 - Unix permission bits and resource forks in an archive from another system: they
   are reported as partial.
@@ -455,11 +482,13 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
 
 ## Things that are easy to miss
 
-1. **Special files on Unix-like systems are skipped, and no message says so.**
-   FIFOs, sockets and device nodes are not archived and creation does not report
-   them.
-2. **Hard links duplicate data.** Two names for one file become two files after a
-   round trip, and the archive stores the data twice.
+1. **Special files are not archived, but are now reported.** FIFOs, sockets and
+   device nodes (and on Windows links, junctions and special files) get a warning
+   per item and a summary count; creation still exits 0, as `tar` does, so a
+   script that must not lose them has to read stderr.
+2. **Hard links keep their data twice in the archive.** The link itself is
+   recreated on a reader that knows the record, but the archive is as large as
+   if each name were a separate file.
 3. **Ownership is never restored.** Files extracted as root are still owned by
    whoever extracts them; there is no mode that records owners.
 4. **Fork and attribute loss happens on the way out of a system.** If an archive
@@ -477,7 +506,38 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
    table in [hardware-testing.md](hardware-testing.md) tracks the first real
    machines.
 
+## Gaps worth fixing, in priority order
+
+Chosen by three tests: data is really lost, the loss is silent, and a fix can be
+verified without the target system. Status as of 2026-11-12.
+
+| # | Gap | Status |
+| - | --- | ------ |
+| 1 | Skipped items not reported (Unix special files; Windows links, junctions, special files) | **Done.** Linux names each skipped FIFO, socket or device and counts them. The Windows CLI turned out to *follow* directory links, which made a looping link fail the whole create and a link to an outside folder pull its files in; it now reports and skips them. Verified on a Linux host and, for Windows, under Wine (`make linux-native-attrs-test`, `make win-links-test`). |
+| 2 | Linux extended attributes, POSIX ACLs, file capabilities | **Done** for `user.*` and ACLs (verified on tmpfs, including a read-only file and a directory's default ACL). `security.*`/`trusted.*` are carried and applied only with `--security-attrs`; that gate is verified, but actually restoring a capability needs root and was not run. |
+| 3 | Hard links duplicated | **Done**, with the limit that the archive still holds every name's data. Recreation is refused unless the target is a file this run extracted with the same size and checksum, so a hostile record cannot join unrelated or pre-existing files. Verified including readers that do not know the record. |
+| 4 | QDOS file type and data-space header not stored (QL) | **Not done.** It needs the QL toolchain and sQLux, which are not in this environment, and whether sQLux's host-file mode exposes the header was never established. No code was written rather than code that could not be run. |
+| 5 | Native attributes on Haiku, OS/2 and Windows | **Not done.** None of the three runs natively here, so the code could only be checked against stand-ins that cannot show how the real system behaves. The container and the Linux code are the template when one of them is available. |
+
+Also worth doing when cheap:
+
+- **Cocoa GUI parity with the macOS CLI.** The GUI stores no resource forks,
+  Finder info or extended attributes and does not tell you. Using the CLI's code
+  would fix that; it cannot be built or run here.
+- **Full DOS time zone.** How the full DOS build picks its zone was not checked
+  for this document; confirm it before relying on DOS times.
+- **FreeMiNT and EmuTOS name behavior** on Atari: the accented-letter rule is only
+  verified on TOS 1.06, 1.62 and 2.05.
+
+Left alone on purpose:
+
+- **CP/M-86** carries file data only because the system offers nothing else.
+- **Mac OS 9 reports partial for archives from macOS** because the Unix permission
+  record cannot be applied there; that is accurate.
+- **Atari long names** (FreeMiNT) until someone needs them; the base rule is 8.3.
+
 To see exactly what an archive carries, list it:
 `boltpack l archive` shows one line per entry, with a Type column of `DATA`,
 `DIR`, `LINK`, `RSRC` (resource fork), `META` (permissions, Finder info or other
-platform metadata) and `ATTR` (macOS extended attributes).
+platform metadata) and `ATTR` (extended attributes and hard-link records, from
+macOS or Linux).

@@ -236,6 +236,17 @@ reports a malformed or unsupported container, still extracts the subject, and
 counts the item as partial; it does not treat the container as archive
 corruption because the entry's own checksum has already been verified.
 
+The Linux writer uses origin platform `0x01`. It stores `user.*` attributes and
+the POSIX ACL attributes (`system.posix_acl_access`, `system.posix_acl_default`),
+and `security.*` and `trusted.*` only when asked; a Linux reader applies the
+`user.*` and ACL names by default and refuses the others unless asked. A Linux
+container also uses one reserved item, `boltpack.hardlink`, which is not an
+attribute (a real name always starts with a namespace and a dot): its value is the
+archive name of an earlier file entry that this file is a hard link to. The file's
+own data is still stored, so a reader that ignores the item has a complete copy.
+A reader recreates the link only to a regular file that it extracted with the same
+size and checksum.
+
 Writers do not store attributes that have their own entries or are managed by
 the system. The macOS writer omits `com.apple.ResourceFork` and
 `com.apple.FinderInfo` (carried by the resource fork and Classic Mac metadata

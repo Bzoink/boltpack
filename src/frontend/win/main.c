@@ -202,6 +202,46 @@ static win_dirent *win_readdir(win_DIR *directory)
     return &directory->entry;
 }
 
+#ifndef IO_REPARSE_TAG_SYMLINK
+#define IO_REPARSE_TAG_SYMLINK     0xA000000CUL
+#endif
+#ifndef IO_REPARSE_TAG_MOUNT_POINT
+#define IO_REPARSE_TAG_MOUNT_POINT 0xA0000003UL
+#endif
+
+/* Is the entry readdir just returned a symbolic link or a junction?  Neither is
+ * followed or archived: a link that points back up the tree never ends, and one
+ * can lead outside the tree being archived.  Other reparse points (cloud
+ * placeholders, deduplicated files) are ordinary files and are kept. */
+static int win_dir_entry_is_link(const win_DIR *directory)
+{
+    if ((directory->data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)
+        return 0;
+    /* Windows always reports the tag of a reparse point; a zero tag only comes
+     * from Wine, which flags a Unix symlink as a reparse point without one. */
+    return directory->data.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
+           directory->data.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT ||
+           directory->data.dwReserved0 == 0;
+}
+
+static unsigned long g_win_skipped_items; /* links, junctions, special files */
+
+static void win_note_skipped(const char *path, const char *what)
+{
+    fprintf(stderr, "boltpack: warning: %s is %s; it is not archived\n", path,
+            what);
+    g_win_skipped_items++;
+}
+
+static void win_report_skipped(void)
+{
+    if (g_win_skipped_items > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu item%s not archived (symbolic links, "
+                "junctions or special files); the archive holds everything else\n",
+                g_win_skipped_items, g_win_skipped_items == 1 ? " was" : "s were");
+}
+
 static int win_closedir(win_DIR *directory)
 {
     int result;
@@ -1447,6 +1487,7 @@ static int sum_path_data_size(const char *path, bp_uint64 *total_size,
                 strcmp(ent->d_name, "..") == 0)
                 continue;
 
+            if (win_dir_entry_is_link(d)) continue; /* reported when collecting */
             path_join(child_path, sizeof(child_path), path, ent->d_name);
             rc = sum_path_data_size(child_path, total_size, data_count);
             if (rc != BP_OK) {
@@ -1560,6 +1601,10 @@ static int collect_directory_jobs(add_job_list_t *list, const char *dir_path,
             continue;
 
         path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
+        if (win_dir_entry_is_link(d)) {
+            win_note_skipped(child_path, "a symbolic link or junction");
+            continue;
+        }
         path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name);
 
         rc = collect_path_jobs(list, child_path, child_arc);
@@ -1651,6 +1696,7 @@ static int collect_path_jobs(add_job_list_t *list, const char *path,
                           &source_basic_info);
     }
 
+    win_note_skipped(path, "not a regular file or directory");
     return BP_OK;
 }
 
@@ -2163,6 +2209,10 @@ static int add_directory(bp_archive_t *ar, const char *dir_path,
             continue;
 
         path_join(child_path, sizeof(child_path), dir_path, ent->d_name);
+        if (win_dir_entry_is_link(d)) {
+            win_note_skipped(child_path, "a symbolic link or junction");
+            continue;
+        }
         path_join(child_arc, sizeof(child_arc), arc_prefix, ent->d_name);
 
         rc = add_path(ar, child_path, child_arc);
@@ -2287,7 +2337,8 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         return BP_OK;
     }
 
-    /* skip other file types (no symlinks, devices, etc. on DOS) */
+    /* other file types (devices, pipes): say so rather than skip silently */
+    win_note_skipped(path, "not a regular file or directory");
     return BP_OK;
 }
 
@@ -4808,6 +4859,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         SetConsoleCtrlHandler(ctrl_cleanup_handler, FALSE);
         return 1;
     }
+    win_report_skipped();
 
     elapsed = wall_time_seconds() - start;
 
@@ -5503,6 +5555,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
         goto add_cleanup_win;
     }
+    win_report_skipped();
 
     if (fflush(fp) != 0 || _commit(_fileno(fp)) != 0) {
         fprintf(stderr, "boltpack: cannot flush staged archive\n");

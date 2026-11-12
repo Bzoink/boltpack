@@ -174,10 +174,26 @@ Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion n
 | `-n`              | Dry run                                       |
 | `-q` / `-qq`      | Quiet / silent                                |
 | `--single-thread` | Force sequential compression on modern builds  |
+| `--security-attrs` | Linux: also store and restore `security.*` and `trusted.*` attributes (file capabilities, SELinux labels); restoring them needs the kernel's privilege |
 | `--interchange-profile-1` | Create or append using mini-reader limits: BoltLite, 16 KiB blocks, 65,535 entries, 4 GiB minus one byte per entry, and 2 GiB minus one byte total |
 | `--target-profile=posix-utf8-v1` | Create/add with strict UTF-8 byte names, case-sensitive path checks, 255-byte components, 4,095-byte paths, safe relative symlinks, and no foreign metadata |
 | `--target-profile=plan9-utf8-v1` | Create/add with Plan 9 UTF-8 path and control-character checks, 255-byte components, 511-byte paths, and Stored/BoltLite/BoltLZ/Fluff only |
 | `--target-profile=haiku-bfs-v1` | Create/add with UTF-8 BFS byte-name rules, 255-byte components, 1,023-byte paths, supported entry types, and Interchange Profile 1 limits |
+
+**Extended attributes, ACLs and hard links (Linux).** `create` and `add` store a
+file's or directory's `user.*` attributes and POSIX ACLs in a native attribute
+container (shown as `ATTR` by `list`) and record each file that is another name
+for an earlier one (a hard link); `extract` restores them. `--security-attrs`
+adds `security.*` and `trusted.*` on both sides; without it those are refused on
+extract with a message. Hard links are recreated only to a regular file this run
+extracted with the same size and checksum, and otherwise stay copies. The data of
+every name is still archived. Failures and skipped items are reported with the
+item, the attribute and `errno` and ended with a count, and `BOLTPACK_DEBUG=1`
+traces each attribute. Target profiles and Interchange Profile 1 carry neither.
+FIFOs, sockets and device nodes are not archived; each is named in a warning and
+counted, and the command still exits 0 (like `tar`). See the
+[specification](specification-1.0.md) (section 2.3.1.2) and
+[same-system-transfer.md](same-system-transfer.md).
 
 `--interchange-profile-1` is valid only for `create` and `add`. Append checks the
 existing archive against the profile before modifying it. It refuses codec,

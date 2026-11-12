@@ -49,6 +49,7 @@
 #endif
 #if defined(BP_CLI_TARGET_PROFILES)
 #include "../atari/atari_path.h"
+#include "../posix/linux_xattr.h"
 #include "../cpm86/cpm86_path.h"
 #include "../x68k/x68k_path_index.h"
 #endif
@@ -127,6 +128,110 @@ typedef enum {
 
 static int g_verbosity    = VERB_DEFAULT;
 static int g_target_plan9_profile;
+
+/* ---- extended attributes, hard links and skipped items ------------------ */
+
+static bp_lxa_stats_t g_lxa;           /* counters for the end-of-run summary */
+static int g_security_attrs;           /* --security-attrs */
+static int g_nattr_debug;              /* BOLTPACK_DEBUG=1 */
+static int g_nattr_enabled = 1;        /* off for target profiles */
+static unsigned long g_skipped_special; /* FIFOs, sockets and devices */
+
+/* Say what a path is when it is neither a file, a directory nor a symlink:
+ * such items are not archived, and archiving must not look complete when it is
+ * not.  Like tar, this is a warning and does not change the exit status. */
+static void note_skipped_special(const char *path, const struct stat *st)
+{
+    const char *what = "special file";
+    if (S_ISFIFO(st->st_mode)) what = "FIFO";
+    else if (S_ISSOCK(st->st_mode)) what = "socket";
+    else if (S_ISCHR(st->st_mode)) what = "character device";
+    else if (S_ISBLK(st->st_mode)) what = "block device";
+    fprintf(stderr, "boltpack: warning: %s is a %s; it is not archived\n",
+            path, what);
+    g_skipped_special++;
+}
+
+/* Summary printed after create/add: dropped items and attributes stay visible. */
+static void lxa_report_create(void)
+{
+    if ((g_lxa.stored > 0 || g_lxa.hardlinks > 0) && g_verbosity == VERB_DEFAULT) {
+        if (g_lxa.stored > 0)
+            printf("native attributes: %lu stored on %lu item%s\n", g_lxa.stored,
+                   g_lxa.subjects, g_lxa.subjects == 1 ? "" : "s");
+        if (g_lxa.hardlinks > 0)
+            printf("hard links: %lu recorded\n", g_lxa.hardlinks);
+    }
+    if (g_lxa.skipped > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu extended attribute%s could not be stored "
+                "(see the messages above); the archive is otherwise complete\n",
+                g_lxa.skipped, g_lxa.skipped == 1 ? "" : "s");
+    if (g_skipped_special > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu special file%s (FIFO, socket or device) "
+                "not archived; the archive holds everything else\n",
+                g_skipped_special, g_skipped_special == 1 ? "" : "s");
+}
+
+/* Summary printed after extraction. */
+static void lxa_report_extract(void)
+{
+    if ((g_lxa.restored > 0 || g_lxa.hardlinks > 0) && g_verbosity == VERB_DEFAULT) {
+        if (g_lxa.restored > 0)
+            printf("native attributes: %lu restored\n", g_lxa.restored);
+        if (g_lxa.hardlinks > 0)
+            printf("hard links: %lu recreated\n", g_lxa.hardlinks);
+    }
+    if (g_lxa.failed > 0 || g_lxa.refused > 0)
+        fprintf(stderr,
+                "boltpack: warning: %lu extended attribute%s could not be "
+                "restored (see the messages above)\n",
+                g_lxa.failed + g_lxa.refused,
+                g_lxa.failed + g_lxa.refused == 1 ? "" : "s");
+}
+
+/* A read-only in-memory stream over a byte buffer, for metadata entries. */
+typedef struct {
+    const unsigned char *buf;
+    bp_uint32 size;
+    bp_uint32 pos;
+} lxa_mem_t;
+
+static long lxa_mem_read(void *handle, void *buffer, bp_uint32 count)
+{
+    lxa_mem_t *m = (lxa_mem_t *)handle;
+    bp_uint32 left = m->size - m->pos;
+    if (count > left) count = left;
+    if (count == 0) return 0;
+    memcpy(buffer, m->buf + m->pos, count);
+    m->pos += count;
+    return (long)count;
+}
+
+static long lxa_mem_write(void *handle, const void *buffer, bp_uint32 count)
+{
+    (void)handle; (void)buffer; (void)count;
+    return -1L;
+}
+
+static int lxa_mem_seek(void *handle, bp_off_t offset, int origin)
+{
+    lxa_mem_t *m = (lxa_mem_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)m->pos + (long)offset;
+    else if (origin == SEEK_END) position = (long)m->size + (long)offset;
+    else return -1;
+    if (position < 0 || position > (long)m->size) return -1;
+    m->pos = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t lxa_mem_tell(void *handle)
+{
+    return (bp_off_t)((lxa_mem_t *)handle)->pos;
+}
 static fast_thread_policy_t g_fast_thread_policy = FAST_THREAD_AUTO;
 
 /*
@@ -684,6 +789,8 @@ typedef struct {
     long       source_ctime_nsec;
     bp_uint32  packed_checksum;
     int        packed_checksum_valid;
+    unsigned long source_nlink;
+    const char *hardlink_to;  /* arcname of the first job sharing this inode */
 } add_job_t;
 
 typedef struct {
@@ -785,6 +892,8 @@ static int append_job(add_job_list_t *list, const char *path,
     list->items[list->count].source_ctime = source_stat->st_ctime;
     list->items[list->count].packed_checksum = 0;
     list->items[list->count].packed_checksum_valid = 0;
+    list->items[list->count].source_nlink = (unsigned long)source_stat->st_nlink;
+    list->items[list->count].hardlink_to = NULL;
 #ifdef BP_STAT_HAS_NSEC
     list->items[list->count].source_mtime_nsec = source_stat->st_mtim.tv_nsec;
     list->items[list->count].source_ctime_nsec = source_stat->st_ctim.tv_nsec;
@@ -1010,6 +1119,100 @@ static int add_plan9_target_metadata(bp_archive_t *ar, const add_job_t *job)
                                    bp_u64_from_u32(0), 0);
 }
 
+/* ---- native attributes and hard links: create side -------------------- */
+
+/* Link every regular file whose inode was already seen to the first name that
+ * used it.  The data is still archived for every name, so a reader that does
+ * not understand the record simply gets an independent copy. */
+static void mark_hard_links(add_job_list_t *list)
+{
+    int i, j, slots;
+    int *table;
+    if (list->count < 2) return;
+    slots = 1;
+    while (slots < list->count * 2) slots <<= 1;
+    table = (int *)malloc((size_t)slots * sizeof(int));
+    if (table == NULL) return;
+    for (i = 0; i < slots; i++) table[i] = -1;
+    for (i = 0; i < list->count; i++) {
+        add_job_t *job = &list->items[i];
+        unsigned long h;
+        job->hardlink_to = NULL;
+        if (job->entry_type != BP_TYPE_DATA || job->source_nlink < 2UL) continue;
+        h = ((unsigned long)job->source_ino * 2654435761UL) ^
+            (unsigned long)job->source_dev;
+        j = (int)(h & (unsigned long)(slots - 1));
+        for (;;) {
+            if (table[j] < 0) { table[j] = i; break; }
+            if (list->items[table[j]].source_ino == job->source_ino &&
+                list->items[table[j]].source_dev == job->source_dev) {
+                job->hardlink_to = list->items[table[j]].arcname;
+                break;
+            }
+            j = (j + 1) & (slots - 1);
+        }
+    }
+    free(table);
+}
+
+/* Write one BPNA entry after a file or directory: its hard-link record (if it
+ * is another name for an earlier file) and its extended attributes.  Nothing is
+ * written when there is nothing to say, and never for target profiles or
+ * Interchange Profile 1, which describe other readers. */
+static int add_native_attrs_metadata(bp_archive_t *ar, const add_job_t *job)
+{
+    unsigned char *payload;
+    bp_nattr_builder_t builder;
+    int rc = BP_OK;
+
+    if (!g_nattr_enabled || ar->profile != BP_PROFILE_NONE) return BP_OK;
+    if (job->entry_type != BP_TYPE_DATA && job->entry_type != BP_TYPE_DIR)
+        return BP_OK;
+    payload = (unsigned char *)malloc(BP_NATTR_MAX_PAYLOAD);
+    if (payload == NULL) return BP_ERR_NOMEM;
+    bp_nattr_begin(&builder, payload, BP_OS_LINUX,
+                   job->entry_type == BP_TYPE_DIR ? 4 : 0);
+    if (job->hardlink_to != NULL) {
+        int add_rc = bp_nattr_add(&builder, BP_LXA_HARDLINK_ITEM,
+                                  (unsigned long)strlen(BP_LXA_HARDLINK_ITEM),
+                                  job->hardlink_to,
+                                  (unsigned long)strlen(job->hardlink_to));
+        if (add_rc == BP_NATTR_OK) {
+            g_lxa.hardlinks++;
+        } else {
+            fprintf(stderr,
+                    "boltpack: warning: hard link record for %s not stored: %s\n",
+                    job->arcname, bp_nattr_strerror(add_rc));
+            g_lxa.skipped++;
+        }
+    }
+    bp_lxa_collect(job->path, &builder, g_security_attrs, &g_lxa, g_nattr_debug);
+    if (builder.count > 0) {
+        unsigned long length = bp_nattr_finish(&builder);
+        lxa_mem_t mem;
+        bp_io_t io;
+        mem.buf = payload;
+        mem.size = (bp_uint32)length;
+        mem.pos = 0;
+        io.read = lxa_mem_read;
+        io.write = lxa_mem_write;
+        io.seek = lxa_mem_seek;
+        io.tell = lxa_mem_tell;
+        io.handle = &mem;
+        rc = bp_archive_add_entry_ex(ar, job->arcname, BP_TYPE_META,
+                                     BP_META_NATIVE_ATTRS, &io,
+                                     bp_u64_from_u32((bp_uint32)length),
+                                     bp_u64_from_u32(0), 0);
+        if (rc != BP_OK)
+            fprintf(stderr, "boltpack: error storing attributes of %s: %s\n",
+                    job->path, bp_strerror(rc));
+        else
+            g_lxa.subjects++;
+    }
+    free(payload);
+    return rc;
+}
+
 static int add_job(bp_archive_t *ar, add_job_t *job)
 {
     int rc;
@@ -1035,6 +1238,7 @@ static int add_job(bp_archive_t *ar, add_job_t *job)
                                      bp_u64_from_u32(0), job->mtime,
                                      job->flags);
         if (rc == BP_OK) rc = add_plan9_target_metadata(ar, job);
+        if (rc == BP_OK) rc = add_native_attrs_metadata(ar, job);
         return rc;
     }
 
@@ -1123,6 +1327,8 @@ static int add_job(bp_archive_t *ar, add_job_t *job)
                     job->arcname, bp_strerror(rc));
             return rc;
         }
+        rc = add_native_attrs_metadata(ar, job);
+        if (rc != BP_OK) return rc;
         print_added_data_result(ar, job->arcname, actual_size);
         return BP_OK;
     }
@@ -1265,6 +1471,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         return add_job(ar, &job);
     }
 
+    note_skipped_special(path, &st);
     return BP_OK;
 }
 
@@ -1423,6 +1630,7 @@ static int collect_path_jobs_from_stat(add_job_list_t *list, const char *path,
                           bp_u64_from_u32(0), mtime, mode_flags, st, target);
     }
 
+    note_skipped_special(path, st);
     return BP_OK;
 }
 
@@ -1642,6 +1850,7 @@ static int add_job_list_with_policy(bp_archive_t *ar,
     int threads;
     int rc;
 
+    mark_hard_links(list);
     threads = choose_parallel_compression_threads(list, method);
     if (threads > 1) {
         if (method == BP_METHOD_FLUFF)
@@ -1874,6 +2083,7 @@ static int add_data_job_batch(bp_archive_t *ar, add_job_t *jobs,
         jobs[i].packed_checksum = packed_jobs[i].packed.checksum;
         jobs[i].packed_checksum_valid = 1;
         rc = add_plan9_target_metadata(ar, &jobs[i]);
+        if (rc == BP_OK) rc = add_native_attrs_metadata(ar, &jobs[i]);
         if (rc != BP_OK) {
             cleanup_packed_job(&packed_jobs[i]);
             free(packed_jobs);
@@ -2006,7 +2216,9 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     switch (entry->entry_type) {
     case BP_TYPE_DATA:    type_str = "DATA"; break;
     case BP_TYPE_RSRC:    type_str = "RSRC"; break;
-    case BP_TYPE_META:    type_str = "META"; break;
+    case BP_TYPE_META:
+        type_str = entry->platform == BP_META_NATIVE_ATTRS ? "ATTR" : "META";
+        break;
     case BP_TYPE_SYMLINK: type_str = "LINK"; break;
     case BP_TYPE_DIR:     type_str = "DIR "; break;
     default:              type_str = "??? "; break;
@@ -2074,11 +2286,328 @@ typedef struct {
     int         slash_warned;  /* printed the leading-'/' warning once */
 #ifdef BP_USE_DIRFD_EXTRACTION
     int         root_fd;
+    /* The file or directory extracted most recently, for the attribute entry
+     * that follows it. */
+    char        subject_name[4096];
+    int         subject_type;
+    int         subject_ok;
+    dev_t       subject_dev;
+    ino_t       subject_ino;
+    bp_uint32   subject_size;      /* of a file: its size and checksum */
+    bp_uint32   subject_checksum;
+    /* Regular files extracted so far, so that a hard-link record can only join
+     * two files this run wrote with identical size and checksum. */
+    struct lxa_extracted_s *extracted;
+    unsigned long extracted_count;
+    unsigned long extracted_cap;
 #endif
 } extract_ctx_t;
 
 #ifdef BP_USE_DIRFD_EXTRACTION
 #include "../posix/extract_paths.h"
+
+static int restore_file_metadata_fd(int fd, const char *name, bp_uint16 flags,
+                                    bp_uint64 mtime, extract_ctx_t *ctx);
+
+/* ---- native attributes and hard links: extract side -------------------- */
+
+typedef struct lxa_extracted_s {
+    dev_t dev;
+    ino_t ino;
+    bp_uint32 size;       /* low 32 bits of the size; enough with the checksum */
+    bp_uint32 checksum;
+    int used;
+} lxa_extracted_t;
+
+static void lxa_extracted_free(extract_ctx_t *ctx)
+{
+    free(ctx->extracted);
+    ctx->extracted = NULL;
+    ctx->extracted_count = ctx->extracted_cap = 0;
+}
+
+static unsigned long lxa_slot(dev_t dev, ino_t ino, unsigned long cap)
+{
+    return (((unsigned long)ino * 2654435761UL) ^ (unsigned long)dev) & (cap - 1UL);
+}
+
+static int lxa_extracted_add(extract_ctx_t *ctx, const struct stat *st,
+                             const bp_entry_t *entry)
+{
+    unsigned long i;
+    if (ctx->extracted_count * 2UL >= ctx->extracted_cap) {
+        unsigned long newcap = ctx->extracted_cap ? ctx->extracted_cap * 2UL : 256UL;
+        lxa_extracted_t *table = (lxa_extracted_t *)calloc(newcap, sizeof(*table));
+        if (table == NULL) return -1;
+        for (i = 0; i < ctx->extracted_cap; i++) {
+            lxa_extracted_t *old = &ctx->extracted[i];
+            unsigned long j;
+            if (!old->used) continue;
+            j = lxa_slot(old->dev, old->ino, newcap);
+            while (table[j].used) j = (j + 1UL) & (newcap - 1UL);
+            table[j] = *old;
+        }
+        free(ctx->extracted);
+        ctx->extracted = table;
+        ctx->extracted_cap = newcap;
+    }
+    i = lxa_slot(st->st_dev, st->st_ino, ctx->extracted_cap);
+    while (ctx->extracted[i].used) {
+        if (ctx->extracted[i].dev == st->st_dev && ctx->extracted[i].ino == st->st_ino)
+            return 0;
+        i = (i + 1UL) & (ctx->extracted_cap - 1UL);
+    }
+    ctx->extracted[i].used = 1;
+    ctx->extracted[i].dev = st->st_dev;
+    ctx->extracted[i].ino = st->st_ino;
+    ctx->extracted[i].size = entry->original_size.lo;
+    ctx->extracted[i].checksum = entry->checksum;
+    ctx->extracted_count++;
+    return 0;
+}
+
+static const lxa_extracted_t *lxa_extracted_find(const extract_ctx_t *ctx,
+                                                 const struct stat *st)
+{
+    unsigned long i;
+    if (ctx->extracted_cap == 0) return NULL;
+    i = lxa_slot(st->st_dev, st->st_ino, ctx->extracted_cap);
+    while (ctx->extracted[i].used) {
+        if (ctx->extracted[i].dev == st->st_dev && ctx->extracted[i].ino == st->st_ino)
+            return &ctx->extracted[i];
+        i = (i + 1UL) & (ctx->extracted_cap - 1UL);
+    }
+    return NULL;
+}
+
+/* Record the file or directory just extracted as the subject of any attribute
+ * entry that follows. */
+static void lxa_set_subject(extract_ctx_t *ctx, const char *name, int type,
+                            const struct stat *st)
+{
+    if (strlen(name) >= sizeof(ctx->subject_name)) { ctx->subject_ok = 0; return; }
+    strcpy(ctx->subject_name, name);
+    ctx->subject_type = type;
+    ctx->subject_dev = st->st_dev;
+    ctx->subject_ino = st->st_ino;
+    ctx->subject_ok = 1;
+}
+
+/* An attribute container being received. */
+typedef struct {
+    bp_io_t io; /* first member */
+    unsigned char *buf;
+    bp_uint32 cap, len, pos;
+} lxa_sink_t;
+
+static long lxa_sink_write(void *handle, const void *data, bp_uint32 count)
+{
+    lxa_sink_t *k = (lxa_sink_t *)handle;
+    if (count > k->cap - k->pos) return -1;
+    memcpy(k->buf + k->pos, data, count);
+    k->pos += count;
+    if (k->pos > k->len) k->len = k->pos;
+    return (long)count;
+}
+
+static long lxa_sink_read(void *handle, void *data, bp_uint32 count)
+{
+    (void)handle; (void)data; (void)count;
+    return -1;
+}
+
+static int lxa_sink_seek(void *handle, bp_off_t offset, int origin)
+{
+    lxa_sink_t *k = (lxa_sink_t *)handle;
+    long position;
+    if (origin == SEEK_SET) position = (long)offset;
+    else if (origin == SEEK_CUR) position = (long)k->pos + (long)offset;
+    else if (origin == SEEK_END) position = (long)k->len + (long)offset;
+    else return -1;
+    if (position < 0 || (unsigned long)position > k->cap) return -1;
+    k->pos = (bp_uint32)position;
+    return 0;
+}
+
+static bp_off_t lxa_sink_tell(void *handle)
+{
+    return (bp_off_t)((lxa_sink_t *)handle)->pos;
+}
+
+static void lxa_sink_free(lxa_sink_t *k)
+{
+    if (k == NULL) return;
+    free(k->buf);
+    free(k);
+}
+
+/* Replace the extracted copy of name by a hard link to target, which must be a
+ * regular file this run extracted with the same size and checksum.  On any
+ * refusal the extracted copy stays as it is: the data is complete either way. */
+static int lxa_make_hardlink(extract_ctx_t *ctx, const char *name,
+                             const char *target, const struct stat *self,
+                             const bp_entry_t *entry)
+{
+    char leaf[4096], tleaf[4096], temporary[64];
+    int pfd = -1, tfd = -1, ok = 0, tries;
+    struct stat tst;
+    const lxa_extracted_t *known;
+    static unsigned long counter;
+
+    while (*target == '/') target++;
+    if (!bp_name_is_safe(target) || strcmp(target, name) == 0) {
+        fprintf(stderr,
+                "boltpack: hard link %s not recreated: the target name %s is "
+                "not usable; it stays a separate copy\n", entry->name, target);
+        return -1;
+    }
+    pfd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
+    tfd = extract_open_parent(ctx->root_fd, target, tleaf, sizeof(tleaf));
+    if (pfd < 0 || tfd < 0 ||
+        fstatat(tfd, tleaf, &tst, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(tst.st_mode)) {
+        fprintf(stderr,
+                "boltpack: hard link %s not recreated: %s was not extracted; it "
+                "stays a separate copy\n", entry->name, target);
+        goto done;
+    }
+    if (tst.st_dev == self->st_dev && tst.st_ino == self->st_ino) { ok = 1; goto done; }
+    known = lxa_extracted_find(ctx, &tst);
+    if (known == NULL || known->size != ctx->subject_size ||
+        known->checksum != ctx->subject_checksum ||
+        (bp_uint32)tst.st_size != ctx->subject_size) {
+        fprintf(stderr,
+                "boltpack: hard link %s not recreated: %s is not an identical "
+                "file extracted by this run; it stays a separate copy\n",
+                entry->name, target);
+        goto done;
+    }
+    for (tries = 0; tries < 256; tries++) {
+        sprintf(temporary, ".boltpack-hl-%08lx-%08lx", (unsigned long)getpid(),
+                ++counter);
+        if (linkat(tfd, tleaf, pfd, temporary, 0) == 0) break;
+        if (errno != EEXIST) {
+            fprintf(stderr,
+                    "boltpack: hard link %s not recreated: %s (it stays a "
+                    "separate copy)\n", entry->name, strerror(errno));
+            goto done;
+        }
+    }
+    if (tries == 256) goto done;
+    if (renameat(pfd, temporary, pfd, leaf) != 0) {
+        fprintf(stderr,
+                "boltpack: hard link %s not recreated: %s (it stays a separate "
+                "copy)\n", entry->name, strerror(errno));
+        unlinkat(pfd, temporary, 0);
+        goto done;
+    }
+    ok = 1;
+done:
+    if (pfd >= 0) close(pfd);
+    if (tfd >= 0) close(tfd);
+    return ok ? 0 : -1;
+}
+
+/* Apply a received container to the subject extracted just before it.  Every
+ * refusal and failure is reported with the item and the reason.  Returns
+ * BP_ERR_PARTIAL when anything could not be applied. */
+static int lxa_apply_entry(extract_ctx_t *ctx, const bp_entry_t *entry,
+                           const char *name, const unsigned char *data,
+                           unsigned long size)
+{
+    bp_nattr_info_t info;
+    bp_nattr_iter_t it;
+    struct stat st;
+    char leaf[4096];
+    int parse_rc, fd = -1, pfd = -1, bad = 0;
+    const char *aname;
+    const unsigned char *avalue;
+    unsigned long alen, vlen;
+
+    if (!ctx->subject_ok || strcmp(name, ctx->subject_name) != 0) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: the item itself was "
+                "not extracted\n", entry->name);
+        return BP_ERR_PARTIAL;
+    }
+    parse_rc = bp_nattr_parse(data, size, &info);
+    if (parse_rc == BP_NATTR_UNSUPPORTED) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: container version %u is "
+                "newer than this boltpack understands\n", entry->name,
+                (unsigned)info.version);
+        return BP_ERR_PARTIAL;
+    }
+    if (parse_rc != BP_NATTR_OK) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: malformed container "
+                "(%lu bytes)\n", entry->name, size);
+        return BP_ERR_PARTIAL;
+    }
+    if (info.origin != BP_OS_LINUX) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: they come from platform "
+                "0x%02X, not Linux\n", entry->name, (unsigned)info.origin);
+        return BP_ERR_PARTIAL;
+    }
+    if ((info.subject_type == 0 && ctx->subject_type != BP_TYPE_DATA) ||
+        (info.subject_type == 4 && ctx->subject_type != BP_TYPE_DIR)) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: container is for a %s "
+                "but the item is a %s\n", entry->name,
+                info.subject_type == 0 ? "file" : "directory",
+                ctx->subject_type == BP_TYPE_DATA ? "file" : "directory");
+        return BP_ERR_PARTIAL;
+    }
+
+    /* Reach the item without following links and confirm it is the one extracted. */
+    if (ctx->subject_type == BP_TYPE_DATA) {
+        pfd = extract_open_parent(ctx->root_fd, name, leaf, sizeof(leaf));
+        if (pfd >= 0)
+            fd = openat(pfd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    } else {
+        fd = extract_open_directory(ctx->root_fd, name, 0);
+    }
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_dev != ctx->subject_dev ||
+        st.st_ino != ctx->subject_ino ||
+        (ctx->subject_type == BP_TYPE_DATA ? !S_ISREG(st.st_mode)
+                                           : !S_ISDIR(st.st_mode))) {
+        fprintf(stderr,
+                "boltpack: attributes for %s not applied: the extracted item "
+                "could not be reopened or changed identity\n", entry->name);
+        if (fd >= 0) close(fd);
+        if (pfd >= 0) close(pfd);
+        g_lxa.failed += info.count;
+        return BP_ERR_PARTIAL;
+    }
+
+    if (bp_lxa_apply(fd, &info, entry->name, g_security_attrs, &g_lxa,
+                     g_nattr_debug) > 0)
+        bad = 1;
+    g_lxa.subjects++;
+
+    /* A hard-link record: replace the copy just written by a link. */
+    if (ctx->subject_type == BP_TYPE_DATA) {
+        bp_nattr_iter_begin(&info, &it);
+        while (bp_nattr_iter_next(&it, &aname, &alen, &avalue, &vlen)) {
+            if (alen == strlen(BP_LXA_HARDLINK_ITEM) &&
+                memcmp(aname, BP_LXA_HARDLINK_ITEM, (size_t)alen) == 0) {
+                char target[4096];
+                if (vlen == 0 || vlen >= sizeof(target)) { bad = 1; break; }
+                memcpy(target, avalue, (size_t)vlen);
+                target[vlen] = '\0';
+                if (lxa_make_hardlink(ctx, name, target, &st, entry) == 0)
+                    g_lxa.hardlinks++;
+                else
+                    bad = 1;
+                break;
+            }
+        }
+    }
+    close(fd);
+    if (pfd >= 0) close(pfd);
+    return bad ? BP_ERR_PARTIAL : BP_OK;
+}
 
 static int restore_file_metadata_fd(int fd, const char *name, bp_uint16 flags,
                                     bp_uint64 mtime, extract_ctx_t *ctx)
@@ -2520,6 +3049,36 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
         ctx->unsafe_count++;
         return NULL;
     }
+    if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
+        entry->entry_type == BP_TYPE_SYMLINK)
+        ctx->subject_ok = 0;
+    if (entry->entry_type == BP_TYPE_META &&
+        entry->platform == BP_META_NATIVE_ATTRS) {
+        lxa_sink_t *sink;
+        if (ctx->dry_run) return bp_archive_dry_run_stream();
+        if (entry->original_size.hi != 0 ||
+            entry->original_size.lo < BP_NATTR_HEADER_SIZE ||
+            entry->original_size.lo > BP_NATTR_MAX_PAYLOAD) {
+            fprintf(stderr,
+                    "boltpack: skipping attributes of %s: container size %lu is "
+                    "outside %lu..%lu bytes\n", entry->name,
+                    (unsigned long)entry->original_size.lo,
+                    BP_NATTR_HEADER_SIZE, BP_NATTR_MAX_PAYLOAD);
+            ctx->partial_count++;
+            return NULL;
+        }
+        sink = (lxa_sink_t *)calloc(1, sizeof(*sink));
+        if (sink == NULL) { ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        sink->buf = (unsigned char *)malloc(entry->original_size.lo);
+        if (sink->buf == NULL) { free(sink); ctx->open_error = BP_ERR_NOMEM; return NULL; }
+        sink->cap = entry->original_size.lo;
+        sink->io.read = lxa_sink_read;
+        sink->io.write = lxa_sink_write;
+        sink->io.seek = lxa_sink_seek;
+        sink->io.tell = lxa_sink_tell;
+        sink->io.handle = sink;
+        return &sink->io;
+    }
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
         if (g_verbosity == VERB_DEFAULT) printf("   creating: %s\n", entry->name);
@@ -2530,6 +3089,9 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
                 ctx->open_error = BP_ERR_IO;
             } else {
                 int r;
+                struct stat dir_st;
+                if (fstat(fd, &dir_st) == 0)
+                    lxa_set_subject(ctx, name, BP_TYPE_DIR, &dir_st);
                 close(fd);
                 r = queue_directory(ctx, name, entry);
                 if (r != BP_OK && ctx->open_error == BP_OK) ctx->open_error = r;
@@ -2607,9 +3169,21 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
 {
     extract_ctx_t *ctx = (extract_ctx_t *)user_data;
     bp_extract_output_t *output = (bp_extract_output_t *)out;
-    FILE *fp = (FILE *)out->handle;
+    FILE *fp;
     const char *name = extract_entry_name(entry, ctx);
     int rc = BP_OK;
+
+    if (entry->entry_type == BP_TYPE_META &&
+        entry->platform == BP_META_NATIVE_ATTRS) {
+        lxa_sink_t *sink = (lxa_sink_t *)out;
+        if (status == BP_OK) {
+            rc = lxa_apply_entry(ctx, entry, name, sink->buf, sink->len);
+            if (rc == BP_ERR_PARTIAL) ctx->partial_count++;
+        }
+        lxa_sink_free(sink);
+        return rc;
+    }
+    fp = (FILE *)out->handle;
 
     if (status != BP_OK) {
         fclose(fp);
@@ -2676,6 +3250,17 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
     if (fflush(fp) != 0) rc = BP_ERR_IO;
     if (rc == BP_OK)
         rc = restore_file_metadata_fd(fileno(fp), name, entry->flags, entry->mtime, ctx);
+    {
+        struct stat done_st;
+        if (rc == BP_OK && fstat(fileno(fp), &done_st) == 0) {
+            lxa_set_subject(ctx, name, BP_TYPE_DATA, &done_st);
+            ctx->subject_size = entry->original_size.lo;
+            ctx->subject_checksum = entry->checksum;
+            lxa_extracted_add(ctx, &done_st, entry);
+        } else {
+            ctx->subject_ok = 0;
+        }
+    }
     if (fclose(fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
     if (rc == BP_OK) {
         if (ctx->force) {
@@ -2686,6 +3271,7 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
                                          output->destination) != 0) rc = BP_ERR_IO;
         }
     }
+    if (rc != BP_OK) ctx->subject_ok = 0;
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: cannot finish extracting %s\n", name);
         unlinkat(output->parent_fd, output->temporary, 0);
@@ -2788,6 +3374,7 @@ static void usage_basic(void)
         "  -F               Use fluff compression\n");
 #endif
     fprintf(stderr,
+        "  --security-attrs Also store and restore security.* and trusted.* attributes\n"
         "  --interchange-profile-1  Enforce mini-compatible limits (create/add)\n"
         "  --target-profile=PROFILE  Select a target compatibility profile\n"
         "  --help-targets  List target profiles and their restrictions\n"
@@ -2854,6 +3441,7 @@ static void usage_advanced(void)
         "  -F               Use fluff compression (defaults to 256k blocks)\n");
 #endif
     fprintf(stderr,
+        "  --security-attrs Also store and restore security.* and trusted.* attributes\n"
         "  --interchange-profile-1  BoltLite default (or -0 Stored), 16 KiB, mini limits\n"
         "  --target-profile=PROFILE  Select a target compatibility profile\n"
         "  --help-targets  List target profiles and their restrictions\n"
@@ -3240,6 +3828,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         signal(SIGTERM, old_sigterm);
         return 1;
     }
+    lxa_report_create();
 
     elapsed = wall_time_seconds() - start;
 
@@ -3565,7 +4154,9 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     if (rc == BP_OK && (ctx.partial_count || ctx.unsafe_count)) rc = BP_ERR_PARTIAL;
 #ifdef BP_USE_DIRFD_EXTRACTION
     if (ctx.root_fd >= 0) close(ctx.root_fd);
+    lxa_extracted_free(&ctx);
 #endif
+    lxa_report_extract();
 #ifdef BP_PRIVATE_ROOT_EXTRACTION
     if (!dry_run)
         private_root_open(out_dir, &private_root,
@@ -4240,6 +4831,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(fin_rc));
         goto add_cleanup;
     }
+    lxa_report_create();
 
     if (target_profile == TARGET_PROFILE_LINUX_MINI ||
         target_profile == TARGET_PROFILE_CPM86_83) {
@@ -4936,6 +5528,9 @@ int main(int argc, char **argv)
             }
             out_dir = argv[i + 1];
             i += 2;
+        } else if (strcmp(argv[i], "--security-attrs") == 0) {
+            g_security_attrs = 1;
+            i++;
         } else if (strcmp(argv[i], "-f") == 0 ||
                    strcmp(argv[i], "--force") == 0) {
             force = 1;
@@ -5088,6 +5683,15 @@ int main(int argc, char **argv)
 
     g_target_plan9_profile =
         target_profile == TARGET_PROFILE_PLAN9_UTF8;
+    /* Extended attributes and hard-link records are for same-system archives;
+     * target profiles and Interchange Profile 1 describe other readers. */
+    g_nattr_enabled = target_profile == TARGET_PROFILE_NONE &&
+                      !interchange_profile;
+    {
+        const char *debug_env = getenv("BOLTPACK_DEBUG");
+        if (debug_env != NULL && debug_env[0] != '\0' && debug_env[0] != '0')
+            g_nattr_debug = 1;
+    }
 
     switch (command) {
     case 'c':

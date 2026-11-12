@@ -18,6 +18,17 @@
   one-line summary. `BOLTPACK_DEBUG=1` traces each attribute. Directory Finder
   info is now restored, and a partial result caused only by the Classic
   creation date not being restored is explained.
+- Linux: `create` and `add` now store `user.*` extended attributes and POSIX ACLs
+  in the native attribute container and record hard links; `extract` restores
+  them (hard links only to an identical file it extracted itself). `--security-attrs`
+  adds `security.*` and `trusted.*` (file capabilities, SELinux labels). Items that
+  cannot be archived (FIFOs, sockets, devices) are now named in a warning instead of
+  being skipped silently. Target profiles and Interchange Profile 1 carry none of
+  this.
+- Windows CLI: directory symlinks and junctions are no longer followed. A link
+  that pointed back up the tree made the whole create fail, and a link to a folder
+  outside the tree archived that folder's files. Each link is now reported and
+  skipped.
 - The Atari CLI and GEM GUI now accept Atari ST accented letters in names (for
   example `café.txt`), which TOS stores as exact bytes; before, extraction refused
   them, so a file with an accented name archived on one Atari could not be
