@@ -2385,6 +2385,23 @@ mini-all: mini-test dos16 win16 os2-16
 
 # ---- GUI frontends --------------------------------------------------------
 
+# Application acceptance: use actual restored programs, not just archive hashes.
+# Other platform binaries must be built first; missing environments are reported
+# as unavailable with exit 2, and are never counted as passing.
+USABLE_PLATFORMS ?= linux
+USABLE_OUTPUT ?=
+.PHONY: usable-roundtrip-test usable-roundtrip-unit-test
+usable-roundtrip-unit-test:
+	python3 -m unittest discover -s test/usable -p 'test_*.py'
+
+usable-roundtrip-test: modern usable-roundtrip-unit-test
+	python3 test/usable_roundtrip.py --platforms "$(USABLE_PLATFORMS)" \
+	    --linux-cli build/linux/boltpack \
+	    $(if $(USABLE_OUTPUT),--output "$(USABLE_OUTPUT)") \
+	    $(if $(HATARI_TOS),--tos "$(HATARI_TOS)") \
+	    --rom "$(AMIGA_ROM)" --workbench "$(AMIGA_WORKBENCH)" \
+	    --xdftool "$(XDFTOOL)"
+
 GUI_COMMON     = src/frontend/gui_common
 
 # Core source list shared by all GUI builds

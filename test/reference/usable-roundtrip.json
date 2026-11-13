@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "data": "BoltPack usable application data\n",
+  "data_sha256": "e9a0b8beb8618d306b938852a574d623efa7360d7737ba60c05625d9f0beb78a",
+  "program_marker": "BOLTPACK_USABLE_PROGRAM_OK",
+  "dos_marker": "BOLTPACK_USABLE_DOS_OK",
+  "required": [
+    "exact bytes and names",
+    "essential metadata",
+    "execute restored application",
+    "preserve existing files on failure"
+  ],
+  "expected_partial": [
+    "unsafe symlinks on Linux",
+    "directory timestamps on DOS",
+    "foreign metadata when cross-reading"
+  ]
+}

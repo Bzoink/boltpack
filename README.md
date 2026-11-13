@@ -138,6 +138,7 @@ platforms and cross-compilation details.
 ```sh
 make test                                    # unit tests + CLI integration tests
 make unit-test                               # unit tests only
+make usable-roundtrip-test                    # restored applications and failure preservation (Linux)
 python3 test/check_boltpack.py --verbose     # integration tests, verbose
 ```
 

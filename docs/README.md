@@ -39,6 +39,7 @@ make
 | [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) | Phase 0–3 and basic Profile 1 acceptance mapped to every frontend/build |
 | [emulator-setup.md](emulator-setup.md) | Verified local Atari and Amiga emulator startup settings |
 | [same-system-transfer.md](same-system-transfer.md) | What data and filesystem resources survive create-then-extract between two systems of the same type, per system |
+| [usable-roundtrip.md](usable-roundtrip.md) | Acceptance gate that runs restored applications, checks essential metadata and verifies failure preservation |
 | [hardware-testing.md](hardware-testing.md) | How to test on real machines and report results; per-system test steps |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |
 | `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |

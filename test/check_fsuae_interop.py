@@ -93,6 +93,7 @@ def main():
     p.add_argument("--expect-fluff-refusal", action="store_true",
                    help="expect a nonzero Fluff create with no published archive")
     p.add_argument("--timeout", type=int, default=60)
+    p.add_argument("--usable-roundtrip", action="store_true")
     args = p.parse_args()
     if args.depth < 0 or args.depth > 64:
         p.error("--depth must be between 0 and 64")
@@ -156,6 +157,29 @@ def main():
         deep_leaf.parent.mkdir(parents=True)
         deep_leaf.write_bytes(deep_payload)
         (drive / "DEEPOUT").mkdir()
+    usable_commands = []
+    if args.usable_roundtrip:
+        app = drive / "APP"
+        app.mkdir()
+        (app / "DATA.TXT").write_bytes(b"BoltPack usable application data\n")
+        (app / "START").write_text("DH0:USEOUT/APP/APP DH0:USEOUT/APP/DATA.TXT DH0:USABLE.TXT\n", encoding="ascii")
+        (app / "EMPTY").mkdir()
+        (drive / "USEOUT").mkdir()
+        subprocess.run([args.amiga_cc, "-noixemul", "-O2",
+                        str(ROOT / "test/usable/probe.c"), "-o", str(app / "APP")], check=True)
+        usable_commands = [
+            "DH0:METAPROBE set DH0:APP/START",
+            "DH0:METAPROBE get DH0:APP/START >DH0:USES.META",
+            "DH0:boltpack c --interchange-profile-1 -0 DH0:USE.BLT DH0:APP >DH0:USEC.LOG",
+            "C:Echo $RC >DH0:USEC.RC",
+            "DH0:boltpack t DH0:USE.BLT >DH0:USET.LOG",
+            "C:Echo $RC >DH0:USET.RC",
+            "DH0:boltpack x -o DH0:USEOUT DH0:USE.BLT >DH0:USEX.LOG",
+            "C:Echo $RC >DH0:USEX.RC",
+            "DH0:METAPROBE get DH0:USEOUT/APP/START >DH0:USED.META",
+            "DH0:USEOUT/APP/START >DH0:USABLE.LOG",
+            "C:Echo $RC >DH0:USABLE.RC",
+        ]
     with (out / "commands.log").open("wb") as log:
         subprocess.run([args.amiga_cc, "-noixemul", "-O2", str(ROOT / "test/amiga/metadata_probe.c"),
                         "-o", str(drive / "METAPROBE")], stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -175,7 +199,9 @@ def main():
         if corruption_check.returncode == 0 or b"checksum mismatch" not in corruption_check.stdout:
             raise RuntimeError("corrupt fixture did not trigger checksum verification")
         startup = out / "startup"
-        initial = ["C:SetPatch >NIL: QUIET", "C:Assign T: RAM:"]
+        initial = ["C:SetPatch >NIL: QUIET", "C:Assign T: RAM:",
+                   "C:MakeDir RAM:ENV", "C:Assign ENV: RAM:ENV",
+                   "C:Echo NOLINE 0 >ENV:BP_TZ_OFFSET"]
         if args.stack:
             initial.append("C:Stack %d" % args.stack)
         startup.write_text("\n".join(initial + [
@@ -268,7 +294,7 @@ def main():
             "C:Echo $RC >DH0:BADX.RC",
             "DH0:METAPROBE get DH0:BADOUT/SRC.TXT >DH0:BADAFT.TXT",
             "DH0:boltpack c --interchange-profile-1 -F DH0:BAD.BLT DH0:SRC.TXT >DH0:BAD.LOG",
-            "C:Echo $RC >DH0:BAD.RC", "C:Echo FINISHED >DH0:DONE.TXT", ""]), encoding="ascii")
+            "C:Echo $RC >DH0:BAD.RC", *usable_commands, "C:Echo FINISHED >DH0:DONE.TXT", ""]), encoding="ascii")
         for command in ([args.xdftool, str(disk), "delete", "S/Startup-Sequence"],
                         [args.xdftool, str(disk), "write", str(startup), "S/Startup-Sequence"]):
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -303,6 +329,18 @@ def main():
     if not args.expect_fluff_refusal:
         required_status.extend(("FLUFFT.RC", "FLUFFX.RC"))
     required_status.append("FLUFFCRT.RC")
+    if args.usable_roundtrip:
+        required_status.extend(["USEC.RC", "USET.RC", "USEX.RC", "USABLE.RC"])
+        if "BOLTPACK_USABLE_PROGRAM_OK" not in (drive / "USABLE.TXT").read_text():
+            raise RuntimeError("restored Amiga script/program did not run with its data")
+        for name in ("APP", "START", "DATA.TXT"):
+            if (drive / "USEOUT/APP" / name).read_bytes() != (drive / "APP" / name).read_bytes():
+                raise RuntimeError("restored Amiga application bytes differ: " + name)
+        if not (drive / "USEOUT/APP/EMPTY").is_dir():
+            raise RuntimeError("restored Amiga application lost its empty directory")
+        metadata = (drive / "USES.META").read_bytes()
+        if metadata != (drive / "USED.META").read_bytes() or not int(metadata.split(b":", 1)[0]) & 64:
+            raise RuntimeError("restored Amiga script lost protection/comment metadata")
     for name in required_status:
         if (drive / name).read_text().strip() != "0":
             if name == "FLUFFCRT.RC" and args.expect_fluff_refusal:
@@ -495,6 +533,11 @@ def main():
     record = {
         "case": "Amiga/Linux host-directory interchange and codec interoperability",
         "result": "PASS: " + summary,
+        "usable_roundtrip": {"enabled": args.usable_roundtrip,
+            "script_and_program_ran_with_restored_data": args.usable_roundtrip,
+            "payload_and_executable_bytes_match": args.usable_roundtrip,
+            "script_protection_and_comment_restored": args.usable_roundtrip,
+            "existing_target_failure_preservation": True},
         "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": commit,
         "worktree_status": status.decode("utf-8", "replace").splitlines(),

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added a usable round-trip acceptance gate (`make usable-roundtrip-test`),
+  with explicit pass/fail/unavailable reporting and retained evidence. It runs
+  restored Linux applications with all codecs, a DOS16 program on FAT12, and
+  optional Atari and Amiga application checks through existing emulator runners.
+
 - 64-bit Linux, Windows, macOS, Haiku and Plan 9 CLI builds, and the POSIX
   wrappers built on the Linux frontend, now default to Fluff with 256 KiB
   blocks. 32-bit builds keep BoltLZ. `-2` selects BoltLZ and `-b` sets the block

@@ -95,6 +95,8 @@ def main():
     p.add_argument("--amiga-archive", type=Path,
                    help="also extract an Amiga-created archive on the FAT12 guest")
     p.add_argument("--output", type=Path)
+    p.add_argument("--usable-roundtrip", action="store_true",
+                   help="archive, restore and execute an application with its data")
     args = p.parse_args()
     if args.output:
         out = args.output.resolve()
@@ -211,6 +213,18 @@ def main():
         for name in (("OUT", "RESTORE", "METAOUT", "NATOUT", "PORTOUT", "ALIOUT") +
                      (("AMIOUT",) if args.amiga_archive else ())):
             run(["mmd", "-i", str(image), "::/" + name])
+        if args.usable_roundtrip:
+            app = out / "APP"
+            app.mkdir()
+            (app / "DATA.TXT").write_bytes(b"BoltPack usable application data\n")
+            (app / "EMPTY").mkdir()
+            run([args.cc, "-Os", "-s", str(ROOT / "test/usable/probe.c"),
+                 "-o", str(app / "APP.TOS")])
+            for path in list(app.rglob("*")) + [app]:
+                os.utime(path, (951786000, 951786000))
+            run(["mcopy", "-s", "-m", "-i", str(image), str(app), "::/APP"])
+            run(["mattrib", "-i", str(image), "+r", "+a", "::/APP/APP.TOS"])
+            run(["mmd", "-i", str(image), "::/USEOUT"])
         before = out / "floppy-before.st"
         shutil.copyfile(image, before)
         commands = [
@@ -233,23 +247,53 @@ def main():
         ]
         if args.amiga_archive:
             commands.append(r"x -o A:\AMIOUT A:\AMIGA.BLT")
+        usable_start = len(commands)
+        if args.usable_roundtrip:
+            commands.extend([
+                r"c -0 -b 16k A:\USE.BLT A:\APP",
+                r"t A:\USE.BLT",
+                r"x -o A:\USEOUT A:\USE.BLT",
+                r"@A:\USEOUT\APP\APP.TOS A:\USEOUT\APP\DATA.TXT C:\USABLE.TXT",
+            ])
         (host / "COMMANDS.TXT").write_text("\n".join(commands) + "\n", encoding="ascii")
         env = os.environ.copy()
         env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
         hconsole_script = out / "HCONSOLE.TXT"
-        hconsole_script.write_text("sleep 25\nquit\n", encoding="ascii")
-        run([sys.executable, str(args.hconsole), str(hconsole_script), "--exit", "--",
-             "--machine", "ste", "--tos", str(tos), "--sound", "off",
+        hconsole_script.write_text("sleep %d\nquit\n" % (55 if args.usable_roundtrip else 25), encoding="ascii")
+        launcher = ([sys.executable, str(ROOT / "test/usable/hatari_wait.py"),
+                     "--hconsole", str(args.hconsole), "--hatari", args.hatari,
+                     "--marker", str(host / "FINISH.TXT"), "--timeout", "120", "--"]
+                    if args.usable_roundtrip else
+                    [sys.executable, str(args.hconsole), str(hconsole_script), "--exit", "--"])
+        run(launcher + ["--machine", "ste", "--tos", str(tos), "--sound", "off",
              "--confirm-quit", "off", "--fast-forward", "on", "--fast-boot", "on", "--memsize", args.memsize,
              "--harddrive", str(host), "--disk-a", str(image), "--protect-floppy", "off",
-             "--auto", r"C:\RUN.TOS"], ROOT, env, timeout=80)
+             "--auto", r"C:\RUN.TOS"], ROOT, env, timeout=150 if args.usable_roundtrip else 80)
         statuses = (host / "RESULT.TXT").read_text().splitlines()
         expected_statuses = ["0", "0", "0", "1", "0", "0", "1", "0", "0",
                              "0", "0", "1", "1", "1", "1", "0"]
         if args.amiga_archive:
             expected_statuses.append("1")
+        if args.usable_roundtrip:
+            expected_statuses.extend(["0", "0", "1", "0"])
         if statuses != expected_statuses:
             raise RuntimeError("guest command statuses %r; evidence: %s" % (statuses, out))
+        if args.usable_roundtrip:
+            extract_log = (host / ("LOG%02d.TXT" % (usable_start + 2))).read_text()
+            if "cannot restore directory timestamp" not in extract_log:
+                raise RuntimeError("Atari partial result lacked its expected directory-time diagnostic")
+            program_log = host / "USABLE.TXT"
+            if "BOLTPACK_USABLE_PROGRAM_OK" not in program_log.read_text():
+                raise RuntimeError("restored Atari program did not run with its data")
+            for name in ("APP.TOS", "DATA.TXT"):
+                restored = out / ("restored-" + name)
+                run(["mcopy", "-i", str(image), "::/USEOUT/APP/" + name, str(restored)])
+                if restored.read_bytes() != (app / name).read_bytes():
+                    raise RuntimeError("restored Atari application bytes differ: " + name)
+            run(["mdir", "-i", str(image), "::/USEOUT/APP/EMPTY"])
+            attributes = run(["mattrib", "-i", str(image), "::/USEOUT/APP/APP.TOS"]).split(b"::", 1)[0]
+            if b"R" not in attributes or b"A" not in attributes:
+                raise RuntimeError("restored Atari executable lost FAT attributes")
         unicode_log = (host / "LOG14.TXT").read_text(errors="replace")
         if "unsafe or unrepresentable Atari name: payload-🧪.txt" not in unicode_log:
             raise RuntimeError("Atari CLI did not explicitly refuse the UTF-8 name; evidence: " + str(out))
@@ -444,6 +488,12 @@ def main():
     record = {
         "purpose": "Linux/Atari FAT12 CLI exchange under Hatari",
         "result": "PASS: transfer, edits, metadata, refusal, and failure-preservation cases",
+        "expected_partials": ["TOS 1.62 directory timestamps report partial; executable/data/attributes survive."],
+        "usable_roundtrip": {"enabled": args.usable_roundtrip,
+            "program_ran_with_restored_data": args.usable_roundtrip,
+            "payload_and_executable_bytes_match": args.usable_roundtrip,
+            "executable_fat_attributes_restored": args.usable_roundtrip,
+            "existing_target_failure_preservation": True},
         "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),

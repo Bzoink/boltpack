@@ -18,8 +18,10 @@ and attribute mapping, and is covered by the
 
 It describes what the code is written to do, taken from the frontend sources and
 the matrix, together with how well each system has been verified. Where a
-statement rests only on a host test or a cross-build, it says so. Hardware
-results are collected in [hardware-testing.md](hardware-testing.md).
+statement rests only on a host test or a cross-build, it says so. The
+[usable round-trip suite](usable-roundtrip.md) checks restored application
+execution and essential metadata. Hardware results are collected in
+[hardware-testing.md](hardware-testing.md).
 
 ## Contents
 
@@ -130,7 +132,7 @@ systems' ACLs are not captured.
 | CP/M-86 mini | yes | no | no | no | n/a | n/a | no | host shim only |
 | Mac OS 9 (PowerPC, 68k) | yes | yes | yes (1970-2040) | Finder flags | n/a | resource fork, type/creator | no | build only |
 | Amiga (OS 2.x/3.x CLI, GUI) | yes | yes | yes | protection bits | no | n/a | file comment | emulator (FS-UAE) |
-| Atari (TOS CLI, GEM GUI) | yes | yes | yes (2 s) | TOS attributes | n/a | n/a | no | emulator (Hatari) |
+| Atari (TOS CLI, GEM GUI) | yes | yes | files: yes (2 s); CLI directory times can report partial | TOS attributes | n/a | n/a | no | emulator (Hatari) |
 | Sinclair QL | yes | yes | yes | no | n/a | file type and dataspace | no | emulator (sQLux host FS) |
 | X68000 | yes | yes | files only | FAT attributes | n/a | n/a | no | host shim only |
 | RISC OS | yes | yes | yes | RISC OS attributes | n/a | filetype, load/exec | no | host shim only |
@@ -380,6 +382,10 @@ lacks its 32-bit runtime).
   (a configured time zone offset, `BP_TZ_OFFSET`, is required; a missing one is
   reported) and the FAT attribute envelope.
 - **Codecs:** Stored and BoltLite only; 32 KiB blocks.
+- **DOS16 directory times:** restoration reports partial because the DOS
+  handle-based timestamp API cannot open directories. The usable round-trip
+  check verifies that the restored application, file times and FAT attributes
+  survive this expected partial outcome.
 - **Limits:** at most 128 distinct directory prefixes and 4 KiB of name-index
   storage per extraction; DOS16 needs 8.3 names. Mini builds have a 65,535-entry
   and about 2 GiB archive ceiling.
@@ -470,8 +476,14 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
   have not been checked and may fold accented letters.
 - **Limits:** GEMDOS paths are limited to 125 bytes.
 - **TOS version differences:** the hidden and system flags on **directories** are
-  not applied by TOS 1.06, 1.62 or 2.05 (reported partial); directory times are
-  restored at FAT12 resolution.
+  not applied by TOS 1.06, 1.62 or 2.05 (reported partial). The GEM GUI has
+  directory-time restoration evidence at FAT12 resolution; see the separate
+  CLI qualification below.
+- **CLI directory-time qualification:** the usable application corpus on TOS
+  1.62/FAT12 reports `cannot restore directory timestamp` for its directories.
+  The restored program runs with its restored data and FAT attributes intact,
+  but this CLI result does not establish directory-time preservation. Keep it
+  separate from the GEM GUI directory-time evidence.
 - **Verification:** Hatari with TOS 1.06, 1.62 and 2.05 on host-drive and FAT12
   volumes, including crash recovery of the extraction journal. No real Atari.
 
