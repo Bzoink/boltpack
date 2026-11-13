@@ -136,6 +136,7 @@ stage_common() {
     local frontend="$2"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
+    copy_file "$PROJROOT/VERSION" "$kitdir/VERSION"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/$frontend" "$kitdir/src/frontend/$frontend"
     copy_file "$PROJROOT/docs/BUILD.md" "$kitdir/docs/BUILD.md"

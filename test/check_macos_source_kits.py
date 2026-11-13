@@ -50,6 +50,10 @@ def main():
             with tarfile.open(kit) as tar:
                 tar.extractall(dest, filter="data") if hasattr(tarfile, "data_filter") else tar.extractall(dest)
             top = next(dest.iterdir())
+            check((top / "VERSION").is_file() and
+                  (top / "VERSION").read_text().strip() ==
+                  (ROOT / "VERSION").read_text().strip(),
+                  name + ": release version is included")
             missing = []
             for src in sorted((top / "src/frontend").glob("macosx*/*")):
                 if src.suffix not in (".c", ".h", ".m", ".cpp"):

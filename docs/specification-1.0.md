@@ -1,9 +1,9 @@
 # BoltPack Specification v1.0
 
 **Format Version:** 6 (only)
-**Software Version:** 1.10
+**Software Version:** 1.11
 **Status:** Development
-**Last updated:** 2026-10-26
+**Last updated:** 2026-11-13
 
 > **Archive format 6.** Method 2 uses BoltLZ format 2. Method 1 uses the
 > compact BoltLite stream defined below. Readers accept only version 6 and reject

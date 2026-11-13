@@ -120,6 +120,7 @@ stage_common() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
+    copy_file "$PROJROOT/VERSION" "$kitdir/VERSION"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/macosx" "$kitdir/src/frontend/macosx"
     # The CLI includes shared headers from sibling frontend directories.  The

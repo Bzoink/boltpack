@@ -155,6 +155,7 @@ stage_common() {
     local kitdir="$1"
 
     copy_tree "$PROJROOT/src/core" "$kitdir/src/core"
+    copy_file "$PROJROOT/VERSION" "$kitdir/VERSION"
     copy_file "$PROJROOT/LICENSE.md" "$kitdir/LICENSE.md"
     copy_tree "$PROJROOT/src/frontend/macos9" "$kitdir/src/frontend/macos9"
     rm -rf "$kitdir/src/frontend/macos9/68k"

@@ -7,11 +7,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 
-BUNDLE_VERSION=$(sed -n \
-    -e 's/^\*\*Version:\*\*[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-    -e 's/.*Version:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-    "$ROOT/RELEASE-NOTES.md" | head -1)
-[ -n "$BUNDLE_VERSION" ] || BUNDLE_VERSION="1.0"
+BUNDLE_VERSION=$(tr -d '[:space:]' < "$ROOT/VERSION")
+[ -n "$BUNDLE_VERSION" ] || { echo "Error: VERSION file is empty" >&2; exit 1; }
 
 usage() {
     cat <<EOF

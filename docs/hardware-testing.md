@@ -86,11 +86,11 @@ info and extended attributes survive a create and extract round trip.
 ### Build
 
 You need Xcode 3.x (the Developer Tools) for `gcc`. Copy
-`dist/boltpack-1.10-source-macosx-ppc.tar.gz` to the Mac, then:
+`dist/boltpack-1.11-source-macosx-ppc.tar.gz` to the Mac, then:
 
 ```sh
-tar xzf boltpack-1.10-source-macosx-ppc.tar.gz
-cd boltpack-1.10-source-macosx-ppc
+tar xzf boltpack-1.11-source-macosx-ppc.tar.gz
+cd boltpack-1.11-source-macosx-ppc
 sh scripts/macos/build-native.sh ppc 2>&1 | tee build.txt
 ```
 

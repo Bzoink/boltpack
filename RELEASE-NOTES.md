@@ -1,16 +1,26 @@
 # Release Notes
 
-## Unreleased
+## 1.11 — Native metadata preservation and usable application transfers
+
+- Archive format remains at version 6. Bolt Mini remains at version 1.3;
+  no mini codec or format changes.
 
 - Added a usable round-trip acceptance gate (`make usable-roundtrip-test`),
   with explicit pass/fail/unavailable reporting and retained evidence. It runs
   restored Linux applications with all codecs, a DOS16 program on FAT12, and
   optional Atari and Amiga application checks through existing emulator runners.
+  The combined 2026-11-13 run passed Linux, DOS16, Atari TOS 1.62 and Amiga
+  checks on the host and in emulators; physical hardware remains unqualified.
+
+- Added same-system transfer and hardware-testing guides describing what each
+  frontend preserves, known limitations and how to verify native systems.
 
 - 64-bit Linux, Windows, macOS, Haiku and Plan 9 CLI builds, and the POSIX
   wrappers built on the Linux frontend, now default to Fluff with 256 KiB
   blocks. 32-bit builds keep BoltLZ. `-2` selects BoltLZ and `-b` sets the block
   size. Target profiles that exclude Fluff keep their own codec rules.
+- Linux and Windows FLTK GUIs enable multithreaded Fluff by default on
+  systems with more than one hardware thread. Saved settings take precedence.
 - New native attribute container (metadata namespace `0xFD`, see the
   specification section 2.3.1.2). The macOS CLI stores extended attributes
   other than the resource fork and Finder info, such as Finder tags and
@@ -30,6 +40,10 @@
   cannot be archived (FIFOs, sockets, devices) are now named in a warning instead of
   being skipped silently. Target profiles and Interchange Profile 1 carry none of
   this.
+- The Linux FLTK GUI now preserves Linux extended attributes, POSIX ACLs,
+  hard links, modes and symbolic links during creation and extraction,
+  including selected and flattened extraction. Security attributes are
+  controlled by a session-only option.
 - Sinclair QL: a file's QDOS type and dataspace (what an executable needs to run)
   are now stored in a small `BP_OS_QL` metadata entry and restored on extraction.
   The QL tool also could not archive any file that has a header on sQLux (its size
@@ -55,8 +69,13 @@
   shared source also no longer needs the `openat()` family to compile in that
   mode. Verified on a Linux host only; none of these systems has been built or
   run.
+- The NeXTSTEP wrapper no longer requires `statvfs()` for the temporary-space
+  check, allowing builds on systems without that interface.
 - The macOS source kits now include the shared headers the CLI needs; the
   previous kits stopped at the first `#include`.
+- Source kits now include `VERSION`, standalone builds report 1.11, and
+  macOS app bundles read their version from `VERSION` instead of an older
+  entry in the release notes.
 - The macOS CLI now builds for Mac OS X 10.5 and earlier PowerPC systems in
   principle: `src/frontend/posix/legacy_at.h` emulates the `openat()` family
   and `futimens()` with `fchdir()` on single path components, keeping
