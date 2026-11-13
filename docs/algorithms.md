@@ -12,13 +12,13 @@ For the on-disk archive format, see [specification-1.0.md](specification-1.0.md)
 
 ## 1. Methods at a Glance
 
-| Method | Name   | Implementation                 | Primary role                                    |
-| ------ | ------ | ------------------------------ | ----------------------------------------------- |
-| 0      | Stored | `src/core/archiver.c`          | Fallback for incompressible data                |
-| 1      | BoltLite   | `src/core/boltlite.c`              | Small-memory LZ77, especially for mini builds   |
-| 2      | boltlz | `src/core/compress.c` wrapper  | Fast general-purpose compression                |
-| 3      | Fluff  | `src/core/fluff.c`             | Highest-ratio codec in the full build           |
-| 4      | retired | —                             | Former zstd method; readers reject it           |
+| Method | Name | Implementation | Primary role |
+| --- | --- | --- | --- |
+| 0 | Stored | `src/core/archiver.c` | Fallback for incompressible data |
+| 1 | BoltLite | `src/core/boltlite.c` | Small-memory LZ77, especially for mini builds |
+| 2 | boltlz | `src/core/compress.c` wrapper | Fast general-purpose compression |
+| 3 | Fluff | `src/core/fluff.c` | Highest-ratio codec in the full build |
+| 4 | retired | — | Former zstd method; readers reject it |
 
 The full archiver can read and write methods 0–3. Constrained frontends
 (DOS 16-bit, Win16, Amiga, Atari, Classic Mac 68 K) may
@@ -69,13 +69,13 @@ BoltLZ and Fluff instead.
 
 ### 3.2 Format-Fixed Parameters
 
-| Parameter            | Value    | Meaning                                      |
-| -------------------- | -------- | -------------------------------------------- |
-| History window       | 4096     | Maximum back-distance                        |
-| Maximum match length | 66       | Explicit matches cap at 10; repeats can reach 66 |
-| Minimum match length | 3        | Shorter runs become literals                 |
-| Flag packing         | 8 bits   | Bit 0 is the first symbol in each flag byte  |
-| Work buffer          | 18432    | 1024 bucket heads plus two 4096-slot links   |
+| Parameter | Value | Meaning |
+| --- | --- | --- |
+| History window | 4096 | Maximum back-distance |
+| Maximum match length | 66 | Explicit matches cap at 10; repeats can reach 66 |
+| Minimum match length | 3 | Shorter runs become literals |
+| Flag packing | 8 bits | Bit 0 is the first symbol in each flag byte |
+| Work buffer | 18432 | 1024 bucket heads plus two 4096-slot links |
 
 The token layout is:
 
@@ -205,20 +205,20 @@ and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x8
 
 ### 5.2 Format-Fixed Parameters
 
-| Parameter               | Value           | Notes                                                                                                                                                                      |
-| ----------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stream version          | `0x09` / `0x89` | Current shifted-state FSE; reads legacy `0x07`/`0x87`, `0x08`/`0x88`, and `0x06` |
-| Window bits             | 18              | 256 KB window                                                                                                                                                              |
-| Window size             | 262144          | `1 << 18`                                                                                                                                                                  |
-| Minimum match           | 3               | Shared by normal and repeat matches                                                                                                                                        |
-| Maximum match           | 258             | DEFLATE-style upper bound                                                                                                                                                  |
-| Main hash table         | 131072          | 17-bit 4-byte hash                                                                                                                                                         |
-| Sub-hash table          | 65536           | 3-byte recent-position table                                                                                                                                               |
-| Default chain depth     | 256             | Tuned by compression level                                                                                                                                                 |
-| Good-match early stop   | 64              | Stop deeper chain search at large matches                                                                                                                                  |
-| Lit/len alphabet        | 289             | Literals, EOB, match lengths, rep-match symbols                                                                                                                            |
-| Distance alphabet       | 48              | Format-defined distance categories                                                                                                                                        |
-| Repeat-distance symbols | 286-288         | Reuse `rep0`, `rep1`, `rep2`                                                                                                                                               |
+| Parameter | Value | Notes |
+| --- | --- | --- |
+| Stream version | `0x09` / `0x89` | Current shifted-state FSE; reads legacy `0x07`/`0x87`, `0x08`/`0x88`, and `0x06` |
+| Window bits | 18 | 256 KB window |
+| Window size | 262144 | `1 << 18` |
+| Minimum match | 3 | Shared by normal and repeat matches |
+| Maximum match | 258 | DEFLATE-style upper bound |
+| Main hash table | 131072 | 17-bit 4-byte hash |
+| Sub-hash table | 65536 | 3-byte recent-position table |
+| Default chain depth | 256 | Tuned by compression level |
+| Good-match early stop | 64 | Stop deeper chain search at large matches |
+| Lit/len alphabet | 289 | Literals, EOB, match lengths, rep-match symbols |
+| Distance alphabet | 48 | Format-defined distance categories |
+| Repeat-distance symbols | 286-288 | Reuse `rep0`, `rep1`, `rep2` |
 
 ### 5.2a Modern Fast-Fluff Path
 
@@ -366,12 +366,12 @@ with `BP_ERR_UNSUPPORTED_METHOD`; no zstd encoder or decoder is built.
 
 ## 7. Memory Profile
 
-| Method | Compression-side working memory                              | Decompression-side working memory                         |
-| ------ | ------------------------------------------------------------ | --------------------------------------------------------- |
-| 0      | No codec scratch beyond the caller’s buffers                 | No codec scratch beyond the caller’s buffers              |
-| 1      | 18,432-byte hash-chain workspace                             | No decoder scratch                                               |
-| 2      | 32 KiB Fast / 64 KiB Balanced heap workspace                 | No codec workspace                                        |
-| 3      | About 2.52 MiB internally at 256 KiB blocks, per encoder | About 276 KiB context plus 5.4 KiB temporary table scratch |
+| Method | Compression-side working memory | Decompression-side working memory |
+| --- | --- | --- |
+| 0 | No codec scratch beyond the caller’s buffers | No codec scratch beyond the caller’s buffers |
+| 1 | 18,432-byte hash-chain workspace | No decoder scratch |
+| 2 | 32 KiB Fast / 64 KiB Balanced heap workspace | No codec workspace |
+| 3 | About 2.52 MiB internally at 256 KiB blocks, per encoder | About 276 KiB context plus 5.4 KiB temporary table scratch |
 
 Fluff's encoder total includes its context, match tables and reusable scratch;
 it excludes caller buffers, allocator overhead and stack. The
@@ -386,12 +386,43 @@ Relevant checks include:
 1. `test/check_boltpack.py` for end-to-end archive behavior.
 1. `make unit-test` for the C unit suites in `test/unit/`.
 
+### Fluff development checks
+
+[`test/unit/test_fluff.c`](../test/unit/test_fluff.c) covers direct codec
+round trips, levels, bounds, history, legacy streams, allocator ownership,
+and allocation failures. Run `make unit-test` and `make unit-test-asan` for
+normal and sanitizer checks. Threaded archive behavior needs separate CLI
+integration checks with an OpenMP-enabled build and explicit thread/group
+settings.
+
+[`test/bench_fluff.py`](../test/bench_fluff.py) builds isolated baseline and
+candidate sources and runs alternating, verified codec measurements. It
+retains source, executable and corpus hashes, compiler flags, raw samples,
+and summaries. Portable and modern SIMD runs are separate; `--modern` still
+uses sequential encoding and does not measure threaded archive throughput.
+Allocation, filesystem I/O and archive metadata are outside the timed codec
+loops. Compare per-file results as well as aggregate size and time.
+
+For encoder changes, verify candidate streams with a frozen compatible
+decoder and baseline streams with the candidate decoder. Cover mixed
+compressed/stored blocks, persistent history, cold and warm parallel groups,
+reset markers, malformed input, and long-stream position boundaries before
+making wider compatibility claims. Cross-builds alone do not establish
+runtime correctness or speed.
+
+`make parse-dump` produces a parser CSV. Detailed search counters require
+`FLUFF_STATS`; the `*_ctx_trace` wrappers currently ignore their trace
+argument. Neither interface is a complete encoded-bit accounting tool.
+There is no dedicated Fluff libFuzzer target; the generic `make fuzz` recipe
+references an absent script. The working BoltLZ fuzzer does not exercise
+Fluff.
+
 This reference tracks the codecs shipped in BoltPack 1.11. Historical experiment
 reports remain separate from the implementation description.
 
 ## 9. References
 
-1. Haruhiko Okumura, original BoltLite design and binary-search-tree matcher.
+1. Haruhiko Okumura, original LZSS design and binary-search-tree matcher.
 1. J. Duda, “Asymmetric numeral systems,” arXiv:0902.0271, 2009 — theoretical
    basis for the FSE/tANS entropy coder in Fluff.
 1. [specification-1.0.md](specification-1.0.md) for the exact BoltPack wire

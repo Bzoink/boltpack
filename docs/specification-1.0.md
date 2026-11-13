@@ -36,7 +36,8 @@ Topics **not** covered here (see separate documentation):
 
 ### 1.2 Normative References
 
-- ANSI C99 / ISO C (for portable type definitions)
+- ANSI C89 / ISO C90 (the portable implementation baseline; wire field widths
+  are defined explicitly by this specification)
 - RFC 1962 — The PPP Compression Control Protocol (LZW reference)
 - RFC 1950 — ZLIB Compressed Data Format (Huffman coding patterns)
 - BoltLZ format 2, defined in §3.3 (method 2)
@@ -78,18 +79,18 @@ A BoltPack archive consists of three sequential sections:
 
 ### 2.2 Archive Header (32 bytes)
 
-| Offset | Size | Field            | Type   | Description                                                            |
-| ------ | ---- | ---------------- | ------ | ---------------------------------------------------------------------- |
-| 0      | 4    | `magic`          | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT")                           |
-| 4      | 2    | `format_version` | u16 LE | `0x0006`; readers reject every other archive version                 |
-| 6      | 2    | `flags`          | u16 LE | Reserved; must be `0x0000`. Fail with `ERR_CORRUPT` if nonzero.        |
-| 8      | 4    | `file_count`     | u32 LE | Number of entries (0 to 4,294,967,295)                                 |
-| 12     | 1    | `creator_os`     | u8     | Platform that created the archive (see Section 2.6)                    |
-| 13     | 1    | `creator_cpu`    | u8     | CPU architecture of creator (see Section 2.7)                          |
-| 14     | 2    | `creator_ver`    | u8, u8 | BoltPack version (major, minor) at offset 14 and 15                    |
-| 16     | 8    | `archive_size`   | u64 LE | Total size of `.bolt` file in bytes                                 |
-| 24     | 4    | `table_crc`      | u32 LE | CRC-32 of the file-table region                                      |
-| 28     | 4    | `header_crc`     | u32 LE | CRC-32 of header bytes `[0, 28)`                                     |
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 4 | `magic` | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT") |
+| 4 | 2 | `format_version` | u16 LE | `0x0006`; readers reject every other archive version |
+| 6 | 2 | `flags` | u16 LE | Reserved; must be `0x0000`. Fail with `ERR_CORRUPT` if nonzero. |
+| 8 | 4 | `file_count` | u32 LE | Number of entries (0 to 4,294,967,295) |
+| 12 | 1 | `creator_os` | u8 | Platform that created the archive (see Section 2.6) |
+| 13 | 1 | `creator_cpu` | u8 | CPU architecture of creator (see Section 2.7) |
+| 14 | 2 | `creator_ver` | u8, u8 | BoltPack version (major, minor) at offset 14 and 15 |
+| 16 | 8 | `archive_size` | u64 LE | Total size of `.bolt` file in bytes |
+| 24 | 4 | `table_crc` | u32 LE | CRC-32 of the file-table region |
+| 28 | 4 | `header_crc` | u32 LE | CRC-32 of header bytes `[0, 28)` |
 
 **Validation:**
 
@@ -109,30 +110,30 @@ After the header, entries are stored sequentially. Each entry consists of a vari
 
 #### 2.3.1 Entry Header (variable size)
 
-| Offset | Size | Field             | Type   | Description                                                               |
-| ------ | ---- | ----------------- | ------ | ------------------------------------------------------------------------- |
-| 0      | 2    | `header_size`     | u16 LE | Total entry header size (offset 0 to start of comp data)                  |
-| 2      | 2    | `name_len`        | u16 LE | Length of file name in bytes (no null terminator; max 65493)              |
-| 4      | N    | `name`            | bytes  | File name (UTF-8, forward-slash separated; path is relative)              |
-| 4+N    | 8    | `original_size`   | u64 LE | Uncompressed size in bytes                                                |
-| 12+N   | 8    | `compressed_size` | u64 LE | Compressed data size (all blocks combined)                                |
-| 20+N   | 4    | `checksum`        | u32 LE | Checksum of uncompressed payload, per `checksum_type`                     |
-| 24+N   | 1    | `method`          | u8     | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff; 4 retired)      |
-| 25+N   | 1    | `checksum_type`   | u8     | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
-| 26+N   | 4    | `block_size`      | u32 LE | Max uncompressed block size; 0 = single block (no blocking)               |
-| 30+N   | 1    | `entry_type`      | u8     | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir)                 |
-| 31+N   | 1    | `platform`        | u8     | OS code or, for metadata only, namespace `0xFE` (portable) or `0xFD` (native attributes) |
-| 32+N   | 8    | `mtime`           | u64 LE | Modification time (unsigned Unix epoch seconds, UTC), when valid         |
-| 40+N   | 2    | `flags`           | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently.          |
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 2 | `header_size` | u16 LE | Total entry header size (offset 0 to start of comp data) |
+| 2 | 2 | `name_len` | u16 LE | Length of file name in bytes (no null terminator; max 65493) |
+| 4 | N | `name` | bytes | File name (UTF-8, forward-slash separated; path is relative) |
+| 4+N | 8 | `original_size` | u64 LE | Uncompressed size in bytes |
+| 12+N | 8 | `compressed_size` | u64 LE | Compressed data size (all blocks combined) |
+| 20+N | 4 | `checksum` | u32 LE | Checksum of uncompressed payload, per `checksum_type` |
+| 24+N | 1 | `method` | u8 | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff; 4 retired) |
+| 25+N | 1 | `checksum_type` | u8 | Checksum algorithm (1=CRC-32, the only value written; 0=Adler-32 retired) |
+| 26+N | 4 | `block_size` | u32 LE | Max uncompressed block size; 0 = single block (no blocking) |
+| 30+N | 1 | `entry_type` | u8 | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir) |
+| 31+N | 1 | `platform` | u8 | OS code or, for metadata only, namespace `0xFE` (portable) or `0xFD` (native attributes) |
+| 32+N | 8 | `mtime` | u64 LE | Modification time (unsigned Unix epoch seconds, UTC), when valid |
+| 40+N | 2 | `flags` | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently. |
 
 **Entry flags (format 6):**
 
-| Bit(s) | Constant                   | Description                                                      |
-| ------ | -------------------------- | ---------------------------------------------------------------- |
-| 15     | `BP_ENTRY_FLAG_MODE_VALID` | Bits 0–11 contain valid Unix permission bits                     |
-| 14     | `BP_ENTRY_FLAG_MTIME_VALID` | Modification time is known, including the Unix epoch           |
-| 0–11   | `BP_ENTRY_FLAG_MODE_MASK`  | Unix mode bits (`st_mode & 0x0FFF`)                              |
-| 12–13  | —                          | Reserved; writers MUST write zero; readers MUST accept any value |
+| Bit(s) | Constant | Description |
+| --- | --- | --- |
+| 15 | `BP_ENTRY_FLAG_MODE_VALID` | Bits 0–11 contain valid Unix permission bits |
+| 14 | `BP_ENTRY_FLAG_MTIME_VALID` | Modification time is known, including the Unix epoch |
+| 0–11 | `BP_ENTRY_FLAG_MODE_MASK` | Unix mode bits (`st_mode & 0x0FFF`) |
+| 12–13 | — | Reserved; writers MUST write zero; readers MUST accept any value |
 
 When bit 15 is set, bits 0–11 encode the 12-bit Unix permission+type-low field
 (`st_mode & 0x0FFF`). An extractor that supports POSIX permissions SHOULD apply
@@ -341,9 +342,9 @@ a clear bit means a match token follows. Match tokens have three forms:
 
 | Prefix | Remaining fields | Meaning |
 | ------ | ---------------- | ------- |
-| `00`   | 3-bit distance-minus-one, 3-bit length-minus-three | Distance 1–8, length 3–10; one byte |
-| `01`   | 6-bit length-minus-three | Repeat previous match distance, length 3–66; one byte |
-| `1`    | 15-bit payload: 12-bit distance-minus-one, 3-bit length-minus-three | Distance 1–4096, length 3–10; two bytes total |
+| `00` | 3-bit distance-minus-one, 3-bit length-minus-three | Distance 1–8, length 3–10; one byte |
+| `01` | 6-bit length-minus-three | Repeat previous match distance, length 3–66; one byte |
+| `1` | 15-bit payload: 12-bit distance-minus-one, 3-bit length-minus-three | Distance 1–4096, length 3–10; two bytes total |
 
 The previous distance starts unset and is updated by every local or explicit
 match. It persists across literals. A repeat-distance token before the first
@@ -456,12 +457,12 @@ from the end towards the start.
 
 #### 3.4.3 Stream Header (4 bytes, byte-aligned)
 
-| Byte | Value            | Field         | Description                                                                                                          |
-| ---- | ---------------- | ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 0    | `0x46`           | `magic[0]`    | ASCII `'F'`; invalid value → `ERR_CORRUPT`                                                                           |
-| 1    | `0x4C`           | `magic[1]`    | ASCII `'L'`; invalid value → `ERR_CORRUPT`                                                                           |
-| 2    | `0x09` or `0x89` | `version`     | `0x09` = shifted-state compact FSE; `0x89` = reset variant; `0x07`/`0x87` and `0x08`/`0x88` = legacy FSE; `0x06` = range coder |
-| 3    | `0x12`           | `window_bits` | `18` = 256 KB window (informational; always 18)                                                                      |
+| Byte | Value | Field | Description |
+| --- | --- | --- | --- |
+| 0 | `0x46` | `magic[0]` | ASCII `'F'`; invalid value → `ERR_CORRUPT` |
+| 1 | `0x4C` | `magic[1]` | ASCII `'L'`; invalid value → `ERR_CORRUPT` |
+| 2 | `0x09` or `0x89` | `version` | `0x09` = shifted-state compact FSE; `0x89` = reset variant; `0x07`/`0x87` and `0x08`/`0x88` = legacy FSE; `0x06` = range coder |
+| 3 | `0x12` | `window_bits` | `18` = 256 KB window (informational; always 18) |
 
 Current encoders write version `0x09` for normal blocks and `0x89` when
 a grouped batch must reset history. Decoders MUST accept `0x06`, `0x07`,
@@ -1049,20 +1050,20 @@ use it in preference to iterating records.
 
 Followed by `entry_count` records:
 
-| Offset | Size | Field             | Type   | Description                             |
-| ------ | ---- | ----------------- | ------ | --------------------------------------- |
-| 0      | 2    | `name_len`        | u16 LE | Length of file name                     |
-| 2      | N    | `name`            | bytes  | File name (UTF-8, forward-slash sep)    |
-| 2+N    | 8    | `original_size`   | u64 LE | Uncompressed size                       |
-| 10+N   | 8    | `compressed_size` | u64 LE | Compressed size                         |
-| 18+N   | 1    | `entry_type`      | u8     | Entry type (0–4)                        |
-| 19+N   | 1    | `platform`        | u8     | Metadata platform origin                |
-| 20+N   | 8    | `mtime`           | u64 LE | Modification time (Unix epoch)          |
-| 28+N   | 8    | `offset`          | u64 LE | Byte offset of entry from archive start |
-| 36+N   | 1    | `method`          | u8     | Compression method (0–4)                |
-| 37+N   | 2    | `header_size`     | u16 LE | Entry header size                       |
-| 39+N   | 4    | `checksum`        | u32 LE | Entry payload checksum                  |
-| 43+N   | 2    | `flags`           | u16 LE | Entry flags, identical to the entry header |
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 2 | `name_len` | u16 LE | Length of file name |
+| 2 | N | `name` | bytes | File name (UTF-8, forward-slash sep) |
+| 2+N | 8 | `original_size` | u64 LE | Uncompressed size |
+| 10+N | 8 | `compressed_size` | u64 LE | Compressed size |
+| 18+N | 1 | `entry_type` | u8 | Entry type (0–4) |
+| 19+N | 1 | `platform` | u8 | Metadata platform origin |
+| 20+N | 8 | `mtime` | u64 LE | Modification time (Unix epoch) |
+| 28+N | 8 | `offset` | u64 LE | Byte offset of entry from archive start |
+| 36+N | 1 | `method` | u8 | Compression method (0–4) |
+| 37+N | 2 | `header_size` | u16 LE | Entry header size |
+| 39+N | 4 | `checksum` | u32 LE | Entry payload checksum |
+| 43+N | 2 | `flags` | u16 LE | Entry flags, identical to the entry header |
 
 The fixed record tail is 43 bytes. Fields duplicated in the entry header,
 including the name, sizes, type, platform, time, method, checksum, header size,

@@ -4,7 +4,10 @@
 
 1. **Strict layer separation** — each layer has a single responsibility and a clean interface
 2. **No platform-specific code in the core** — platform details live only in the frontend
-3. **ANSI C (C89)** throughout — no compiler extensions in the core or archiver layers
+3. **Portable C89 baseline** for the archive core and baseline codecs. The
+   optional accelerated Fluff encoder uses C11/OpenMP; frontends use their
+   platform's language and APIs. Guarded file-offset types and intrinsics are
+   documented in [portability.md](portability.md#coding-constraints).
 
 ## Layers
 
@@ -360,6 +363,34 @@ Exit code: `0` if all files pass, non-zero if any check fails. The frontend repo
 This requires one read (footer), one seek, and then sequential writes. The cost is minimal — no existing entry data is moved or rewritten.
 
 The `boltpack d` command rebuilds the archive without the specified entries, raw-copying all retained entry data without decompression. A directory name ending with `/` removes all entries under that directory.
+
+## Filesystem safety and source consistency
+
+Filesystem transactions belong to the frontend. Frontends with staged
+extraction publish regular-file output only after data verification and
+successful close.
+Skipped or failed subjects must not receive supplementary metadata. Directory
+metadata is deferred until children have finished. The full and mini cores
+check block framing and declared compressed-size boundaries; structural
+preflight does not replace payload checksum verification.
+
+The Linux CLI compares source identity, type, size, mode, and timestamps
+during enumeration, reads, and final validation. It also computes a CRC-32 of
+the archived source bytes and rereads each regular file before accepting the
+archive. This catches stable same-size changes even with coarse timestamps,
+at the cost of another source read. It does not provide an atomic snapshot:
+CRC collisions, transient changes hidden between checks, and writes after
+final validation remain possible.
+
+Directory-relative extractors hold root and parent handles and avoid following
+archive-controlled symlinks. Renaming a held directory can still move it
+outside the originally selected tree. Pathname-only frontends have additional
+check/use windows; some refuse extraction or require a new private root.
+Detected substitution can leave a stage in a moved directory when safe
+cleanup cannot identify it. The
+[interoperability matrix](interoperability-matrix.md) records each frontend's
+behavior and tested limits. Source-change and extraction-race fixtures qualify
+their specific cases, not all possible concurrent mutations.
 
 ## Memory Budget
 

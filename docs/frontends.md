@@ -164,16 +164,16 @@ Assumes the host uses UTF-8 natively (standard on modern Linux). No conversion n
 
 ### Common Options
 
-| Flag              | Description                                   |
-| ----------------- | --------------------------------------------- |
-| `-b SIZE`         | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`              | Store only (no compression)                   |
-| `-F`              | Use Fluff LZ77+FSE/tANS compression           |
-| `-o PATH`         | Extract to directory                          |
-| `-f`              | Force overwrite                               |
-| `-n`              | Dry run                                       |
-| `-q` / `-qq`      | Quiet / silent                                |
-| `--single-thread` | Force sequential compression on modern builds  |
+| Flag | Description |
+| --- | --- |
+| `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
+| `-0` | Store only (no compression) |
+| `-F` | Use Fluff LZ77+FSE/tANS compression |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
+| `-q` / `-qq` | Quiet / silent |
+| `--single-thread` | Force sequential compression on modern builds |
 | `--security-attrs` | Linux: also store and restore `security.*` and `trusted.*` attributes (file capabilities, SELinux labels); restoring them needs the kernel's privilege |
 | `--interchange-profile-1` | Create or append using mini-reader limits: BoltLite, 16 KiB blocks, 65,535 entries, 4 GiB minus one byte per entry, and 2 GiB minus one byte total |
 | `--target-profile=posix-utf8-v1` | Create/add with strict UTF-8 byte names, case-sensitive path checks, 255-byte components, 4,095-byte paths, safe relative symlinks, and no foreign metadata |
@@ -231,15 +231,15 @@ Run `boltpack help advanced` to show the full Linux-family CLI surface,
 including `debug-fluff` / `T`, compression-method tuning, and the explicit
 parallel-compression controls below.
 
-| Flag   | Description                                                                               |
-| ------ | ----------------------------------------------------------------------------------------- |
-| `-1`   | Use BoltLite compression                                                                      |
-| `-2`   | Use boltlz compression explicitly (the default method)                                    |
-| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9                                     |
-| `--light` | Fast preset: BoltLZ 1; Fluff 1                                                   |
-| `--standard` | Default preset: BoltLZ 2; Fluff 8                                          |
-| `--best` | Highest preset: BoltLZ 2; Fluff 9                                                 |
-| `-j N` | Use up to `N` worker threads for BoltLZ or Fluff (OpenMP CLI builds only)            |
+| Flag | Description |
+| --- | --- |
+| `-1` | Use BoltLite compression |
+| `-2` | Use boltlz compression explicitly (the default method) |
+| `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9 |
+| `--light` | Fast preset: BoltLZ 1; Fluff 1 |
+| `--standard` | Default preset: BoltLZ 2; Fluff 8 |
+| `--best` | Highest preset: BoltLZ 2; Fluff 9 |
+| `-j N` | Use up to `N` worker threads for BoltLZ or Fluff (OpenMP CLI builds only) |
 | `-g N` | Group `N` Fluff blocks per shared-history batch before reset (fast-fluff CLI builds only) |
 
 `-j` and `-g` are exposed by OpenMP-enabled CLI builds such as
@@ -404,12 +404,12 @@ HKEY_CURRENT_USER\Software\BoltPack\CompressionMethod (DWORD)
 
 Valid values:
 
-| Value | Method           | Description                          |
-| ----- | ---------------- | ------------------------------------ |
-| `0`   | Stored           | No compression                       |
-| `1`   | BoltLite             | Small-memory LZ77                    |
-| `2`   | boltlz (default) | Fast general-purpose compression     |
-| `3`   | fluff            | LZ77 + FSE/tANS, best compression ratio |
+| Value | Method | Description |
+| --- | --- | --- |
+| `0` | Stored | No compression |
+| `1` | BoltLite | Small-memory LZ77 |
+| `2` | boltlz (default) | Fast general-purpose compression |
+| `3` | fluff | LZ77 + FSE/tANS, best compression ratio |
 
 ### TC WCX: Build
 
@@ -597,18 +597,18 @@ Filenames are stored as-is (ASCII / codepage). Non-ASCII names may not round-tri
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                   |
-| --------- | --------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`      | Store only (no compression)                   |
+| `-0` | Store only (no compression) |
 | `--interchange-profile-1` | Create/add with Stored or BoltLite, 16 KiB blocks, and mini-compatible limits |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
-| `-1`      | Use BoltLite compression                          |
-| `-q`      | Quiet (progress line only)                    |
-| `-qq`     | Silent (errors only)                          |
-| `-o PATH` | Extract to directory                          |
-| `-f`      | Force overwrite                               |
-| `-n`      | Dry run                                       |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (progress line only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
 
 The profile flag applies only to `c` and `a`. It selects BoltLite unless `-0`
 is supplied, permits an explicit `-1` BoltLite selection, and refuses other
@@ -717,11 +717,11 @@ The AmigaOS CLI is the primary frontend that makes BoltPack's `BP_TYPE_META` mec
 
 **Metadata payload layout:**
 
-| Offset | Size | Field         | Description                                  |
-| ------ | ---- | ------------- | -------------------------------------------- |
-| 0      | 4    | `protection`  | Raw `fib_Protection` value (little-endian)   |
-| 4      | 1    | `comment_len` | Length of comment (0–79)                     |
-| 5      | N    | `comment`     | File comment bytes (ISO-8859-1; embedded NUL is invalid) |
+| Offset | Size | Field | Description |
+| --- | --- | --- | --- |
+| 0 | 4 | `protection` | Raw `fib_Protection` value (little-endian) |
+| 4 | 1 | `comment_len` | Length of comment (0–79) |
+| 5 | N | `comment` | File comment bytes (ISO-8859-1; embedded NUL is invalid) |
 
 **Protection bits (AmigaOS HSPARWED format):**
 
@@ -800,17 +800,17 @@ Within archive entry names, forward slashes are always used as directory separat
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                                                           |
-| --------- | ------------------------------------------------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `AvailMem`) |
-| `-0`      | Store only (no compression)                                                           |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression                                                    |
-| `-1`      | Use BoltLite compression                                                                  |
-| `-q`      | Quiet (summary only)                                                                  |
-| `-qq`     | Silent (errors only)                                                                  |
-| `-o PATH` | Output directory for extraction                                                       |
-| `-f`      | Force overwrite existing files                                                        |
-| `-n`      | Dry run                                                                               |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (summary only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Output directory for extraction |
+| `-f` | Force overwrite existing files |
+| `-n` | Dry run |
 
 ---
 
@@ -976,18 +976,18 @@ MYFILE.TXT       →   MYFILE.TXT
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                                                             |
-| --------- | --------------------------------------------------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` (default: auto-detected via `Malloc(-1)`) |
 | `--interchange-profile-1` | Enforce mini-compatible limits for create/add (BoltLite by default, 16 KiB blocks) |
-| `-0`      | Store only (no compression)                                                             |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression                                                      |
-| `-1`      | Use BoltLite compression                                                                    |
-| `-q`      | Quiet (summary only)                                                                    |
-| `-qq`     | Silent (errors only)                                                                    |
-| `-o PATH` | Output directory for extraction                                                         |
-| `-f`      | Force overwrite existing files                                                          |
-| `-n`      | Dry run                                                                                 |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (summary only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Output directory for extraction |
+| `-f` | Force overwrite existing files |
+| `-n` | Dry run |
 
 ### Atari: Observed Compression Throughput
 
@@ -995,9 +995,9 @@ Measured on Atari systems using the shared compression core used by both the
 CLI and GEM GUI frontends. These are practical reference values, not hard
 guarantees:
 
-| Machine        | RAM  | BoltLite     | boltlz  | Fluff    |
+| Machine | RAM | BoltLite | boltlz | Fluff |
 | -------------- | ---- | -------- | ------- | -------- |
-| 68000 @ 8 MHz  | 4 MB | 1.1 kB/s | 27 kB/s | 1.2 kB/s |
+| 68000 @ 8 MHz | 4 MB | 1.1 kB/s | 27 kB/s | 1.2 kB/s |
 | 68030 @ 16 MHz | 4 MB | 4.9 kB/s | 81 kB/s | 4.1 kB/s |
 
 ---
@@ -1057,15 +1057,15 @@ headers, and fixed-width type definitions are byte-for-byte synchronized.
 
 **Project contents:**
 
-| File                             | Role                                            |
-| -------------------------------- | ----------------------------------------------- |
-| `src/core/archiver.c`            | Archive format read/write                       |
-| `src/core/compress.c`            | boltlz compression wrapper                      |
-| `src/core/boltlite.c`                | BoltLite codec                                      |
-| `src/core/fluff.c`               | fluff codec                                     |
-| `src/core/bp_codepage.c`         | code page helpers                               |
-| `src/core/boltlz.c`              | boltlz library                                  |
-| `src/frontend/macos9/main.c`     | GUI frontend                                    |
+| File | Role |
+| --- | --- |
+| `src/core/archiver.c` | Archive format read/write |
+| `src/core/compress.c` | boltlz compression wrapper |
+| `src/core/boltlite.c` | BoltLite codec |
+| `src/core/fluff.c` | fluff codec |
+| `src/core/bp_codepage.c` | code page helpers |
+| `src/core/boltlz.c` | boltlz library |
+| `src/frontend/macos9/main.c` | GUI frontend |
 | `src/frontend/macos9/boltpack.r` | Resources (icons, menus, dialogs, app identity) |
 
 **Libraries (from CodeWarrior):**
@@ -1561,11 +1561,11 @@ POSIX `opendir()` / `readdir()` / `stat()` — identical to the Linux frontend. 
 The macOS CLI can produce up to three supplementary entries after a file or
 directory entry, in this order:
 
-| Entry type                             | Condition               | Content                                                                           |
-| -------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
-| `BP_TYPE_RSRC`                         | Resource fork non-empty and at most 16 MiB | Resource fork bytes (read via `XATTR_RESOURCEFORK_NAME` xattr) |
-| `BP_TYPE_META` (`BP_OS_MACOSX = 0x03`) | Every data/dir entry    | 2-byte Unix permissions (low 9 bits of `mode_t`)                                  |
-| `BP_TYPE_META` (`BP_OS_MACOS9 = 0x02`) | Finder info present     | 18-byte Classic Mac info: Type (4), Creator (4), flags (2), crdate (4), mdate (4) |
+| Entry type | Condition | Content |
+| --- | --- | --- |
+| `BP_TYPE_RSRC` | Resource fork non-empty and at most 16 MiB | Resource fork bytes (read via `XATTR_RESOURCEFORK_NAME` xattr) |
+| `BP_TYPE_META` (`BP_OS_MACOSX = 0x03`) | Every data/dir entry | 2-byte Unix permissions (low 9 bits of `mode_t`) |
+| `BP_TYPE_META` (`BP_OS_MACOS9 = 0x02`) | Finder info present | 18-byte Classic Mac info: Type (4), Creator (4), flags (2), crdate (4), mdate (4) |
 
 On extraction:
 
@@ -1625,19 +1625,19 @@ macOS uses UTF-8 natively. No filename conversion is required; `bp_local_to_utf8
 
 ### macOS: Common Options
 
-| Option     | Description                                   |
-| ---------- | --------------------------------------------- |
-| `-b SIZE`  | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
+| Option | Description |
+| --- | --- |
+| `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `--interchange-profile-1` | Create/add under the mini-compatible profile (BoltLite, 16 KiB by default) |
 | `--target-profile=macos-modern-v1` | Preflight create/add names against macOS path, case, and Unicode-equivalence checks |
 | `--target-profile=macos-classic-hfs-v1` | Preflight create/add for exact MacRoman names, HFS path limits, and data/directory-only archives |
 | `--target-profile=atari-st` | Preflight strict Atari ST GEMDOS names, 8.3 paths, and Interchange Profile 1 limits |
-| `-0`       | Store only (no compression)                   |
-| `-F`       | Use Fluff compression                         |
-| `-o PATH`  | Extract to directory                          |
-| `-f`       | Force overwrite                               |
-| `-n`       | Dry run                                       |
-| `-q`/`-qq` | Quiet / silent                                |
+| `-0` | Store only (no compression) |
+| `-F` | Use Fluff compression |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
+| `-q`/`-qq` | Quiet / silent |
 
 ### macOS: Advanced Help
 
@@ -1645,10 +1645,10 @@ The default `boltpack help` page now hides the secondary compression selectors
 and long-form aliases. Run `boltpack help advanced` to show the full standalone
 macOS CLI surface.
 
-| Option              | Description                            |
+| Option | Description |
 | ------------------- | -------------------------------------- |
-| `-1`, `--boltlite`      | Use BoltLite compression                   |
-| `-2`, `--boltlz`    | Use boltlz compression explicitly      |
+| `-1`, `--boltlite` | Use BoltLite compression |
+| `-2`, `--boltlz` | Use boltlz compression explicitly |
 | `--interchange-profile-1` | Create/add using mini-compatible limits; defaults to BoltLite and 16 KiB blocks |
 | `--target-profile=macos-modern-v1` | Reject create/add names that collide or exceed macOS path limits |
 | `--target-profile=macos-classic-hfs-v1` | Require Classic HFS MacRoman names and Interchange Profile 1 limits |
@@ -1663,17 +1663,17 @@ macOS CLI surface.
 | `--target-profile=os2-fat-cp850` | Require OS/2 FAT CP850 8.3 names and limits |
 | `--target-profile=cpm86-83` | Project flat ASCII 8.3 names to uppercase; enforce CP/M-86 entry, codec, and size limits |
 | `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9 |
-| `--light`           | Fast preset: BoltLZ 1; Fluff 1    |
-| `--standard`        | Default preset: BoltLZ 2; Fluff 8 |
-| `--best`            | Highest preset: BoltLZ 2; Fluff 9 |
-| `--store`           | Long-form alias for `-0`               |
-| `--fluff`           | Long-form alias for `-F`               |
-| `--block-size N`    | Long-form alias for `-b`               |
-| `--output PATH`     | Long-form alias for `-o`               |
-| `--force`           | Long-form alias for `-f`               |
-| `--dry-run`         | Long-form alias for `-n`               |
-| `--quiet`           | Long-form alias for `-q`               |
-| `--silent`          | Long-form alias for `-qq`              |
+| `--light` | Fast preset: BoltLZ 1; Fluff 1 |
+| `--standard` | Default preset: BoltLZ 2; Fluff 8 |
+| `--best` | Highest preset: BoltLZ 2; Fluff 9 |
+| `--store` | Long-form alias for `-0` |
+| `--fluff` | Long-form alias for `-F` |
+| `--block-size N` | Long-form alias for `-b` |
+| `--output PATH` | Long-form alias for `-o` |
+| `--force` | Long-form alias for `-f` |
+| `--dry-run` | Long-form alias for `-n` |
+| `--quiet` | Long-form alias for `-q` |
+| `--silent` | Long-form alias for `-qq` |
 
 `--target-profile=macos-classic-hfs-v1` composes Interchange Profile 1 with
 31-byte MacRoman components, a 255-byte relative path ceiling, MacRoman
@@ -1831,16 +1831,16 @@ Haiku uses UTF-8 natively. No filename conversion is required.
 
 ### Haiku: Common Options
 
-| Option     | Description                                   |
-| ---------- | --------------------------------------------- |
-| `-b SIZE`  | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`       | Store only (no compression)                   |
-| `-F`       | Use Fluff compression                         |
+| Option | Description |
+| --- | --- |
+| `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
+| `-0` | Store only (no compression) |
+| `-F` | Use Fluff compression |
 | `--interchange-profile-1` | Create or append a broadly portable archive |
-| `-o PATH`  | Extract to directory                          |
-| `-f`       | Force overwrite                               |
-| `-n`       | Dry run                                       |
-| `-q`/`-qq` | Quiet / silent                                |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
+| `-q`/`-qq` | Quiet / silent |
 
 ### Haiku: Advanced Help
 
@@ -1848,22 +1848,22 @@ The default `boltpack help` page now hides the secondary compression selectors
 and long-form aliases. Run `boltpack help advanced` to show the full standalone
 Haiku CLI surface.
 
-| Option              | Description                            |
-| ------------------- | -------------------------------------- |
-| `-1`, `--boltlite`      | Use BoltLite compression                   |
-| `-2`, `--boltlz`    | Use boltlz compression explicitly      |
+| Option | Description |
+| --- | --- |
+| `-1`, `--boltlite` | Use BoltLite compression |
+| `-2`, `--boltlz` | Use boltlz compression explicitly |
 | `-l N`, `--level N` | Exact level: BoltLZ 1-2; Fluff 1-9 |
-| `--light`           | Fast preset: BoltLZ 1; Fluff 1    |
-| `--standard`        | Default preset: BoltLZ 2; Fluff 8 |
-| `--best`            | Highest preset: BoltLZ 2; Fluff 9 |
-| `--store`           | Long-form alias for `-0`               |
-| `--fluff`           | Long-form alias for `-F`               |
-| `--block-size N`    | Long-form alias for `-b`               |
-| `--output PATH`     | Long-form alias for `-o`               |
-| `--force`           | Long-form alias for `-f`               |
-| `--dry-run`         | Long-form alias for `-n`               |
-| `--quiet`           | Long-form alias for `-q`               |
-| `--silent`          | Long-form alias for `-qq`              |
+| `--light` | Fast preset: BoltLZ 1; Fluff 1 |
+| `--standard` | Default preset: BoltLZ 2; Fluff 8 |
+| `--best` | Highest preset: BoltLZ 2; Fluff 9 |
+| `--store` | Long-form alias for `-0` |
+| `--fluff` | Long-form alias for `-F` |
+| `--block-size N` | Long-form alias for `-b` |
+| `--output PATH` | Long-form alias for `-o` |
+| `--force` | Long-form alias for `-f` |
+| `--dry-run` | Long-form alias for `-n` |
+| `--quiet` | Long-form alias for `-q` |
+| `--silent` | Long-form alias for `-qq` |
 
 ---
 
@@ -2011,17 +2011,17 @@ RISC OS uses Latin-1 (ISO 8859-1). File names are converted to UTF-8 on archive 
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                   |
-| --------- | --------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
-| `-1`      | Use BoltLite compression                          |
-| `-q`      | Quiet (progress line only)                    |
-| `-qq`     | Silent (errors only)                          |
-| `-o PATH` | Extract to directory                          |
-| `-f`      | Force overwrite                               |
-| `-n`      | Dry run                                       |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (progress line only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
 
 ---
 
@@ -2117,18 +2117,18 @@ trip has been performed.
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                   |
-| --------- | --------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
 | `--interchange-profile-1` | Enforce mini-compatible limits for create/add (BoltLite by default, 16 KiB blocks) |
-| `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
-| `-1`      | Use BoltLite compression                          |
-| `-q`      | Quiet (progress line only)                    |
-| `-qq`     | Silent (errors only)                          |
-| `-o PATH` | Extract to directory                          |
-| `-f`      | Force overwrite                               |
-| `-n`      | Dry run                                       |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (progress line only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
 
 ---
 
@@ -2221,17 +2221,17 @@ Plan 9 was the first production operating system to adopt UTF-8, designed by Rob
 extraction into the current directory are refused, including with `-f`. `-n`
 remains available for extraction dry-run.
 
-| Option    | Description                                   |
-| --------- | --------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
-| `-1`      | Use BoltLite compression                          |
-| `-q`      | Quiet (progress line only)                    |
-| `-qq`     | Silent (errors only)                          |
-| `-o PATH` | Extract to directory                          |
-| `-f`      | Force overwrite                               |
-| `-n`      | Dry run                                       |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (progress line only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
 
 ---
 
@@ -2381,17 +2381,17 @@ fixture; sQLux continues to cover zero-offset file and directory timestamps.
 | `i`     | Show archive information      |
 | `d`     | Delete files from archive     |
 
-| Option    | Description                                   |
-| --------- | --------------------------------------------- |
+| Option | Description |
+| --- | --- |
 | `-b SIZE` | Block size: `8k`, `16k`, `32k`, `64k`, `256k` |
-| `-0`      | Store only (no compression)                   |
-| `-F`      | Use fluff LZ77 + FSE/tANS compression            |
-| `-1`      | Use BoltLite compression                          |
-| `-q`      | Quiet (progress line only)                    |
-| `-qq`     | Silent (errors only)                          |
-| `-o PATH` | Extract to directory                          |
-| `-f`      | Force overwrite                               |
-| `-n`      | Dry run                                       |
+| `-0` | Store only (no compression) |
+| `-F` | Use fluff LZ77 + FSE/tANS compression |
+| `-1` | Use BoltLite compression |
+| `-q` | Quiet (progress line only) |
+| `-qq` | Silent (errors only) |
+| `-o PATH` | Extract to directory |
+| `-f` | Force overwrite |
+| `-n` | Dry run |
 
 ---
 
@@ -2561,21 +2561,21 @@ pathname builds now give those names inert definitions so the source compiles an
 links on systems without them. Nothing here has been built or run on the real
 systems: see [hardware-testing.md](hardware-testing.md).
 
-| Frontend     | Source file                    | `BP_CREATOR_OS`  | Default CPU     | Compiler                     | Notes                                                 |
-| ------------ | ------------------------------ | ---------------- | --------------- | ---------------------------- | ----------------------------------------------------- |
-| FreeBSD      | `src/frontend/freebsd/main.c`  | `BP_OS_FREEBSD`  | `BP_CPU_X86_64` | `freebsd-gcc`                | Override CPU with `-DBP_CREATOR_CPU=` for other ports |
-| NetBSD       | `src/frontend/netbsd/main.c`   | `BP_OS_NETBSD`   | `BP_CPU_X86_64` | `netbsd-gcc`                 | Many ports; override CPU as needed                    |
-| OpenBSD      | `src/frontend/openbsd/main.c`  | `BP_OS_OPENBSD`  | `BP_CPU_X86_64` | `openbsd-gcc`                |                                                       |
-| Solaris      | `src/frontend/solaris/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `sparc-sun-solaris2-gcc`     | Override with `BP_CPU_SPARC` or `BP_CPU_SPARC64`      |
-| HP-UX        | `src/frontend/hpux/main.c`     | `BP_OS_HPUX`     | `BP_CPU_PARISC` | `hppa-hp-hpux-gcc`           | Override with `BP_CPU_IA64` for Itanium               |
-| AIX          | `src/frontend/aix/main.c`      | `BP_OS_AIX`      | `BP_CPU_PPC64`  | `powerpc-ibm-aix-gcc`        | `_AIX73` selects dirfd extraction; older/unidentified AIX refuses extraction; override with `BP_CPU_PPC32` for 32-bit AIX |
-| IRIX         | `src/frontend/irix/main.c`     | `BP_OS_IRIX`     | `BP_CPU_MIPS64` | `mips-sgi-irix6.5-gcc`       | MIPS hardware only (R4000–R16000)                     |
-| illumos      | `src/frontend/illumos/main.c`  | `BP_OS_SOLARIS`  | `BP_CPU_X86_64` | `x86_64-unknown-illumos-gcc` | OpenIndiana, OmniOS, SmartOS                          |
-| GNU Hurd     | `src/frontend/hurd/main.c`     | `BP_OS_HURD`     | `BP_CPU_X86_64` | `hurd-gcc`                   | Override with `BP_CPU_X86` for 32-bit                 |
-| Tru64        | `src/frontend/tru64/main.c`    | `BP_OS_TRU64`    | `BP_CPU_ALPHA`  | `alpha-dec-tru64-gcc`        | End-of-life; Alpha hardware only                      |
-| SCO          | `src/frontend/sco/main.c`      | `BP_OS_SCO`      | `BP_CPU_X86`    | `sco-gcc`                    | End-of-life; x86 only                                 |
-| QNX Neutrino | `src/frontend/qnx/main.c`      | `BP_OS_QNX`      | `BP_CPU_X86`    | `qcc` (QNX SDP)              | Override with `BP_CPU_X86_64` or `BP_CPU_ARM64`; listing/test/dry-run work, extraction is refused until safe traversal is available |
-| NeXTSTEP     | `src/frontend/nextstep/main.c` | `BP_OS_NEXTSTEP` | `BP_CPU_M68K`   | NeXT `cc`                    | End-of-life; also x86/SPARC/PA-RISC                   |
+| Frontend | Source file | `BP_CREATOR_OS` | Default CPU | Compiler | Notes |
+| --- | --- | --- | --- | --- | --- |
+| FreeBSD | `src/frontend/freebsd/main.c` | `BP_OS_FREEBSD` | `BP_CPU_X86_64` | `freebsd-gcc` | Override CPU with `-DBP_CREATOR_CPU=` for other ports |
+| NetBSD | `src/frontend/netbsd/main.c` | `BP_OS_NETBSD` | `BP_CPU_X86_64` | `netbsd-gcc` | Many ports; override CPU as needed |
+| OpenBSD | `src/frontend/openbsd/main.c` | `BP_OS_OPENBSD` | `BP_CPU_X86_64` | `openbsd-gcc` | |
+| Solaris | `src/frontend/solaris/main.c` | `BP_OS_SOLARIS` | `BP_CPU_X86_64` | `sparc-sun-solaris2-gcc` | Override with `BP_CPU_SPARC` or `BP_CPU_SPARC64` |
+| HP-UX | `src/frontend/hpux/main.c` | `BP_OS_HPUX` | `BP_CPU_PARISC` | `hppa-hp-hpux-gcc` | Override with `BP_CPU_IA64` for Itanium |
+| AIX | `src/frontend/aix/main.c` | `BP_OS_AIX` | `BP_CPU_PPC64` | `powerpc-ibm-aix-gcc` | `_AIX73` selects dirfd extraction; older/unidentified AIX refuses extraction; override with `BP_CPU_PPC32` for 32-bit AIX |
+| IRIX | `src/frontend/irix/main.c` | `BP_OS_IRIX` | `BP_CPU_MIPS64` | `mips-sgi-irix6.5-gcc` | MIPS hardware only (R4000–R16000) |
+| illumos | `src/frontend/illumos/main.c` | `BP_OS_SOLARIS` | `BP_CPU_X86_64` | `x86_64-unknown-illumos-gcc` | OpenIndiana, OmniOS, SmartOS |
+| GNU Hurd | `src/frontend/hurd/main.c` | `BP_OS_HURD` | `BP_CPU_X86_64` | `hurd-gcc` | Override with `BP_CPU_X86` for 32-bit |
+| Tru64 | `src/frontend/tru64/main.c` | `BP_OS_TRU64` | `BP_CPU_ALPHA` | `alpha-dec-tru64-gcc` | End-of-life; Alpha hardware only |
+| SCO | `src/frontend/sco/main.c` | `BP_OS_SCO` | `BP_CPU_X86` | `sco-gcc` | End-of-life; x86 only |
+| QNX Neutrino | `src/frontend/qnx/main.c` | `BP_OS_QNX` | `BP_CPU_X86` | `qcc` (QNX SDP) | Override with `BP_CPU_X86_64` or `BP_CPU_ARM64`; listing/test/dry-run work, extraction is refused until safe traversal is available |
+| NeXTSTEP | `src/frontend/nextstep/main.c` | `BP_OS_NEXTSTEP` | `BP_CPU_M68K` | NeXT `cc` | End-of-life; also x86/SPARC/PA-RISC |
 
 **Build commands:** `make freebsd`, `make netbsd`, `make openbsd`, `make solaris`, `make hpux`, `make aix`, `make irix`, `make illumos`, `make hurd`, `make tru64`, `make sco`, `make qnx`
 
@@ -2638,27 +2638,27 @@ calls into `boltpack_core.dll` via P/Invoke. The DLL wrapper in
 `boltpack_dll.c` exposes the archiver API as flat C functions with
 `__declspec(dllexport)` linkage:
 
-| DLL Function                 | Wraps                    |
-| ---------------------------- | ------------------------ |
-| `bp_dll_archive_info`        | `bp_archive_info`        |
-| `bp_dll_archive_list`        | `bp_archive_list`        |
+| DLL Function | Wraps |
+| --- | --- |
+| `bp_dll_archive_info` | `bp_archive_info` |
+| `bp_dll_archive_list` | `bp_archive_list` |
 | `bp_dll_archive_extract_all` | `bp_archive_extract_all` |
 | `bp_dll_archive_extract_all_ex` | `bp_archive_extract_all_ex` |
-| `bp_dll_archive_create`      | `bp_archive_create`      |
+| `bp_dll_archive_create` | `bp_archive_create` |
 | `bp_dll_archive_create_profile` | `bp_archive_create_profile` |
-| `bp_dll_archive_add_entry`   | `bp_archive_add_entry`   |
+| `bp_dll_archive_add_entry` | `bp_archive_add_entry` |
 | `bp_dll_archive_add_entry_ex` | `bp_archive_add_entry_ex` |
 | `bp_dll_archive_add_fat_metadata` | portable FAT metadata writer |
-| `bp_dll_archive_alloc/free`  | correctly sized managed archive context |
-| `bp_dll_archive_finalize`    | `bp_archive_finalize`    |
-| `bp_dll_archive_close`       | `bp_archive_close`       |
-| `bp_dll_fopen`               | `fopen` with mode string |
-| `bp_dll_fopen_w`             | `_wfopen` with Unicode paths |
-| `bp_dll_fopen_w_exclusive`   | exclusive Unicode sibling-stage creation |
-| `bp_dll_fclose`              | `fclose`                 |
-| `bp_dll_fclose_checked`      | flush, commit, and checked close |
-| `bp_dll_fseek_start`         | `fseek` with `SEEK_SET`  |
-| `bp_dll_compress_init`       | `bp_compress_init`       |
+| `bp_dll_archive_alloc/free` | correctly sized managed archive context |
+| `bp_dll_archive_finalize` | `bp_archive_finalize` |
+| `bp_dll_archive_close` | `bp_archive_close` |
+| `bp_dll_fopen` | `fopen` with mode string |
+| `bp_dll_fopen_w` | `_wfopen` with Unicode paths |
+| `bp_dll_fopen_w_exclusive` | exclusive Unicode sibling-stage creation |
+| `bp_dll_fclose` | `fclose` |
+| `bp_dll_fclose_checked` | flush, commit, and checked close |
+| `bp_dll_fseek_start` | `fseek` with `SEEK_SET` |
+| `bp_dll_compress_init` | `bp_compress_init` |
 
 The DLL also provides its own `bp_io_t` callback implementations
 (`dll_file_read`, `dll_file_write`, `dll_file_seek`, `dll_file_tell`) that
@@ -2995,16 +2995,16 @@ and managed output writing. All functions use the `Cdecl` calling convention.
 This frontend is not intended for PowerPC Mac OS X. For G4/G5 systems, use the
 CLI frontend and the `macosx-ppc` native source kit instead.
 
-| Feature            | Implementation                                                                               |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| File list          | `NSTableView` with resizable columns and horizontal scroll                                   |
-| Drag-and-drop      | `NSDraggingDestination` protocol; `file://` URL pasteboard                                   |
-| File dialogs       | `NSOpenPanel` / `NSSavePanel`                                                                |
-| Progress           | Sheet-attached `BPProgressPanel` (`NSWindow`) with cancel                                    |
-| Validation         | `bp_archive_test_progress()` with live entry progress                                        |
-| Preferences        | `NSUserDefaults` for window frame, columns, compression, multi-threaded Fluff, and Interchange Profile 1 |
-| Keyboard shortcuts | Cmd+O, Cmd+E, Cmd+W, Cmd+T, Cmd+I, Cmd+N, Cmd+Q                                              |
-| Linking            | Static to archiver core                                                                      |
+| Feature | Implementation |
+| --- | --- |
+| File list | `NSTableView` with resizable columns and horizontal scroll |
+| Drag-and-drop | `NSDraggingDestination` protocol; `file://` URL pasteboard |
+| File dialogs | `NSOpenPanel` / `NSSavePanel` |
+| Progress | Sheet-attached `BPProgressPanel` (`NSWindow`) with cancel |
+| Validation | `bp_archive_test_progress()` with live entry progress |
+| Preferences | `NSUserDefaults` for window frame, columns, compression, multi-threaded Fluff, and Interchange Profile 1 |
+| Keyboard shortcuts | Cmd+O, Cmd+E, Cmd+W, Cmd+T, Cmd+I, Cmd+N, Cmd+Q |
+| Linking | Static to archiver core |
 
 Classes:
 
@@ -3152,10 +3152,19 @@ destination stayed byte-identical and the substituted stage was not deleted
 under `build/atari-gui-create-msxh3kx1/failed-replacement`. A separate Hatari process-termination fixture preserves the old destination
 after 32 KiB reaches a sibling stage; a production retry restores the exact
 16 MiB payload while leaving the old partial stage
-(`build/atari-gui-cancel-jh47lf8m`). Interruption after moving the old target
-and safe stale-stage cleanup remain open. These
-runtime results and screenshots are retained in
-`docs/interoperability-remaining-steps.md` and the referenced `build/` evidence.
+(`build/atari-gui-cancel-jh47lf8m`). Interrupted-backup recovery now passes on
+Hatari/TOS 1.62: retry restores the
+original, removes the fully verified stage and journal, then extracts the
+replacement (`build/atari-gui-interrupt-backup-6q_jm0mo/run.json`). EmuTOS 1.4
+FAT12 also passes device-error recovery after write protection prevents
+publication: retry restores the original, publishes the replacement, and
+clears the transaction (`build/atari-gui-media-error-3keon0b7/run.json`).
+The equivalent TOS 1.62 error prompt remains unautomated; its failed keyboard
+probe is recorded in
+[the retained evidence](evidence/atari-tos162-keyboard-followup-20261031.json).
+Unverified partial stages can remain after restart or parent substitution.
+See the [interoperability matrix](interoperability-matrix.md) for qualification
+and remaining filesystem limits.
 
 ---
 
@@ -3315,45 +3324,45 @@ The core API is pure C89 and compiles on any platform with a C89 compiler. No po
 
 ## Frontend Comparison
 
-| Frontend       | Interface         | I/O layer              | Directory API           | Text encoding      | Metadata                                     |
-| -------------- | ----------------- | ---------------------- | ----------------------- | ------------------ | -------------------------------------------- |
-| Linux          | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| macOS X        | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions, resource fork, Finder info |
-| Haiku / BeOS   | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions + BFS MIME type             |
-| RISC OS        | CLI               | `OS_GBPB` SWI          | `OS_GBPB` enumerate     | Latin-1 ↔ UTF-8    | Load/exec address, attribute word            |
-| Windows 32/64  | CLI               | `<stdio.h>` + Win32    | `FindFirstFile`         | CP850/437 ↔ UTF-8  | FAT attributes                               |
-| Windows 3.1    | CLI               | `_lopen` / `_lread`    | `_dos_findfirst`        | CP850 ↔ UTF-8      | FAT attributes                               |
-| MS-DOS         | CLI               | `<stdio.h>`            | `opendir` / `findfirst` | CP850/437 ↔ UTF-8  | FAT attributes                               |
-| OS/2           | CLI               | `<stdio.h>` (kLIBC)    | `DosFindFirst`          | CP850 ↔ UTF-8      | FAT/HPFS attributes, `.TYPE` EA              |
-| AmigaOS 68k    | CLI               | `<stdio.h>` (libnix)   | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
-| AmigaOS 4.x    | CLI               | `<stdio.h>` (newlib)   | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
-| MorphOS        | CLI               | `<stdio.h>` (clib2)    | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
-| AROS           | CLI               | `<stdio.h>`            | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
-| Atari TOS/MiNT | CLI (`.TOS`)      | `<stdio.h>` (mintlib)  | `opendir` / `readdir`   | Atari ST ↔ UTF-8   | TOS attribute byte                           |
-| Mac OS 9       | GUI (drag & drop) | Mac File Manager       | `PBGetCatInfoSync`      | MacRoman ↔ UTF-8   | Type, creator, Finder flags, timestamps      |
-| Plan 9         | CLI               | Plan 9 `read`/`write`  | `dirread`               | UTF-8 native       | `Dir.mode` lower 16 bits                     |
-| Sinclair QL    | CLI               | `<stdio.h>`            | `qdirect` struct read   | ISO-8859-1 ↔ UTF-8 | None                                         |
-| Sharp X68000   | CLI               | `<stdio.h>`            | `_dos_files`            | Shift-JIS ↔ UTF-8  | None                                         |
-| FreeBSD        | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| NetBSD         | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| OpenBSD        | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| Solaris        | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| illumos        | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| HP-UX          | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| AIX            | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| IRIX           | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| GNU Hurd       | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| Tru64 UNIX     | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| SCO OpenServer | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| QNX Neutrino   | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| NeXTSTEP       | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| z/OS (USS)     | CLI               | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | Unqualified; filename bytes pass through without conversion | Unix permissions |
-| Linux FLTK     | GUI (FLTK)        | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| Win32 GUI      | GUI (Win32)       | UTF-16 Win32/CRT APIs  | `FindFirstFileW`        | UTF-8 ↔ UTF-16     | —                                            |
-| Windows FLTK   | GUI (FLTK)        | UTF-16 Win32/CRT APIs  | FLTK chooser / wide APIs | UTF-8 ↔ UTF-16   | —                                            |
-| WinForms .NET  | GUI (WinForms)    | DLL via P/Invoke       | `Directory.GetFiles`    | UTF-16 native      | —                                            |
-| Total Commander| WCX plugin        | WCX host API           | Host supplies paths     | UTF-16 ↔ UTF-8 (`W` API); strict ACP legacy API | —                         |
-| macOS Cocoa    | GUI (Cocoa)       | `<stdio.h>` (`fseeko`) | `opendir` / `readdir`   | UTF-8 native       | Unix permissions                             |
-| Atari GEM      | GUI (GEM/VDI)     | `<stdio.h>` (mintlib)  | `opendir` / `readdir`   | Atari ST ↔ UTF-8   | TOS attribute byte                           |
-| Amiga GadTools | GUI (GadTools)    | `<stdio.h>` (libnix)   | `opendir` / `readdir`   | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment               |
-| Haiku BeAPI    | GUI (BeAPI)       | `<stdio.h>` (`fseeko`) | `BDirectory`/`BEntry`   | UTF-8 native       | Unix permissions + BFS MIME type             |
+| Frontend | Interface | I/O layer | Directory API | Text encoding | Metadata |
+| --- | --- | --- | --- | --- | --- |
+| Linux | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| macOS X | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions, resource fork, Finder info |
+| Haiku / BeOS | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions + BFS MIME type |
+| RISC OS | CLI | `OS_GBPB` SWI | `OS_GBPB` enumerate | Latin-1 ↔ UTF-8 | Load/exec address, attribute word |
+| Windows 32/64 | CLI | `<stdio.h>` + Win32 | `FindFirstFile` | CP850/437 ↔ UTF-8 | FAT attributes |
+| Windows 3.1 | CLI | `_lopen` / `_lread` | `_dos_findfirst` | CP850 ↔ UTF-8 | FAT attributes |
+| MS-DOS | CLI | `<stdio.h>` | `opendir` / `findfirst` | CP850/437 ↔ UTF-8 | FAT attributes |
+| OS/2 | CLI | `<stdio.h>` (kLIBC) | `DosFindFirst` | CP850 ↔ UTF-8 | FAT/HPFS attributes, `.TYPE` EA |
+| AmigaOS 68k | CLI | `<stdio.h>` (libnix) | `opendir` / `readdir` | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment |
+| AmigaOS 4.x | CLI | `<stdio.h>` (newlib) | `opendir` / `readdir` | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment |
+| MorphOS | CLI | `<stdio.h>` (clib2) | `opendir` / `readdir` | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment |
+| AROS | CLI | `<stdio.h>` | `opendir` / `readdir` | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment |
+| Atari TOS/MiNT | CLI (`.TOS`) | `<stdio.h>` (mintlib) | `opendir` / `readdir` | Atari ST ↔ UTF-8 | TOS attribute byte |
+| Mac OS 9 | GUI (drag & drop) | Mac File Manager | `PBGetCatInfoSync` | MacRoman ↔ UTF-8 | Type, creator, Finder flags, timestamps |
+| Plan 9 | CLI | Plan 9 `read`/`write` | `dirread` | UTF-8 native | `Dir.mode` lower 16 bits |
+| Sinclair QL | CLI | `<stdio.h>` | `qdirect` struct read | ISO-8859-1 ↔ UTF-8 | None |
+| Sharp X68000 | CLI | `<stdio.h>` | `_dos_files` | Shift-JIS ↔ UTF-8 | None |
+| FreeBSD | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| NetBSD | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| OpenBSD | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| Solaris | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| illumos | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| HP-UX | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| AIX | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| IRIX | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| GNU Hurd | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| Tru64 UNIX | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| SCO OpenServer | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| QNX Neutrino | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| NeXTSTEP | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| z/OS (USS) | CLI | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | Unqualified; filename bytes pass through without conversion | Unix permissions |
+| Linux FLTK | GUI (FLTK) | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| Win32 GUI | GUI (Win32) | UTF-16 Win32/CRT APIs | `FindFirstFileW` | UTF-8 ↔ UTF-16 | — |
+| Windows FLTK | GUI (FLTK) | UTF-16 Win32/CRT APIs | FLTK chooser / wide APIs | UTF-8 ↔ UTF-16 | — |
+| WinForms .NET | GUI (WinForms) | DLL via P/Invoke | `Directory.GetFiles` | UTF-16 native | — |
+| Total Commander | WCX plugin | WCX host API | Host supplies paths | UTF-16 ↔ UTF-8 (`W` API); strict ACP legacy API | — |
+| macOS Cocoa | GUI (Cocoa) | `<stdio.h>` (`fseeko`) | `opendir` / `readdir` | UTF-8 native | Unix permissions |
+| Atari GEM | GUI (GEM/VDI) | `<stdio.h>` (mintlib) | `opendir` / `readdir` | Atari ST ↔ UTF-8 | TOS attribute byte |
+| Amiga GadTools | GUI (GadTools) | `<stdio.h>` (libnix) | `opendir` / `readdir` | ISO-8859-1 ↔ UTF-8 | Protection bits + file comment |
+| Haiku BeAPI | GUI (BeAPI) | `<stdio.h>` (`fseeko`) | `BDirectory`/`BEntry` | UTF-8 native | Unix permissions + BFS MIME type |

@@ -28,14 +28,14 @@ fit within the 8.3 filename limit.
 
 ## Capability Limits
 
-| Capability             | Mini limit                       | Notes                                                                                                       |
-| ---------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Compression methods    | 0 (stored), 1 (BoltLite), 2 (boltlz) | Methods 3 (Fluff) and above return unsupported-method; BoltLZ compression is unavailable on 16-bit mini builds |
-| Block size             | 8 KB – 32 KB                     | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`)                                                   |
-| Files per archive      | ≤ 65 535                         | Create rejects entry 65 536 and above                                                                       |
-| Uncompressed file size | ≤ 4 GB                           | `original_size.hi != 0` triggers error; display still shows the size                                        |
-| Practical archive size | ≤ 2 GB                           | `bp_off_t` is `long` on DOS; `fseek`/`ftell` cap at 2 GB                                                    |
-| Commands               | `c`, `x`, `l`, `t`, `i`          | `a` (append), `d` (delete), `-F` (Fluff) → unsupported message                                               |
+| Capability | Mini limit | Notes |
+| --- | --- | --- |
+| Compression methods | 0 (stored), 1 (BoltLite), 2 (boltlz) | Methods 3 (Fluff) and above return unsupported-method; BoltLZ compression is unavailable on 16-bit mini builds |
+| Block size | 8 KB – 32 KB | `-b` option is capped at 32 KB (`BP_MINI_MAX_BLOCK_SIZE`) |
+| Files per archive | ≤ 65 535 | Create rejects entry 65 536 and above |
+| Uncompressed file size | ≤ 4 GB | `original_size.hi != 0` triggers error; display still shows the size |
+| Practical archive size | ≤ 2 GB | `bp_off_t` is `long` on DOS; `fseek`/`ftell` cap at 2 GB |
+| Commands | `c`, `x`, `l`, `t`, `i` | `a` (append), `d` (delete), `-F` (Fluff) → unsupported message |
 
 Even when limits are exceeded in an existing archive, the `l` and `i` commands
 always enumerate and display all entries and their sizes correctly.
@@ -467,12 +467,12 @@ system differ.
 The `-mc` (compact) model is required. During create with BoltLite the following
 allocations must coexist:
 
-| Buffer                          | Size   |
+| Buffer | Size |
 | ------------------------------- | ------ |
 | BoltLite work buffer (lazy, create) | 18,432 bytes |
-| Input block buffer              | 32,768 bytes |
-| Output block buffer              | 36,880 bytes |
-| **Codec buffers during create**  | **88,080 bytes** |
+| Input block buffer | 32,768 bytes |
+| Output block buffer | 36,880 bytes |
+| **Codec buffers during create** | **88,080 bytes** |
 
 Extraction is lighter: the BoltLite work buffer is never allocated, leaving a
 34,883-byte compressed-input buffer and a 32,768-byte output buffer (allocated
@@ -489,68 +489,32 @@ keeping the code portable.
 
 ---
 
-## Files Modified
-
-| File                       | Change                                           |
-| -------------------------- | ------------------------------------------------ |
-| `src/core/bp_types.h`      | 16-bit `bp_uint32` override; `BP_MINI` constants |
-| `src/core/mini/compress.c` | boltlz decompress via shared decoder on 16-bit   |
-| `Makefile`                 | `dos16`, `cpm86`, `win16`, `os2_16` targets      |
-| `docs/portability.md`      | Mini platform rows and capability notes          |
-
-## Files Created
-
-| File                                     | Purpose                                       |
-| ---------------------------------------- | --------------------------------------------- |
-| `src/core/mini/compress.h`               | Mini compress API (stored + BoltLite + boltlz)    |
-| `src/core/mini/compress.c`               | Mini compression wrapper — no fluff           |
-| `src/core/mini/boltlz_decomp.h`          | Shared BoltLZ decoder API (16-bit)            |
-| `src/core/mini/boltlz_decomp.c`          | Shared BoltLZ decoder (16-bit)                |
-| `src/core/mini/archiver.h`               | Mini archiver API (subset of full)            |
-| `src/core/mini/archiver.c`               | Archiver with per-operation capability checks |
-| `src/frontend/mini_shared/mini_common.h` | Shared declarations for all mini frontends    |
-| `src/frontend/mini_shared/mini_common.c` | print_utf8_safe, bp_io_from_file, helpers     |
-| `src/frontend/dos16/main.c`              | 16-bit DOS CLI frontend (Watcom)              |
-| `src/frontend/cpm86/main.c`              | CP/M-86 CLI frontend (Aztec C 86)             |
-| `src/frontend/win16/main.c`              | Windows 3.x CLI frontend (Watcom / Borland)   |
-| `src/frontend/os2_16/main.c`             | OS/2 1.x CLI frontend (Watcom / Microsoft C)  |
-
----
-
 ## Verification
 
-1. `make dos16` (Watcom cross-toolchain or Docker container) — produces
-   `build/dos16/bpmini.exe`, zero errors under `-za`.
-2. `make cpm86` / `make win16` / `make os2_16` — each produces its binary with
-   zero errors.
-3. `wcc -bt=dos -mc -0 -za ... src/core/mini/boltlz_decomp.c` in isolation —
-   must compile without errors.
-4. `make` on Linux — full build unaffected.
-5. `python3 test/check_boltpack.py` — all existing integration tests pass.
-6. DOSBox or real DOS hardware:
-   - `bpmini c test.bolt file.txt` — create archive
-   - `bpmini l test.bolt` — list entries, sizes display correctly
-   - `bpmini x test.bolt` — extract, compare bytes
-   - `bpmini t test.bolt` — test integrity
-7. CP/M-86 (real hardware or emulator such as DOSBOX-X with CP/M-86 ROM):
-   - `bpmini c test.bolt file1.txt file2.txt` — files stored with basename
-     paths only
-   - `bpmini x test.bolt` — flat extraction to current drive/user area
-   - `bpmini l test.bolt` — directory paths from a multi-level archive display
-     correctly (even though extraction would flatten them)
-   - Extract archive containing `src/core/foo.c` and `src/core/bar.c` → both
-     extract to `FOO.C` and `BAR.C`; duplicate basename → warning printed
-8. Win16 (Windows 3.1 in DOSBox-X or VirtualBox):
-   - Same command set as DOS 16 test; confirm hierarchical extraction creates
-     subdirectories correctly.
-9. OS/2 1.x (VirtualBox or real hardware):
-   - Same command set; confirm full path extraction and mtime restoration.
-10. Cross-method test: create a fluff archive on Linux (`boltpack c -F
-out.bolt file.txt`), then `bpmini x out.bolt` on any mini target — must
-    print `"Method 3 not supported by mini"` and exit 1.
-11. Large-archive test: `bpmini l` on an archive with > 65 535 entries must
-    display all of them; `bpmini c` must reject at entry 65 536 with a clear
-    message.
+`make mini-test` checks the portable mini core on the host. With the required
+Watcom toolchain and DOSBox available, `make unit-test-dos16` exercises 16-bit
+bounds and allocation failures, while `make dos16-stack-interoperability-test`
+records workload-specific stack and heap use. `make mini-all` builds the
+DOS16, Win16 and OS/2-16 binaries and the host compatibility fixture.
+
+On each native target or emulator, create, list, test and extract a small
+archive, then compare the restored bytes with independent originals. Include
+non-ASCII names in the configured codepage, nested and empty directories where
+supported, timestamps, read-only existing destinations, corrupt data, and
+resource exhaustion. Cross-read target-created archives with the full reader
+and full-reader-created compatible archives with mini.
+
+CP/M-86 supports flat 8.3 paths: directory entries, lossy name projections and
+collisions must be refused, not flattened silently during extraction. Fluff
+entries must be reported as unsupported on every mini target. Allocation,
+name-index and entry-table ceilings can be lower than the format's 65,535
+entry limit on a particular 16-bit build. Listing and info can report sizes
+beyond a target's extraction capabilities without establishing that those
+archives can be extracted there.
+
+Use [resource accounting](16-bit-resource-accounting.md) for measured bounds
+and [the interoperability matrix](interoperability-matrix.md) for actual
+target evidence. Build success is separate from native runtime qualification.
 
 ---
 
@@ -571,14 +535,6 @@ all mini targets, including 32-bit DOS extenders and Linux tier-3 test builds.
 The implementation must handle the full 64-bit range correctly — `bp_uint64.hi`
 can legitimately be non-zero when listing large archives created on 64-bit
 systems.
-
-### Future `BP_MINI_NO_BOLTLZ` Flag
-
-If a future target needs stored-only mode (true real-mode small model with no
-room for the boltlz decode paths), a `BP_MINI_NO_BOLTLZ` compile flag can
-strip boltlz from `src/core/mini/compress.c` cleanly. The mini layer already
-isolates boltlz behind `bp_mini_compress_block`, so the removal is a
-localised change.
 
 ### CP/M-86 Filename Projection
 

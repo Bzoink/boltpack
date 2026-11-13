@@ -3,12 +3,12 @@
 These patches reproduce the isolated, rejected prototypes and the first ANS
 state-layout prototype. They are benchmark inputs, not codec configurations.
 Start each patch from `fluff.c` at revision
-`f627bac5e77da844a863a99a41bdfd8eb3c3d0ee` (SHA-256
+`28aaa99963d29fcd3126b98262d319a2a98beb3d` (SHA-256
 `b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532`).
 
 ```sh
 mkdir -p build/fluff-prototype
-git show f627bac5:src/core/fluff.c > build/fluff-prototype/fluff.c
+git show 28aaa999:src/core/fluff.c > build/fluff-prototype/fluff.c
 patch -d build/fluff-prototype -p1 < test/experiments/fluff-2026-10-15/backward.patch
 clang -ansi -pedantic -O3 -march=native -Isrc/core test/bench_fluff.c \
   build/fluff-prototype/fluff.c -o build/fluff-prototype/bench

@@ -23,11 +23,11 @@ remains unqualified.
 Non-ASCII MacRoman projection, collision behavior, resource forks, Finder
 fields, directory dates, partial failures, and append behavior also remain
 untested in the guest. The boot, media, and package records are
-[here](../build/macos-classic-qemu/boot-smoke-20261101/run.json) and
-[here](../build/macos-classic-qemu/hfs-media-20261101/run.json) and
-[here](../build/macos-classic-qemu/resource-package-20261101/run.json). The
+[boot smoke-test record](../build/macos-classic-qemu/boot-smoke-20261101/run.json) and
+[HFS media record](../build/macos-classic-qemu/hfs-media-20261101/run.json) and
+[resource-package record](../build/macos-classic-qemu/resource-package-20261101/run.json). The
 runtime transfer record is
-[here](../build/macos-classic-qemu/resource-package-20261101/runtime-root-file-transfer.json).
+[root-file transfer record](../build/macos-classic-qemu/resource-package-20261101/runtime-root-file-transfer.json).
 The hybrid-CD preparation below needs `genisoimage` (`sudo apt install
 genisoimage` on Debian).
 
@@ -498,10 +498,13 @@ normal GUI then extracted that archive to a fresh `OUT` directory; output bytes
 matched the source and its timestamp restored to whole-second precision. The
 host-directory drive changed the POSIX mode from 0664 to 0644, so this does not
 qualify POSIX mode preservation. Mouse activation of Create in the shipped
-dialog remains unqualified. Production GUI extraction, file attributes, and
+dialog has separate Hatari/TOS
+1.62 evidence in `build/atari-mouse-diagnostic`; that click opens the save
+selector and does not qualify every pointer interaction. Production GUI
+extraction, file attributes, and
 filesystem-specific partial outcomes are qualified on Hatari FAT12 with TOS
-1.06, 1.62, 2.05, and EmuTOS 1.4; see the R06 evidence in
-[`interoperability-remaining-steps.md`](interoperability-remaining-steps.md).
+1.06, 1.62, 2.05, and EmuTOS 1.4; see the Atari GEM GUI evidence in the
+[interoperability matrix](interoperability-matrix.md).
 GEM's leftmost Desk
 title is the application name and aligns with its pull-down; see the
 [Atari Compendium, AES menu bar and GEM menu guidelines](https://info-coach.fr/atari/software/_development/Atari-Compendium.pdf)
@@ -513,8 +516,8 @@ with the bundled EmuTOS 1.4 ROM at `build/freemint-probe/etos1024k.img`. Run it
 with `make CC=gcc HATARI_TOS=build/freemint-probe/etos1024k.img
 atari-gui-menu-pointer-test`. The runner waits for the initial screen and
 checks that each menu visibly opened before selecting its item; per-action
-records and hash verification are listed under R06 in the
-[remaining interoperability steps](interoperability-remaining-steps.md).
+records and hash verification are retained under `build/atari-menu-pointer-*`;
+the [interoperability matrix](interoperability-matrix.md) summarizes coverage.
 
 On 2026-10-29, additional `xdotool` probes under `xvfb-run` moved the Hatari
 pointer onto the `SOURCE.TXT` row, selector OK button, and Create button, but

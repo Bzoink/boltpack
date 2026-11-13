@@ -658,22 +658,22 @@ and [`FFS`](../build/amiga-native-ffs-target-profile-getvar-20261101/manifest.tx
 This qualifies that profile transfer on the tested emulator/filesystem
 combination, not every AmigaDOS volume or OS version.
 
-## Proposed behavior
+## Writer behavior
 
-A full-featured creator should accept a target profile on create and append,
-for example:
+The shared POSIX, macOS, and Windows creators accept target profiles on
+create and append, with the client/profile coverage listed above. For example:
 
 ```text
 boltpack create --target-profile=atari-st archive.blt source/
 ```
 
-The initial command-line option is intended for full clients on 32-bit and
-wider systems. The selected profile describes the destination, independently
+The command-line option is available in the enabled full-client builds.
+The selected profile describes the destination, independently
 of the creator's operating system. A constrained client may still consume an
 archive made under a profile if its reader supports the declared codecs and
 limits.
 
-The selected profile should:
+Writer preflight checks the following before publication:
 
 1. Preflight the complete source tree before opening the final archive path.
 2. Convert each source name exactly from the creator's native encoding to
@@ -687,13 +687,11 @@ The selected profile should:
 5. Refuse publication if the archive would violate the profile. Diagnostics
    should identify the path or property that failed.
 
-Regular files and directories are the baseline supported entry types. A
-profile must explicitly allow and qualify symlink creation before it can
-promise symlink extraction. Profiles for filesystems without symlinks should
-refuse archives containing them in strict mode. Resource forks, Finder fields,
-Amiga comments/protection bits, RISC OS filetypes, and other platform metadata
-must have an explicit required/portable/best-effort policy; they must not be
-silently treated as ordinary file contents.
+Regular files and directories are the baseline supported entry types.
+Profiles allow or refuse symlinks and supplementary metadata according to
+their documented target contract. Native metadata is not automatically
+translated between platforms. See each profile above for what it preserves,
+omits, or refuses, and the interoperability matrix for reader behavior.
 
 Profiles default to exact names and refusal. The shared POSIX, Windows, and
 macOS CLIs support an explicit auto-alias mode backed by `BPNAMES.TXT` for
@@ -701,27 +699,21 @@ Atari ST and the DOS-family 8.3 and CP850 long-filename profiles, AmigaOS 68k,
 Classic HFS, Sinclair QL, RISC OS, X68000, CP/M-86, and the Linux, POSIX, Haiku
 and Plan 9 profiles.
 
-For append, validate both the existing archive and all new entries under the
-selected profile. Do not append to an archive that already violates it.
+Auto-renaming is create-only and rejects symbolic links. It writes a mapping
+report named `BPNAMES.TXT` (`BPNAMESTXT` on RISC OS); the report does not
+automatically restore original names on extraction. Without auto-renaming,
+`--target-name-report` is supported for Atari creation only.
 
-## On-disk declaration
+Append validates both the existing archive and new entries under the selected
+profile and refuses an archive that already violates it.
 
-An optional archive-level declaration could record a stable profile identifier
-and policy revision, such as `atari-st-gemdos-v1`. This would let `boltpack info`
-show the intended compatibility claim and let a reader check it. The
-declaration must be treated as a claim, not proof: readers still validate
-archive structure and projected paths themselves.
+## Archive representation
 
-The serialization mechanism remains open. First check whether an optional
-archive-level descriptor can be added compatibly to format version 6 and safely
-ignored by old readers. If not, define it in a future format version. Do not
-reuse creator OS/CPU fields or imply that the creator's system is the target.
-An untagged archive remains valid; a missing declaration means “no target
-profile asserted.”
-
-Profile identifiers need explicit revisions. Changing the allowed codepage,
-name rules, codec set, or numeric limits changes conformance and therefore
-requires a new profile revision or identifier.
+Profiles are writer-side constraints and are not serialized in format 6.
+The reserved archive-header flags remain zero. Creator OS/CPU fields describe
+the creator, not an intended destination, and `boltpack info` cannot recover
+the selected target profile. Select the profile again when appending.
+Readers still validate ordinary format records and native path mappings.
 
 ## Profile catalog
 
@@ -731,7 +723,7 @@ marked **confirm** require target-specific qualification before the profile
 can make a strong compatibility promise.
 
 | Profile | Target constraints to enforce | Codec and size policy | Current evidence and qualification |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `linux-posix-v1` | Valid canonical UTF-8 paths; 255-byte components and bounded 4,095-byte paths; case-sensitive names; reject duplicate and file/directory-prefix conflicts. Refuse resource and metadata entries skipped by the Linux extractor; allow symlinks. | Full reader codecs compiled into the target. Optional Interchange Profile 1 limits. | The shared POSIX, Windows, and macOS CLI writer option `--target-profile=linux-posix-v1`; host checks cover path encoding, symlinks, case-sensitive names, and Linux-reader acceptance. Win64 Wine and the macOS POSIX host shim also cover automatic aliases and reports. |
 | `linux-mini-v1` | Same Linux path mapping; bounded preflight; regular files and directories only; check existing archive when appending. | Stored, BoltLite, and BoltLZ; 32 KiB maximum block; 65,535 physical entries; 4,294,967,295-byte per-file limit; 2,147,483,647-byte serialized archive limit. | The shared POSIX, Windows, and macOS CLI writer option `--target-profile=linux-mini-v1`; integration checks use the native 32-bit mini reader for integrity and extracted payloads. Runtime checks cover this Linux target profile directly. |
 | `windows-nt-lfn-v1` | Windows CLI: UTF-8 paths mapped through UTF-16; NFC collision keys; reject reserved device names, trailing dots/spaces, case-insensitive aliases, and file/directory conflicts; 255-unit components and 259-unit relative paths. Win32, .NET, FLTK, and WCX apply create-side preflight. | Methods supported by the selected Windows reader build; optional Interchange Profile 1 limits. Portable Windows FAT metadata is best effort. | Native Windows CLI option `--target-profile=windows-nt-lfn-v1`; `make win64-target-profile-test` runs create/append and Linux-created collision/invalid-name archives under Wine. `make win32-target-profile-test` runs the same corpus against the Win32 binary when 32-bit Wine is installed; this machine has the MinGW Win32 compiler but Wine reports that its 32-bit runtime is missing. Win32 GUI changes compile and `make win64-gui-profile-test` exercises its production preflight under Wine; full dialog/create flow remains unqualified. Mono 6.12 compiles the .NET GUI sources and `make win-gui-net-profile-host-test` exercises its production create validator and collision rules. SDK-style .NET 4.8 project build and Windows WinForms runtime remain unqualified. `make win64-fltk-wine-create-test` verifies GUI creation with a supplementary-Unicode filename, Linux full/mini integrity, and exact payload extraction; case and NFC source-collision suites verify refusal before the save dialog and archive publication ([case](../build/r08-win64-fltk-wine-create-dn0h0ceg/run.json), [NFC](../build/r08-win64-fltk-wine-create-t8eqezop/run.json)). `make win64-wcx-wine-test` verifies Unicode pack/append and refuses case/NFC collision fixtures while preserving the archive on failed append. Native Windows volume behavior remains unqualified. |
@@ -745,7 +737,7 @@ can make a strong compatibility promise.
 | `atari-st-gemdos-v1` | Exact Atari ST codepage conversion followed by classic GEMDOS legality checks; GEMDOS excludes bytes above `0x7f`, with 8.3 components, 125-byte full file-specification cap, ASCII case folding, and collision/prefix preflight. Strict mode refuses shortening or high-bit filename bytes; Linux auto-rename creates ASCII aliases with a mapping report. | Stored/BoltLite, 16 KiB blocks, Interchange Profile 1 count/archive-size limits, and a 1,024-entry/32 KiB name-index budget. The signed-long GEMDOS seek path motivates the 2,147,483,647-byte archive/file ceiling. Current full Atari CLI requires at least 1 MiB RAM (Hatari/TOS 1.62); 512 KiB cannot load the executable. | The shared POSIX, macOS, and Windows CLIs accept `--target-profile=atari-st` and `--target-auto-rename`. Linux host integration verifies strict rejection of Atari-codepage-representable `ö` plus alias/report behavior. `make macosx-host-test` verifies strict create/append, GEMDOS case collision and high-bit refusal, codec limits, and mode-metadata omission ([run](../build/macosx-host/runs/macosx-host-hclhqtxq/run.json)); it does not qualify native macOS metadata behavior. `make win64-target-profile-test` under Wine covers projected-name refusal, creation, append collision, codec refusal, and Linux-reader acceptance. Hatari/TOS 1.62 FAT12 verifies profile extraction, and a [guest alias-transfer run](../build/atari-hatari-alias-profile-20261101-rerun/run.json) confirms the report and exact payload for an accented source name. The [4 MiB run](../build/atari-hatari-fat-20261101-135330/run.json) and [1 MiB run](../build/atari-hatari-fat-20261101-135525/run.json) passed; the [512 KiB failure record](../build/atari-hatari-fat-20261101-135705/run.json) retains Hatari’s “Program too large” diagnostic; the 317,438-byte `-Os` build failed the same way in [this run](../build/atari-hatari-fat-512k-os/run.json). Physical Atari and other TOS/filesystem behavior remain open. |
 | `amigaos-68k-latin1-v1` | Exact Latin-1 projection; reject colon, absolute paths, empty/dot components, and control characters; 30-byte component and 255-byte relative-path v1 ceilings; Latin-1 case-fold collision and prefix checks. | Stored/BoltLite with Interchange Profile 1 bounds; signed 32-bit per-file I/O ceiling. | Linux x86-64, macOS, and Windows 32/64 CLI options `--target-profile=amigaos-68k-latin1`; Linux integration plus macOS POSIX-host and Win64 Wine tests cover creation, append, encoding, limits, metadata omission/refusal, and Linux-reader acceptance. FS-UAE 3.1.66/Kickstart 2.04 extracts Linux-created profile archives and reads back `café.txt` and exact bytes on OFS and FFS; [OFS](../build/amiga-native-ofs-target-profile-getvar-20261101/manifest.txt), [FFS](../build/amiga-native-ffs-target-profile-getvar-20261101/manifest.txt). Native macOS and other Amiga versions/filesystems remain unqualified. OS4, MorphOS, and AROS need separate profiles. |
 | `cpm86-83-v1` | Flat uppercase ASCII 8.3 names; regular files only; reject directories, separators, unsupported characters, and projected collisions. | Stored/BoltLite, 32 KiB max blocks, 256 entries, signed 32-bit files, 2,147,483,647-byte archive ceiling. | Linux x86-64, macOS, and Windows 32/64 CLI writer option `--target-profile=cpm86-83`; Linux integration extracts with the CP/M-86 frontend and checks limits, macOS host-shim and Windows Wine checks cover projection, append, collisions, metadata omission, codec refusal, and Linux-reader acceptance. Native CP/M-86 runtime remains unqualified. |
-| `sinclair-ql-latin1-v1` | Exact Latin-1 conversion; project `/` to QDOS `_` before collision checks; reject empty/dot components, controls, colon, and backslash; 36-byte relative-path ceiling; case-fold aliases. QL native source creation strips recognized device prefixes; Linux, macOS, and Windows writers validate archive-member output projection. | Stored/BoltLite and Interchange Profile 1 bounds; signed 32-bit per-file I/O ceiling; data and directories only, no metadata, resource forks, or links. Timestamp restoration depends on QDOS range and timezone. | Linux x86-64, macOS, and Windows CLIs accept `--target-profile=sinclair-ql-latin1-v1`. Linux and macOS host suites check projection, aliases, limits, metadata policy, append, and refusals; macOS evidence is [here](../build/macosx-host/runs/macosx-host-01_ynba0/run.json). `ql-host-test` checks frontend extraction, and Minerva 1.98 sQLux hostFS extracts Linux-created Latin-1 flat/nested names byte-identically. Win64 Wine checks creation, slash collisions, append refusal, unmappable names, codec refusal, and Linux-reader acceptance. Physical QL disks and native macOS behavior remain unqualified. |
+| `sinclair-ql-latin1-v1` | Exact Latin-1 conversion; project `/` to QDOS `_` before collision checks; reject empty/dot components, controls, colon, and backslash; 36-byte relative-path ceiling; case-fold aliases. QL native source creation strips recognized device prefixes; Linux, macOS, and Windows writers validate archive-member output projection. | Stored/BoltLite and Interchange Profile 1 bounds; signed 32-bit per-file I/O ceiling; data and directories only, no metadata, resource forks, or links. Timestamp restoration depends on QDOS range and timezone. | Linux x86-64, macOS, and Windows CLIs accept `--target-profile=sinclair-ql-latin1-v1`. Linux and macOS host suites check projection, aliases, limits, metadata policy, append, and refusals; macOS evidence is [the macOS host record](../build/macosx-host/runs/macosx-host-01_ynba0/run.json). `ql-host-test` checks frontend extraction, and Minerva 1.98 sQLux hostFS extracts Linux-created Latin-1 flat/nested names byte-identically. Win64 Wine checks creation, slash collisions, append refusal, unmappable names, codec refusal, and Linux-reader acceptance. Physical QL disks and native macOS behavior remain unqualified. |
 | `x68000-sjis-v1` | Human68k v3 18.3 names in strict standard Shift-JIS; 18-byte stem, 3-byte extension, 255-byte relative path; reject CP932 extensions, DOS-forbidden characters, malformed dot/separator syntax, ASCII case aliases, and file/directory conflicts; scanner respects Shift-JIS trail bytes. | Stored/BoltLite with Interchange Profile 1 bounds; signed 32-bit per-file I/O ceiling; data and directories only, no links, resource forks, or metadata. | The shared POSIX, Windows, and macOS CLI writer option `--target-profile=x68000-sjis-v1`; host integration cross-extracts through the X68000 frontend and verifies raw Shift-JIS paths. Win64 Wine covers 18.3, trail-byte handling, a greater-than-255-byte existing path refusal, case/prefix collisions, codec refusal, metadata omission, and Linux-reader acceptance. Native Human68k v3 behavior and older 8.3 systems remain unqualified. |
 | `riscos-latin1-v1` | Exact Latin-1 conversion; 10-byte components and conservative 255-byte relative paths; reject absolute paths, empty/dot components, RISC OS syntax characters, and literal dots that alias directory separators; FileSwitch Latin-1 case-fold and file/directory-prefix checks. Data and directories only. Linux, Windows, and macOS writers omit native/portable host metadata; the RISC OS client uses destination defaults. | Stored/BoltLite with Interchange Profile 1 limits (16 KiB blocks, 65,535 physical entries, 4 GiB per file and 2 GiB serialized archive); additionally cap files at signed 32-bit I/O size. | Linux x86-64, Windows, and macOS CLI writer option `--target-profile=riscos-latin1-v1`; Linux and macOS host integration check Latin-1 names, FileCore limits, aliases, append validation, and archive integrity. RISC OS host-shim tests verify native-writer output through Linux full/mini readers. Win64 Wine checks Latin-1 creation, component/dot refusals, existing case-alias refusal, metadata omission, codec limits, and Linux-reader acceptance. macOS host shim also verifies metadata omission/refusal and failed-append preservation ([run record](../build/macosx-host/runs/macosx-host-irdb43l9/run.json)). Native filing-system equivalence and metadata defaults remain unqualified. |
 | `macos-classic-hfs-v1` | MacRoman mapping; HFS component limit of 31 bytes; conservative 255-byte path limit; reject colon, controls, backslash, dot components, and unmappable names; MacRoman case-fold and file/directory conflict checks. Refuses links, resource forks, and metadata; the macOS CLI omits Unix mode records and refuses source Finder/resource-fork data, while the Windows CLI omits FAT records and refuses read-only/hidden/system sources. | Stored/BoltLite and Interchange Profile 1 bounds; signed 32-bit per-file I/O ceiling. | Linux x86-64, macOS, and native Windows CLI writer options `--target-profile=macos-classic-hfs-v1`; Linux and macOS host integration plus Win64 under Wine check conversion, collisions, limits, create, append, metadata/type policy, and integrity. QEMU 10.0.13 q800 boots System 7.5.3; the 68k app launches and extracts a stored root-level file with byte-identical payload readback. A later profile run creates both nested directories and three root-level files with expected lengths, but leaves the nested 21-byte payload under staging name `BP0003.TMP` and reports partial; the stage-prefix bug found in that run is fixed. Nested publication and payload hashes remain unqualified. Non-ASCII MacRoman behavior and metadata restoration remain unqualified. See [runtime notes](emulator-setup.md) and [nested run record](../build/macos-classic-qemu/resource-package-20261101/runtime-nested-stage-fix-20261101.json). HFS and HFS+ are separate. |
@@ -767,20 +759,19 @@ The writer must choose the intersection of the requested target profile and
 the actual writer/reader capabilities. An explicit method option outside that
 intersection should fail rather than be silently changed.
 
-## Compatibility levels and reporting
+## Metadata and preservation reporting
 
-Profiles should define one of these outcomes for metadata:
+Metadata policy is defined per profile; there is no general
+required/portable/best-effort command-line selector. Writers can omit source
+metadata outside the selected target contract, and append preflight rejects
+existing entries the profile does not allow. An archive made for a constrained
+target is therefore not a complete backup of the source filesystem.
 
-- **Required:** refuse an archive operation when the requested metadata cannot
-  be preserved as specified.
-- **Portable:** retain supported portable metadata in the archive; report
-  native restoration that the target cannot perform.
-- **Best effort:** preserve payload and representable paths, and return a
-  partial result for unsupported metadata.
-
-Do not describe an archive as “fully compatible” when only payload and names
-are guaranteed. `boltpack info` should distinguish a target profile assertion
-from observed codec support and from metadata loss reported during extraction.
+Extraction reports unsupported metadata or failed restoration as partial
+preservation. Profile-conforming names and payloads alone do not establish
+that every filesystem resource can be restored. Use the
+[same-system transfer guide](same-system-transfer.md) to check frontend
+preservation limits.
 
 ## Remaining qualification work
 
@@ -799,12 +790,12 @@ The remaining work is evidence gathering and any fixes it exposes:
    documented value. In particular, retain the stated Atari GEMDOS seek/RAM,
    Amiga path, and QL/X68000 runtime limits as conservative until native
    evidence supports changing them.
-3. Keep Atari auto-renaming and its create-time mapping report specific to the
-   Atari profile. Reports are not restored as archive metadata; users retain
-   the report when they need to map aliases back to source names.
+3. Qualify automatic aliases and their create-time mapping reports for each
+   supported profile. Retain the report when original-to-target name mappings
+   are needed; extraction does not reverse aliases automatically.
 4. Keep unsupported clients and runtime environments listed per catalog row;
    host-shim success alone does not close those gaps.
 
-Related records: [Interoperability matrix](interoperability-matrix.md),
-[Interoperability requirement ledger](interoperability-requirement-ledger.md),
-and [archive format plan](archive-format-plan.md).
+Related records: [interoperability matrix](interoperability-matrix.md),
+[requirement ledger](interoperability-requirement-ledger.md), and
+[hardware testing](hardware-testing.md#qualification-and-evidence).

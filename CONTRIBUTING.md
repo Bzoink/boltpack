@@ -49,7 +49,7 @@ make unit-test                               # unit tests only (fast)
 make unit-test-asan                          # unit tests under AddressSanitizer
 python3 test/check_boltpack.py --verbose     # integration tests, verbose
 python3 test/bench_corpus.py                 # compression corpus benchmark
-make fuzz                                    # fuzz the ASan build
+make boltlz-fuzz CC=clang                     # build the BoltLZ libFuzzer target
 ```
 
 What to add with your change:
@@ -61,6 +61,9 @@ What to add with your change:
   versions keep decoding
 
 Use `make unit-test-asan` or `make debug` for anything memory-sensitive.
+The generic `make fuzz` recipe currently references the absent
+`test/test_fuzz.py`; use the working BoltLZ fuzzing instructions in
+[docs/boltlz-development.md](docs/boltlz-development.md#fuzzing).
 
 ## Core Language Rules
 
@@ -75,8 +78,9 @@ platforms.
 - No compiler extensions — no `__attribute__`, `__declspec`, or `#pragma pack`
 - Use the sized types from `bp_types.h` (`bp_uint8`, `bp_uint16`, `bp_uint32`,
   `bp_uint64`) — never raw `int`/`long` for sized data
-- `bp_uint32` is `unsigned int`, not `unsigned long` — this matters for correct
-  LP64 arithmetic
+- `bp_uint32` uses `unsigned int` on normal 32/64-bit builds and `unsigned long`
+  on configured 16-bit-int builds; use the typedef rather than assuming a
+  native integer width
 - Return `0` on success and non-zero on error; check every return value
 - The core never calls `fopen`/`fread` directly — it goes through the `bp_io_t`
   callbacks so non-POSIX platforms can supply their own I/O
@@ -90,8 +94,9 @@ requirement for the portable baseline. See
 
 Frontend code under `src/frontend/<platform>/` may use its platform APIs and
 language, but those dependencies must not leak into the portable baseline. The
-baseline C89 paths do not create threads. OpenMP batching is isolated in the
-optional fast-Fluff module and enabled only by supported build targets.
+baseline build does not require threads. Supported modern builds enable
+OpenMP batching in `archiver.c` for BoltLZ and Fluff; the separate accelerated
+Fluff encoder uses C11/OpenMP.
 
 ## Style
 

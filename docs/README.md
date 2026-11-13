@@ -17,45 +17,47 @@ make
 
 ## Canonical Docs
 
-| File                   | Purpose                                                           |
-| ---------------------- | ----------------------------------------------------------------- |
-| `architecture.md`      | Layer boundaries, core interfaces, progress model, and error flow |
-| `specification-1.0.md` | Normative archive and codec rules                                 |
-| `format.md`            | Concise overview of the `.bolt` / `.blt` file format              |
-| `archive-format-audit.md` | Portability and filesystem-attribute preservation audit         |
-| `algorithms.md`        | BoltLite, boltlz, and Fluff implementation behavior                   |
-| `portability.md`       | Supported environments, C89 constraints, and toolchain reference  |
-| `frontends.md`         | Frontend responsibilities and platform-specific integration notes |
+| File | Purpose |
+| --- | --- |
+| `architecture.md` | Layer boundaries, core interfaces, progress model, and error flow |
+| `specification-1.0.md` | Normative archive and codec rules |
+| `format.md` | Concise overview of the `.bolt` / `.blt` file format |
+| `algorithms.md` | BoltLite, boltlz, and Fluff implementation behavior |
+| `portability.md` | Supported environments, C89 constraints, and toolchain reference |
+| `frontends.md` | Frontend responsibilities and platform-specific integration notes |
 
 ## Support Docs
 
-| File                   | Purpose                                                |
+| File | Purpose |
 | ---------------------- | ------------------------------------------------------ |
-| `BUILD.md`             | Native build procedures and platform-specific caveats  |
-| `mini.md`              | 16-bit mini variant architecture and capability limits |
+| `BUILD.md` | Native build procedures and platform-specific caveats |
+| `mini.md` | 16-bit mini variant architecture and capability limits |
 | [16-bit-resource-accounting.md](16-bit-resource-accounting.md) | Watcom map sizes, 16-bit heap limits, and measured resource bounds |
-| [archive-format-plan.md](archive-format-plan.md) | Format 6 work plan and remaining interoperability tasks |
-| [interoperability-completion-plan.md](interoperability-completion-plan.md) | Ordered completion backlog, target environments, and exit criteria |
-| [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) | Phase 0–3 and basic Profile 1 acceptance mapped to every frontend/build |
+| [interoperability-requirement-ledger.md](interoperability-requirement-ledger.md) | Format, extraction, naming, metadata, and Profile 1 acceptance by frontend/build |
+| [target-compatibility-profiles.md](target-compatibility-profiles.md) | Writer-side target profiles, automatic filename aliases, and compatibility limits |
 | [emulator-setup.md](emulator-setup.md) | Verified local Atari and Amiga emulator startup settings |
 | [same-system-transfer.md](same-system-transfer.md) | What data and filesystem resources survive create-then-extract between two systems of the same type, per system |
 | [usable-roundtrip.md](usable-roundtrip.md) | Acceptance gate that runs restored applications, checks essential metadata and verifies failure preservation |
 | [hardware-testing.md](hardware-testing.md) | How to test on real machines and report results; per-system test steps |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |
-| `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior          |
-| `RELEASES.md`          | Release workflow (maintainer reference)                |
+| `DEPENDENCY-CHECKS.md` | Build and packaging dependency-check behavior |
+| `RELEASES.md` | Release workflow (maintainer reference) |
 
 ## Codec Development and Evaluations
 
-| File                                                               | Purpose                                                                             |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| [boltlz-design.md](boltlz-design.md)                               | BoltLZ representation, token layout, and decoder constraints                       |
-| [boltlz-development.md](boltlz-development.md)                     | BoltLZ implementation, benchmarks, and reproducible validation commands             |
-| [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation and full-block robustness checks                      |
-| [boltlite-evaluation-2026-10-14.md](boltlite-evaluation-2026-10-14.md) | BoltLite format-5 evaluation and measured tradeoffs                                  |
-| [fluff-compression-review.md](fluff-compression-review.md)         | Pre-v1.8 Fluff ratio review, historical baseline, speed budget, and experiment plan |
-| [fluff-experiments-2026-10-15.md](fluff-experiments-2026-10-15.md) | Measured Fluff ratio experiments and reproduction commands                           |
-| [fluff-memory-2026-10-15.md](fluff-memory-2026-10-15.md)           | Fluff allocation accounting, buffer reuse, and memory/speed measurements             |
+| File | Purpose |
+| --- | --- |
+| [boltlz-design.md](boltlz-design.md) | BoltLZ representation, token layout, and decoder constraints |
+| [boltlz-development.md](boltlz-development.md) | BoltLZ implementation, benchmarks, and reproducible validation commands |
+| [boltlz-validation-2026-10-14.md](boltlz-validation-2026-10-14.md) | Independent corpus evaluation and full-block robustness checks |
+| [boltlite-evaluation-2026-10-14.md](boltlite-evaluation-2026-10-14.md) | BoltLite format-5 evaluation and measured tradeoffs |
+| [fluff-experiments-2026-10-15.md](fluff-experiments-2026-10-15.md) | Measured Fluff ratio experiments and reproduction commands |
+| [fluff-memory-2026-10-15.md](fluff-memory-2026-10-15.md) | Fluff allocation accounting, buffer reuse, and memory/speed measurements |
+
+The dated codec reports retain measurements, corpus and source hashes, and
+reproduction instructions. They describe the measured revisions; use
+`algorithms.md` for current behavior. Current qualification gaps belong in the
+interoperability matrix, requirement ledger, and hardware-testing guide.
 
 ## Elsewhere in the Repository
 

@@ -1,8 +1,10 @@
 # BoltLZ development guide
 
-BoltLZ is BoltPack's default general-purpose codec: archive method 2, raw
-block format 2, archive format 6. Balanced is the default. `-2` or `--boltlz`
-selects the codec; `-l 1` selects Fast and `-l 2` selects Balanced. The CLI
+BoltLZ is BoltPack's fast general-purpose codec: archive method 2, raw
+block format 2, archive format 6. It is the default on 32-bit CLIs; 64-bit
+CLIs default to Fluff, and target profiles can choose other defaults.
+Balanced is BoltLZ's default mode. `-2` or `--boltlz` selects the codec;
+`-l 1` selects Fast and `-l 2` selects Balanced. The CLI
 accepts only levels 1 and 2 and rejects other numeric levels. `--light` maps to
 Fast; `--standard` and `--best` both map to Balanced. Readers accept only
 archive format 6.
@@ -31,8 +33,8 @@ distances, truncation, and output bounds are validated.
 
 The archive retains the 1% stored-block fallback and verifies CRC-32 for
 both encoded blocks and reconstructed file data. Empty entries are Stored.
-CLI and GUI defaults, method labels, source kits and platform build recipes
-use BoltLZ. All GCC/Clang codec builds use `-O2`.
+Source kits and platform build recipes include BoltLZ where supported.
+GCC/Clang BoltLZ builds use `-O2`.
 
 ## Checks
 

@@ -181,12 +181,15 @@ versioned benchmark runner, copy `src/core/fluff.c`, replace
 
 ## Reproduce
 
-The baseline is revision `f627bac5e77da844a863a99a41bdfd8eb3c3d0ee`, matching
-the review's source SHA-256. From the repository root:
+The baseline is revision `28aaa99963d29fcd3126b98262d319a2a98beb3d`
+(formerly `f627bac5` before the attribution-only history rewrite). Its
+`src/core/fluff.c` SHA-256 is
+`b0884d8fae7346a556807899152279708e36c78f3e0ad8db319cc24676a0e532`.
+From the repository root:
 
 ```sh
 mkdir -p build
-git show f627bac5:src/core/fluff.c > build/fluff-ab-baseline.c
+git show 28aaa999:src/core/fluff.c > build/fluff-ab-baseline.c
 python3 test/bench_fluff.py --baseline-source build/fluff-ab-baseline.c \
   --output build/fluff-ab-portable --cc clang --pairs 5 --levels 1,5,8 \
   test/corpus/silesia/*

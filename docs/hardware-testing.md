@@ -24,6 +24,60 @@ the machine. When a result differs, the difference is the useful finding.
 | Mac OS 9 (PowerPC) | [Mac OS 9](#mac-os-9-powerpc) | not run |
 | QNX, HP-UX, IRIX, NeXTSTEP, SCO, Tru64, AIX < 7.3 | [Unix systems without `openat()`](#unix-systems-without-openat-qnx-hp-ux-irix-nextstep-sco-tru64-aix-before-73) | not run |
 
+## Qualification and evidence
+
+The [interoperability matrix](interoperability-matrix.md) records capabilities
+and per-frontend evidence. The
+[requirement ledger](interoperability-requirement-ledger.md) maps that evidence
+to format, lifecycle, name, metadata, and Profile 1 acceptance. Passing a host
+shim, cross-build, or emulator fixture does not qualify an untested native OS,
+filesystem, GUI, or CPU variant.
+
+For each target, verify create, list, test, extract, and every supported archive
+edit. Transfer archives in both directions with a full reader and a constrained
+reader where applicable. Compare payload bytes independently, including empty
+files and directories. Check exact native name projection, case and prefix
+collisions, unrepresentable names, codec/block limits, unknown versus epoch-zero
+times, deferred directory attributes, and native/portable metadata precedence
+in both record orders. Unsupported preservation must be reported explicitly.
+
+Failure cases include corrupt data, failed writes/closes, cancellation,
+publication failure, existing read-only targets, and interrupted replacement.
+Existing files and archives must survive handled failures. Recovery tests must
+check both restored bytes and leftover stages, backups, or journals. A process
+kill in an emulator does not establish power-loss durability on hardware.
+
+Important remaining target checks include:
+
+| Target | Qualification still needed |
+| --- | --- |
+| Windows CLI, GUIs, DLL and WCX | Native Windows filesystem and reparse-point behavior, sharing and publication semantics, GUI cancellation and metadata restoration. Wine evidence is limited to Wine. |
+| Win16 and OS/2 | Native filesystem operations, attribute restoration, recovery, and runtime heap/stack exhaustion. DOS16 measurements do not qualify these runtimes; see [resource accounting](16-bit-resource-accounting.md). |
+| Atari GEM GUI | Safe cleanup of incomplete stages after restart or parent substitution, the TOS 1.62 device-error prompt, and a working FreeMiNT GUI launch. EmuTOS FAT12 device-error retry and TOS interrupted-backup recovery have separate emulator evidence. |
+| Amiga GUI and OS4/MorphOS/AROS variants | GUI behavior on native OFS/FFS, timestamp zone/DST policy, replacement failures, cancellation, and separate build/runtime checks for each shipped variant. CLI results do not qualify GUI callbacks. |
+| Classic Mac OS | Complete nested 68k extraction/publication and executable/resource-fork round trips; runnable PowerPC packaging and target execution. A PowerPC XCOFF link alone is insufficient. |
+| QDOS, RISC OS, Human68k and CP/M-86 | Real filesystem name/metadata handling, edits, recovery and constrained-resource failures. sQLux hostFS header/enumeration checks and host shims do not establish all native filesystem behavior. |
+| POSIX wrappers | Native compiler/API availability, encoding, timestamps, private-root or directory-relative extraction, and archive edits on each supported OS version. |
+| Plan 9 and Haiku/BeOS | Native qualification remains open. Preserve host-shim evidence and label older guest runs by their tested revision; deferred native work is not a passing result. |
+
+Reusable input manifests are in
+[`test/reference/interoperability/`](../test/reference/interoperability/).
+For example, `atari-amiga-fsuae.json` defines bidirectional interchange, and
+`amiga-native-recovery.json` defines interrupted-publication expectations.
+Use independent expected payloads and metadata rather than having a reader
+validate only its own writer's output. The
+[usable round-trip gate](usable-roundtrip.md) additionally runs restored
+applications to check that essential metadata makes them usable.
+
+Retain the exact command, source revision and working-tree diff, compiler and
+runtime versions, expected input manifest, executable/ROM/image hashes, and
+observed output hashes. Record passes, expected partial/refused operations,
+defects, and unavailable environments separately. Links into ignored `build/`
+directories refer to local evidence; they are not artifacts shipped in a fresh
+checkout. Versioned evidence summaries live in [`docs/evidence/`](evidence/).
+Rerun affected checks when behavior changes; documentation cleanup alone does
+not create new runtime evidence.
+
 ## How to report
 
 A report is most useful when it lets the problem be reproduced without a second
