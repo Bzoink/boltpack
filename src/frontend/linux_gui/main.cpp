@@ -563,7 +563,9 @@ class FileTable : public Fl_Group {
         fl_font(FL_HELVETICA, 12);
         for (int i = 0; i < total; i++) {
             std::string display = g_entries[i].name;
-            if (g_entries[i].entry_type == BP_TYPE_DIR) display += "/";
+            if (g_entries[i].entry_type == BP_TYPE_DIR &&
+                (display.empty() || display[display.size() - 1] != '/'))
+                display += "/";
             int tw = (int)fl_width(display.c_str()) + 16;
             if (tw > best) best = tw;
         }
@@ -799,7 +801,9 @@ public:
 
             /* Name */
             if (e.entry_type == BP_TYPE_DIR) {
-                std::string dir_name = e.name + "/";
+                std::string dir_name = e.name;
+                if (dir_name.empty() || dir_name[dir_name.size() - 1] != '/')
+                    dir_name += "/";
                 draw_cell_text(dir_name.c_str(), cx, ry, col_widths[COL_NAME], row_h,
                                FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
             } else {
