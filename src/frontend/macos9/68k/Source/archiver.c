@@ -2940,11 +2940,19 @@ int bp_archive_test(bp_io_t *io, bp_test_fn fn, void *user_data)
 
 int bp_archive_info(bp_io_t *io, bp_archive_info_t *info)
 {
+    return bp_archive_info_ex(io, info, NULL);
+}
+
+int bp_archive_info_ex(bp_io_t *io, bp_archive_info_t *info,
+                       bp_uint32 *sidecar_count)
+{
     bp_uint8 hdr[BP_HEADER_SIZE];
     bp_uint16 version;
     bp_uint32 file_count, table_count, i;
+    bp_uint32 sidecars = 0;
     int rc;
 
+    if (sidecar_count != NULL) *sidecar_count = 0;
     if (io == NULL || info == NULL) return BP_ERR_INVALID_ARG;
 
     memset(info, 0, sizeof(*info));
@@ -3002,6 +3010,10 @@ int bp_archive_info(bp_io_t *io, bp_archive_info_t *info)
             rc = read_table_entry(io, &entry, version);
             if (rc != BP_OK) return rc;
 
+            if (entry.entry_type == BP_TYPE_META ||
+                entry.entry_type == BP_TYPE_RSRC)
+                sidecars++;
+
             if (entry.entry_type == BP_TYPE_DIR) {
                 info->dir_count++;
             } else if (version >= BP_FORMAT_VERSION) {
@@ -3035,6 +3047,7 @@ int bp_archive_info(bp_io_t *io, bp_archive_info_t *info)
         info->total_compressed = tot_comp;
     }
 
+    if (sidecar_count != NULL) *sidecar_count = sidecars;
     return BP_OK;
 }
 

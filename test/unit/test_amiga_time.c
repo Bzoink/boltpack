@@ -26,6 +26,16 @@ int main(void)
     failed += !check(!bp_amiga_parse_tz_offset("60x", &offset),
                      "reject malformed timezone offset");
 
+    failed += !check(bp_amiga_locale_offset(-60L, &offset) &&
+                     offset == 3600L, "Locale CET (60 min east)");
+    failed += !check(bp_amiga_locale_offset(300L, &offset) &&
+                     offset == -18000L, "Locale EST (300 min west)");
+    failed += !check(bp_amiga_locale_offset(0L, &offset) && offset == 0L,
+                     "Locale GMT");
+    failed += !check(!bp_amiga_locale_offset(1440L, &offset) &&
+                     !bp_amiga_locale_offset(-1440L, &offset),
+                     "reject Locale offset beyond 23:59");
+
     failed += !check(setenv("BP_TZ_OFFSET", "60", 1) == 0,
                      "set positive timezone environment");
     failed += !check(bp_amiga_time_to_utc((time_t)1700003700L, &utc) &&

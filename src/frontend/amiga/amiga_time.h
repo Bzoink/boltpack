@@ -10,7 +10,10 @@
 #include "../../core/bp_time.h"
 #ifdef __AMIGA__
 #include <dos/var.h>
+#include <libraries/locale.h>
 #include <proto/dos.h>
+#include <proto/exec.h>
+#include <inline/locale.h>
 #endif
 
 /* Parse an explicit timezone in minutes east of UTC. */
@@ -40,6 +43,50 @@ static int bp_amiga_parse_tz_offset(const char *text, long *offset_seconds)
     return 1;
 }
 
+/* Convert locale.library's loc_GMTOffset (minutes west of GMT) to seconds
+ * east of UTC, refusing values outside +/-23:59. */
+static int bp_amiga_locale_offset(long minutes_west, long *offset_seconds)
+{
+    if (offset_seconds == NULL ||
+        minutes_west < -1439L || minutes_west > 1439L)
+        return 0;
+    *offset_seconds = -minutes_west * 60L;
+    return 1;
+}
+
+#ifdef __AMIGA__
+/* Read the time zone from the Locale preferences.  locale.library is opened
+ * through a local base pointer: referencing the global LocaleBase would make
+ * libnix open it at startup, which fails on AmigaOS 2.04 (no locale.library).
+ * The result is cached; a missing library or locale stays unknown. */
+static int bp_amiga_locale_tz_offset(long *offset_seconds)
+{
+    static int state = 0; /* 0 = not asked, 1 = known, -1 = unavailable */
+    static long cached = 0;
+
+    if (state == 0) {
+        struct Library *locale_base;
+        state = -1;
+        locale_base = OpenLibrary((CONST_STRPTR)"locale.library", 38);
+        if (locale_base != NULL) {
+            struct Locale *locale = __OpenLocale_base(locale_base, NULL);
+            if (locale != NULL) {
+                if (bp_amiga_locale_offset((long)locale->loc_GMTOffset,
+                                           &cached))
+                    state = 1;
+                __CloseLocale_base(locale_base, locale);
+            }
+            CloseLibrary(locale_base);
+        }
+    }
+    if (state != 1) return 0;
+    *offset_seconds = cached;
+    return 1;
+}
+#endif
+
+/* BP_TZ_OFFSET (minutes east of UTC, local or global variable) takes
+ * precedence; otherwise the Locale preferences time zone is used. */
 static int bp_amiga_get_tz_offset(long *offset_seconds)
 {
     const char *text = getenv("BP_TZ_OFFSET");
@@ -53,6 +100,8 @@ static int bp_amiga_get_tz_offset(long *offset_seconds)
             text = native_value;
         }
     }
+    if (text == NULL || *text == '\0')
+        return bp_amiga_locale_tz_offset(offset_seconds);
 #endif
     return bp_amiga_parse_tz_offset(text, offset_seconds);
 }

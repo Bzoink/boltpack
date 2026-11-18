@@ -501,6 +501,7 @@ struct EntryInfo {
 static std::vector<EntryInfo> g_entries;
 static std::string g_archive_path;
 static bp_archive_info_t g_info;
+static bp_uint32 g_sidecars; /* META/RSRC entries counted in g_info */
 static bool g_archive_open = false;
 
 enum ShellActionType {
@@ -2160,7 +2161,8 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     e.comp_size = u64_to_double(entry->compressed_size);
     e.ratio     = ratio_percent(e.orig_size, e.comp_size);
     e.method    = entry->method;
-    e.date      = format_time(entry->mtime);
+    e.date      = (entry->flags & BP_ENTRY_FLAG_MTIME_VALID)
+                ? format_time(entry->mtime) : std::string("-");
     e.entry_type = entry->entry_type;
 
     g_entries.push_back(e);
@@ -2182,7 +2184,8 @@ static void do_open_archive(const char *path)
 
     bp_archive_info_t info;
     memset(&info, 0, sizeof(info));
-    int rc = bp_archive_info(&io, &info);
+    bp_uint32 sidecars = 0;
+    int rc = bp_archive_info_ex(&io, &info, &sidecars);
     if (rc != BP_OK) {
         fclose(fp);
         fl_alert("Error reading archive:\n%s", bp_strerror(rc));
@@ -2203,6 +2206,7 @@ static void do_open_archive(const char *path)
 
     g_archive_path = path;
     g_info = info;
+    g_sidecars = sidecars;
     g_archive_open = true;
     update_ui();
 }
@@ -2311,7 +2315,8 @@ static void do_validate()
     work.archive_path = g_archive_path;
     work.vctx.progress = pctx;
     work.result = BP_OK;
-    work.vctx.file_total = (unsigned long)(g_info.entry_count - g_info.dir_count);
+    work.vctx.file_total = (unsigned long)(g_info.entry_count - g_info.dir_count -
+                                           g_sidecars);
     work.vctx.dir_total = (unsigned long)g_info.dir_count;
     work.vctx.entry_total = (unsigned long)g_info.entry_count;
 
@@ -2388,8 +2393,12 @@ static void do_info()
     if (!g_archive_open) return;
 
     const bp_archive_info_t &info = g_info;
-    bp_uint32 file_count = info.entry_count - info.dir_count;
+    bp_uint32 file_count = info.entry_count - info.dir_count - g_sidecars;
     double orig_d = u64_to_double(info.total_original);
+    char sidecar_text[48] = "";
+    if (g_sidecars > 0)
+        snprintf(sidecar_text, sizeof(sidecar_text), ", %lu metadata",
+                 (unsigned long)g_sidecars);
     double comp_d = u64_to_double(info.total_compressed);
     double arc_d  = u64_to_double(info.archive_size);
     int pct = (orig_d > 0.0) ? (int)(comp_d / orig_d * 100.0) : 0;
@@ -2404,7 +2413,7 @@ static void do_info()
         "Method:          %s\n"
         "\n"
         "Archive size:    %s\n"
-        "Entries:         %lu  (%lu file%s, %lu director%s)\n"
+        "Entries:         %lu  (%lu file%s, %lu director%s%s)\n"
         "Original size:   %s\n"
         "Compressed:      %s  (%d%% of original)",
         g_archive_path.c_str(),
@@ -2418,6 +2427,7 @@ static void do_info()
         (unsigned long)info.entry_count,
         (unsigned long)file_count, file_count == 1 ? "" : "s",
         (unsigned long)info.dir_count, info.dir_count == 1 ? "y" : "ies",
+        sidecar_text,
         format_size(orig_d).c_str(),
         format_size(comp_d).c_str(),
         pct);
@@ -2446,6 +2456,7 @@ static void do_close_archive()
     g_entries.clear();
     g_archive_path.clear();
     memset(&g_info, 0, sizeof(g_info));
+    g_sidecars = 0;
     g_archive_open = false;
     update_ui();
 }
@@ -6223,7 +6234,8 @@ static void update_ui()
         snprintf(status_buf, sizeof(status_buf),
              "  %s  |  %lu files  |  %s -> %s  |  %d%% of original",
                  g_archive_path.c_str(),
-                 (unsigned long)g_info.file_count,
+                 (unsigned long)(g_info.entry_count - g_info.dir_count -
+                                 g_sidecars),
                  format_size(orig).c_str(),
                  format_size(comp).c_str(),
                  ratio);

@@ -452,8 +452,10 @@ GUI. AmigaOS 4, MorphOS and AROS share the CLI source but have not been built he
   time. Directory time and protection are applied after the directory's children.
 - **Names:** converted through Latin-1; names containing an AmigaDOS volume
   separator (a colon) are refused.
-- **Time zone:** AmigaDOS stores local time. Set the `BP_TZ_OFFSET` variable to
-  your offset in minutes east of UTC before creating or extracting.
+- **Time zone:** AmigaDOS stores local time. BoltPack uses the `BP_TZ_OFFSET`
+  variable (your offset in minutes east of UTC) when it is set, and otherwise
+  the time zone from the Locale preferences (AmigaOS 2.1 and later). On
+  AmigaOS 2.04 without `BP_TZ_OFFSET`, file times are stored as unknown.
 - **Not carried:** soft and hard links (reported partial) and metadata from
   other systems. An icon (`.info`) file is an ordinary file, so it travels when it
   is included in the archive.

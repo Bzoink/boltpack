@@ -683,7 +683,7 @@ static int add_directory_record(bp_archive_t *ar, const char *path,
     mtime_flags = amiga_entry_mtime(st->st_mtime, &mtime);
     if (mtime_flags == 0)
         fprintf(stderr,
-                "boltpack: source timestamp unavailable; set BP_TZ_OFFSET to minutes east of UTC; storing unknown: %s\n",
+                "boltpack: source timestamp unavailable; set BP_TZ_OFFSET (minutes east of UTC) or the Locale time zone; storing unknown: %s\n",
                 path);
     rc = bp_archive_add_entry_ex(ar, dir_arc_utf8, BP_TYPE_DIR,
                                  BP_CREATOR_OS, NULL, bp_u64_from_u32(0),
@@ -899,7 +899,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         mtime_flags = amiga_entry_mtime(st.st_mtime, &mtime);
         if (mtime_flags == 0)
             fprintf(stderr,
-                    "boltpack: source timestamp unavailable; set BP_TZ_OFFSET to minutes east of UTC; storing unknown: %s\n",
+                    "boltpack: source timestamp unavailable; set BP_TZ_OFFSET (minutes east of UTC) or the Locale time zone; storing unknown: %s\n",
                     path);
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA,
                                      BP_CREATOR_OS, &fio, file_size,
@@ -2727,6 +2727,7 @@ static int cmd_info(const char *archive_name)
     FILE              *fp;
     bp_io_t           aio;
     bp_archive_info_t info;
+    bp_uint32         sidecars;
     int               rc;
 
     fp = fopen(archive_name, "rb");
@@ -2735,7 +2736,7 @@ static int cmd_info(const char *archive_name)
         return 1;
     }
     bp_io_from_file(&aio, fp);
-    rc = bp_archive_info(&aio, &info);
+    rc = bp_archive_info_ex(&aio, &info, &sidecars);
     fclose(fp);
 
     if (rc != BP_OK) {
@@ -2743,7 +2744,7 @@ static int cmd_info(const char *archive_name)
         return 1;
     }
     {
-        bp_uint32 file_count = info.entry_count - info.dir_count;
+        bp_uint32 file_count = info.entry_count - info.dir_count - sidecars;
         bp_uint64 total_orig = info.total_original;
         bp_uint64 total_comp = info.total_compressed;
         bp_uint64 arc_size   = info.archive_size;
@@ -2758,11 +2759,14 @@ static int cmd_info(const char *archive_name)
         printf("Method:         %s\n", format_methods(info.method_counts));
         format_size64(arc_size, arcbuf, sizeof(arcbuf));
         printf("Archive size:   %s\n", arcbuf);
-        printf("Entries:        %lu (%lu file%s, %lu director%s)\n",
+        printf("Entries:        %lu (%lu file%s, %lu director%s",
                (unsigned long)info.entry_count,
                (unsigned long)file_count, file_count == 1 ? "" : "s",
                (unsigned long)info.dir_count,
                info.dir_count == 1 ? "y" : "ies");
+        if (sidecars > 0)
+            printf(", %lu metadata", (unsigned long)sidecars);
+        printf(")\n");
         format_size64(total_orig, origbuf, sizeof(origbuf));
         format_size64(total_comp, compbuf, sizeof(compbuf));
         printf("Original size:  %s\n", origbuf);

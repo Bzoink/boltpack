@@ -2093,7 +2093,8 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
     if (entry->entry_type == BP_TYPE_DIR) {
         ctx->dir_count++;
-    } else {
+    } else if (entry->entry_type == BP_TYPE_DATA ||
+               entry->entry_type == BP_TYPE_SYMLINK) {
         ctx->file_count++;
     }
     ctx->total_orig = bp_u64_add(ctx->total_orig, entry->original_size);
@@ -3907,6 +3908,7 @@ static int cmd_info(const char *archive_name)
     FILE *fp;
     bp_io_t aio;
     bp_archive_info_t info;
+    bp_uint32 sidecars;
     int rc;
 
     fp = fopen(archive_name, "rb");
@@ -3916,7 +3918,7 @@ static int cmd_info(const char *archive_name)
     }
 
     bp_io_from_file(&aio, fp);
-    rc = bp_archive_info(&aio, &info);
+    rc = bp_archive_info_ex(&aio, &info, &sidecars);
     fclose(fp);
 
     if (rc != BP_OK) {
@@ -3925,7 +3927,7 @@ static int cmd_info(const char *archive_name)
     }
 
     {
-        bp_uint32 file_count = info.entry_count - info.dir_count;
+        bp_uint32 file_count = info.entry_count - info.dir_count - sidecars;
         bp_uint64 total_orig = info.total_original;
         bp_uint64 total_comp = info.total_compressed;
         bp_uint64 arc_size = info.archive_size;
@@ -3943,11 +3945,14 @@ static int cmd_info(const char *archive_name)
         format_size64(arc_size, arcbuf, sizeof(arcbuf));
         printf("Archive size:   %s\n", arcbuf);
 
-        printf("Entries:        %lu (%lu file%s, %lu director%s)\n",
+        printf("Entries:        %lu (%lu file%s, %lu director%s",
                (unsigned long)info.entry_count,
                (unsigned long)file_count, file_count == 1 ? "" : "s",
                (unsigned long)info.dir_count,
                info.dir_count == 1 ? "y" : "ies");
+        if (sidecars > 0)
+            printf(", %lu metadata", (unsigned long)sidecars);
+        printf(")\n");
 
         format_size64(total_orig, origbuf, sizeof(origbuf));
         format_size64(total_comp, compbuf, sizeof(compbuf));

@@ -295,6 +295,13 @@ typedef struct {
 /* Read archive header and file table to fill info struct. */
 int bp_archive_info(bp_io_t *io, bp_archive_info_t *info);
 
+/* Like bp_archive_info(), and also report in *sidecar_count (may be NULL)
+ * how many entries are metadata or resource sidecars (BP_TYPE_META or
+ * BP_TYPE_RSRC) attached to another entry.  entry_count still counts them,
+ * so user-visible file totals are entry_count - dir_count - *sidecar_count. */
+int bp_archive_info_ex(bp_io_t *io, bp_archive_info_t *info,
+                       bp_uint32 *sidecar_count);
+
 /* --- Deletion ----------------------------------------------------------- */
 
 /* Delete entries whose names match any string in del_names[].

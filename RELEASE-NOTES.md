@@ -1,5 +1,23 @@
 # Release Notes
 
+## Unreleased
+
+- Amiga CLI and GUI: when `BP_TZ_OFFSET` is not set, the time zone now comes
+  from the Locale preferences (AmigaOS 2.1 and later), so file times are
+  stored instead of being recorded as unknown. `locale.library` is opened only
+  when needed, so AmigaOS 2.04 is still supported.
+- Amiga GUI: fixed a garbled window title after opening an archive; protection
+  bit and comment metadata entries are no longer listed as extra files; the
+  progress counter no longer exceeds the file total; the partial-preservation
+  requester now says which information was not kept.
+- Archive information in the Amiga, Linux and FLTK (Linux/Windows) frontends
+  no longer counts metadata entries as files. It reports them separately, for
+  example `22 (11 files, 0 directories, 11 metadata)`. The Linux CLI list
+  summary and the FLTK status bar count files the same way, and the FLTK GUIs
+  show `-` instead of 1970-01-01 for unknown modification times. The core adds
+  `bp_archive_info_ex()`, which also returns the number of metadata entries;
+  `bp_archive_info_t` is unchanged.
+
 ## 1.11 — Native metadata preservation and usable application transfers
 
 - Archive format remains at version 6. Bolt Mini remains at version 1.3;

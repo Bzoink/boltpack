@@ -145,6 +145,7 @@ static struct AppWindow *app_win;
 static FILE *archive_fp;
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
+static bp_uint32 archive_sidecars; /* META/RSRC entries in archive_info */
 
 /* List of entries for GadTools listview */
 static struct List entry_list;
@@ -165,6 +166,11 @@ typedef struct {
     double        file_total;
     unsigned long total_files;
     unsigned long current_file;
+    /* When set, current_file follows subject_number (files and directories
+     * only) instead of the core's physical entry index, which also counts
+     * metadata sidecar entries. */
+    int           count_subjects;
+    unsigned long subject_number;
     clock_t       start_ticks;
     int           active;
     int           total_pct;
@@ -828,13 +834,15 @@ static void set_status_lines(const char *line1, const char *line2,
 
 static void refresh_window_title(void)
 {
-    char title[128];
+    /* Intuition keeps the pointer passed to SetWindowTitles(), so the
+     * buffer must outlive this call. */
+    static char title[128];
 
     if (!win)
         return;
 
     if (archive_path[0] != '\0') {
-        sprintf(title, "BoltPack - %s", FilePart((STRPTR)archive_path));
+        sprintf(title, "BoltPack - %.100s", FilePart((STRPTR)archive_path));
         SetWindowTitles(win, (STRPTR)title, (UBYTE *)~0);
     } else {
         SetWindowTitles(win, (STRPTR)"BoltPack", (UBYTE *)~0);
@@ -1059,10 +1067,14 @@ static int update_progress_ui(const bp_progress_t *p, void *user_data)
     ctx->total_bytes = total;
     ctx->file_bytes = u64_to_dbl(p->file_bytes_done);
     ctx->file_total = u64_to_dbl(p->file_orig_size);
-    ctx->current_file = (unsigned long)(file_index + 1);
+    if (ctx->count_subjects) {
+        ctx->current_file = ctx->subject_number;
+    } else {
+        ctx->current_file = (unsigned long)(file_index + 1);
+        if (file_count > 0)
+            ctx->total_files = file_count;
+    }
     ctx->total_pct = pct;
-    if (file_count > 0)
-        ctx->total_files = file_count;
     if (p->file_name) {
         strncpy(ctx->current_name, p->file_name,
                 sizeof(ctx->current_name) - 1);
@@ -1248,7 +1260,8 @@ static void refresh_idle_status(void)
             method_name(current_method), free_buf);
 
     if (archive_fp) {
-        file_count = archive_info.entry_count - archive_info.dir_count;
+        file_count = archive_info.entry_count - archive_info.dir_count -
+                     archive_sidecars;
         orig = u64_to_dbl(archive_info.total_original);
         comp = u64_to_dbl(archive_info.total_compressed);
         format_size_compact_u64(archive_info.total_original, orig_buf);
@@ -1346,6 +1359,7 @@ static void close_archive(void)
     }
     archive_path[0] = '\0';
     memset(&archive_info, 0, sizeof(archive_info));
+    archive_sidecars = 0;
 }
 
 static int list_cb(const bp_entry_t *entry, void *user_data)
@@ -1354,6 +1368,10 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
     double orig, comp;
     char orig_s[16], comp_s[16], ratio_s[8], date_s[20];
     (void)user_data;
+
+    /* Protection-bit/comment sidecars belong to the preceding entry. */
+    if (entry->entry_type == BP_TYPE_META || entry->entry_type == BP_TYPE_RSRC)
+        return 0;
 
     if (entry_nodes == NULL || entry_count >= entry_capacity)
         return 1;
@@ -1393,6 +1411,7 @@ static void do_open(const char *path)
 {
     bp_io_t io;
     bp_archive_info_t info;
+    bp_uint32 sidecars;
     int rc;
 
     close_archive();
@@ -1418,7 +1437,7 @@ static void do_open(const char *path)
 
     io = make_io(archive_fp);
     memset(&info, 0, sizeof(info));
-    rc = bp_archive_info(&io, &info);
+    rc = bp_archive_info_ex(&io, &info, &sidecars);
     if (rc != BP_OK) {
         log_message("bp_archive_info failed for '%s': rc=%d (%s)",
                     path ? path : "(null)", rc, bp_strerror(rc));
@@ -1429,6 +1448,7 @@ static void do_open(const char *path)
         return;
     }
     archive_info = info;
+    archive_sidecars = sidecars;
 
     fseek(archive_fp, 0L, SEEK_SET);
     io = make_io(archive_fp);
@@ -1448,9 +1468,10 @@ static void do_open(const char *path)
 
     refresh_window_title();
     refresh_idle_status();
-    log_message("Archive opened: entries=%lu dirs=%lu methods=%s",
+    log_message("Archive opened: entries=%lu dirs=%lu sidecars=%lu methods=%s",
                 (unsigned long)archive_info.entry_count,
                 (unsigned long)archive_info.dir_count,
+                (unsigned long)archive_sidecars,
                 format_methods(archive_info.method_counts));
 }
 
@@ -1539,7 +1560,8 @@ static void do_info(void)
         return;
     }
 
-    file_count = archive_info.entry_count - archive_info.dir_count;
+    file_count = archive_info.entry_count - archive_info.dir_count -
+                 archive_sidecars;
     orig = u64_to_dbl(archive_info.total_original);
     comp = u64_to_dbl(archive_info.total_compressed);
     pct  = (orig > 0.0) ? (int)(comp / orig * 100.0) : 0;
@@ -1717,6 +1739,7 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *ud)
     gui_staged_output_t *stage;
     if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
         entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->progress.subject_number++;
         ctx->subject_ok = 0;
         ctx->subject_directory = NULL;
         ctx->subject_name[0] = '\0';
@@ -1975,10 +1998,12 @@ static void do_extract(void)
             return;
         }
 
-        total_files = (unsigned long)(archive_info.entry_count - archive_info.dir_count);
+        total_files = (unsigned long)(archive_info.entry_count -
+                                      archive_sidecars);
         start_progress_ui(&ctx.progress, "Extracting archive", NULL,
                           u64_to_dbl(archive_info.total_original),
                           total_files);
+        ctx.progress.count_subjects = 1;
         log_message("Extract destination: %s", ctx.dest);
         log_memory_snapshot("before extract");
         SetPointer(win, NULL, 0, 0, 0, 0); /* busy pointer */
@@ -2140,6 +2165,8 @@ static void do_create_from_paths(const char **paths, int path_count)
     struct stat out_st;
     int gather_rc;
     int preservation_partial;
+    int time_unknown;
+    int metadata_unread;
     int closed_current_archive;
     int have_base;
     int rc, i;
@@ -2371,6 +2398,9 @@ static void do_create_from_paths(const char **paths, int path_count)
         return;
     }
     preservation_partial = 0;
+    time_unknown = 0;
+    metadata_unread = 0;
+    progress.count_subjects = 1;
     ar.progress_fn = update_progress_ui;
     ar.progress_data = &progress;
 
@@ -2384,6 +2414,7 @@ static void do_create_from_paths(const char **paths, int path_count)
         FILE *fp;
         bp_io_t fio;
 
+        progress.subject_number = (unsigned long)(i + 1);
         update_create_queue_state(base_dir, i, "[>]");
         if (lstat(gather_files[i], &st) != 0 || S_ISLNK(st.st_mode) ||
             (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) {
@@ -2407,9 +2438,9 @@ static void do_create_from_paths(const char **paths, int path_count)
         mtime_flags = gui_archive_mtime(st.st_mtime, &mtime)
                     ? BP_ENTRY_FLAG_MTIME_VALID : 0;
         if (mtime_flags == 0) {
-                log_message("Source time unavailable; set BP_TZ_OFFSET to minutes east of UTC, storing unknown: %s",
+            log_message("Source time unavailable; set BP_TZ_OFFSET to minutes east of UTC or a Locale time zone, storing unknown: %s",
                         gather_files[i]);
-            preservation_partial = 1;
+            time_unknown = 1;
         }
 
         log_message("Create add %d/%d: source='%s' rel='%s' size=%llu",
@@ -2463,7 +2494,7 @@ static void do_create_from_paths(const char **paths, int path_count)
             if (rc == BP_OK && !metadata_captured) {
                 log_message("Could not read Amiga metadata for '%s'",
                             gather_files[i]);
-                preservation_partial = 1;
+                metadata_unread = 1;
             }
         }
         if (rc == BP_OK) {
@@ -2554,9 +2585,21 @@ static void do_create_from_paths(const char **paths, int path_count)
         log_message("Create complete: '%s' size unknown", out_path);
     }
 
-    if (preservation_partial)
-        show_requester("Partial preservation",
-                       "Archive created, but some metadata or recovery cleanup was incomplete");
+    if (time_unknown || metadata_unread || preservation_partial) {
+        char msg[400];
+        strcpy(msg, "Archive created, but:");
+        if (time_unknown)
+            strcat(msg, "\n- File times were not stored: no time zone"
+                        "\n  is known. Set it in Locale prefs or with"
+                        "\n  SetEnv BP_TZ_OFFSET <minutes east of UTC>");
+        if (metadata_unread)
+            strcat(msg, "\n- Protection bits or comments could not be"
+                        "\n  read for some files");
+        if (preservation_partial)
+            strcat(msg, "\n- The replaced archive's protection bits or"
+                        "\n  comment, or staging cleanup, were not kept");
+        show_requester("Partial preservation", msg);
+    }
 
     /* Open the newly created archive */
     do_open(out_path);

@@ -744,13 +744,16 @@ Foreign native metadata, portable FAT envelopes, resource forks, and symlink ent
 
 File and directory modification times use format-6 UTC seconds. Epoch zero is preserved. Negative or host-unrepresentable source times are warned about and recorded as unknown rather than wrapping into a different date.
 
-AmigaDOS `DateStamp` values are local wall time and carry no timezone. Set the
-global AmigaDOS variable `BP_TZ_OFFSET` to minutes east of UTC before creating
-or extracting archives (for example, `C:SetEnv BP_TZ_OFFSET 60` for UTC+1).
-The Amiga frontend reads this with C `getenv()` or, when that is unavailable,
-AmigaDOS `GetVar()`. If the offset is absent or invalid, creation stores source
-times as unknown and extraction reports partial when a known time cannot be
-restored.
+AmigaDOS `DateStamp` values are local wall time and carry no timezone. The
+Amiga CLI and GUI take the offset from the AmigaDOS variable `BP_TZ_OFFSET`
+(minutes east of UTC, for example `C:SetEnv BP_TZ_OFFSET 60` for UTC+1),
+read with C `getenv()` or, when that is unavailable, AmigaDOS `GetVar()`. When
+the variable is not set, they use the time zone from the Locale preferences
+(`locale.library` version 38, AmigaOS 2.1 and later; `loc_GMTOffset`), opened
+only when needed so the programs still start on AmigaOS 2.04. Neither source
+follows daylight saving time automatically. If the variable is invalid, or it is
+unset and no Locale time zone is available, creation stores source times as
+unknown and extraction reports partial when a known time cannot be restored.
 
 ### AmigaOS: Text Encoding
 
