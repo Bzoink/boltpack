@@ -159,17 +159,17 @@ declare -A PLATFORM_ENCODING=(
     [tru64]="UTF-8"
     [sco]="ISO-8859-1"
     [zos]="UTF-8"
-    [dos]="ISO-8859-1"
-    [dos16]="ISO-8859-1"
+    [dos]="CP437"
+    [dos16]="CP437"
     [win16]="ISO-8859-1"
-    [os2-16]="ISO-8859-1"
+    [os2-16]="CP437"
     [win32]="UTF-8"
     [win32-fltk-gui]="UTF-8"
     [win64]="UTF-8"
     [win64-fltk-gui]="UTF-8"
     [linux-gui]="UTF-8"
     [os2]="UTF-8"
-    [atari]="ISO-8859-1"
+    [atari]="ASCII"
     [amiga]="ISO-8859-1"
     [aros]="UTF-8"
     [amigaos4]="UTF-8"
@@ -182,6 +182,19 @@ declare -A PLATFORM_ENCODING=(
     [ql]="ISO-8859-1"
     [qnx]="UTF-8"
     [riscos]="ISO-8859-1"
+    [os2]="CP437"
+)
+
+# Text files use CRLF line endings on these systems.
+declare -A PLATFORM_CRLF=(
+    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [os2]=1
+    [win32]=1 [win32-fltk-gui]=1 [win64]=1 [win64-fltk-gui]=1
+    [atari]=1
+)
+
+# These systems only have 8.3 file names.
+declare -A PLATFORM_SHORT_NAMES=(
+    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [atari]=1
 )
 
 declare -A PLATFORM_TEMPLATE=(
@@ -219,7 +232,7 @@ declare -A PLATFORM_TEMPLATE=(
     [win64-fltk-gui]="README-windows.txt"
     [linux-gui]="README-linux.txt"
     [os2]="README-windows.txt"
-    [atari]="README-generic.txt"
+    [atari]="README-atari.txt"
     [amiga]="README-amiga.txt"
     [aros]="README-generic.txt"
     [amigaos4]="README-generic.txt"
@@ -270,6 +283,33 @@ get_cpu_from_platform() {
         linux|linux-static|linux-gui|musl|haiku|freebsd|netbsd|openbsd|macosx|solaris|illumos|hurd|zos|win64|win64-fltk-gui|irix|tru64|qnx|plan9|nextstep|zos)  echo "x86-64" ;;
         *)                                     echo "unknown" ;;
     esac
+}
+
+# Recode a UTF-8 text file to ENCODING (characters it lacks are
+# transliterated, e.g. an em dash becomes "--") and optionally convert
+# LF line endings to CRLF.
+convert_package_text() {
+    local file="$1"
+    local encoding="$2"
+    local crlf="$3"
+
+    if [ "$encoding" != "UTF-8" ]; then
+        if command_exists iconv &&
+           LC_ALL=C.UTF-8 iconv -f UTF-8 -t "$encoding//TRANSLIT" "$file" > "$file.tmp" 2>/dev/null; then
+            mv "$file.tmp" "$file"
+        else
+            rm -f "$file.tmp"
+            log_warn "Failed to recode $(basename "$file") to $encoding, keeping UTF-8"
+        fi
+    fi
+    if [ -n "$crlf" ]; then
+        sed 's/\r$//; s/$/\r/' "$file" > "$file.tmp" && mv "$file.tmp" "$file" || {
+            rm -f "$file.tmp"
+            log_error "Failed to convert $(basename "$file") to CRLF line endings"
+            return 1
+        }
+    fi
+    return 0
 }
 
 create_totalcmd_plugin_package() {
@@ -762,6 +802,15 @@ create_package() {
         chmod +x "$stagindir/$binary_name" 2>/dev/null || true
     fi
 
+    # The WebAssembly loader needs its module beside it
+    if [ "$platform" = "wasm" ]; then
+        if [ ! -f "$BUILDDIR/$platform/boltpack.wasm" ]; then
+            log_error "Binary not found: $BUILDDIR/$platform/boltpack.wasm"
+            return 1
+        fi
+        cp "$BUILDDIR/$platform/boltpack.wasm" "$stagindir/"
+    fi
+
     # For Windows platforms, copy all binaries (exe, wcx, config exe)
     if [ "$platform" = "win32" ] || [ "$platform" = "win64" ]; then
         for extra in "$BUILDDIR/$platform"/boltpack*.exe \
@@ -788,21 +837,21 @@ create_package() {
         sed "s|{VERSION}|$VERSION|g; s|{BUILD_DATE}|$BUILD_DATE|g; s|{ARCH}|$cpu|g; s|{BINARY_SIZE}|~50 KB|g" "$template_file"
     } > "$stagindir/README.txt"
     
-    # Copy RELEASE-NOTES
+    # Copy RELEASE-NOTES (8.3 systems cannot hold RELEASE-NOTES.txt)
+    local notes_name="RELEASE-NOTES.txt"
+    if [ -n "${PLATFORM_SHORT_NAMES[$platform]:-}" ]; then
+        notes_name="RELNOTES.TXT"
+    fi
     if [ -f "$PROJROOT/RELEASE-NOTES.md" ]; then
-        cp "$PROJROOT/RELEASE-NOTES.md" "$stagindir/RELEASE-NOTES.txt"
+        cp "$PROJROOT/RELEASE-NOTES.md" "$stagindir/$notes_name"
     fi
-    
-    # Recode README to target encoding if not UTF-8
-    if [ "$encoding" != "UTF-8" ] && command_exists iconv; then
-        # Try to convert using iconv
-        if iconv -f UTF-8 -t "$encoding" "$stagindir/README.txt" > "$stagindir/README.txt.tmp" 2>/dev/null; then
-            mv "$stagindir/README.txt.tmp" "$stagindir/README.txt"
-        else
-            rm -f "$stagindir/README.txt.tmp"
-            log_warn "Failed to recode README to $encoding, keeping UTF-8"
-        fi
-    fi
+
+    # Recode text files and set the native line endings
+    local textfile
+    for textfile in "$stagindir/README.txt" "$stagindir/LICENSE" "$stagindir/$notes_name"; do
+        [ -f "$textfile" ] || continue
+        convert_package_text "$textfile" "$encoding" "${PLATFORM_CRLF[$platform]:-}" || return 1
+    done
     
     # Create final package
     # For platforms where the CPU is already implied by the platform name,
@@ -988,7 +1037,15 @@ main() {
                 binary="$BUILDDIR/$platform/boltpack.prg"
             fi
         else
-            for candidate in "$BUILDDIR/$platform"/boltpack* "$BUILDDIR/$platform"/bpmini*; do
+            # Prefer the program's exact name; build by-products (objects,
+            # link maps, older packages, installers) must not be shipped.
+            local d="$BUILDDIR/$platform"
+            for candidate in "$d/boltpack" "$d/boltpack.exe" "$d/boltpack-gui" \
+                             "$d/boltpack-gui.exe" "$d/bpmini" "$d/bpmini.exe" \
+                             "$d/boltpack.js" "$d"/boltpack* "$d"/bpmini*; do
+                case "$candidate" in
+                    *.o|*.map|*.zip|*-setup.exe) continue ;;
+                esac
                 if [ -f "$candidate" ]; then
                     binary="$candidate"
                     break

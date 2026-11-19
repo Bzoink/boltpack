@@ -24,6 +24,15 @@
   wrapped to fit the GEM alert box, the window title no longer uses a
   temporary buffer, and the progress counter and archive information count
   files instead of entries, so metadata is no longer counted as files.
+- Release packages: text files are converted for the target system. DOS,
+  Windows, OS/2 and Atari packages use CRLF line endings; DOS and OS/2 use code
+  page 437 and the Atari package plain ASCII, with characters the target lacks
+  transliterated (an em dash becomes `--`) instead of the whole file staying
+  UTF-8. Packages for 8.3 systems (DOS, Windows 3.x, 16-bit OS/2, Atari) name
+  the release notes `RELNOTES.TXT`. The Atari package has its own README, and
+  the generic README no longer lists options that do not exist. The Windows
+  CLI packages no longer contain a stray object file, and the WebAssembly
+  package now includes `boltpack.wasm`, without which it could not run.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

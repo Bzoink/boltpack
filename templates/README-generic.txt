@@ -1,125 +1,72 @@
 BoltPack v{VERSION}
 ====================
 
-A lightweight file archiver for portability across vintage and modern computer systems.
+A lightweight file archiver for moving files and programs between vintage
+and modern computers.
 
 ABOUT
 -----
 
-BoltPack is designed to store and transfer data and programs across different
-platforms — from an 8088 PC running DOS to a modern x86-64 Linux box, including
-AmigaOS, Atari TOS, Classic Mac OS, RISC OS, Haiku, Plan 9, and many more.
+BoltPack stores and transfers data and programs across platforms, from an
+8088 PC running DOS to a modern x86-64 Linux machine, including AmigaOS,
+Atari TOS, Classic Mac OS, RISC OS, Haiku, Plan 9 and many more.
 
-Key features:
-  * Four compression methods where supported: Stored, BoltLite, boltlz, Fluff
-  * Cross-platform compatibility: strict ANSI C89 implementation
-  * Small binaries: ~50 KB standalone executable
-  * 64-bit file support and block-based compression
-  * Unicode file names (stored as UTF-8, displayed in native encoding)
+  * Compression methods: Stored, BoltLite, boltlz and Fluff (the methods
+    available depend on the build)
+  * Portable C89 core; the same archive format on every system
+  * File names stored as UTF-8 and converted to the local character set
+  * Native file information (permissions, attributes, file types) kept
+    where the system has it
 
 QUICK START
 -----------
 
-Create an archive:
-  boltpack c myarchive.blt file1 file2 folder/
+  boltpack c myarchive.bolt file1 file2 folder    Create (recursive)
+  boltpack x myarchive.bolt                       Extract
+  boltpack x -o outdir myarchive.bolt             Extract into a folder
+  boltpack l myarchive.bolt                       List contents
+  boltpack t myarchive.bolt                       Test integrity
+  boltpack i myarchive.bolt                       Show archive information
 
-Create with compression:
-  boltpack c -F myarchive.blt file1 file2    (best ratio)
-  boltpack c -2 myarchive.blt file1          (fast decompression)
-  boltpack c -0 myarchive.blt file1          (no compression)
+Run boltpack without arguments for the full list of commands and options
+in this build.
 
-Extract:
-  boltpack x myarchive.blt
-
-List contents:
-  boltpack l myarchive.blt
-
-Show archive info:
-  boltpack i myarchive.blt
-
-COMMANDS
---------
-
-boltpack c [options] <archive> <files...>     Create archive
-boltpack x [options] <archive>                 Extract archive
-boltpack l [options] <archive>                 List contents
-boltpack i <archive>                           Show archive info
-
-OPTIONS
--------
-
--F, --fluff           Use Fluff codec (best compression, 29%)
--2, --boltlz          Use boltlz (fast, 47%)
--1, --boltlite            Use BoltLite (small-memory)
--0, --stored          No compression (stored)
--r, --recursive       Include directories recursively
--q, --quiet           Suppress progress messages
-
-COMPRESSION METHODS
--------------------
-
-Stored (0):     No compression, instant speed
-BoltLite (1):       Small-memory compression
-boltlz (2):     Fast decompression, good compatibility
-Fluff (3):      Best ratio, modern systems
-
-Default: boltlz for maximum speed
-
-LICENSE
--------
-
-BoltPack is licensed under the BSD 2-Clause License.
-See the included LICENSE file for full details.
-
-DOCUMENTATION
+COMMON OPTIONS
 --------------
 
-For complete documentation, usage examples, and platform-specific notes:
-  * Online: https://github.com/your-repo/boltpack
-  * Local: See RELEASE-NOTES.txt and accompanying documentation
+  -0        Store only (no compression)
+  -1        BoltLite (smallest memory use)
+  -2        boltlz (fast)
+  -F        Fluff (best ratio)
+  -b SIZE   Block size: 8k, 16k, 32k, 64k or 256k
+  -o PATH   Output folder for extraction
+  -f        Overwrite existing files
+  -n        Dry run
+  -q, -qq   Quiet, silent
 
-PLATFORMS
----------
-
-BoltPack has been built and tested on 30+ platforms including:
-
-  Modern:      Linux, Windows, macOS, FreeBSD, NetBSD, OpenBSD
-  Vintage:     Amiga, Atari TOS, RISC OS, DOS, OS/2, Classic Mac OS,
-               Haiku, Plan 9, Solaris, HP-UX, AIX, IRIX
-
-Support matrix and build details are available in RELEASE-NOTES.txt.
+64-bit builds use Fluff by default; 32-bit and vintage builds use boltlz.
+Use --interchange-profile-1 for archives that every BoltPack reader,
+including the smallest ones, must accept.
 
 TROUBLESHOOTING
 ---------------
 
-Q: Archive is corrupted or won't extract
-A: Ensure the .bolt file is intact (check file size). Try listing first:
-   boltpack l archive.blt
+Archive will not extract: run "boltpack t archive.bolt" to find the damaged
+file, and check that the archive was transferred in binary mode.
 
-Q: Decompression is slow
-A: If using Fluff (-F), this is normal on slow systems. Use boltlz:
-   boltpack c -2 archive.blt <files>
+Extraction is slow on an old machine: the archive probably uses Fluff.
+Create it again with -2 (boltlz).
 
-Q: File names appear garbled
-A: BoltPack stores all paths as UTF-8. If your system uses a different
-   character set (e.g., Shift-JIS on Japanese systems), the extraction
-   will convert automatically. Check your system's locale settings.
+File names look wrong: names are stored as UTF-8. Characters the local
+system cannot represent are replaced on extraction.
 
-Q: Can't execute the binary
-A: Verify file permissions (on Unix-like systems):
-   chmod +x boltpack
-   On Amiga/RISC OS, may require setting file type/protection bits.
+LICENSE
+-------
 
-FEEDBACK & SUPPORT
-------------------
+BoltPack is licensed under the BSD 2-Clause License. See LICENSE.
 
-For bug reports, feature requests, and platform support:
-  https://github.com/your-repo/boltpack/issues
-
-Source code is available at:
-  https://github.com/your-repo/boltpack
-
----
+Documentation, source code and bug reports:
+  https://github.com/Bzoink/boltpack
 
 Version: {VERSION}
 Build date: {BUILD_DATE}
