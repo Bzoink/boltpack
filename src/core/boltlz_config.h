@@ -5,6 +5,38 @@
 #ifndef BP_BOLTLZ_CONFIG_H
 #define BP_BOLTLZ_CONFIG_H
 
+/* Motorola 68000-family builds. The 68000 has no 32-bit multiply and traps
+ * on word or long access at an odd address, so the generic encoder's memcpy
+ * loads and 32x32 hash multiply become library calls. BOLTLZ_M68K selects
+ * the 68000 load, hash and match-length code in boltlz.c and the defaults
+ * below, measured fastest on an 8 MHz 68000 (Hatari). It needs a
+ * big-endian CPU. The archive format is unchanged. */
+#ifndef BOLTLZ_M68K
+#if defined(__m68k__) || defined(__mc68000__) || defined(mc68000) || \
+    defined(__MC68000__)
+#define BOLTLZ_M68K 1
+#else
+#define BOLTLZ_M68K 0
+#endif
+#endif
+#if BOLTLZ_M68K
+#ifndef BOLTLZ_HASH_CACHE
+#define BOLTLZ_HASH_CACHE 1      /* hash once per position, not twice */
+#endif
+#ifndef BOLTLZ_NARROW_TABLE
+#define BOLTLZ_NARROW_TABLE 0    /* no data cache to save */
+#endif
+#ifndef BOLTLZ_FAST_DECODE
+#define BOLTLZ_FAST_DECODE 1     /* exact copies; mode 2 over-copies 16 bytes */
+#endif
+#ifndef BOLTLZ_ENCODE_SHORT_COPY
+#define BOLTLZ_ENCODE_SHORT_COPY 0
+#endif
+#ifndef BOLTLZ_WORD_MATCH
+#define BOLTLZ_WORD_MATCH 0      /* boltlz.c has its own m68k match loop */
+#endif
+#endif
+
 #ifndef BOLTLZ_HASH_BITS
 #define BOLTLZ_HASH_BITS 13
 #endif
@@ -117,7 +149,12 @@
     (BOLTLZ_DECODE_DISTANCE3 != 0 && BOLTLZ_DECODE_DISTANCE3 != 1) || \
     (BOLTLZ_DECODE_ZERO_LITERAL != 0 && BOLTLZ_DECODE_ZERO_LITERAL != 1) || \
     (BOLTLZ_PIPELINE != 0 && BOLTLZ_PIPELINE != 1) || \
-    (BOLTLZ_FULL_CAPACITY != 0 && BOLTLZ_FULL_CAPACITY != 1)
+    (BOLTLZ_FULL_CAPACITY != 0 && BOLTLZ_FULL_CAPACITY != 1) || \
+    (BOLTLZ_M68K != 0 && BOLTLZ_M68K != 1)
 #error "BoltLZ experiment switches must be zero or one"
+#endif
+#if BOLTLZ_M68K && defined(__BYTE_ORDER__) && \
+    __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
+#error "BOLTLZ_M68K needs a big-endian CPU"
 #endif
 #endif

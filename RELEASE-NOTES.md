@@ -33,6 +33,13 @@
   the generic README no longer lists options that do not exist. The Windows
   CLI packages no longer contain a stray object file, and the WebAssembly
   package now includes `boltpack.wasm`, without which it could not run.
+- BoltLZ is faster on Motorola 68000-family builds (Atari, Amiga, Classic Mac
+  68k, X68000). On an emulated 8 MHz 68000, default-level compression is 1.9x
+  faster (3.3 to 6.5 KB/s on mixed Silesia data), fast-level compression 2.8x
+  and decompression 1.4x. The encoder avoids the 68000's missing 32-bit
+  multiply and odd-address word access, and hashes each position once.
+  Compressed output is up to 0.25% larger; the archive format is unchanged
+  and other CPUs compile to the same code as before.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

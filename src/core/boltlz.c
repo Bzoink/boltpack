@@ -35,7 +35,56 @@
 #define BL_FORCE_INLINE static
 #endif
 
+/* Helpers that older m68k compilers leave as calls in the hot loop. */
+#if BOLTLZ_M68K
+#define BL_M68K_INLINE BL_FORCE_INLINE
+#else
+#define BL_M68K_INLINE static
+#endif
+#if BOLTLZ_M68K && defined(__GNUC__)
+typedef bp_uint32 __attribute__((__may_alias__)) bl_u32_alias;
+typedef bp_uint16 __attribute__((__may_alias__)) bl_u16_alias;
+#endif
+
 #ifndef BOLTLZ_DECODE_ONLY
+#if BOLTLZ_M68K
+/* The value only has to be consistent: it is hashed and compared. */
+BL_FORCE_INLINE bp_uint32 bl_load32(const bp_uint8 *p)
+{
+#if defined(__GNUC__)
+    /* An even address takes one MOVE.L. An odd one takes a byte, the
+     * aligned word after it and a byte, all inside p[0..3]. On a big-endian
+     * CPU both give the same value as memcpy. */
+    if (((unsigned long)p & 1) == 0) return *(const bl_u32_alias *)p;
+    return ((((bp_uint32)p[0] << 16) | *(const bl_u16_alias *)(p + 1)) << 8) | p[3];
+#else
+    return ((bp_uint32)p[0] << 24) | ((bp_uint32)p[1] << 16) |
+           ((bp_uint32)p[2] << 8) | p[3];
+#endif
+}
+
+/* Fold the halves with a rotate, then one 16x16 MULU.W. */
+BL_FORCE_INLINE bp_uint32 bl_hash_value(bp_uint32 value)
+{
+    bp_uint16 hi, lo;
+    hi = (bp_uint16)(value >> 16);
+    lo = (bp_uint16)((bp_uint16)value ^ (bp_uint16)((hi << 5) | (hi >> 11)));
+    return (bp_uint32)((bp_uint16)(lo * 0x9E37U) >> (16 - BL_HASH_BITS));
+}
+#else
+static bp_uint32 bl_load32(const bp_uint8 *p)
+{
+    bp_uint32 value;
+    memcpy(&value, p, 4);
+    return value;
+}
+
+BL_FORCE_INLINE bp_uint32 bl_hash_value(bp_uint32 value)
+{
+    return (value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+}
+#endif
+
 /* Share the current prefix between lookup and insertion in this experiment.
  * Disabled builds retain the original lookup interfaces. */
 #if BOLTLZ_HASH_CACHE || BOLTLZ_PIPELINE
@@ -97,7 +146,7 @@ BL_FORCE_INLINE void bl_forward_prefix(const bp_uint8 *src, bp_uint32 size,
 {
     if (size - pos >= 4) {
         memcpy(value, src + pos, 4);
-        *hash = (*value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+        *hash = bl_hash_value(*value);
     }
 }
 #else
@@ -112,16 +161,9 @@ typedef struct {
     bp_uint32 saving;
 } bl_match;
 
-static bp_uint32 bl_load32(const bp_uint8 *p)
+BL_M68K_INLINE bp_uint32 bl_hash(const bp_uint8 *p)
 {
-    bp_uint32 value;
-    memcpy(&value, p, 4);
-    return value;
-}
-
-static bp_uint32 bl_hash(const bp_uint8 *p)
-{
-    return (bl_load32(p) * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+    return bl_hash_value(bl_load32(p));
 }
 
 #if BOLTLZ_DUAL_HASH
@@ -146,7 +188,7 @@ bp_uint32 boltlz_compress_bound(bp_uint32 src_len)
     return src_len + src_len / 63 + 16;
 }
 
-static bp_uint32 bl_var_size(bp_uint32 value)
+BL_M68K_INLINE bp_uint32 bl_var_size(bp_uint32 value)
 {
 #if BOLTLZ_CHEAP_COST
     /* All encoder fields are bounded by the 256 KiB block limit. */
@@ -210,6 +252,30 @@ bp_uint32 bl_count(const bp_uint8 *src, bp_uint32 size,
     unsigned long current, previous, difference;
 #endif
     length = 4;
+#if BOLTLZ_M68K
+    {
+        const bp_uint8 *a, *b;
+        bp_uint32 left;
+        a = src + pos + length;
+        b = src + ref + length;
+        left = size - pos - length;
+#if defined(__GNUC__)
+        /* Equal parity: align once, then compare longs. */
+        if (left >= 8 && (((unsigned long)a ^ (unsigned long)b) & 1) == 0) {
+            if (((unsigned long)a & 1) != 0) {
+                if (*a != *b) return length;
+                a++; b++; left--; length++;
+            }
+            while (left >= 4 &&
+                   *(const bl_u32_alias *)a == *(const bl_u32_alias *)b) {
+                a += 4; b += 4; left -= 4; length += 4;
+            }
+        }
+#endif
+        while (left != 0 && *a == *b) { a++; b++; left--; length++; }
+        return length;
+    }
+#endif
 #if BOLTLZ_WORD_MATCH && (defined(__GNUC__) || defined(__clang__)) && \
     defined(__BYTE_ORDER__) && \
     (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ || __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
@@ -274,7 +340,7 @@ bl_match bl_find(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
 #endif
 #if !BOLTLZ_HASH_CACHE && !BOLTLZ_PIPELINE
     value = bl_load32(src + pos);
-    hash = (value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+    hash = bl_hash_value(value);
 #endif
     entries[0] = last != 0 && last <= pos ? pos - last + 1 : 0;
     entries[1] = bl_table_get(table, hash BL_TABLE_ARGS);
@@ -356,7 +422,7 @@ bl_match bl_fast_find(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
     match.length = match.distance = match.saving = 0;
 #if !BOLTLZ_HASH_CACHE && !BOLTLZ_PIPELINE
     value = bl_load32(src + pos);
-    hash = (value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+    hash = bl_hash_value(value);
 #endif
     entry = bl_table_get(table, hash BL_TABLE_ARGS);
 #if BOLTLZ_PIPELINE
@@ -376,7 +442,7 @@ bl_match bl_fast_find(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
     return match;
 }
 
-static void bl_insert_hash(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
+BL_M68K_INLINE void bl_insert_hash(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
                             BL_TABLE_TYPE *table, int level, bp_uint32 hash BL_TABLE_PARAMS)
 {
     if (level == BOLTLZ_BALANCED) {
@@ -394,7 +460,7 @@ static void bl_insert_hash(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
     bl_table_set(table, hash, pos + 1 BL_TABLE_ARGS);
 }
 
-static void bl_insert(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
+BL_M68K_INLINE void bl_insert(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
                        BL_TABLE_TYPE *table, int level BL_TABLE_PARAMS)
 {
     bl_insert_hash(src, size, pos, table, level, bl_hash(src + pos) BL_TABLE_ARGS);
@@ -510,7 +576,7 @@ int boltlz_compress(const bp_uint8 *src, bp_uint32 src_len,
 #endif
 #if BOLTLZ_HASH_CACHE || BOLTLZ_PIPELINE
         value = bl_load32(src + pos);
-        hash = (value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+        hash = bl_hash_value(value);
 #endif
 #if BOLTLZ_PIPELINE
         }
@@ -551,7 +617,7 @@ int boltlz_compress(const bp_uint8 *src, bp_uint32 src_len,
                                   match.length >= 5 ? match.length - 1 : 0;
 #if BOLTLZ_HASH_CACHE || BOLTLZ_PIPELINE
             next_value = bl_load32(src + pos + 1);
-            next_hash = (next_value * (bp_uint32)2654435761UL) >> (32 - BL_HASH_BITS);
+            next_hash = bl_hash_value(next_value);
 #endif
             next = bl_find(src, src_len, pos + 1, last, table, level,
                            known_repeat_length BL_TABLE_ARGS BL_NEXT_PREFIX_ARGS BL_NO_FORWARD_ARGS);
