@@ -200,6 +200,8 @@ def main():
                    help="add a nested source tree at this depth (0 disables it)")
     p.add_argument("--filesystem", choices=("ofs", "ffs"), default="ofs")
     args = p.parse_args()
+    # A bare name (the default) is looked up on PATH, e.g. a pipx install.
+    args.xdftool = shutil.which(args.xdftool) or args.xdftool
     if args.depth < 0 or args.depth > 128:
         p.error("--depth must be between 0 and 128")
     out = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="boltpack-amiga-" + args.filesystem + "-"))

@@ -110,6 +110,8 @@ def main():
                    help="allow native floppy buffers to flush while the CLI is paused")
     p.add_argument("--output", type=Path)
     args = p.parse_args()
+    # A bare name (the default) is looked up on PATH, e.g. a pipx install.
+    args.xdftool = shutil.which(args.xdftool) or args.xdftool
 
     out = (args.output.resolve() if args.output else
            Path(tempfile.mkdtemp(prefix="boltpack-amiga-native-recovery-")))

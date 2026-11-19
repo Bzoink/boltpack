@@ -8,6 +8,7 @@ import locale
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,8 @@ def main():
                         default=ROOT / "build/linux/boltpack")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    # A bare name (the default) is looked up on PATH, e.g. a pipx install.
+    args.xdftool = shutil.which(args.xdftool) or args.xdftool
 
     if args.output:
         evidence = args.output.resolve()

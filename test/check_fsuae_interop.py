@@ -95,6 +95,8 @@ def main():
     p.add_argument("--timeout", type=int, default=60)
     p.add_argument("--usable-roundtrip", action="store_true")
     args = p.parse_args()
+    # A bare name (the default) is looked up on PATH, e.g. a pipx install.
+    args.xdftool = shutil.which(args.xdftool) or args.xdftool
     if args.depth < 0 or args.depth > 64:
         p.error("--depth must be between 0 and 64")
     if args.expect_fluff_refusal and (args.chip_memory != 512 or
