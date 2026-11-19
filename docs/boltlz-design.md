@@ -75,7 +75,9 @@ copying dominates there and the C code already copies with long moves.
 
 Release packages ship the C build and, in an optimized folder, assembly
 builds for the 68000 and for 68020 to 68060 (`make atari-optimized`,
-`make amiga-optimized`).
+`make amiga-optimized`). Classic Mac 68k ships them as separate packages
+(`mac68k-optimized-68000.hqx`, `mac68k-optimized-68020.hqx`; `make
+macos9-68k-optimized`).
 
 `make atari-hatari-boltlz-asm-test HATARI_TOS=... [EMUTOS_ROM=...]` checks
 the assembly against the C code over generated inputs (sizes 0 to 256 KiB,

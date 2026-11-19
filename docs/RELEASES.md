@@ -36,8 +36,10 @@ write access. Avoid saving tokens in shell startup files.
 
    Add or omit targets according to available toolchains. Atari and Amiga
    packages also need the assembly-optimized builds for their Optimized folders
-   (`make atari atari-optimized amiga amiga-optimized`); packaging stops if they
-   are missing. `scripts/build-and-release.sh` builds them automatically. Native
+   (`make atari atari-optimized amiga amiga-optimized`), and Classic Mac 68k
+   needs them for its separate optimized packages (`make macos9-68k
+   macos9-68k-optimized`); packaging stops if they are missing.
+   `scripts/build-and-release.sh` builds them automatically. Native
    source kits are created separately with `bash scripts/create-source-kits.sh`.
 4. Upload packages and review the draft:
 

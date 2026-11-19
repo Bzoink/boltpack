@@ -55,6 +55,12 @@
   the one for their CPU over the standard program; archives are identical.
   The READMEs explain the choice. Built with `make atari-optimized` and
   `make amiga-optimized`.
+- Classic Mac 68k gets two more packages next to the C build
+  (`boltpack-VERSION-mac68k.hqx`): `mac68k-optimized-68000.hqx` for any 68k
+  Mac and `mac68k-optimized-68020.hqx` for 68020 and later, built with
+  `make macos9-68k-optimized`. The download page now lists the Mac 68k
+  packages, which it previously skipped (`.hqx` and the `mac68k` name were
+  not recognized).
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

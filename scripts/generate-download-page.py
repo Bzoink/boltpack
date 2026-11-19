@@ -192,6 +192,17 @@ PLATFORMS = {
         ),
         "family": "macOS",
     },
+    "mac68k": {
+        "name": "Classic Mac OS (68k)",
+        "os": "System 7 through Mac OS 8.1",
+        "arch": "Motorola 68k",
+        "description": (
+            "Classic Mac OS 68k application (BinHex) built with the Retro68 "
+            "cross-compiler. Runs on Mac Plus, SE, Classic, LC, II, Quadra and "
+            "Centris. Requires System 7 or later."
+        ),
+        "family": "macOS",
+    },
     "macos9": {
         "name": "Classic Mac OS",
         "os": "Mac OS 7 through Mac OS 9",
@@ -626,11 +637,13 @@ FAMILY_ORDER = [
 ]
 
 # Known package extensions, longest first so .tar.gz is matched before .tar
-EXTENSIONS = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.Z", ".zip", ".lha", ".tar")
+EXTENSIONS = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.Z", ".zip", ".lha", ".tar", ".hqx")
 
 # Known variant suffixes that can trail the cpu field
 VARIANT_LABELS = {
     "uqlx": "UQLX container for emulator",
+    "optimized-68000": "assembly-optimized, any 68k CPU",
+    "optimized-68020": "assembly-optimized, 68020 to 68060 only",
 }
 
 
@@ -699,6 +712,10 @@ def parse_package_name(filename):
     cpu = cpu_part
     for v in VARIANT_LABELS:
         suffix = "-" + v
+        if cpu_part == v:
+            variant = v
+            cpu = ""
+            break
         if cpu_part.endswith(suffix):
             variant = v
             cpu = cpu_part[: -len(suffix)]

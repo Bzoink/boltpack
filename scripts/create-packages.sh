@@ -980,7 +980,31 @@ create_package() {
     if [ "$platform" = "ql" ]; then
         create_ql_uqlx_package "$stagindir" "$binary_name" "$cpu" || return 1
     fi
+
+    if [ "$platform" = "macos9-68k" ]; then
+        create_mac68k_optimized_packages || return 1
+    fi
     
+    return 0
+}
+
+# The Classic Mac 68k application is one file, so its assembly-optimized
+# builds (make macos9-68k-optimized) are separate BinHex packages:
+# boltpack-VERSION-mac68k-optimized-68000.hqx and ...-68020.hqx.
+create_mac68k_optimized_packages() {
+    local cpu rsrc pkg_name pkg_path
+    for cpu in 68000 68020; do
+        rsrc="$BUILDDIR/macos9-68k-optimized/$cpu/.rsrc/BoltPack"
+        if [ ! -f "$rsrc" ]; then
+            log_error "Optimized build not found: $rsrc (run: make macos9-68k-optimized)"
+            return 1
+        fi
+        pkg_name="boltpack-$VERSION-mac68k-optimized-$cpu.hqx"
+        pkg_path="$DISTDIR/$pkg_name"
+        create_binhex "$rsrc" "$pkg_path" || return 1
+        log_info "✓ Created: $pkg_name ($(du -h "$pkg_path" | cut -f1))"
+        echo "$pkg_path"
+    done
     return 0
 }
 

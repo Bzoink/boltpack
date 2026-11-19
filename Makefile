@@ -758,12 +758,13 @@ ifeq ($(BOLTLZ_M68K_ASM),1)
 M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1 $(if $(M68K_CPU),-m$(M68K_CPU))
 M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S
 # The Mac 68k flags force-include a C header, so assemble it on its own.
-MACOS68K_ASM_OBJ = build/macos9-68k/boltlz_m68k.o
+MACOS68K_ASM_OBJ = $(MACOS68K_BUILDDIR)/boltlz_m68k.o
 endif
 
 # Assembly-optimized executables for the packages' Optimized folders, one
-# directory per CPU: 68000 (any 68k) and 68020 (68020 to 68060).
-.PHONY: atari-optimized amiga-optimized
+# directory per CPU: 68000 (any 68k) and 68020 (68020 to 68060). The Classic
+# Mac 68k builds become separate packages.
+.PHONY: atari-optimized amiga-optimized macos9-68k-optimized
 atari-optimized:
 	$(MAKE) atari-cli atari-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68000 \
 	    ATARI_BUILDDIR=build/atari-optimized/68000
@@ -775,6 +776,12 @@ amiga-optimized:
 	    AMIGA68K_BUILDDIR=build/amiga-optimized/68000
 	$(MAKE) amiga68k amiga-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68020-60 \
 	    AMIGA68K_BUILDDIR=build/amiga-optimized/68020
+
+macos9-68k-optimized:
+	$(MAKE) macos9-68k BOLTLZ_M68K_ASM=1 M68K_CPU=68000 \
+	    MACOS68K_BUILDDIR=build/macos9-68k-optimized/68000
+	$(MAKE) macos9-68k BOLTLZ_M68K_ASM=1 M68K_CPU=68020-60 \
+	    MACOS68K_BUILDDIR=build/macos9-68k-optimized/68020
 
 AMIGA68K_CC      ?= /opt/amiga/bin/m68k-amigaos-gcc
 AMIGA68K_CFLAGS  = -noixemul -Wall -Wextra -Wno-unused-function -O2
@@ -968,7 +975,7 @@ macos9-68k: macos9-core-sync-test
 	    exit 0; \
 	fi
 	rm -f '$(MACOS68K_BUILDDIR)/.link-smoke' '$(MACOS68K_BUILDDIR)/.link-smoke.gdb'
-	$(if $(MACOS68K_ASM_OBJ),$(MACOS68K_ENV) $(MACOS68K_CC) -c $(M68K_ASM_SRCS) -o $(MACOS68K_ASM_OBJ))
+	$(if $(MACOS68K_ASM_OBJ),$(MACOS68K_ENV) $(MACOS68K_CC) $(if $(M68K_CPU),-m$(M68K_CPU)) -c $(M68K_ASM_SRCS) -o $(MACOS68K_ASM_OBJ))
 	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \

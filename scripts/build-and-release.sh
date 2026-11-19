@@ -56,9 +56,10 @@ print_step "Building binaries"
 for platform in "${PLATFORMS[@]}"; do
     if make "$platform"; then
         print_success "Built $platform"
-        # Atari and Amiga packages also carry assembly-optimized builds.
+        # Atari and Amiga packages carry assembly-optimized builds, and the
+        # Classic Mac 68k ones are separate packages.
         case "$platform" in
-            atari|amiga)
+            atari|amiga|macos9-68k)
                 make "$platform-optimized" || {
                     echo "✗ Optimized build failed for $platform" >&2
                     exit 1
