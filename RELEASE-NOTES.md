@@ -61,6 +61,19 @@
   `make macos9-68k-optimized`. The download page now lists the Mac 68k
   packages, which it previously skipped (`.hqx` and the `mac68k` name were
   not recognized).
+- Sinclair QL: the c68 compiler's `MC68000` macro now selects the 68000
+  BoltLZ code, which the QL build had missed. At original QL speed (sQLux
+  68008 timing) BoltLZ compression is 2.2x faster (0.56 to 1.25 KB/s on mixed
+  data); decompression is unchanged, as c68 keeps the default decoder.
+- Sinclair QL: an assembly-optimized build in the package's `Optimized/68000`
+  folder (`optimized_68000_boltpack` in the UQLX container), built with
+  `make ql-optimized`. c68's assembler cannot read GNU syntax, so
+  `src/core/boltlz_m68k_c68.s` carries the same position-independent machine
+  code as data words; `scripts/gen_boltlz_m68k_c68.py` regenerates it and
+  `make boltlz-m68k-c68-sync-test` checks it. At original QL speed BoltLZ
+  compresses at about 7 KB/s and decompresses at about 49 KB/s (from 0.56
+  and 14 KB/s in 1.11). `make ql-sqlux-boltlz-asm-test` compares it with the
+  C build in sQLux; its compressed output is identical to the Atari builds.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

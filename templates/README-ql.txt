@@ -10,6 +10,7 @@ FILES
 -----
 
 boltpack           Main executable
+Optimized/68000/   Faster boltpack (see OPTIMIZED VERSION)
 README.txt         This file
 LICENSE            License information
 RELEASE-NOTES.txt  Release notes
@@ -63,6 +64,18 @@ OPTIONS
 -n        Dry run
 -q        Quiet output
 -qq       Silent output
+
+OPTIMIZED VERSION
+-----------------
+
+boltpack is the standard build. Optimized/68000/boltpack is the same program
+with hand-written 68000 assembly for BoltLZ, the default compression method.
+It runs on every QL and QL-compatible (68008, Gold Card, Super Gold Card,
+Q68, QPC2). To use it, copy it over the standard boltpack. Archives are
+exactly the same as with the standard build. Measured in an emulator at
+original QL speed on mixed files: BoltLZ compression about 7 KB/s instead of
+about 1.3 KB/s, decompression about 49 KB/s instead of about 14 KB/s. Other
+compression methods run at the standard speed.
 
 QL NOTES
 --------

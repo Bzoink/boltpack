@@ -10,10 +10,11 @@
  * loads and 32x32 hash multiply become library calls. BOLTLZ_M68K selects
  * the 68000 load, hash and match-length code in boltlz.c and the defaults
  * below, measured fastest on an 8 MHz 68000 (Hatari). It needs a
- * big-endian CPU. The archive format is unchanged. */
+ * big-endian CPU. The archive format is unchanged. MC68000 is c68's macro
+ * (Sinclair QL). */
 #ifndef BOLTLZ_M68K
 #if defined(__m68k__) || defined(__mc68000__) || defined(mc68000) || \
-    defined(__MC68000__)
+    defined(__MC68000__) || defined(MC68000)
 #define BOLTLZ_M68K 1
 #else
 #define BOLTLZ_M68K 0
@@ -26,8 +27,10 @@
 #ifndef BOLTLZ_NARROW_TABLE
 #define BOLTLZ_NARROW_TABLE 0    /* no data cache to save */
 #endif
-#ifndef BOLTLZ_FAST_DECODE
-#define BOLTLZ_FAST_DECODE 1     /* exact copies; mode 2 over-copies 16 bytes */
+/* Exact copies beat mode 2's 16-byte over-copy with GCC. c68 (the QL) does
+ * not inline the copy helpers, so it keeps mode 2 and its fast memcpy. */
+#if !defined(BOLTLZ_FAST_DECODE) && defined(__GNUC__)
+#define BOLTLZ_FAST_DECODE 1
 #endif
 #ifndef BOLTLZ_ENCODE_SHORT_COPY
 #define BOLTLZ_ENCODE_SHORT_COPY 0

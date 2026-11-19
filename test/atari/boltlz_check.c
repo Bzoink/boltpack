@@ -1,25 +1,33 @@
 /*
- * boltlz_check.c -- BoltLZ encoder check for Atari TOS (run in Hatari)
+ * boltlz_check.c -- BoltLZ encoder and decoder check for 68k systems
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  *
- * Writes C:\BOLTLZ.TXT: the length and CRC-32 of every compressed stream
- * for many generated inputs and both levels, and the result code and output
- * CRC of decoding many corrupted streams, so builds with the C codec and
- * with boltlz_m68k.S can be compared byte for byte; plus round-trip failures
- * and compression and decompression times (200 Hz ticks, emulated time).
+ * Writes BOLTLZ.TXT (C:\ on Atari TOS, win1_ on the Sinclair QL): the length
+ * and CRC-32 of every compressed stream for many generated inputs and both
+ * levels, and the result code and output CRC of decoding many corrupted
+ * streams, so builds with the C codec, with boltlz_m68k.S and from different
+ * compilers can be compared byte for byte; plus round-trip failures and
+ * compression and decompression times. On TOS the times are 200 Hz ticks of
+ * emulated time; on the QL they are not measured (0).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <osbind.h>
 #include "boltlz.h"
 
 #define MAXB 262144UL
 
+#if defined(QDOS)
+#define CHECK_OUTPUT "win1_boltlz_txt"
+static long now(void) { return 0; }
+#else
+#include <osbind.h>
+#define CHECK_OUTPUT "C:\\BOLTLZ.TXT"
 static long ticks;
 static long read_hz200(void) { ticks = *(volatile long *)0x4baL; return 0; }
 static long now(void) { Supexec(read_hz200); return ticks; }
+#endif
 
 static unsigned long seed;
 static unsigned long rnd(void) { seed = seed * 1103515245UL + 12345UL; return (seed >> 8) & 0xFFFFFFUL; }
@@ -58,7 +66,7 @@ int main(void)
 {
     static const unsigned long sizes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 18, 19, 20,
         31, 33, 63, 64, 65, 127, 128, 129, 1000, 4097, 16384, 65535, 65536, 65537, 200001, 262144 };
-    FILE *out = fopen("C:\\BOLTLZ.TXT", "w");
+    FILE *out = fopen(CHECK_OUTPUT, "w");
     unsigned char *buf = malloc(MAXB + 2), *enc = malloc(boltlz_compress_bound(MAXB)),
                   *dec = malloc(MAXB), *work = malloc(boltlz_work_size(BOLTLZ_BALANCED));
     unsigned int si, kind, level, odd;

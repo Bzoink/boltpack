@@ -8,6 +8,11 @@ FILES
 -----
 
 boltpack             Main executable
+optimized_68000_boltpack
+                     The same program with hand-written 68000 assembly for
+                     BoltLZ: about 5x faster compression and 3.5x faster
+                     decompression at QL speed, same archives. Runs on every
+                     QL; copy it over boltpack to use it.
 readme_txt           This file
 license_txt          License information
 release_notes_txt    Release notes

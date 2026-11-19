@@ -710,6 +710,13 @@ create_ql_uqlx_package() {
         log_error "qcp failed while creating QL UQLX container package"
         return 1
     }
+    if [ -f "$stagindir/Optimized/68000/$binary_name" ]; then
+        qcp "$stagindir/Optimized/68000/$binary_name" \
+            "$store_dir/optimized_68000_$binary_name" || {
+            log_error "qcp failed while creating QL UQLX container package"
+            return 1
+        }
+    fi
 
     {
         sed "s|{VERSION}|$VERSION|g; s|{BUILD_DATE}|$BUILD_DATE|g; s|{ARCH}|$cpu|g; s|{BINARY_SIZE}|~50 KB|g" "$readme_template"
@@ -838,6 +845,18 @@ create_package() {
             return 1
         fi
         cp "$BUILDDIR/$platform/boltpack.wasm" "$stagindir/"
+    fi
+
+    # The QL's assembly-optimized build (make ql-optimized); one 68000 build
+    # serves every QL, so there is only Optimized/68000.
+    if [ "$platform" = "ql" ]; then
+        local ql_opt="$BUILDDIR/ql-optimized/68000/boltpack"
+        if [ ! -f "$ql_opt" ]; then
+            log_error "Optimized build not found: $ql_opt (run: make ql-optimized)"
+            return 1
+        fi
+        mkdir -p "$stagindir/Optimized/68000"
+        cp "$ql_opt" "$stagindir/Optimized/68000/boltpack"
     fi
 
     # For Windows platforms, copy all binaries (exe, wcx, config exe)

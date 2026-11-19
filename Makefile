@@ -1458,10 +1458,24 @@ os2-watcom:
 QL_CC ?= qcc
 QL_CFLAGS=-O -DBP_CREATOR_OS=BP_OS_QL -DBP_CREATOR_CPU=BP_CPU_M68K
 QL_BUILDDIR=build/ql
+# BOLTLZ_M68K_ASM=1: link boltlz_m68k.S as generated for as68 (see
+# scripts/gen_boltlz_m68k_c68.py), since c68 cannot assemble GNU syntax.
+QL_ASM = $(if $(filter 1,$(BOLTLZ_M68K_ASM)),-DBOLTLZ_M68K_ASM=1 ../../core/boltlz_m68k_c68.s)
 QL_CC_EXEC=$(shell command -v $(firstword $(QL_CC)) 2>/dev/null)
 QL_CC_DIR=$(patsubst %/,%,$(dir $(QL_CC_EXEC)))
 
 .PHONY: ql ql-host-test ql-path-test ql-time-host-test ql-sqlux-qdirect-diagnostic
+.PHONY: ql-optimized boltlz-m68k-c68-sync-test
+
+# The assembly-optimized QL build for the package's Optimized folder. One
+# 68000 build serves every QL: the 68008 and 68000/68020 accelerators.
+ql-optimized: boltlz-m68k-c68-sync-test
+	$(MAKE) ql BOLTLZ_M68K_ASM=1 QL_BUILDDIR=build/ql-optimized/68000
+
+# src/core/boltlz_m68k_c68.s must match boltlz_m68k.S (skipped without a GNU
+# m68k toolchain to regenerate it).
+boltlz-m68k-c68-sync-test:
+	python3 scripts/gen_boltlz_m68k_c68.py --check
 ql:
 	@if [ -z "$(QL_CC_EXEC)" ]; then
 	    echo "  SKIP  ql ($(firstword $(QL_CC)) not found)"
@@ -1477,7 +1491,7 @@ ql:
 	rm -f $(QL_BUILDDIR)/cc_probe.c $(QL_BUILDDIR)/cc_probe
 	rm -f $(QL_BUILDDIR)/boltpack
 	cd src/frontend/ql
-	if ! PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) $(QL_CFLAGS) \
+	if ! PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) $(QL_CFLAGS) $(QL_ASM) \
 	    -I../../core -I../../../$(BOLTLZDIR) \
 	    ../../core/archiver.c \
 	    ../../core/compress.c \
@@ -1531,6 +1545,14 @@ ql-sqlux-interoperability-test: ql all linuxmini
 	    --rom "$(QL_ROM)" --ql-binary build/ql/boltpack \
 	    --linux-binary build/linux/boltpack \
 	    --mini-binary build/linux32mini/bpmini
+
+# The 68000 BoltLZ assembly on the QL: c68 builds with and without
+# boltlz_m68k_c68.s must give identical results in sQLux.
+.PHONY: ql-sqlux-boltlz-asm-test
+ql-sqlux-boltlz-asm-test: boltlz-m68k-c68-sync-test
+	@test -n "$(QL_CC_EXEC)" || { echo "Set QL_CC to the working qcc compiler" >&2; exit 2; }
+	python3 test/check_sqlux_boltlz_asm.py --sqlux "$(QL_SQLUX)" \
+	    --rom "$(QL_ROM)" --qcc "$(QL_CC_EXEC)"
 
 # QDOS file headers (type and dataspace) through the QL tool in sQLux.
 .PHONY: ql-sqlux-header-test
@@ -2053,7 +2075,7 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
+test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test boltlz-m68k-c68-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="

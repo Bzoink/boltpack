@@ -77,7 +77,25 @@ Release packages ship the C build and, in an optimized folder, assembly
 builds for the 68000 and for 68020 to 68060 (`make atari-optimized`,
 `make amiga-optimized`). Classic Mac 68k ships them as separate packages
 (`mac68k-optimized-68000.hqx`, `mac68k-optimized-68020.hqx`; `make
-macos9-68k-optimized`).
+macos9-68k-optimized`). The Sinclair QL ships one 68000 build in
+`Optimized/68000` (`make ql-optimized`).
+
+The QL's c68 toolchain cannot assemble GNU syntax, and the code has no
+relocations, so [boltlz_m68k_c68.s](../src/core/boltlz_m68k_c68.s) holds the
+GNU-assembled 68000 machine code as `as68` data words. Regenerate it with
+`scripts/gen_boltlz_m68k_c68.py` after changing `boltlz_m68k.S`; `make
+boltlz-m68k-c68-sync-test` (part of `make test`) fails if it is stale. c68 also
+keeps decoder mode 2, because it does not inline the copy helpers mode 1 uses.
+At original QL speed (sQLux with 68008 timing, 32 KiB of mixed data):
+
+| QL build | Compress, default level | Compress, fast level | Decompress |
+| --- | --- | --- | --- |
+| 1.11 (generic C) | 0.56 KB/s | 1.1 KB/s | 14 KB/s |
+| 68000 C path | 1.25 KB/s | 2.2 KB/s | 14 KB/s |
+| Assembly | about 7 KB/s | about 14 KB/s | about 49 KB/s |
+
+`make ql-sqlux-boltlz-asm-test` runs the same check program as the Atari test
+in sQLux, with and without the assembly.
 
 `make atari-hatari-boltlz-asm-test HATARI_TOS=... [EMUTOS_ROM=...]` checks
 the assembly against the C code over generated inputs (sizes 0 to 256 KiB,
