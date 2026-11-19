@@ -73,6 +73,10 @@ Measured in Hatari on 384 KiB of mixed Silesia data (emulated time):
 Data made of very long matches gains less (about 1.2x decoding), because
 copying dominates there and the C code already copies with long moves.
 
+Release packages ship the C build and, in an optimized folder, assembly
+builds for the 68000 and for 68020 to 68060 (`make atari-optimized`,
+`make amiga-optimized`).
+
 `make atari-hatari-boltlz-asm-test HATARI_TOS=... [EMUTOS_ROM=...]` checks
 the assembly against the C code over generated inputs (sizes 0 to 256 KiB,
 odd addresses, both levels) and 540 corrupted streams (same result codes

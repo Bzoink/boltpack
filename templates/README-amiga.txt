@@ -60,6 +60,23 @@ Workbench usage:
   2. Double-click boltpack to open a Shell window and display CLI usage
   3. For normal command-line work, run boltpack from Shell with arguments
 
+OPTIMIZED VERSIONS
+------------------
+
+boltpack and boltpack-gui are the standard build and run on every 68k
+Amiga. The Optimized drawer holds the same two programs with hand-written
+68000 assembly for BoltLZ, the default compression method:
+
+  Optimized/68000/   any 68k Amiga (A500, A600, A2000, CDTV, ...)
+  Optimized/68020/   68020 to 68060 only (A1200, A3000, A4000, accelerators)
+
+To use one, copy boltpack and/or boltpack-gui from the drawer for your CPU
+over the standard ones; keep the existing .info icons. Archives are exactly
+the same as with the standard build. Measured in an emulator on mixed
+files, BoltLZ compression and decompression are each about twice as fast;
+the 68020 version adds 10-20% on a 68030. Other compression methods run at
+the standard speed. The 68020 version does not run on a 68000.
+
 MULTIVIEW / ICON CLICKING
 --------------------------
 

@@ -748,15 +748,33 @@ wasm:
 # Optional hand-written 68000 BoltLZ encoder and decoder loops (boltlz_m68k.S)
 # for the Atari, Amiga and Classic Mac 68k builds, for example
 #   make atari amiga BOLTLZ_M68K_ASM=1
-# Results are identical to the C code. Built with -m68020 or later, the
-# assembly also uses unaligned long access.
+# Results are identical to the C code. M68K_CPU (for example 68020-60) sets
+# the target CPU; on a 68020 or later the assembly also uses unaligned long
+# access. Release packages ship the C build and, in an Optimized folder,
+# the builds from atari-optimized and amiga-optimized below.
 BOLTLZ_M68K_ASM ?= 0
+M68K_CPU ?=
 ifeq ($(BOLTLZ_M68K_ASM),1)
-M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1
+M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1 $(if $(M68K_CPU),-m$(M68K_CPU))
 M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S
 # The Mac 68k flags force-include a C header, so assemble it on its own.
 MACOS68K_ASM_OBJ = build/macos9-68k/boltlz_m68k.o
 endif
+
+# Assembly-optimized executables for the packages' Optimized folders, one
+# directory per CPU: 68000 (any 68k) and 68020 (68020 to 68060).
+.PHONY: atari-optimized amiga-optimized
+atari-optimized:
+	$(MAKE) atari-cli atari-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68000 \
+	    ATARI_BUILDDIR=build/atari-optimized/68000
+	$(MAKE) atari-cli atari-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68020-60 \
+	    ATARI_BUILDDIR=build/atari-optimized/68020
+
+amiga-optimized:
+	$(MAKE) amiga68k amiga-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68000 \
+	    AMIGA68K_BUILDDIR=build/amiga-optimized/68000
+	$(MAKE) amiga68k amiga-gui BOLTLZ_M68K_ASM=1 M68K_CPU=68020-60 \
+	    AMIGA68K_BUILDDIR=build/amiga-optimized/68020
 
 AMIGA68K_CC      ?= /opt/amiga/bin/m68k-amigaos-gcc
 AMIGA68K_CFLAGS  = -noixemul -Wall -Wextra -Wno-unused-function -O2

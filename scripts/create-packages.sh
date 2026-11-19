@@ -312,6 +312,32 @@ convert_package_text() {
     return 0
 }
 
+# Copy the assembly-optimized executables (make <platform>-optimized) into
+# <stage>/<folder>/<cpu>/. Only executables go there: users copy the one for
+# their CPU over the C build in the package root.
+copy_optimized_builds() {
+    local platform="$1"
+    local stagindir="$2"
+    local folder="$3"
+    shift 3
+    local cpu exe src
+    for cpu in 68000 68020; do
+        src="$BUILDDIR/$platform-optimized/$cpu"
+        for exe in "$@"; do
+            if [ ! -f "$src/$exe" ]; then
+                log_error "Optimized build not found: $src/$exe (run: make $platform-optimized)"
+                return 1
+            fi
+        done
+        mkdir -p "$stagindir/$folder/$cpu"
+        for exe in "$@"; do
+            cp "$src/$exe" "$stagindir/$folder/$cpu/$exe"
+            chmod +x "$stagindir/$folder/$cpu/$exe" 2>/dev/null || true
+        done
+    done
+    return 0
+}
+
 create_totalcmd_plugin_package() {
     local platform="$1"
     local plugin_name=""
@@ -773,6 +799,7 @@ create_package() {
             log_error "Amiga Workbench icon generation failed"
             return 1
         fi
+        copy_optimized_builds amiga "$stagindir" Optimized boltpack boltpack-gui || return 1
 
         binary_name="boltpack"
     elif [ "$platform" = "atari" ]; then
@@ -792,6 +819,8 @@ create_package() {
         cp "$atari_gui" "$stagindir/boltpack.prg"
         chmod +x "$stagindir/boltpack.tos" 2>/dev/null || true
         chmod +x "$stagindir/boltpack.prg" 2>/dev/null || true
+        # TOS names are 8.3, so the folder cannot be called Optimized.
+        copy_optimized_builds atari "$stagindir" OPTIMIZE boltpack.tos boltpack.prg || return 1
         binary_name="boltpack.tos"
     else
         if [ ! -f "$binary" ]; then

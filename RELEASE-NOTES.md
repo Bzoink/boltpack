@@ -48,6 +48,13 @@
   and 1.8x, and 2.0x and 2.1x with a `-m68020` build.
   `make atari-hatari-boltlz-asm-test` compares it with the C code in Hatari.
   Off by default.
+- The Atari and Amiga packages keep the C build in the root and add an
+  optimized folder (`OPTIMIZE` on the Atari, as TOS names are 8.3, and
+  `Optimized` on the Amiga) with the assembly builds of both programs for
+  each CPU: `68000` for any machine and `68020` for 68020 to 68060. Users copy
+  the one for their CPU over the standard program; archives are identical.
+  The READMEs explain the choice. Built with `make atari-optimized` and
+  `make amiga-optimized`.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

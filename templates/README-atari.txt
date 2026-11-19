@@ -14,6 +14,7 @@ FILES
   README.TXT     This file
   RELNOTES.TXT   Release notes
   LICENSE        License terms
+  OPTIMIZE\      Faster versions of both programs for each CPU (see below)
 
 Requirements: TOS 1.04 or later (tested in Hatari with TOS 1.06, 1.62 and
 2.05). 512 KB RAM works; 1 MB or more is recommended for larger archives.
@@ -61,8 +62,27 @@ Options:
   -q, -qq   Quiet, silent
   --interchange-profile-1   Limits that every BoltPack reader accepts
 
-Approximate speed on an 8 MHz 68000: boltlz 27 KB/s, BoltLite and Fluff
-about 1 KB/s. Use boltlz on an ST unless size matters most.
+Approximate speed of the standard build on an 8 MHz 68000 with mixed files:
+boltlz compresses 6-7 KB/s and decompresses about 65 KB/s; BoltLite and
+Fluff compress about 1 KB/s. Use boltlz on an ST unless size matters most.
+
+OPTIMIZED VERSIONS
+------------------
+
+The programs above are the standard build and run on every Atari. The
+OPTIMIZE folder holds the same two programs with hand-written 68000
+assembly for BoltLZ, the default compression method:
+
+  OPTIMIZE\68000\   any Atari: ST, STE, Mega ST, Mega STE, also TT/Falcon
+  OPTIMIZE\68020\   68020 to 68060 only: TT, Falcon, accelerated machines
+
+To use one, copy BOLTPACK.PRG and/or BOLTPACK.TOS from the folder for your
+CPU over the standard ones. Archives are exactly the same as with the
+standard build. Measured in an emulator on mixed files, BoltLZ compression
+is about twice as fast and decompression about twice as fast (8 MHz 68000:
+decompression 64 to 131 KB/s); the 68020 version adds 10-20% on a 68030.
+Other compression methods run at the standard speed. The 68020 version
+does not start on a 68000.
 
 ATARI NOTES
 -----------

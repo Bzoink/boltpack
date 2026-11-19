@@ -34,8 +34,11 @@ write access. Avoid saving tokens in shell startup files.
    python3 scripts/generate-download-page.py
    ```
 
-   Add or omit targets according to available toolchains. Native source kits are
-   created separately with `bash scripts/create-source-kits.sh`.
+   Add or omit targets according to available toolchains. Atari and Amiga
+   packages also need the assembly-optimized builds for their Optimized folders
+   (`make atari atari-optimized amiga amiga-optimized`); packaging stops if they
+   are missing. `scripts/build-and-release.sh` builds them automatically. Native
+   source kits are created separately with `bash scripts/create-source-kits.sh`.
 4. Upload packages and review the draft:
 
    ```sh
