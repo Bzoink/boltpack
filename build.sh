@@ -750,11 +750,12 @@ _do_watcom_target() {
 }
 
 do_dos16() {
+    local target="${1:-dos16}"
     if ! _check_watcom; then
-        echo "  SKIP  dos16 (Open Watcom not found)"
+        echo "  SKIP  $target (Open Watcom not found)"
         return 0
     fi
-    _do_watcom_target dos16 build/dos16/bpmini.exe
+    _do_watcom_target "$target" "build/$target/bpmini.exe"
 }
 
 do_win16() {
@@ -1198,6 +1199,7 @@ Targets:
 
 16-bit mini archiver targets (Open Watcom 2.0 at /opt/watcom):
   dos16          16-bit DOS (8086 compact model)
+  dos16-optimized  16-bit DOS with 8086 BoltLite assembly
   win16          16-bit Windows 3.x (8086 compact model)
   os2-16         16-bit OS/2 1.x (8086 compact model)
 
@@ -1290,7 +1292,7 @@ case "$1" in
     ql)           do_ql ;;
     x68k)         do_x68k ;;
     wasm)         do_wasm ;;
-    dos16)        do_dos16 ;;
+    dos16|dos16-optimized) do_dos16 "$1" ;;
     win16)        do_win16 ;;
     os2-16)       do_os2_16 ;;
     all-tiers)    do_all_tiers ;;

@@ -550,6 +550,11 @@ make win16
 make os2-16
 ```
 
+`make dos16-optimized` builds `build/dos16-optimized/bpmini.exe` with 8086
+assembly for BoltLite, the default DOS16 codec. The encoder still produces
+the same BoltLite bitstream. `make dos16-boltlite-asm-test` compares the C
+and assembly paths in DOSBox-X with an emulated 8086.
+
 `make mini-all` builds all three and the C89 mini compatibility fixture.
 These are cross-build commands; Windows 3.x and OS/2 1.x runtime validation
 requires their respective guest environments.

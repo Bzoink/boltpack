@@ -2181,6 +2181,7 @@ WATCOM_ROOT  = /opt/watcom
 WATCOM_BIN   = $(WATCOM_ROOT)/binl64
 WCC16        = $(WATCOM_BIN)/wcc
 WLINK16      = $(WATCOM_BIN)/wlink
+WASM16       = $(WATCOM_BIN)/wasm
 # MINI_ENV: set WATCOM (for wlink runtime library search) and INCLUDE (neutral C headers)
 MINI_ENV     = WATCOM=$(WATCOM_ROOT) INCLUDE=$(WATCOM_ROOT)/h
 
@@ -2278,6 +2279,12 @@ DOS16_CORE  = -bt=dos -mc -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_DOS $(DOS
 DOS16_FRONT = -bt=dos -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_DOS $(DOS16_CODEPAGE_FLAGS) $(DOS16_TEST_FLAGS)
 DOS16_BDIR   = build/dos16
 DOS16_EXE    = $(DOS16_BDIR)/bpmini.exe
+DOS16_OPT_BDIR = build/dos16-optimized
+DOS16_BOLTLITE_ASM ?= 0
+ifeq ($(DOS16_BOLTLITE_ASM),1)
+DOS16_BOLTLITE_FLAGS = -DBOLTLITE_8086_ASM
+DOS16_BOLTLITE_OBJ = $(DOS16_BDIR)/bl8086.obj
+endif
 DOS16_STACK_BDIR = build/dos16-stack
 DOS16_STACK_EXE = $(DOS16_STACK_BDIR)/bpmini.exe
 DOS16_STACK_WRITER_EXE = $(DOS16_STACK_BDIR)/writer-resource.exe
@@ -2286,12 +2293,15 @@ DOS16_STACK_ALLOC_FLAGS = -DBP_TEST_ALLOC_ACCOUNTING \
 	-Dmalloc=bp_test_malloc -Dcalloc=bp_test_calloc \
 	-Drealloc=bp_test_realloc -Dfree=bp_test_free
 
-.PHONY: dos16
-dos16:
+.PHONY: dos16 dos16-optimized
+dos16-optimized:
+	$(MAKE) dos16 DOS16_BDIR=$(DOS16_OPT_BDIR) DOS16_BOLTLITE_ASM=1
+
+dos16: $(DOS16_BOLTLITE_OBJ)
 	mkdir -p $(DOS16_BDIR)
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(DOS16_BOLTLITE_FLAGS) $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) -fo=$(DOS16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(DOS16_CORE)  $(MINI_INCS) -fo=$(DOS16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
@@ -2302,12 +2312,37 @@ dos16:
 	    file {$(DOS16_BDIR)/archiver.obj} \
 	    file {$(DOS16_BDIR)/compress.obj} \
 	    file {$(DOS16_BDIR)/boltlite.obj} \
+	    $(if $(DOS16_BOLTLITE_OBJ),file {$(DOS16_BOLTLITE_OBJ)}) \
 	    file {$(DOS16_BDIR)/boltlz_decomp.obj} \
 	    file {$(DOS16_BDIR)/mini_common.obj} \
 	    file {$(DOS16_BDIR)/bp_codepage.obj} \
 	    file {$(DOS16_BDIR)/main.obj} \
 	    name $(DOS16_EXE)
 	@echo "  OK    $(DOS16_EXE)"
+
+$(DOS16_BDIR)/bl8086.obj: $(COREDIR)/boltlite_8086.asm
+	mkdir -p $(@D)
+	$(MINI_ENV) $(WASM16) -0 -we -fo=$@ $<
+
+.PHONY: dos16-boltlite-asm-test
+dos16-boltlite-asm-test: dos16-optimized
+	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+	    -Dboltlite_compress=boltlite_compress_c -Dboltlite_decompress=boltlite_decompress_c \
+	    -fo=$(DOS16_OPT_BDIR)/blref.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
+	    -fo=$(DOS16_OPT_BDIR)/blcheck.obj test/unit/dos16_boltlite_asm.c
+	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
+	    file {$(DOS16_OPT_BDIR)/blcheck.obj $(DOS16_OPT_BDIR)/blref.obj} \
+	    file {$(DOS16_OPT_BDIR)/boltlite.obj $(DOS16_OPT_BDIR)/bl8086.obj} \
+	    name $(DOS16_OPT_BDIR)/blcheck.exe
+	: > $(DOS16_OPT_BDIR)/BLCHECK.TXT
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(DOSBOX_X) -defaultconf \
+	    -nopromptfolder -nogui -fastlaunch -time-limit 60 \
+	    -set 'cpu core=normal' -set 'cpu cputype=8086' -set 'cpu cycles=fixed 18000' \
+	    -c "mount c $(abspath $(DOS16_OPT_BDIR))" -c "c:" \
+	    -c "blcheck > BLCHECK.TXT" -c "exit"
+	@cat $(DOS16_OPT_BDIR)/BLCHECK.TXT
+	@grep -q '^PASS: .* BoltLite C/8086 cases' $(DOS16_OPT_BDIR)/BLCHECK.TXT
 
 .PHONY: dos16-stack-probe
 dos16-stack-probe:

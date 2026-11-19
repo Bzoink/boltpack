@@ -25,6 +25,45 @@ typedef bp_uint32 boltlite_index;
 #define BOLTLITE_SEARCH_LIMIT 64U
 #endif
 
+#if defined(BOLTLITE_8086_ASM)
+#if !defined(__WATCOMC__) || !defined(__I86__) || !defined(__COMPACT__) || \
+    !defined(BP_MINI) || BOLTLITE_HASH_BUCKETS != 1024U
+#error BOLTLITE_8086_ASM requires the Open Watcom 16-bit compact mini build
+#endif
+
+/* Compute the same hash with 251 = 256 - 5 to avoid 8086 multiplies.
+ * The intermediate mask is redundant because the final modulus divides 65536. */
+static unsigned int boltlite_hash3_8086(const bp_uint8 *src);
+#pragma aux boltlite_hash3_8086 = \
+    "xor ax,ax"     "mov al,es:[bx]" \
+    "mov ch,al"     "xor cl,cl" \
+    "mov dx,ax"     "shl ax,1"       "shl ax,1"  "add ax,dx" \
+    "sub cx,ax" \
+    "xor ax,ax"     "mov al,es:1[bx]" "add cx,ax" \
+    "mov dh,cl"     "xor dl,dl" \
+    "mov ax,cx"     "shl cx,1"       "shl cx,1"  "add cx,ax" \
+    "sub dx,cx" \
+    "xor ax,ax"     "mov al,es:2[bx]" "add ax,dx" "and ax,1023" \
+    __parm [__es __bx] __value [__ax] __modify __exact [__ax __cx __dx];
+
+/* Both spans are in the same source buffer and contain at least limit
+ * bytes. CMPSB advances past a mismatch, so subtract that last byte. */
+static boltlite_index boltlite_match_8086(const bp_uint8 *pos,
+                                         boltlite_index distance,
+                                         boltlite_index limit);
+#pragma aux boltlite_match_8086 = \
+    "push ds"       "push es"        "pop ds" \
+    "mov si,di"     "sub si,bx"      "mov ax,cx" \
+    "cld"           "repe cmpsb"     "je matched" \
+    "dec ax"        "matched:"       "sub ax,cx" \
+    "pop ds" \
+    __parm [__es __di] [__bx] [__cx] __value [__ax] \
+    __modify __exact [__ax __cx __si __di];
+
+extern int __cdecl boltlite_decode_8086(const bp_uint8 *src, unsigned int src_len,
+                                        bp_uint8 *dst, unsigned int dst_len);
+#endif
+
 static unsigned int boltlite_hash3(const bp_uint8 *src, boltlite_index src_len,
                                boltlite_index pos)
 {
@@ -32,6 +71,9 @@ static unsigned int boltlite_hash3(const bp_uint8 *src, boltlite_index src_len,
     unsigned int a;
     unsigned int b;
     unsigned int c;
+#if defined(BOLTLITE_8086_ASM)
+    if (src_len - pos >= 3U) return boltlite_hash3_8086(src + pos);
+#endif
     a = (pos < src_len) ? src[pos] : 0x20U;
     b = (pos + 1U < src_len) ? src[pos + 1U] : 0x20U;
     c = (pos + 2U < src_len) ? src[pos + 2U] : 0x20U;
@@ -98,10 +140,14 @@ static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_
     if (limit > BOLTLITE_MAX_MATCH) limit = BOLTLITE_MAX_MATCH;
 
     if (previous_distance != 0 && previous_distance <= produced) {
+#if defined(BOLTLITE_8086_ASM)
+        length = boltlite_match_8086(src + pos, previous_distance, limit);
+#else
         length = 0;
         while (length < limit &&
                src[pos + length] == src[pos - previous_distance + length])
             length++;
+#endif
         if (length >= BOLTLITE_MIN_MATCH) {
             *best_distance = previous_distance;
             *best_length = length;
@@ -122,10 +168,14 @@ static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_
             candidate = next[candidate];
         else {
             if (distance != *best_distance) {
+#if defined(BOLTLITE_8086_ASM)
+                length = boltlite_match_8086(src + pos, distance, limit);
+#else
                 length = 0;
                 while (length < limit &&
                        src[pos + length] == src[pos - distance + length])
                     length++;
+#endif
                 if (length > *best_length) {
                     *best_distance = distance;
                     *best_length = length;
@@ -288,6 +338,7 @@ bp_uint32 boltlite_compress(const bp_uint8 *src, bp_uint32 src_len,
     return boltlite_compress_capacity(src, (boltlite_index)src_len, dst, capacity, work);
 }
 
+#if !defined(BOLTLITE_8086_ASM)
 static int boltlite_decompress_capacity(const bp_uint8 *src, boltlite_index src_len,
                          bp_uint8 *dst, boltlite_index dst_capacity)
 {
@@ -350,17 +401,26 @@ static int boltlite_decompress_capacity(const bp_uint8 *src, boltlite_index src_
     }
     return in == src_len;
 }
+#endif
 
 int boltlite_decompress(const bp_uint8 *src, bp_uint32 src_len,
                     bp_uint8 *dst, bp_uint32 dst_len, bp_uint8 *work)
 {
+    int ok;
     (void)work;
 #if defined(BP_MINI) && defined(SIZEOF_INT) && (SIZEOF_INT < 4)
     if (src_len > BOLTLITE_COMPRESS_BOUND(BP_MINI_MAX_BLOCK_SIZE) ||
         dst_len > BP_MINI_MAX_BLOCK_SIZE)
         return BP_ERR_CORRUPT;
 #endif
-    return boltlite_decompress_capacity(src, (boltlite_index)src_len, dst,
-                                    (boltlite_index)dst_len)
-           ? BP_OK : BP_ERR_CORRUPT;
+#if defined(BOLTLITE_8086_ASM)
+    BP_STACK_PROBE();
+    if (src == NULL || dst == NULL || src_len == 0 || dst_len == 0)
+        return BP_ERR_CORRUPT;
+    ok = boltlite_decode_8086(src, (boltlite_index)src_len, dst, (boltlite_index)dst_len);
+#else
+    ok = boltlite_decompress_capacity(src, (boltlite_index)src_len, dst,
+                                      (boltlite_index)dst_len);
+#endif
+    return ok ? BP_OK : BP_ERR_CORRUPT;
 }
