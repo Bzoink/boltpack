@@ -17,6 +17,13 @@
   show `-` instead of 1970-01-01 for unknown modification times. The core adds
   `bp_archive_info_ex()`, which also returns the number of metadata entries;
   `bp_archive_info_t` is unchanged.
+- Atari GUI: Create no longer fails on Hatari with a Windows host GEMDOS
+  drive. The unfinished file's date is now checked after it is closed, because
+  such drives may report a stale date while the file is open. If Create still
+  fails, the alert names the unfinished file that was kept. Long alerts are
+  wrapped to fit the GEM alert box, the window title no longer uses a
+  temporary buffer, and the progress counter and archive information count
+  files instead of entries, so metadata is no longer counted as files.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

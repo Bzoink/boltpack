@@ -167,6 +167,7 @@ static int scroll_pos;
 static FILE *archive_fp;
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
+static bp_uint32 archive_sidecars; /* META/RSRC entries in archive_info */
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 static int current_interchange_profile;
 
@@ -179,6 +180,11 @@ typedef struct {
     double        file_total;
     unsigned long total_files;
     unsigned long current_file;
+    /* When set, current_file follows subject_number (files and directories
+     * only) instead of the core's physical entry index, which also counts
+     * attribute metadata entries. */
+    int           count_subjects;
+    unsigned long subject_number;
     clock_t       start_ticks;
     int           active;
     int           cancel_enabled;
@@ -524,10 +530,41 @@ static void show_fluff_memory_alert(long avail)
     show_alert(msg);
 }
 
+/* form_alert() shows at most five lines of about 30 characters and clips
+ * anything longer, so wrap at spaces.  '|' in msg forces a line break;
+ * brackets would end the alert string and become parentheses. */
+#define ALERT_LINE_MAX 30
+#define ALERT_LINES_MAX 5
 static void show_alert(const char *msg)
 {
-    char buf[256];
-    sprintf(buf, "[1][%s][ OK ]", msg);
+    char buf[ALERT_LINES_MAX * (ALERT_LINE_MAX + 1) + 16];
+    char *out;
+    const char *p = msg;
+    int lines = 0;
+
+    strcpy(buf, "[1][");
+    out = buf + strlen(buf);
+    while (*p != '\0' && lines < ALERT_LINES_MAX) {
+        const char *end = p;
+        const char *cut = NULL;
+        size_t len;
+        while (*end != '\0' && *end != '|' && end - p < ALERT_LINE_MAX) {
+            if (*end == ' ') cut = end;
+            end++;
+        }
+        if (*end != '\0' && *end != '|' && cut != NULL)
+            end = cut;
+        len = (size_t)(end - p);
+        if (lines > 0) *out++ = '|';
+        while (len-- > 0) {
+            char c = *p++;
+            *out++ = c == '[' ? '(' : c == ']' ? ')' : c;
+        }
+        lines++;
+        while (*p == ' ') p++;
+        if (*p == '|') p++;
+    }
+    strcpy(out, "][ OK ]");
     form_alert(1, buf);
 }
 
@@ -586,7 +623,9 @@ static void show_about_dialog(void)
 
 static void set_main_window_chrome(void)
 {
-    char title[128];
+    /* The AES keeps the WF_NAME pointer, so the text must outlive this
+     * call. */
+    static char title[128];
     const char *base;
 
     if (win_handle < 0)
@@ -597,7 +636,7 @@ static void set_main_window_chrome(void)
         if (!base)
             base = strrchr(archive_path, '/');
         base = base ? base + 1 : archive_path;
-        sprintf(title, " BoltPack - %s ", base);
+        sprintf(title, " BoltPack - %.100s ", base);
     } else {
         strcpy(title, " BoltPack ");
     }
@@ -726,6 +765,8 @@ static void start_progress_ui(atari_progress_ui_t *ctx, const char *verb,
     ctx->file_total = 0.0;
     ctx->total_files = total_files;
     ctx->current_file = 0UL;
+    ctx->count_subjects = 0;
+    ctx->subject_number = 0UL;
     ctx->start_ticks = clock();
     ctx->active = 1;
     ctx->cancel_enabled = cancel_enabled;
@@ -784,10 +825,14 @@ static int update_progress_ui(const bp_progress_t *p, void *user_data)
     ctx->total_bytes = total;
     ctx->file_bytes = u64_to_dbl(p->file_bytes_done);
     ctx->file_total = u64_to_dbl(p->file_orig_size);
-    ctx->current_file = (unsigned long)(file_index + 1);
+    if (ctx->count_subjects) {
+        ctx->current_file = ctx->subject_number;
+    } else {
+        ctx->current_file = (unsigned long)(file_index + 1);
+        if (file_count > 0)
+            ctx->total_files = file_count;
+    }
     ctx->total_pct = pct;
-    if (file_count > 0)
-        ctx->total_files = file_count;
     if (p->file_name) {
         strncpy(ctx->current_name, p->file_name,
                 sizeof(ctx->current_name) - 1);
@@ -1264,6 +1309,7 @@ static void close_archive(void)
     free_entries();
     archive_path[0] = '\0';
     memset(&archive_info, 0, sizeof(archive_info));
+    archive_sidecars = 0;
 }
 
 static int list_cb(const bp_entry_t *entry, void *user_data)
@@ -1324,6 +1370,7 @@ static void do_open(const char *path)
 {
     bp_io_t io;
     bp_archive_info_t info;
+    bp_uint32 sidecars;
     int rc;
 
     close_archive();
@@ -1338,13 +1385,14 @@ static void do_open(const char *path)
 
     io = make_io(archive_fp);
     memset(&info, 0, sizeof(info));
-    rc = bp_archive_info(&io, &info);
+    rc = bp_archive_info_ex(&io, &info, &sidecars);
     if (rc != BP_OK) {
         show_alert("Not a valid BoltPack|archive");
         close_archive();
         return;
     }
     archive_info = info;
+    archive_sidecars = sidecars;
 
     if (!alloc_entries((int)info.entry_count)) {
         show_alert("Out of memory");
@@ -1954,6 +2002,28 @@ static void snapshot_staged_output(atari_gui_staged_output_t *stage)
         stage->temporary_snapshot_valid = 0;
 }
 
+/* Call after closing a stage that snapshot_staged_output() captured while
+ * open.  Some GEMDOS drives report an open file's date as of an earlier
+ * point and update it only on close: Hatari's host-directory drive on
+ * Windows does, because the host updates directory metadata lazily.  Later
+ * checks compare pathname stats against the snapshot, so retake it by path
+ * now.  Accept it only if the path still names a regular file of the size
+ * the open handle reported (sizes come from Fseek and are reliable) on the
+ * same drive; otherwise leave the stage untrusted. */
+static void snapshot_closed_stage(atari_gui_staged_output_t *stage)
+{
+    struct stat closed;
+    if (!stage->temporary_snapshot_valid || stage->temporary[0] == '\0')
+        return;
+    if (lstat(stage->temporary, &closed) != 0 || !S_ISREG(closed.st_mode) ||
+        closed.st_dev != stage->temporary_snapshot.st_dev ||
+        closed.st_size != stage->temporary_snapshot.st_size) {
+        stage->temporary_snapshot_valid = 0;
+        return;
+    }
+    stage->temporary_snapshot = closed;
+}
+
 static int verify_staged_output_content(atari_gui_staged_output_t *stage)
 {
     unsigned char buffer[4096];
@@ -2098,8 +2168,12 @@ static void discard_staged_output(atari_gui_staged_output_t *stage)
 {
     struct stat current;
     int removed = 0;
-    snapshot_staged_output(stage);
-    if (stage->fd >= 0) { (void)close(stage->fd); stage->fd = -1; }
+    if (stage->fd >= 0) {
+        snapshot_staged_output(stage);
+        (void)close(stage->fd);
+        stage->fd = -1;
+        snapshot_closed_stage(stage);
+    }
     if (stage->temporary[0]) {
         /* Never remove or publish a different file substituted at our stage
          * pathname while the verified output was open. */
@@ -2625,6 +2699,8 @@ static int finish_archive_stage(FILE **stream,
     if (fclose(*stream) != 0) rc = BP_ERR_IO;
     *stream = NULL;
     stage->fd = -1;
+    snapshot_closed_stage(stage);
+    if (rc == BP_OK && !stage->temporary_snapshot_valid) rc = BP_ERR_PARTIAL;
     if (rc == BP_OK && stage->preserve_target_attributes) {
         if (lstat(stage->temporary, &current) != 0 ||
             !atari_gui_same_staged_file(&stage->temporary_snapshot, &current)) {
@@ -2650,6 +2726,7 @@ static bp_io_t *extract_open_cb(const bp_entry_t *entry, void *user_data)
     struct stat st;
     if (entry->entry_type == BP_TYPE_DATA || entry->entry_type == BP_TYPE_DIR ||
         entry->entry_type == BP_TYPE_SYMLINK) {
+        ctx->progress.subject_number++;
         ctx->subject_ok = 0;
         ctx->subject_type = entry->entry_type;
         ctx->subject_native_seen = 0;
@@ -2859,6 +2936,7 @@ static int extract_done_cb(const bp_entry_t *entry, bp_io_t *out, int status,
         snapshot_staged_output(stage);
         if (stage->fd >= 0) close_rc = close(stage->fd);
         stage->fd = -1;
+        snapshot_closed_stage(stage);
         if (close_rc != 0) {
             discard_extraction_stage(ctx, stage);
             free(stage);
@@ -3009,8 +3087,10 @@ static void do_extract(void)
 
     start_progress_ui(&ctx.progress, "Extracting archive", NULL,
                       u64_to_dbl(archive_info.total_original),
-                      (unsigned long)(archive_info.entry_count - archive_info.dir_count),
+                      (unsigned long)(archive_info.entry_count -
+                                      archive_sidecars),
                       1);
+    ctx.progress.count_subjects = 1;
     graf_mouse(BUSYBEE, NULL);
     io = make_io(archive_fp);
     rc = bp_archive_extract_all_ex(&io, extract_open_cb, extract_done_cb,
@@ -3096,7 +3176,8 @@ static void do_info(void)
         return;
     }
 
-    file_count = archive_info.entry_count - archive_info.dir_count;
+    file_count = archive_info.entry_count - archive_info.dir_count -
+                 archive_sidecars;
     orig = u64_to_dbl(archive_info.total_original);
     comp = u64_to_dbl(archive_info.total_compressed);
     pct  = (orig > 0.0) ? (int)(comp / orig * 100.0) : 0;
@@ -3405,6 +3486,7 @@ static void do_create_from_paths(char **paths, int path_count)
     start_progress_ui(&progress, "Creating archive",
                       current_interchange_profile ? "Interchange 1" : method_name(current_method),
                       total_bytes, (unsigned long)gather_count, 0);
+    progress.count_subjects = 1;
 
     graf_mouse(BUSYBEE, NULL);
 
@@ -3421,6 +3503,7 @@ static void do_create_from_paths(char **paths, int path_count)
         (void)fclose(outfp);
         outfp = NULL;
         archive_stage.fd = -1;
+        snapshot_closed_stage(&archive_stage);
         discard_staged_output(&archive_stage);
         graf_mouse(ARROW, NULL);
         stop_progress_ui(&progress);
@@ -3441,6 +3524,7 @@ static void do_create_from_paths(char **paths, int path_count)
 
     for (i = 0; rc == BP_OK && i < gather_count; i++) {
         char *rel;
+        progress.subject_number = (unsigned long)(i + 1);
         char archive_name[BP_MAX_PATH];
         struct stat st;
         bp_uint64 fsize, mtime;
@@ -3568,6 +3652,7 @@ static void do_create_from_paths(char **paths, int path_count)
             (void)fclose(outfp);
             outfp = NULL;
             archive_stage.fd = -1;
+            snapshot_closed_stage(&archive_stage);
         }
         discard_staged_output(&archive_stage);
     }
@@ -3583,9 +3668,17 @@ static void do_create_from_paths(char **paths, int path_count)
         } else if (rc == BP_ERR_PARTIAL && archive_published) {
             show_alert("Archive created, but its replacement backup needs attention");
             do_open(out_path);
+        } else if (archive_stage.temporary[0] != '\0') {
+            const char *kept = strrchr(archive_stage.temporary, '\\');
+            char msg[96];
+            kept = kept != NULL ? kept + 1 : archive_stage.temporary;
+            if (create_error != NULL) show_alert(create_error);
+            sprintf(msg, "Create failed. The unfinished archive was kept as %.12s",
+                    kept);
+            show_alert(msg);
         } else {
             show_alert(create_error != NULL ? create_error :
-                       "Create failed; the existing archive was preserved");
+                       "Create failed; any existing archive is unchanged");
         }
         return;
     }
