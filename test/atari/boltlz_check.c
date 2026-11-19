@@ -3,13 +3,14 @@
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  *
- * Writes BOLTLZ.TXT (C:\ on Atari TOS, win1_ on the Sinclair QL): the length
+ * Writes BOLTLZ.TXT (C:\ on Atari TOS, win1_ on the Sinclair QL, the current
+ * directory on the X68000): the length
  * and CRC-32 of every compressed stream for many generated inputs and both
  * levels, and the result code and output CRC of decoding many corrupted
  * streams, so builds with the C codec, with boltlz_m68k.S and from different
  * compilers can be compared byte for byte; plus round-trip failures and
  * compression and decompression times. On TOS the times are 200 Hz ticks of
- * emulated time; on the QL they are not measured (0).
+ * emulated time; on the QL and the X68000 they are not measured (0).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,9 @@
 
 #if defined(QDOS)
 #define CHECK_OUTPUT "win1_boltlz_txt"
+static long now(void) { return 0; }
+#elif defined(__human68k__)
+#define CHECK_OUTPUT "BOLTLZ.TXT"
 static long now(void) { return 0; }
 #else
 #include <osbind.h>

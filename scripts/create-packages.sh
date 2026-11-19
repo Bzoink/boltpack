@@ -176,7 +176,7 @@ declare -A PLATFORM_ENCODING=(
     [morphos]="UTF-8"
     [macos9]="ISO-8859-1"
     [macos9-68k]="ISO-8859-1"
-    [x68k]="ISO-8859-1"
+    [x68k]="ASCII"
     [nextstep]="ISO-8859-1"
     [plan9]="UTF-8"
     [ql]="ISO-8859-1"
@@ -189,7 +189,7 @@ declare -A PLATFORM_ENCODING=(
 declare -A PLATFORM_CRLF=(
     [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [os2]=1
     [win32]=1 [win32-fltk-gui]=1 [win64]=1 [win64-fltk-gui]=1
-    [atari]=1
+    [atari]=1 [x68k]=1
 )
 
 # These systems only have 8.3 file names.
@@ -239,7 +239,7 @@ declare -A PLATFORM_TEMPLATE=(
     [morphos]="README-generic.txt"
     [macos9]="README-generic.txt"
     [macos9-68k]="README-generic.txt"
-    [x68k]="README-generic.txt"
+    [x68k]="README-x68k.txt"
     [nextstep]="README-generic.txt"
     [plan9]="README-generic.txt"
     [ql]="README-ql.txt"
@@ -313,15 +313,17 @@ convert_package_text() {
 }
 
 # Copy the assembly-optimized executables (make <platform>-optimized) into
-# <stage>/<folder>/<cpu>/. Only executables go there: users copy the one for
-# their CPU over the C build in the package root.
+# <stage>/<folder>/<cpu>/ for each CPU in the space-separated list. Only
+# executables go there: users copy the one for their CPU over the C build in
+# the package root.
 copy_optimized_builds() {
     local platform="$1"
     local stagindir="$2"
     local folder="$3"
-    shift 3
+    local cpus="$4"
+    shift 4
     local cpu exe src
-    for cpu in 68000 68020; do
+    for cpu in $cpus; do
         src="$BUILDDIR/$platform-optimized/$cpu"
         for exe in "$@"; do
             if [ ! -f "$src/$exe" ]; then
@@ -806,7 +808,7 @@ create_package() {
             log_error "Amiga Workbench icon generation failed"
             return 1
         fi
-        copy_optimized_builds amiga "$stagindir" Optimized boltpack boltpack-gui || return 1
+        copy_optimized_builds amiga "$stagindir" Optimized "68000 68020" boltpack boltpack-gui || return 1
 
         binary_name="boltpack"
     elif [ "$platform" = "atari" ]; then
@@ -827,7 +829,7 @@ create_package() {
         chmod +x "$stagindir/boltpack.tos" 2>/dev/null || true
         chmod +x "$stagindir/boltpack.prg" 2>/dev/null || true
         # TOS names are 8.3, so the folder cannot be called Optimized.
-        copy_optimized_builds atari "$stagindir" OPTIMIZE boltpack.tos boltpack.prg || return 1
+        copy_optimized_builds atari "$stagindir" OPTIMIZE "68000 68020" boltpack.tos boltpack.prg || return 1
         binary_name="boltpack.tos"
     else
         if [ ! -f "$binary" ]; then
@@ -845,6 +847,12 @@ create_package() {
             return 1
         fi
         cp "$BUILDDIR/$platform/boltpack.wasm" "$stagindir/"
+    fi
+
+    # X68000 assembly-optimized build (make x68k-optimized). Nearly every
+    # X68000 model has a 68000, so there is no 68020 variant.
+    if [ "$platform" = "x68k" ]; then
+        copy_optimized_builds x68k "$stagindir" Optimized 68000 boltpack.x || return 1
     fi
 
     # The QL's assembly-optimized build (make ql-optimized); one 68000 build

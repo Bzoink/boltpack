@@ -48,9 +48,11 @@ extern int x68k_host_rename(const char *old_path, const char *new_path);
 #define rename x68k_host_rename
 #endif
 
-/* snprintf is C99 but available in elf2x68k libc; provide prototype for -ansi */
+/* snprintf (C99) and fileno (POSIX) are in elf2x68k's libc but hidden by
+ * -ansi; provide their prototypes */
 #if defined(__STDC__) && !defined(__cplusplus)
 extern int snprintf(char *buf, size_t n, const char *fmt, ...);
+extern int fileno(FILE *stream);
 #endif
 #include <stdlib.h>
 #include <string.h>
@@ -431,6 +433,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         bp_uint16 mtime_flags = x68k_archive_mtime(fb.time, fb.date, &mtime);
         char      arcname_sjis[BP_MAX_PATH];
         char      arcname_utf8[BP_MAX_PATH * 3];
+        bp_uint32 data_index;
         int       rc;
 
         /* Convert Shift-JIS archive name to UTF-8 for storage */
@@ -449,12 +452,14 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
         rc = bp_archive_add_entry_ex(ar, arcname_utf8, BP_TYPE_DATA, BP_OS_X68K,
                                      &fio, fsize, mtime, mtime_flags);
         fclose(fp);
+        /* Remember the data entry: the metadata entry added next is stored. */
+        data_index = ar->entries_written - 1;
         if (rc == BP_OK)
             rc = x68k_add_fat_metadata(ar, arcname_utf8, BP_TYPE_DATA,
                                        (bp_uint8)fb.atr);
 
         if (rc == BP_OK && g_verbosity == VERB_DEFAULT) {
-            bp_entry_t *e = &ar->entry_list[ar->entries_written - 1];
+            bp_entry_t *e = &ar->entry_list[data_index];
             bp_uint32 comp = bp_u64_to_u32(e->compressed_size);
             bp_uint32 fsz  = bp_u64_to_u32(fsize);
             char sb[32];

@@ -77,8 +77,8 @@ Release packages ship the C build and, in an optimized folder, assembly
 builds for the 68000 and for 68020 to 68060 (`make atari-optimized`,
 `make amiga-optimized`). Classic Mac 68k ships them as separate packages
 (`mac68k-optimized-68000.hqx`, `mac68k-optimized-68020.hqx`; `make
-macos9-68k-optimized`). The Sinclair QL ships one 68000 build in
-`Optimized/68000` (`make ql-optimized`).
+macos9-68k-optimized`). The Sinclair QL and the Sharp X68000 ship one 68000
+build in `Optimized/68000` (`make ql-optimized`, `make x68k-optimized`).
 
 The QL's c68 toolchain cannot assemble GNU syntax, and the code has no
 relocations, so [boltlz_m68k_c68.s](../src/core/boltlz_m68k_c68.s) holds the

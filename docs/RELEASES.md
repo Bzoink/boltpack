@@ -38,7 +38,8 @@ write access. Avoid saving tokens in shell startup files.
    packages also need the assembly-optimized builds for their Optimized folders
    (`make atari atari-optimized amiga amiga-optimized`), and Classic Mac 68k
    needs them for its separate optimized packages (`make macos9-68k
-   macos9-68k-optimized`), as does the Sinclair QL (`make ql ql-optimized`);
+   macos9-68k-optimized`), as do the Sinclair QL (`make ql ql-optimized`) and
+   the Sharp X68000 (`make x68k x68k-optimized`);
    packaging stops if they are missing.
    `scripts/build-and-release.sh` builds them automatically. Native
    source kits are created separately with `bash scripts/create-source-kits.sh`.

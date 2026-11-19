@@ -74,6 +74,20 @@
   compresses at about 7 KB/s and decompresses at about 49 KB/s (from 0.56
   and 14 KB/s in 1.11). `make ql-sqlux-boltlz-asm-test` compares it with the
   C build in sQLux; its compressed output is identical to the Atari builds.
+- Sharp X68000: built for the first time with a real Human68k toolchain
+  (elf2x68k, `m68k-xelf-gcc`, now the Makefile default) and run in the run68
+  emulator: create, test, list and extraction work and Linux verifies the
+  archives. Fixed a missing `fileno` prototype and a progress message that
+  reported every file as "(stored)" because it read the FAT metadata entry
+  instead of the file's. Its 68000 BoltLZ C path is active automatically.
+  `scripts/install-x68k-tools.sh` installs the toolchain and a run68 with a
+  fix for its 16-bit `CMPA.W` comparison
+  (`scripts/patches/run68x-cmpa-w.patch`), which had made correct compiled
+  code appear to fail. Not yet run on a real X68000.
+- Sharp X68000: the package has an X68000 README, ASCII text with CRLF line
+  endings, and an assembly-optimized build in `Optimized/68000` (`make
+  x68k-optimized`), whose output in run68 is identical to the Atari builds.
+  `make x68k-run68-boltlz-asm-test` compares it with the C build.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

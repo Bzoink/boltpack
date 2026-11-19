@@ -2401,24 +2401,29 @@ fixture; sQLux continues to cover zero-offset file and directory timestamps.
 ## Sharp X68000 (Human68k) Frontend
 
 **File:** `src/frontend/x68k/main.c`
-**Compiler:** `m68k-x680x-human-gcc` (GCC cross-compiler for Human68k)
+**Compiler:** `m68k-xelf-gcc` ([elf2x68k](https://github.com/yunkya2/elf2x68k), GCC 13 for Human68k)
 **Interface:** Command-line
 **Target:** Sharp X68000 running Human68k
 
 ### X68000: Build
 
-Preferred release workflow: use the special-SDK compile package and run
-`sh scripts/special-sdk/build-sdk.sh x68k`. The direct `make x68k` path
-remains available from a full checkout for expert/manual SDK setups.
+`sh scripts/install-x68k-tools.sh` installs elf2x68k in `/opt/m68k-xelf` and
+the run68 Human68k emulator (run68x 2.3.2 with a fix for `CMPA.W`, which it
+compared in 16 bits). Then:
 
 ```sh
-make x68k
+make x68k                 # build/x68k/boltpack.x
+make x68k-optimized       # build/x68k-optimized/68000/boltpack.x (68000 assembly)
+make x68k-run68-boltlz-asm-test
 ```
 
-Or directly:
+The X68000 build was first compiled and run (in run68) in November 2026; it
+has not run on real hardware. run68 cannot list directories (`FILES`), so
+directory archiving and `-o` extraction fail there with clear errors, and it
+does not execute 68020 instructions. Directly:
 
 ```sh
-m68k-x680x-human-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
+m68k-xelf-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
     -I src/core  \
     src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/bp_codepage.c \

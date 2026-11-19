@@ -26,9 +26,13 @@
  * BALANCED keeps the primary and secondary entry of a bucket side by side.
  */
 
-#define BL_CAT(a, b) a##b
-#define BL_XCAT(a, b) BL_CAT(a, b)
-#define SYM(x) BL_XCAT(__USER_LABEL_PREFIX__, x)
+/* C symbol names: ELF targets (Retro68, elf2x68k) have no prefix, a.out
+ * targets (MiNT, AmigaOS) prefix an underscore. */
+#ifdef __ELF__
+#define SYM(x) x
+#else
+#define SYM(x) _##x
+#endif
 
 #if defined(__mc68020__) || defined(__mc68030__) || \
     defined(__mc68040__) || defined(__mc68060__)

@@ -1586,25 +1586,43 @@ ql-time-host-test:
 
 # Sharp X68000 (Human68k)
 # Toolchain: m68k-x680x-human-gcc (GCC cross-compiler for Human68k).
-X68K_CC ?= m68k-x680x-human-gcc
+# elf2x68k (scripts/install-x68k-tools.sh installs it in /opt/m68k-xelf).
+X68K_CC ?= $(firstword $(wildcard /opt/m68k-xelf/bin/m68k-xelf-gcc) m68k-xelf-gcc)
+# Its linker wrapper runs the other tools by name, so they must be on PATH.
+X68K_CC_EXEC = $(shell command -v $(firstword $(X68K_CC)) 2>/dev/null)
+X68K_ENV = PATH="$(if $(X68K_CC_EXEC),$(patsubst %/,%,$(dir $(X68K_CC_EXEC))):)$$PATH"
 X68K_CFLAGS=-ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
 	-DBP_CREATOR_OS=BP_OS_X68K -DBP_CREATOR_CPU=BP_CPU_M68K
 X68K_BUILDDIR=build/x68k
 
-.PHONY: x68k x68k-host-test
+.PHONY: x68k x68k-host-test x68k-optimized
+
+# The assembly-optimized X68000 build for the package's Optimized folder.
+# Nearly every X68000 model has a 68000 (the X68030 runs it too), so there
+# is only a 68000 build.
+x68k-optimized:
+	$(MAKE) x68k BOLTLZ_M68K_ASM=1 M68K_CPU=68000 \
+	    X68K_BUILDDIR=build/x68k-optimized/68000
 x68k:
-	$(call check_cc,$(X68K_CC) $(X68K_CFLAGS) -c,x68k)
+	$(call check_cc,$(X68K_ENV) $(X68K_CC) $(X68K_CFLAGS) -c,x68k)
 	mkdir -p $(X68K_BUILDDIR)
-	$(X68K_CC) $(X68K_CFLAGS) \
+	$(X68K_ENV) $(X68K_CC) $(X68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/x68k/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(M68K_ASM_SRCS) \
 	    -o $(X68K_BUILDDIR)/boltpack.x \
 	    $(COREDIR)/fluff.c
+
+# The 68000 BoltLZ assembly on the X68000: C and assembly builds of the
+# check program must give identical results in run68 (needs a run68 with the
+# CMPA.W fix from scripts/install-x68k-tools.sh).
+.PHONY: x68k-run68-boltlz-asm-test
+x68k-run68-boltlz-asm-test:
+	python3 test/check_run68_boltlz_asm.py --cc "$(X68K_CC)"
 
 # Host-build the ANSI-C X68000 CLI with filesystem-call stubs to exercise
 # Interchange Profile 1 output where the Human68k toolchain is unavailable.

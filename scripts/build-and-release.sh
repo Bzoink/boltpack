@@ -59,7 +59,7 @@ for platform in "${PLATFORMS[@]}"; do
         # Atari and Amiga packages carry assembly-optimized builds, and the
         # Classic Mac 68k ones are separate packages.
         case "$platform" in
-            atari|amiga|macos9-68k|ql)
+            atari|amiga|macos9-68k|ql|x68k)
                 make "$platform-optimized" || {
                     echo "✗ Optimized build failed for $platform" >&2
                     exit 1

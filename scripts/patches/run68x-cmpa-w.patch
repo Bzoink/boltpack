@@ -1,0 +1,20 @@
+--- a/src/line_b.c
++++ b/src/line_b.c
+@@ -96,6 +96,8 @@
+   /* ソースのアドレッシングモードに応じた処理 */
+   if (size == S_BYTE) return IllegalInstruction();  // CMP.B <ea>,Anは不可
+   if (get_data_at_ea(EA_All, mode, src_reg, size, &src_data)) return true;
++  /* CMPA.W sign-extends the source and compares all 32 bits of An. */
++  if (size == S_WORD) src_data = extl(src_data);
+ 
+   /* ディスティネーションのアドレッシングモードに応じた処理 */
+   if (get_data_at_ea(EA_All, EA_AD, dst_reg, size, &dest_data)) {
+@@ -118,7 +120,7 @@
+   ans = old - src_data;
+ 
+   /* フラグの変化 */
+-  cmp_conditions(src_data, old, ans, size);
++  cmp_conditions(src_data, old, ans, S_LONG);
+ 
+ #ifdef TEST_CCR
+   check("cmpa", src_data, dest_data, ans, size, before);
