@@ -26,6 +26,7 @@
 #include "../mini_shared/mini_common.h"
 #include "cpm86_path.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -454,32 +455,43 @@ static void usage(void)
 
 /* ---- main -------------------------------------------------------------- */
 
+/* The CP/M-86 command processor can uppercase the entire command tail. */
+static int option_is(const char *argument, const char *option)
+{
+    while (*option != '\0') {
+        if (tolower((unsigned char)*argument++) != *option++) return 0;
+    }
+    return *argument == '\0';
+}
+
 int main(int argc, char **argv)
 {
     int i;
     int files_start;
     char cmd;
     const char *arc_path;
-    bp_uint32 block_size = BP_BLOCK_32K;
+    /* With 16 KiB blocks, the codec workspace and both block buffers fit
+     * together in one 64 KiB far-heap segment. */
+    bp_uint32 block_size = BP_BLOCK_16K;
     bp_uint8  method     = BP_METHOD_BOLTLITE;
 
     if (argc < 3) { usage(); return 1; }
 
     for (i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (strcmp(argv[i], "-b8k") == 0)  { block_size = 8192U; }
-            else if (strcmp(argv[i], "-b16k") == 0) { block_size = 16384U; }
-            else if (strcmp(argv[i], "-b32k") == 0) { block_size = 32768U; }
-            else if (strcmp(argv[i], "-m0") == 0)   { method = BP_METHOD_STORED; }
-            else if (strcmp(argv[i], "-m1") == 0)   { method = BP_METHOD_BOLTLITE;   }
-            else if (strcmp(argv[i], "-m2") == 0)   {
+            if (option_is(argv[i], "-b8k")) { block_size = 8192U; }
+            else if (option_is(argv[i], "-b16k")) { block_size = 16384U; }
+            else if (option_is(argv[i], "-b32k")) { block_size = 32768U; }
+            else if (option_is(argv[i], "-m0")) { method = BP_METHOD_STORED; }
+            else if (option_is(argv[i], "-m1")) { method = BP_METHOD_BOLTLITE; }
+            else if (option_is(argv[i], "-m2")) {
                 fputs("bpmini: boltlz not supported on 16-bit\n", stderr);
                 return 1;
             }
         }
     }
 
-    cmd      = argv[1][0];
+    cmd      = (char)tolower((unsigned char)argv[1][0]);
     arc_path = argv[2];
     files_start = 3;
     while (files_start < argc && argv[files_start][0] == '-') files_start++;

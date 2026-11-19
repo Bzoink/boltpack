@@ -291,6 +291,13 @@ CP/M Plus 3.0. Files are addressed by drive letter (`A:`) and user number
 - **Executable format:** `.CMD` (CP/M-86 segmented command format), not `.COM`.
   Total size exceeds 64 KB due to buffer requirements, so `.COM` format is not
   usable. Aztec C 86 and suitable Turbo C ports can produce `.CMD` files.
+- **Default block size:** 16 KiB so the encoder's input, output, and workspace
+  fit in one far-heap segment. Creating 32 KiB blocks requires a runtime that
+  can allocate multiple far-heap segments.
+
+Use `make cpm86` or `make cpm86-optimized` with the CP/M-86 Open Watcom fork.
+See [the build instructions](BUILD.md#16-bit-mini-frontends) for the toolchain
+and emulator requirements.
 
 **Compiler flags (Aztec C 86):**
 
@@ -455,7 +462,7 @@ output directory, and wlink system keyword:
 | Target   | `wlink system` | Output EXE/CMD            | Compiler     |
 | -------- | -------------- | ------------------------- | ------------ |
 | `dos16`  | `dos`          | `build/dos16/bpmini.exe`  | Watcom `wcc` |
-| `cpm86`  | n/a (Aztec C)  | `build/cpm86/bpmini.cmd`  | Aztec C 86   |
+| `cpm86`  | `cpm86`        | `build/cpm86/BPMINI.CMD`  | CP/M-86 Watcom fork |
 | `win16`  | `windows`      | `build/win16/bpmini.exe`  | Watcom `wcc` |
 | `os2_16` | `os2`          | `build/os2_16/bpmini.exe` | Watcom `wcc` |
 
@@ -541,9 +548,10 @@ systems.
 The CP/M-86 frontend now refuses lossy 8.3 projections during creation and
 extraction. A host-run C89 fixture covers create/list/extract, truncation and
 case-folded collision refusal, archive/source alias refusal, and preservation
-of an existing archive. No CP/M-86 compiler or runtime is currently available,
-so target filesystem behavior remains unqualified. See the
-[interoperability matrix](interoperability-matrix.md).
+of an existing archive. The native `.CMD` builds also pass BoltLite archive
+round trips and Linux interoperability tests under emu2-cpm86. See the
+[interoperability matrix](interoperability-matrix.md) for coverage on other
+CP/M-86 environments.
 
 ### OS/2 1.x Long Filenames
 

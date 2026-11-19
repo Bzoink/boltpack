@@ -26,9 +26,10 @@ typedef bp_uint32 boltlite_index;
 #endif
 
 #if defined(BOLTLITE_8086_ASM)
-#if !defined(__WATCOMC__) || !defined(__I86__) || !defined(__COMPACT__) || \
+#if !defined(__WATCOMC__) || !defined(__I86__) || \
+    (!defined(__COMPACT__) && !defined(__LARGE__)) || \
     !defined(BP_MINI) || BOLTLITE_HASH_BUCKETS != 1024U
-#error BOLTLITE_8086_ASM requires the Open Watcom 16-bit compact mini build
+#error BOLTLITE_8086_ASM requires an Open Watcom 16-bit compact or large mini build
 #endif
 
 /* Compute the same hash with 251 = 256 - 5 to avoid 8086 multiplies.

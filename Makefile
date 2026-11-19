@@ -2320,29 +2320,38 @@ dos16: $(DOS16_BOLTLITE_OBJ)
 	    name $(DOS16_EXE)
 	@echo "  OK    $(DOS16_EXE)"
 
-$(DOS16_BDIR)/bl8086.obj: $(COREDIR)/boltlite_8086.asm
-	mkdir -p $(@D)
-	$(MINI_ENV) $(WASM16) -0 -we -fo=$@ $<
+DOS16_BOLTLITE_CHECK_DIR = build/$@
+DOS16_BOLTLITE_CHECK_MODEL = -mc
+DOS16_BOLTLITE_CHECK_CORE = $(filter-out -mc,$(DOS16_CORE)) $(DOS16_BOLTLITE_CHECK_MODEL)
+DOS16_BOLTLITE_CHECK_FRONT = $(filter-out -mc,$(DOS16_FRONT)) $(DOS16_BOLTLITE_CHECK_MODEL)
 
-.PHONY: dos16-boltlite-asm-test
-dos16-boltlite-asm-test: dos16-optimized
-	$(MINI_ENV) $(WCC16) $(DOS16_CORE) $(MINI_INCS) \
+.PHONY: dos16-boltlite-asm-test dos16-boltlite-far-test
+dos16-boltlite-far-test: DOS16_BOLTLITE_CHECK_MODEL = -ml
+dos16-boltlite-far-test: DOS16_BOLTLITE_CHECK_WASM_FLAGS = -dBOLTLITE_FAR_CODE
+
+dos16-boltlite-asm-test dos16-boltlite-far-test:
+	mkdir -p $(DOS16_BOLTLITE_CHECK_DIR)
+	$(MINI_ENV) $(WASM16) -0 -we $(DOS16_BOLTLITE_CHECK_WASM_FLAGS) \
+	    -fo=$(DOS16_BOLTLITE_CHECK_DIR)/bl8086.obj $(COREDIR)/boltlite_8086.asm
+	$(MINI_ENV) $(WCC16) $(DOS16_BOLTLITE_CHECK_CORE) $(MINI_INCS) -DBOLTLITE_8086_ASM \
+	    -fo=$(DOS16_BOLTLITE_CHECK_DIR)/boltlite.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_BOLTLITE_CHECK_CORE) $(MINI_INCS) \
 	    -Dboltlite_compress=boltlite_compress_c -Dboltlite_decompress=boltlite_decompress_c \
-	    -fo=$(DOS16_OPT_BDIR)/blref.obj $(COREDIR)/boltlite.c
-	$(MINI_ENV) $(WCC16) $(DOS16_FRONT) $(MINI_INCS) \
-	    -fo=$(DOS16_OPT_BDIR)/blcheck.obj test/unit/dos16_boltlite_asm.c
+	    -fo=$(DOS16_BOLTLITE_CHECK_DIR)/blref.obj $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(DOS16_BOLTLITE_CHECK_FRONT) $(MINI_INCS) \
+	    -fo=$(DOS16_BOLTLITE_CHECK_DIR)/blcheck.obj test/unit/dos16_boltlite_asm.c
 	$(MINI_ENV) $(WLINK16) @$(WATCOM_BIN)/wlink.lnk system dos option eliminate \
-	    file {$(DOS16_OPT_BDIR)/blcheck.obj $(DOS16_OPT_BDIR)/blref.obj} \
-	    file {$(DOS16_OPT_BDIR)/boltlite.obj $(DOS16_OPT_BDIR)/bl8086.obj} \
-	    name $(DOS16_OPT_BDIR)/blcheck.exe
-	: > $(DOS16_OPT_BDIR)/BLCHECK.TXT
+	    file {$(DOS16_BOLTLITE_CHECK_DIR)/blcheck.obj $(DOS16_BOLTLITE_CHECK_DIR)/blref.obj} \
+	    file {$(DOS16_BOLTLITE_CHECK_DIR)/boltlite.obj $(DOS16_BOLTLITE_CHECK_DIR)/bl8086.obj} \
+	    name $(DOS16_BOLTLITE_CHECK_DIR)/blcheck.exe
+	: > $(DOS16_BOLTLITE_CHECK_DIR)/BLCHECK.TXT
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(DOSBOX_X) -defaultconf \
 	    -nopromptfolder -nogui -fastlaunch -time-limit 60 \
 	    -set 'cpu core=normal' -set 'cpu cputype=8086' -set 'cpu cycles=fixed 18000' \
-	    -c "mount c $(abspath $(DOS16_OPT_BDIR))" -c "c:" \
+	    -c "mount c $(abspath $(DOS16_BOLTLITE_CHECK_DIR))" -c "c:" \
 	    -c "blcheck > BLCHECK.TXT" -c "exit"
-	@cat $(DOS16_OPT_BDIR)/BLCHECK.TXT
-	@grep -q '^PASS: .* BoltLite C/8086 cases' $(DOS16_OPT_BDIR)/BLCHECK.TXT
+	@cat $(DOS16_BOLTLITE_CHECK_DIR)/BLCHECK.TXT
+	@grep -q '^PASS: .* BoltLite C/8086 cases' $(DOS16_BOLTLITE_CHECK_DIR)/BLCHECK.TXT
 
 .PHONY: dos16-stack-probe
 dos16-stack-probe:
@@ -2403,20 +2412,27 @@ dos16-cp850-crash-hook:
 	    DOS16_CODEPAGE_FLAGS=-DBP_MINI_CODEPAGE=BP_CP_850 \
 	    DOS16_TEST_FLAGS=-DBP_TEST_EXIT_AFTER_BACKUP
 
-# ---- win16: Open Watcom, 16-bit Windows 3.x compact model ---------------
+# ---- win16: Open Watcom, 16-bit Windows 3.x large model -----------------
 # The format-6 validator and metadata support exceed a single 64 KiB code
 # segment. Use the large code model for Win16 while retaining 16-bit data.
 WIN16_CORE  = -bt=windows -ml -0 $(MINI_CORE_FLAGS)  -DBP_CREATOR_OS=BP_OS_WIN16
 WIN16_FRONT = -bt=windows -ml -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_WIN16
 WIN16_BDIR   = build/win16
 WIN16_EXE    = $(WIN16_BDIR)/bpmini.exe
+ifeq ($(WIN16_BOLTLITE_ASM),1)
+WIN16_BOLTLITE_FLAGS = -DBOLTLITE_8086_ASM
+WIN16_BOLTLITE_OBJ = $(WIN16_BDIR)/bl8086.obj
+endif
 
-.PHONY: win16
-win16:
+.PHONY: win16 win16-optimized
+win16-optimized:
+	$(MAKE) win16 WIN16_BDIR=build/win16-optimized WIN16_BOLTLITE_ASM=1
+
+win16: $(WIN16_BOLTLITE_OBJ)
 	mkdir -p $(WIN16_BDIR)
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
-	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(WIN16_CORE) $(WIN16_BOLTLITE_FLAGS) $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(WIN16_FRONT) $(MINI_INCS) -fo=$(WIN16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(WIN16_CORE)  $(MINI_INCS) -fo=$(WIN16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
@@ -2428,6 +2444,7 @@ win16:
 	    file {$(WIN16_BDIR)/archiver.obj} \
 	    file {$(WIN16_BDIR)/compress.obj} \
 	    file {$(WIN16_BDIR)/boltlite.obj} \
+	    $(if $(WIN16_BOLTLITE_OBJ),file {$(WIN16_BOLTLITE_OBJ)}) \
 	    file {$(WIN16_BDIR)/boltlz_decomp.obj} \
 	    file {$(WIN16_BDIR)/mini_common.obj} \
 	    file {$(WIN16_BDIR)/bp_codepage.obj} \
@@ -2442,13 +2459,20 @@ OS2_16_FRONT = -bt=os2 -mc -0 $(MINI_FRONT_FLAGS) -DBP_CREATOR_OS=BP_OS_OS2
 OS2_16_INCS  = $(MINI_INCS) -i=$(WATCOM_ROOT)/h/os21x
 OS2_16_BDIR  = build/os2-16
 OS2_16_EXE   = $(OS2_16_BDIR)/bpmini.exe
+ifeq ($(OS2_16_BOLTLITE_ASM),1)
+OS2_16_BOLTLITE_FLAGS = -DBOLTLITE_8086_ASM
+OS2_16_BOLTLITE_OBJ = $(OS2_16_BDIR)/bl8086.obj
+endif
 
-.PHONY: os2-16
-os2-16:
+.PHONY: os2-16 os2-16-optimized
+os2-16-optimized:
+	$(MAKE) os2-16 OS2_16_BDIR=build/os2-16-optimized OS2_16_BOLTLITE_ASM=1
+
+os2-16: $(OS2_16_BOLTLITE_OBJ)
 	mkdir -p $(OS2_16_BDIR)
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/archiver.obj   $(MINI_COREDIR)/archiver.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/compress.obj   $(MINI_COREDIR)/compress.c
-	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlite.obj       $(COREDIR)/boltlite.c
+	$(MINI_ENV) $(WCC16) $(OS2_16_CORE) $(OS2_16_BOLTLITE_FLAGS) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_FRONT) $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
 	$(MINI_ENV) $(WCC16) $(OS2_16_CORE)  $(OS2_16_INCS) -fo=$(OS2_16_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
@@ -2460,6 +2484,7 @@ os2-16:
 	    file {$(OS2_16_BDIR)/archiver.obj} \
 	    file {$(OS2_16_BDIR)/compress.obj} \
 	    file {$(OS2_16_BDIR)/boltlite.obj} \
+	    $(if $(OS2_16_BOLTLITE_OBJ),file {$(OS2_16_BOLTLITE_OBJ)}) \
 	    file {$(OS2_16_BDIR)/boltlz_decomp.obj} \
 	    file {$(OS2_16_BDIR)/mini_common.obj} \
 	    file {$(OS2_16_BDIR)/bp_codepage.obj} \
@@ -2467,23 +2492,60 @@ os2-16:
 	    name $(OS2_16_EXE)
 	@echo "  OK    $(OS2_16_EXE)"
 
-# ---- cpm86: Aztec C 86 (manual build, instructions only) ----------------
-# CP/M-86 requires Aztec C 86 (or compatible CP/M-86 C compiler).
-# Open Watcom does not target CP/M-86.  Build manually on a CP/M-86 system
-# or use an emulator (e.g., RunCPM).
-#
-# Compile flags (Aztec C 86 syntax):
-#   cc -DSIZEOF_INT=2 -DSIZEOF_LONG=4 -DBP_MINI \
-#      -DBP_CREATOR_OS=BP_OS_CPM86 -DBP_CREATOR_CPU=BP_CPU_8086 \
-#      src/core/mini/archiver.c src/core/mini/compress.c \
-#      src/core/boltlite.c src/core/bp_codepage.c \
-#      src/frontend/mini_shared/mini_common.c \
-#      src/core/mini/boltlz_decomp.c \
-#      src/frontend/cpm86/main.c \
-#      -o BPMINI.CMD
-.PHONY: cpm86
-cpm86:
-	@echo "  NOTE  CP/M-86 requires Aztec C 86; see comment in Makefile for build instructions"
+$(DOS16_BDIR)/bl8086.obj $(OS2_16_BDIR)/bl8086.obj: $(COREDIR)/boltlite_8086.asm
+	mkdir -p $(@D)
+	$(MINI_ENV) $(WASM16) -0 -we -fo=$@ $<
+
+$(WIN16_BDIR)/bl8086.obj: $(COREDIR)/boltlite_8086.asm
+	mkdir -p $(@D)
+	$(MINI_ENV) $(WASM16) -0 -we -dBOLTLITE_FAR_CODE -fo=$@ $<
+
+# ---- cpm86: Open Watcom CP/M-86 fork, compact model --------------------
+CPM86_WATCOM_ROOT ?= /opt/watcom-cpm86
+CPM86_WATCOM_BIN = $(CPM86_WATCOM_ROOT)/binl64
+CPM86_ENV = WATCOM=$(CPM86_WATCOM_ROOT) INCLUDE=$(CPM86_WATCOM_ROOT)/h
+CPM86_LIB = $(CPM86_WATCOM_ROOT)/lib286/cpm86
+CPM86_FLAGS = -bt=cpm86 -mc -0 -DBP_CREATOR_OS=BP_OS_CPM86
+CPM86_INCS = -i=$(CPM86_WATCOM_ROOT)/h -i=$(COREDIR) -i=$(MINI_COREDIR) -i=$(MINI_SHARED)
+CPM86_BDIR = build/cpm86
+# A 64 KiB reserve gives the CP/M runtime one far-heap segment on loaders
+# without dynamic segment allocation.
+CPM86_FARHEAP ?= 0x10000
+CPM86_EMULATOR ?= emu2
+ifeq ($(CPM86_BOLTLITE_ASM),1)
+CPM86_BOLTLITE_FLAGS = -DBOLTLITE_8086_ASM
+CPM86_BOLTLITE_OBJ = $(CPM86_BDIR)/bl8086.obj
+endif
+
+.PHONY: cpm86 cpm86-optimized cpm86-boltlite-asm-test
+cpm86-optimized:
+	$(MAKE) cpm86 CPM86_BDIR=build/cpm86-optimized CPM86_BOLTLITE_ASM=1
+
+cpm86: $(CPM86_BOLTLITE_OBJ)
+	mkdir -p $(CPM86_BDIR)
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_CORE_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/archiver.obj $(MINI_COREDIR)/archiver.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_CORE_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/compress.obj $(MINI_COREDIR)/compress.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_CORE_FLAGS) $(CPM86_INCS) $(CPM86_BOLTLITE_FLAGS) -fo=$(CPM86_BDIR)/boltlite.obj $(COREDIR)/boltlite.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_CORE_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/boltlz_decomp.obj $(MINI_COREDIR)/boltlz_decomp.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_CORE_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/bp_codepage.obj $(COREDIR)/bp_codepage.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_FRONT_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/mini_common.obj $(MINI_SHARED)/mini_common.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wcc $(CPM86_FLAGS) $(MINI_FRONT_FLAGS) $(CPM86_INCS) -fo=$(CPM86_BDIR)/main.obj src/frontend/cpm86/main.c
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wlink @$(CPM86_WATCOM_BIN)/wlink.lnk system cpm86 option eliminate \
+	    option start=_cstart_ option farheap=$(CPM86_FARHEAP) option map=$(CPM86_BDIR)/bpmini.map \
+	    file $(CPM86_LIB)/cstartcm.obj \
+	    file {$(addprefix $(CPM86_BDIR)/,archiver.obj compress.obj boltlite.obj boltlz_decomp.obj bp_codepage.obj mini_common.obj main.obj)} \
+	    $(if $(CPM86_BOLTLITE_OBJ),file {$(CPM86_BOLTLITE_OBJ)}) \
+	    library $(CPM86_LIB)/clibc.lib name $(CPM86_BDIR)/BPMINI.CMD
+	@echo "  OK    $(CPM86_BDIR)/BPMINI.CMD"
+
+$(CPM86_BDIR)/bl8086.obj: $(COREDIR)/boltlite_8086.asm
+	mkdir -p $(@D)
+	$(CPM86_ENV) $(CPM86_WATCOM_BIN)/wasm -0 -we -fo=$@ $<
+
+cpm86-boltlite-asm-test: modern cpm86 cpm86-optimized
+	python3 test/check_cpm86_boltlite.py --emu2 "$(CPM86_EMULATOR)" \
+	    --portable $(CPM86_BDIR)/BPMINI.CMD --optimized build/cpm86-optimized/BPMINI.CMD \
+	    --boltpack $(TARGET)
 
 # Host-run policy fixture for the CP/M-86 frontend. This validates the C89
 # frontend logic, not CP/M-86 filesystem or runtime behavior.

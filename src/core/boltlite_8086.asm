@@ -1,15 +1,25 @@
-; Bounds-checked BoltLite decoder for Open Watcom's 16-bit compact model.
+; Bounds-checked BoltLite decoder for Open Watcom's 16-bit cdecl ABI.
 ; Copyright (C) 2026 Tony Mattsson. BSD 2-Clause License.
 
 .8086
+ifdef BOLTLITE_FAR_CODE
+.model large
+ARG_START equ 6                 ; saved BP and far return address
+else
 .model compact
+ARG_START equ 4                 ; saved BP and near return address
+endif
 .code
 
 OUTPUT_START equ -12
 PREVIOUS_DISTANCE equ -14
 
 public _boltlite_decode_8086
+ifdef BOLTLITE_FAR_CODE
+_boltlite_decode_8086 proc far
+else
 _boltlite_decode_8086 proc near
+endif
     push bp
     mov  bp,sp
     push di
@@ -17,13 +27,13 @@ _boltlite_decode_8086 proc near
     push bx
     push ds
     push es
-    les  di,[bp+10]             ; far destination
+    les  di,[bp+ARG_START+6]    ; far destination
     push di                     ; OUTPUT_START
     xor  ax,ax
     push ax                     ; PREVIOUS_DISTANCE
-    lds  si,[bp+4]              ; far source
-    mov  cx,[bp+8]              ; input remaining
-    mov  dx,[bp+14]             ; output remaining
+    lds  si,[bp+ARG_START]      ; far source
+    mov  cx,[bp+ARG_START+4]    ; input remaining
+    mov  dx,[bp+ARG_START+10]   ; output remaining
     cld
 
 read_flags:

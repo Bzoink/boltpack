@@ -749,29 +749,13 @@ _do_watcom_target() {
     fi
 }
 
-do_dos16() {
-    local target="${1:-dos16}"
+do_watcom_mini() {
+    local target="$1"
     if ! _check_watcom; then
         echo "  SKIP  $target (Open Watcom not found)"
         return 0
     fi
     _do_watcom_target "$target" "build/$target/bpmini.exe"
-}
-
-do_win16() {
-    if ! _check_watcom; then
-        echo "  SKIP  win16 (Open Watcom not found)"
-        return 0
-    fi
-    _do_watcom_target win16 build/win16/bpmini.exe
-}
-
-do_os2_16() {
-    if ! _check_watcom; then
-        echo "  SKIP  os2-16 (Open Watcom not found)"
-        return 0
-    fi
-    _do_watcom_target os2-16 build/os2-16/bpmini.exe
 }
 
 # ---- Fluff optimization tier builds ----------------------------------------
@@ -864,9 +848,9 @@ do_all() {
     do_macos9_68k  || failed=1
     do_e2k         || failed=1
     do_wasm        || failed=1
-    do_dos16       || failed=1
-    do_win16       || failed=1
-    do_os2_16      || failed=1
+    do_watcom_mini dos16  || failed=1
+    do_watcom_mini win16  || failed=1
+    do_watcom_mini os2-16 || failed=1
     echo ""
     echo "Done. Built binaries:"
     find build -name 'boltpack*' -type f 2>/dev/null | sort | while read f; do
@@ -1200,8 +1184,12 @@ Targets:
 16-bit mini archiver targets (Open Watcom 2.0 at /opt/watcom):
   dos16          16-bit DOS (8086 compact model)
   dos16-optimized  16-bit DOS with 8086 BoltLite assembly
-  win16          16-bit Windows 3.x (8086 compact model)
-  os2-16         16-bit OS/2 1.x (8086 compact model)
+  win16          16-bit Windows 3.x (large model)
+  win16-optimized  16-bit Windows 3.x with 8086 BoltLite assembly
+  os2-16         16-bit OS/2 1.x (compact model)
+  os2-16-optimized  16-bit OS/2 1.x with 8086 BoltLite assembly
+  cpm86          CP/M-86 (requires the CP/M-86 Open Watcom fork)
+  cpm86-optimized  CP/M-86 with 8086 BoltLite assembly
 
   all-tiers      Build fluff optimization tiers (tier3 + tier4) for Linux
     all            Build aggregate Linux-hosted targets only (skips missing compilers)
@@ -1292,9 +1280,9 @@ case "$1" in
     ql)           do_ql ;;
     x68k)         do_x68k ;;
     wasm)         do_wasm ;;
-    dos16|dos16-optimized) do_dos16 "$1" ;;
-    win16)        do_win16 ;;
-    os2-16)       do_os2_16 ;;
+    dos16|dos16-optimized|win16|win16-optimized|os2-16|os2-16-optimized)
+        do_watcom_mini "$1" ;;
+    cpm86|cpm86-optimized) _do_watcom_target "$1" "build/$1/BPMINI.CMD" ;;
     all-tiers)    do_all_tiers ;;
     all)          do_all ;;
     all-with-packages|all-packages|release) do_all_with_packages ;;

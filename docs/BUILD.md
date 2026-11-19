@@ -550,10 +550,29 @@ make win16
 make os2-16
 ```
 
-`make dos16-optimized` builds `build/dos16-optimized/bpmini.exe` with 8086
-assembly for BoltLite, the default DOS16 codec. The encoder still produces
-the same BoltLite bitstream. `make dos16-boltlite-asm-test` compares the C
-and assembly paths in DOSBox-X with an emulated 8086.
+The opt-in builds use 8086 assembly for BoltLite, the default mini codec,
+and produce the same BoltLite bitstream as the C builds.
+
+| Build command | Executable |
+| --- | --- |
+| `make dos16-optimized` | `build/dos16-optimized/bpmini.exe` |
+| `make os2-16-optimized` | `build/os2-16-optimized/bpmini.exe` |
+| `make win16-optimized` | `build/win16-optimized/bpmini.exe` |
+| `make cpm86-optimized` | `build/cpm86-optimized/BPMINI.CMD` |
+
+`make dos16-boltlite-asm-test dos16-boltlite-far-test` compares the C and
+assembly codecs in DOSBox-X with an emulated 8086. The compact-model test
+exercises the decoder entry point used by DOS16 and OS/2 1.x. The
+large-model test exercises the far-call entry point used by Win16.
+
+The CP/M-86 targets require the compact-model runtime from the CP/M-86 Open
+Watcom fork. Set `CPM86_WATCOM_ROOT` to the toolchain directory. `make cpm86`
+builds the C version. [CP/M-86 Open Watcom fork](https://github.com/ravn/open-watcom-v2-ccpm86)
+
+`make cpm86-boltlite-asm-test` compares CP/M-86 archive creation and extraction
+under emu2-cpm86 and checks interoperability with the Linux CLI. Set
+`CPM86_EMULATOR` if `emu2` is off `PATH`. The test uses the host `script`
+command to give emu2 a terminal. [emu2-cpm86](https://github.com/johnsonjh/emu2-cpm86)
 
 `make mini-all` builds all three and the C89 mini compatibility fixture.
 These are cross-build commands; Windows 3.x and OS/2 1.x runtime validation
