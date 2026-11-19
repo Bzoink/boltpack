@@ -1,13 +1,18 @@
 /*
- * boltlz_m68k.S -- hand-written 68000 BoltLZ encoder main loop
+ * boltlz_m68k.S -- hand-written 68000 BoltLZ encoder and decoder loops
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  *
- * Optional (BOLTLZ_M68K_ASM=1). Implements the BALANCED and FAST main loop
- * of boltlz.c for the BOLTLZ_M68K configuration and produces byte-identical
- * output: same hash, candidates, cost model, lazy step, backward extension
- * and end-of-match insertion. The C code still validates arguments, clears
- * the table, writes the version byte and the final literals.
+ * Optional (BOLTLZ_M68K_ASM=1).
+ *
+ * bl68_encode implements the BALANCED and FAST main loop of boltlz.c for
+ * the BOLTLZ_M68K configuration and produces byte-identical output: same
+ * hash, candidates, cost model, lazy step, backward extension and
+ * end-of-match insertion. The C code still validates arguments, clears the
+ * table, writes the version byte and the final literals.
+ *
+ * bl68_decode (at the end of this file) decodes validated sequences and
+ * leaves everything else, including all error reporting, to the C decoder.
  *
  * Built for a 68000 (the default), all loads are aligned. Built with
  * -m68020 or later (__mc68020__ ... __mc68060__), longs are read and
@@ -15,6 +20,7 @@
  *
  * Called from C (all m68k GCC ABIs pass arguments on the stack):
  *     void bl68_encode(bl68_state *state);
+ *     void bl68_decode(bl68_dstate *state);
  * The caller guarantees room for boltlz_compress_bound(src_len) bytes, so
  * no output checks are made. Table entries hold "pointer + 1" (0 = empty);
  * BALANCED keeps the primary and secondary entry of a bucket side by side.
@@ -567,4 +573,332 @@ SYM(bl68_encode):
 	swap	%d0
 	bra	.Lcp_b
 .Lcp_end:
+	rts
+
+/*
+ * Decoder fast loop.
+ *
+ *     void bl68_decode(bl68_dstate *state);
+ *
+ * Decodes whole sequences while at least ten input bytes remain, writing
+ * nothing until every field of a sequence is validated: canonical LEB128
+ * fields, literal and match bounds, distance within the output. Anything
+ * else (a malformed field, the end of the stream, the final literals) stops
+ * the loop at the start of that sequence, and the C decoder continues from
+ * there and reports any error exactly as before.
+ */
+
+/* bl68_dstate fields */
+#define DS_IN      0
+#define DS_SRCEND  4
+#define DS_OUT     8
+#define DS_DSTEND 12
+#define DS_DST    16
+#define DS_LAST   20
+
+/*
+ * Registers:
+ *   a0 input        a1 output       a2 end of input   a3 end of output
+ *   a4 match source a5 match fields a6 start of output
+ *   d2 tag   d3 literal length   d4 match length   d5 distance
+ *   d6 start of the current sequence   d7 last distance   d0, d1 scratch
+ */
+
+/* d0 = canonical LEB128 at \p, accepting exactly what bl_read_var accepts
+ * (at most three bytes, no zero final byte after the first, third byte 1 to
+ * 16); otherwise stop at the start of the sequence. */
+.macro DVAR p
+	moveq	#0,%d0
+	move.b	(\p)+,%d0
+	bpl	.Ldone\@
+	and.b	#0x7F,%d0
+	moveq	#0,%d1
+	move.b	(\p)+,%d1
+	bmi	.Lthree\@
+	beq	.Ld_bail
+	lsl.l	#7,%d1
+	or.l	%d1,%d0
+	bra	.Ldone\@
+.Lthree\@:
+	and.b	#0x7F,%d1
+	lsl.l	#7,%d1
+	or.l	%d1,%d0
+	moveq	#0,%d1
+	move.b	(\p)+,%d1
+	beq	.Ld_bail
+	cmp.b	#16,%d1
+	bhi	.Ld_bail
+	swap	%d1
+	lsr.l	#2,%d1
+	or.l	%d1,%d0
+.Ldone\@:
+.endm
+
+/* Copy d0 (at most 32) bytes forward from \src to a1 through an unrolled
+ * MOVE.B run; byte order makes it correct for overlapping matches. */
+.macro SHORTCOPY src, done
+	add.w	%d0,%d0
+	neg.w	%d0
+	jmp	(.Ltab\@,%pc,%d0.w)
+	.rept	32
+	move.b	(\src)+,(%a1)+
+	.endr
+.Ltab\@:
+	bra	\done
+.endm
+
+	.globl	SYM(bl68_decode)
+SYM(bl68_decode):
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	48(%sp),%a4
+	move.l	DS_IN(%a4),%a0
+	move.l	DS_SRCEND(%a4),%a2
+	move.l	DS_OUT(%a4),%a1
+	move.l	DS_DSTEND(%a4),%a3
+	move.l	DS_DST(%a4),%a6
+	move.l	DS_LAST(%a4),%d7
+.Ld_loop:
+	move.l	%a2,%d0
+	sub.l	%a0,%d0
+	moveq	#10,%d1
+	cmp.l	%d1,%d0
+	bcs	.Ld_exit
+	move.l	%a0,%d6
+	moveq	#0,%d2
+	move.b	(%a0)+,%d2
+	/* literal length */
+	moveq	#0,%d3
+	move.b	%d2,%d3
+	lsr.b	#4,%d3
+	and.b	#7,%d3
+	cmp.b	#7,%d3
+	bne	.Ld_lit
+	DVAR	%a0
+	add.l	%d0,%d3
+.Ld_lit:
+	/* literals plus six bytes of match fields must be in the input,
+	 * which also rules out the final literal-only sequence */
+	move.l	%a2,%d0
+	sub.l	%a0,%d0
+	subq.l	#6,%d0
+	bcs	.Ld_bail
+	cmp.l	%d3,%d0
+	bcs	.Ld_bail
+	move.l	%a3,%d0
+	sub.l	%a1,%d0
+	cmp.l	%d3,%d0
+	bcs	.Ld_bail
+	lea	(%a0,%d3.l),%a5
+	/* match length */
+	moveq	#15,%d4
+	and.b	%d2,%d4
+	addq.l	#4,%d4
+	cmp.b	#19,%d4
+	bne	.Ld_len
+	DVAR	%a5
+	add.l	%d0,%d4
+.Ld_len:
+	/* distance: repeat or explicit */
+	move.l	%d7,%d5
+	tst.b	%d2
+	bmi	.Ld_dist
+	DVAR	%a5
+	move.l	%d0,%d5
+.Ld_dist:
+	tst.l	%d5
+	beq	.Ld_bail
+	move.l	%a1,%d0
+	sub.l	%a6,%d0
+	add.l	%d3,%d0
+	cmp.l	%d5,%d0
+	bcs	.Ld_bail
+	move.l	%a3,%d0
+	sub.l	%a1,%d0
+	sub.l	%d3,%d0
+	cmp.l	%d4,%d0
+	bcs	.Ld_bail
+	move.l	%d5,%d7
+
+	/* literals: a0 -> a1 */
+	move.l	%d3,%d0
+	moveq	#32,%d1
+	cmp.l	%d1,%d0
+	bhi	.Ld_litlong
+.Ld_litshort:
+	SHORTCOPY %a0, .Ld_match
+.Ld_litlong:
+#if !BL68_020
+	move.l	%a0,%d1
+	sub.l	%a1,%d1
+	btst	#0,%d1
+	bne	.Ld_litbytes
+	move.w	%a1,%d1
+	btst	#0,%d1
+	beq	.Ld_lital
+	move.b	(%a0)+,(%a1)+
+	subq.l	#1,%d0
+.Ld_lital:
+#endif
+	move.l	%d0,%d1
+	lsr.l	#4,%d1
+	subq.l	#1,%d1
+.Ld_lit16:
+	move.l	(%a0)+,(%a1)+
+	move.l	(%a0)+,(%a1)+
+	move.l	(%a0)+,(%a1)+
+	move.l	(%a0)+,(%a1)+
+	dbra	%d1,.Ld_lit16
+	swap	%d1
+	subq.w	#1,%d1
+	bcs	.Ld_litrem
+	swap	%d1
+	bra	.Ld_lit16
+.Ld_litrem:
+	moveq	#15,%d1
+	and.l	%d1,%d0
+	bra	.Ld_litshort
+#if !BL68_020
+.Ld_litbytes:
+	subq.l	#1,%d0
+.Ld_litb:
+	move.b	(%a0)+,(%a1)+
+	dbra	%d0,.Ld_litb
+	swap	%d0
+	subq.w	#1,%d0
+	bcs	.Ld_match
+	swap	%d0
+	bra	.Ld_litb
+#endif
+
+	/* match: a1 - distance -> a1, forward */
+.Ld_match:
+	move.l	%a5,%a0
+	move.l	%a1,%a4
+	suba.l	%d5,%a4
+	move.l	%d4,%d0
+	moveq	#32,%d1
+	cmp.l	%d1,%d0
+	bhi	.Ld_mlong
+.Ld_mshort:
+	SHORTCOPY %a4, .Ld_loop
+.Ld_mlong:
+	moveq	#1,%d1
+	cmp.l	%d1,%d5
+	beq	.Ld_mfill
+	moveq	#4,%d1
+	cmp.l	%d1,%d5
+	bcs	.Ld_mdouble
+#if !BL68_020
+	/* Longs need both sides even: an even distance, then align. */
+	btst	#0,%d5
+	bne	.Ld_mdouble
+.Ld_malign:
+	move.w	%a1,%d1
+	btst	#0,%d1
+	beq	.Ld_mal
+	move.b	(%a4)+,(%a1)+
+	subq.l	#1,%d0
+#endif
+.Ld_mal:
+	/* distance >= 4: each long reads bytes already written */
+	move.l	%d0,%d1
+	lsr.l	#4,%d1
+	subq.l	#1,%d1
+.Ld_m16:
+	move.l	(%a4)+,(%a1)+
+	move.l	(%a4)+,(%a1)+
+	move.l	(%a4)+,(%a1)+
+	move.l	(%a4)+,(%a1)+
+	dbra	%d1,.Ld_m16
+	swap	%d1
+	subq.w	#1,%d1
+	bcs	.Ld_mrem
+	swap	%d1
+	bra	.Ld_m16
+.Ld_mrem:
+	moveq	#15,%d1
+	and.l	%d1,%d0
+	bra	.Ld_mshort
+.Ld_mdouble:
+	/* Distance 2 or 3, or odd on a 68000: once the first distance bytes
+	 * are written, the output repeats with twice the distance, which is
+	 * even and at least 4, so the rest can be copied as longs. */
+	move.l	%d5,%d1
+	moveq	#32,%d2
+	add.l	%d2,%d1
+	cmp.l	%d1,%d0
+	bcs	.Ld_mbytes
+	sub.l	%d5,%d0
+	move.l	%d5,%d1
+	subq.l	#1,%d1
+.Ld_md:
+	move.b	(%a4)+,(%a1)+
+	dbra	%d1,.Ld_md
+	swap	%d1
+	subq.w	#1,%d1
+	bcs	.Ld_mdd
+	swap	%d1
+	bra	.Ld_md
+.Ld_mdd:
+	suba.l	%d5,%a4
+#if !BL68_020
+	bra	.Ld_malign
+#else
+	bra	.Ld_mal
+#endif
+.Ld_mfill:
+	/* distance 1: a run of one byte */
+	move.b	(%a4),%d1
+#if !BL68_020
+	move.w	%a1,%d2
+	btst	#0,%d2
+	beq	.Ld_fal
+	move.b	%d1,(%a1)+
+	subq.l	#1,%d0
+.Ld_fal:
+#endif
+	move.b	%d1,%d2
+	lsl.w	#8,%d2
+	move.b	%d1,%d2
+	move.w	%d2,%d1
+	swap	%d1
+	move.w	%d2,%d1
+	move.l	%d0,%d2
+	lsr.l	#4,%d2
+	subq.l	#1,%d2
+.Ld_f16:
+	move.l	%d1,(%a1)+
+	move.l	%d1,(%a1)+
+	move.l	%d1,(%a1)+
+	move.l	%d1,(%a1)+
+	dbra	%d2,.Ld_f16
+	swap	%d2
+	subq.w	#1,%d2
+	bcs	.Ld_frem
+	swap	%d2
+	bra	.Ld_f16
+.Ld_frem:
+	moveq	#15,%d1
+	and.l	%d1,%d0
+	lea	-1(%a1),%a4
+	bra	.Ld_mshort
+.Ld_mbytes:
+	subq.l	#1,%d0
+.Ld_mb:
+	move.b	(%a4)+,(%a1)+
+	dbra	%d0,.Ld_mb
+	swap	%d0
+	subq.w	#1,%d0
+	bcs	.Ld_loop
+	swap	%d0
+	bra	.Ld_mb
+
+.Ld_bail:
+	move.l	%d6,%a0
+.Ld_exit:
+	move.l	48(%sp),%a4
+	move.l	%a0,DS_IN(%a4)
+	move.l	%a1,DS_OUT(%a4)
+	move.l	%d7,DS_LAST(%a4)
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts

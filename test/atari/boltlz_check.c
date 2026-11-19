@@ -4,9 +4,10 @@
  * Licensed under the BSD 2-Clause License
  *
  * Writes C:\BOLTLZ.TXT: the length and CRC-32 of every compressed stream
- * for many generated inputs and both levels, so builds with the C encoder
- * and with boltlz_m68k.S can be compared byte for byte, plus round-trip
- * failures and compression times (200 Hz ticks, emulated time).
+ * for many generated inputs and both levels, and the result code and output
+ * CRC of decoding many corrupted streams, so builds with the C codec and
+ * with boltlz_m68k.S can be compared byte for byte; plus round-trip failures
+ * and compression and decompression times (200 Hz ticks, emulated time).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,9 +87,43 @@ int main(void)
                             (unsigned long)len, crc32(enc, len));
                 }
             }
+    {   /* Corrupted streams: the result code and every output byte must
+         * not depend on the build. */
+        static const unsigned long fsizes[] = { 300, 5000, 65536 };
+        unsigned long f, trial, pos;
+        int rc;
+        for (f = 0; f < 3 * 3; f++) {
+            n = fsizes[f % 3];
+            seed = 7 + f;
+            fill(buf, n, f / 3 == 0 ? 2 : f / 3 == 1 ? 5 : 4);
+            len = boltlz_compress_bound(n);
+            if (boltlz_compress(buf, n, enc, &len, work, BOLTLZ_BALANCED) != BP_OK) {
+                fprintf(out, "FAIL fuzz source %lu\n", f); failures++; continue;
+            }
+            for (trial = 0; trial < 60; trial++) {
+                unsigned char *bad = buf + MAXB / 2;
+                bp_uint32 bad_len = len, out_len = (bp_uint32)n;
+                memcpy(bad, enc, len);
+                pos = 1 + rnd() % (len - 1);
+                switch (trial % 6) {
+                case 0: bad[pos] ^= (unsigned char)(1 << (rnd() & 7)); break;
+                case 1: bad[pos] = (unsigned char)rnd(); break;
+                case 2: bad_len = (bp_uint32)pos; break;
+                case 3: bad[pos] = 0x80; bad[pos + 1 < len ? pos + 1 : pos] = 0x80; break;
+                case 4: out_len = (bp_uint32)(n - 1 - rnd() % 16 % n); break;
+                default: bad[pos] ^= 0x70; out_len = (bp_uint32)(n + 3); break;
+                }
+                memset(dec, 0xA5, (size_t)out_len);
+                rc = boltlz_decompress(bad, bad_len, dec, out_len);
+                fprintf(out, "fuzz %lu.%lu rc %d crc %08lx\n", f, trial, rc,
+                        crc32(dec, out_len));
+                cases++;
+            }
+        }
+    }
     for (level = 1; level <= 2; level++) {
         /* Timing: four 64 KiB blocks of text-like and copy-heavy data. */
-        long start, total = 0;
+        long start, total = 0, dtotal = 0;
         for (kind = 2; kind < 6; kind++) {
             seed = 99 + kind;
             fill(buf, 65536UL, (int)kind);
@@ -96,8 +131,13 @@ int main(void)
             start = now();
             if (boltlz_compress(buf, 65536UL, enc, &len, work, (int)level) != BP_OK) failures++;
             total += now() - start;
+            start = now();
+            if (boltlz_decompress(enc, len, dec, 65536UL) != BP_OK ||
+                memcmp(dec, buf, 65536UL) != 0) failures++;
+            dtotal += now() - start;
         }
         fprintf(out, "time level %u ticks %ld\n", level, total);
+        fprintf(out, "dtime level %u ticks %ld\n", level, dtotal);
     }
     fprintf(out, "done cases %lu failures %lu\n", cases, failures);
     fclose(out);

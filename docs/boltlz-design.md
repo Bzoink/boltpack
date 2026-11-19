@@ -51,21 +51,32 @@ hash differs from other CPUs, so m68k output differs slightly (up to 0.25%
 larger); the format is unchanged. Other CPUs compile to the same code.
 
 `BOLTLZ_M68K_ASM=1` (`make atari amiga macos9-68k BOLTLZ_M68K_ASM=1`) adds
-[boltlz_m68k.S](../src/core/boltlz_m68k.S), the BALANCED and FAST encoder
-loop in 68000 assembly with byte-identical output to the C loop. A
-`-m68020` or later build also uses unaligned long access there. It is off by
-default. Measured in Hatari (emulated time, compression only):
+[boltlz_m68k.S](../src/core/boltlz_m68k.S), 68000 assembly for the encoder
+and decoder loops. It is off by default. A `-m68020` or later build also uses
+unaligned long access there.
 
-| CPU, build | Default level | Fast level |
-| --- | --- | --- |
-| 68000 8 MHz, assembly vs C | 1.9-2.0x faster | 1.2-1.5x faster |
-| 68030 32 MHz (TT), 68000 assembly vs C | 1.7x | 1.1x |
-| 68030 32 MHz (TT), 68020+ assembly vs 68000 C | 2.0x | 1.3x |
+- The encoder loop (BALANCED and FAST) produces byte-identical output to
+  the C loop.
+- The decoder loop decodes a sequence only after validating all of its
+  fields, and stops at the start of anything else: a malformed field, the
+  last ten input bytes, the final literals. The C decoder continues from
+  there, so results, error codes and output bytes match the C decoder.
+
+Measured in Hatari on 384 KiB of mixed Silesia data (emulated time):
+
+| CPU, build | Compress, default level | Compress, fast level | Decompress |
+| --- | --- | --- | --- |
+| 68000 8 MHz, assembly vs C | 1.86x faster | 1.18x | 2.04x (64 to 131 KB/s) |
+| 68030 32 MHz (TT), 68000 assembly vs C | 1.71x | 1.09x | 1.77x |
+| 68030 32 MHz (TT), 68020+ assembly vs 68000 C | 1.99x | 1.32x | 2.07x |
+
+Data made of very long matches gains less (about 1.2x decoding), because
+copying dominates there and the C code already copies with long moves.
 
 `make atari-hatari-boltlz-asm-test HATARI_TOS=... [EMUTOS_ROM=...]` checks
-that the assembly output is identical to the C output over generated inputs
-(sizes 0 to 256 KiB, odd addresses, both levels), on TOS and, with EmuTOS,
-for 68030 builds on a TT. Decoding is still C.
+the assembly against the C code over generated inputs (sizes 0 to 256 KiB,
+odd addresses, both levels) and 540 corrupted streams (same result codes
+and output bytes), on TOS and, with EmuTOS, for 68030 builds on a TT.
 
 ## Evaluation
 

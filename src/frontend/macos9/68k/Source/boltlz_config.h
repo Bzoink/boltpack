@@ -109,8 +109,9 @@
 #ifndef BOLTLZ_EXTENDED_DECODE
 #define BOLTLZ_EXTENDED_DECODE 0
 #endif
-/* Hand-written 68000 encoder loop (boltlz_m68k.S); link that file too.
- * It implements exactly the default m68k settings checked below. */
+/* Hand-written 68000 encoder and decoder loops (boltlz_m68k.S); link that
+ * file too. The decoder loop works with any decoder setting below; the
+ * encoder implements exactly the default m68k settings checked here. */
 #ifndef BOLTLZ_M68K_ASM
 #define BOLTLZ_M68K_ASM 0
 #endif

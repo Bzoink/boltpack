@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Check the hand-written 68000 BoltLZ encoder (src/core/boltlz_m68k.S).
+"""Check the hand-written 68000 BoltLZ code (src/core/boltlz_m68k.S).
 
-Builds test/atari/boltlz_check.c twice, with the C encoder and with the
+Builds test/atari/boltlz_check.c twice, with the C codec and with the
 assembly, runs both in Hatari and requires byte-identical compressed output
-(length and CRC-32 of every stream) and no round-trip failures. Prints the
-compression times of both builds.
+(length and CRC-32 of every stream), identical result codes and output for
+corrupted streams, and no round-trip failures. Prints the compression and
+decompression times of both builds.
 
 With --emutos, the same is repeated for -m68030 builds on an emulated TT,
 which exercises the assembly's 68020+ variant (EmuTOS is needed there:
@@ -56,8 +57,8 @@ def run(hatari, machine, tos, drive, timeout):
 
 
 def split(lines):
-    streams = [l for l in lines if not l.startswith(("time ", "done "))]
-    times = [l for l in lines if l.startswith("time ")]
+    streams = [l for l in lines if not l.startswith(("time ", "dtime ", "done "))]
+    times = [l for l in lines if l.startswith(("time ", "dtime "))]
     done = [l for l in lines if l.startswith("done ")]
     return streams, times, done
 
@@ -84,10 +85,11 @@ def check_pair(args, label, machine, tos, cflags, work):
         raise RuntimeError("%s: assembly output differs from C: %r" % (label, diff))
     print("PASS %s: %s, assembly output identical to C" % (label, c_done[0]))
     for c, a in zip(c_times, a_times):
+        what = "compress" if c.startswith("time ") else "decompress"
         level = c.split()[2]
         ct, at = int(c.split()[-1]), int(a.split()[-1])
-        print("  level %s: C %d ticks, assembly %d ticks (%.2fx)" %
-              (level, ct, at, ct / at if at else 0.0))
+        print("  level %s %-10s: C %d ticks, assembly %d ticks (%.2fx)" %
+              (level, what, ct, at, ct / at if at else 0.0))
 
 
 def main():

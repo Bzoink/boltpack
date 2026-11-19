@@ -966,6 +966,22 @@ BL_FORCE_INLINE void bl_copy_wide32(bp_uint8 *dst, const bp_uint8 *src, bp_uint3
 #endif
 #endif
 
+#if BOLTLZ_M68K_ASM
+/* boltlz_m68k.S: decodes whole validated sequences and stops at the start
+ * of anything else, leaving it and all error reporting to the C loop.
+ * Field offsets are fixed in the assembly. */
+typedef struct {
+    const bp_uint8 *in;
+    const bp_uint8 *src_end;
+    bp_uint8 *out;
+    bp_uint8 *dst_end;
+    bp_uint8 *dst;
+    bp_uint32 last;
+} bl68_dstate;
+
+void bl68_decode(bl68_dstate *state);
+#endif
+
 int boltlz_decompress(const bp_uint8 *src, bp_uint32 src_len,
                      bp_uint8 *dst, bp_uint32 dst_len)
 {
@@ -992,6 +1008,21 @@ int boltlz_decompress(const bp_uint8 *src, bp_uint32 src_len,
     if (src[0] != BOLTLZ_FORMAT_VERSION) return BP_ERR_VERSION;
     in = 1;
     out = last = 0;
+#if BOLTLZ_M68K_ASM
+    if (dst_len != 0) {
+        bl68_dstate state;
+        state.in = src + in;
+        state.src_end = src + src_len;
+        state.out = dst;
+        state.dst_end = dst + dst_len;
+        state.dst = dst;
+        state.last = 0;
+        bl68_decode(&state);
+        in = (bp_uint32)(state.in - src);
+        out = (bp_uint32)(state.out - dst);
+        last = state.last;
+    }
+#endif
     while (in < src_len) {
         tag = src[in++];
 #if BOLTLZ_FAST_DECODE

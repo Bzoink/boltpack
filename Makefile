@@ -745,10 +745,10 @@ wasm:
 # -noixemul: link against native AmigaDOS clib (no ixemul.library)
 # -pedantic is omitted because AmigaOS NDK headers are not strict C89.
 # The Amiga package ships both the CLI and the GadTools GUI build.
-# Optional hand-written 68000 BoltLZ encoder loop (src/core/boltlz_m68k.S)
+# Optional hand-written 68000 BoltLZ encoder and decoder loops (boltlz_m68k.S)
 # for the Atari, Amiga and Classic Mac 68k builds, for example
 #   make atari amiga BOLTLZ_M68K_ASM=1
-# Output is identical to the C encoder. Built with -m68020 or later, the
+# Results are identical to the C code. Built with -m68020 or later, the
 # assembly also uses unaligned long access.
 BOLTLZ_M68K_ASM ?= 0
 ifeq ($(BOLTLZ_M68K_ASM),1)
@@ -880,7 +880,7 @@ atari-hatari-fat-test: all atari-cli
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
 	    --output "$(ATARI_HATARI_FAT_OUTPUT)"
 
-# Hand-written 68000 BoltLZ encoder: identical output to the C encoder on
+# Hand-written 68000 BoltLZ code: identical results to the C code on
 # TOS, and with EMUTOS_ROM also for 68030 builds on a TT, for example
 #   make atari-hatari-boltlz-asm-test HATARI_TOS=~/images/Atari/tos162se.img \
 #       EMUTOS_ROM=~/images/Atari/etos512se.img
