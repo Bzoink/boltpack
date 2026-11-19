@@ -109,6 +109,18 @@
 #ifndef BOLTLZ_EXTENDED_DECODE
 #define BOLTLZ_EXTENDED_DECODE 0
 #endif
+/* Hand-written 68000 encoder loop (boltlz_m68k.S); link that file too.
+ * It implements exactly the default m68k settings checked below. */
+#ifndef BOLTLZ_M68K_ASM
+#define BOLTLZ_M68K_ASM 0
+#endif
+#if BOLTLZ_M68K_ASM && (!BOLTLZ_M68K || BOLTLZ_HASH_BITS != 13 || \
+    BOLTLZ_LAZY_LIMIT != 32 || BOLTLZ_NARROW_TABLE != 0 || \
+    !BOLTLZ_FULL_CAPACITY || !BOLTLZ_BACKWARD_MATCH || BOLTLZ_DUAL_HASH || \
+    BOLTLZ_EXACT_COST || BOLTLZ_PRUNE_MATCH || BOLTLZ_REUSE_MATCH || \
+    BOLTLZ_SECOND_LIMIT < 262144UL)
+#error "BOLTLZ_M68K_ASM needs the default BOLTLZ_M68K encoder settings"
+#endif
 
 #if BOLTLZ_HASH_BITS < 12 || BOLTLZ_HASH_BITS > 14
 #error "BoltLZ hash bits must be 12, 13, or 14"
@@ -150,7 +162,8 @@
     (BOLTLZ_DECODE_ZERO_LITERAL != 0 && BOLTLZ_DECODE_ZERO_LITERAL != 1) || \
     (BOLTLZ_PIPELINE != 0 && BOLTLZ_PIPELINE != 1) || \
     (BOLTLZ_FULL_CAPACITY != 0 && BOLTLZ_FULL_CAPACITY != 1) || \
-    (BOLTLZ_M68K != 0 && BOLTLZ_M68K != 1)
+    (BOLTLZ_M68K != 0 && BOLTLZ_M68K != 1) || \
+    (BOLTLZ_M68K_ASM != 0 && BOLTLZ_M68K_ASM != 1)
 #error "BoltLZ experiment switches must be zero or one"
 #endif
 #if BOLTLZ_M68K && defined(__BYTE_ORDER__) && \

@@ -745,6 +745,19 @@ wasm:
 # -noixemul: link against native AmigaDOS clib (no ixemul.library)
 # -pedantic is omitted because AmigaOS NDK headers are not strict C89.
 # The Amiga package ships both the CLI and the GadTools GUI build.
+# Optional hand-written 68000 BoltLZ encoder loop (src/core/boltlz_m68k.S)
+# for the Atari, Amiga and Classic Mac 68k builds, for example
+#   make atari amiga BOLTLZ_M68K_ASM=1
+# Output is identical to the C encoder. Built with -m68020 or later, the
+# assembly also uses unaligned long access.
+BOLTLZ_M68K_ASM ?= 0
+ifeq ($(BOLTLZ_M68K_ASM),1)
+M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1
+M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S
+# The Mac 68k flags force-include a C header, so assemble it on its own.
+MACOS68K_ASM_OBJ = build/macos9-68k/boltlz_m68k.o
+endif
+
 AMIGA68K_CC      ?= /opt/amiga/bin/m68k-amigaos-gcc
 AMIGA68K_CFLAGS  = -noixemul -Wall -Wextra -Wno-unused-function -O2
 AMIGA68K_BUILDDIR = build/amiga
@@ -757,7 +770,7 @@ amiga-cli: amiga68k
 amiga68k:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	rm -f $(AMIGA68K_BUILDDIR)/BoltPack $(AMIGA68K_BUILDDIR)/boltpack-gui
-	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) \
+	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -765,7 +778,7 @@ amiga68k:
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/amiga/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(M68K_ASM_SRCS) \
 	    -o $(AMIGA68K_BUILDDIR)/boltpack
 	@echo "  OK    $(AMIGA68K_BUILDDIR)/boltpack"
 
@@ -812,7 +825,7 @@ target-profile-host-test: modern linuxmini cpm86-host-test riscos-profile-host-t
 atari-cli:
 	mkdir -p $(ATARI_BUILDDIR)
 	rm -f $(ATARI_BUILDDIR)/boltpack $(ATARI_BUILDDIR)/boltpack.ttp
-	$(ATARI_CC) $(ATARI_CFLAGS) \
+	$(ATARI_CC) $(ATARI_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -820,7 +833,7 @@ atari-cli:
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/atari/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(M68K_ASM_SRCS) \
 	    -o $(ATARI_BUILDDIR)/boltpack.tos
 	@echo "  OK    $(ATARI_BUILDDIR)/boltpack.tos"
 
@@ -866,6 +879,17 @@ atari-hatari-fat-test: all atari-cli
 	    --memsize "$(ATARI_HATARI_MEMSIZE)" \
 	    --atari-cli $(ATARI_BUILDDIR)/boltpack.tos --linux-cli $(TARGET) \
 	    --output "$(ATARI_HATARI_FAT_OUTPUT)"
+
+# Hand-written 68000 BoltLZ encoder: identical output to the C encoder on
+# TOS, and with EMUTOS_ROM also for 68030 builds on a TT, for example
+#   make atari-hatari-boltlz-asm-test HATARI_TOS=~/images/Atari/tos162se.img \
+#       EMUTOS_ROM=~/images/Atari/etos512se.img
+.PHONY: atari-hatari-boltlz-asm-test
+atari-hatari-boltlz-asm-test:
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	python3 test/check_hatari_boltlz_asm.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --cc "$(ATARI_CC)" \
+	    $(if $(EMUTOS_ROM),--emutos "$(EMUTOS_ROM)")
 
 # Native Atari name rule on real TOS: Atari ST accented letters, nested accented
 # directories, implicit parent directories, and an extract/create/test/extract
@@ -926,7 +950,8 @@ macos9-68k: macos9-core-sync-test
 	    exit 0; \
 	fi
 	rm -f '$(MACOS68K_BUILDDIR)/.link-smoke' '$(MACOS68K_BUILDDIR)/.link-smoke.gdb'
-	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) \
+	$(if $(MACOS68K_ASM_OBJ),$(MACOS68K_ENV) $(MACOS68K_CC) -c $(M68K_ASM_SRCS) -o $(MACOS68K_ASM_OBJ))
+	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -934,7 +959,7 @@ macos9-68k: macos9-core-sync-test
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    $(MACOS68K_FRONTEND)/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(MACOS68K_ASM_OBJ) \
 	    -o $(MACOS68K_BUILDDIR)/BoltPack
 	$(MACOS68K_ENV) $(MACOS68K_REZ) -I $(MACOS68K_RINCLUDES) -I $(MACOS68K_MULTIVERSAL_RINCLUDES) \
 	    $(MACOS68K_FRONTEND)/boltpack.r \
@@ -943,7 +968,7 @@ macos9-68k: macos9-core-sync-test
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack \
 	    $(MACOS68K_BUILDDIR)/.rsrc/boltpack_gui.rsrc \
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack
-	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) \
+	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -951,7 +976,7 @@ macos9-68k: macos9-core-sync-test
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    $(MACOS68K_FRONTEND)/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(MACOS68K_ASM_OBJ) \
 	    -o $(MACOS68K_BUILDDIR)/BoltPack.code.bin
 	$(MACOS68K_ENV) $(MACOS68K_REZ) $(MACOS68K_APPL_TEMPLATE) \
 	    -I $(MACOS68K_RINCLUDES) \
@@ -2932,9 +2957,9 @@ atari-gui:
 	mkdir -p $(ATARI_GUI_BUILDDIR)
 	rm -f $(ATARI_GUI_BUILDDIR)/boltpack.app
 	$(ATARI_CC) \
-	    -Wall -Wextra -Wno-unused-function -O2 \
+	    -Wall -Wextra -Wno-unused-function -O2 $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
-	    $(GUI_CORE_SRCS) \
+	    $(GUI_CORE_SRCS) $(M68K_ASM_SRCS) \
 	    src/frontend/atari_gui/main.c \
 	    -lgem \
 	    -o $(ATARI_GUI_BUILDDIR)/boltpack.prg
@@ -3141,9 +3166,9 @@ amiga-gui:
 	mkdir -p $(AMIGA_GUI_BUILDDIR)
 	rm -f $(AMIGA_GUI_BUILDDIR)/BoltPack
 	/opt/amiga/bin/m68k-amigaos-gcc -noixemul \
-	    -Wall -Wextra -Wno-unused-function -O2 \
+	    -Wall -Wextra -Wno-unused-function -O2 $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -I$(GUI_COMMON) \
-	    $(GUI_CORE_SRCS) \
+	    $(GUI_CORE_SRCS) $(M68K_ASM_SRCS) \
 	    src/frontend/amiga_gui/main.c \
 	    -lm \
 	    -o $(AMIGA_GUI_BUILDDIR)/boltpack-gui

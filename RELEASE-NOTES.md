@@ -40,6 +40,12 @@
   multiply and odd-address word access, and hashes each position once.
   Compressed output is up to 0.25% larger; the archive format is unchanged
   and other CPUs compile to the same code as before.
+- Optional hand-written 68000 assembly for the BoltLZ encoder loop
+  (`make atari amiga macos9-68k BOLTLZ_M68K_ASM=1`). Its output is identical
+  to the C encoder. Default-level compression is a further 1.9x faster on an
+  emulated 8 MHz 68000 and 1.7x on a 32 MHz 68030; a `-m68020` build adds
+  unaligned access for 2.0x on the 68030. `make atari-hatari-boltlz-asm-test`
+  compares it with the C encoder in Hatari. Off by default.
 
 ## 1.11 — Native metadata preservation and usable application transfers
 

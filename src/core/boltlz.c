@@ -161,6 +161,22 @@ typedef struct {
     bp_uint32 saving;
 } bl_match;
 
+#if BOLTLZ_M68K_ASM
+/* boltlz_m68k.S: the BALANCED and FAST main loop in 68000 assembly, with
+ * the same output as the C loop. The output needs room for the compress
+ * bound. Field offsets are fixed in the assembly. */
+typedef struct {
+    const bp_uint8 *src;
+    const bp_uint8 *end;
+    bp_uint8 *out;
+    bp_uint32 *table;
+    bp_uint32 level;
+    const bp_uint8 *anchor;
+} bl68_state;
+
+void bl68_encode(bl68_state *state);
+#endif
+
 BL_M68K_INLINE bp_uint32 bl_hash(const bp_uint8 *p)
 {
     return bl_hash_value(bl_load32(p));
@@ -569,6 +585,23 @@ int boltlz_compress(const bp_uint8 *src, bp_uint32 src_len,
 #if BOLTLZ_PIPELINE
     prefix_valid = 0;
     value = hash = 0;
+#endif
+#if BOLTLZ_M68K_ASM
+    if (full) {
+        /* The assembly loop leaves only the final literals; ending pos at
+         * src_len skips the C loop below. */
+        bl68_state state;
+        state.src = src;
+        state.end = src + src_len;
+        state.out = dst + out;
+        state.table = table;
+        state.level = (bp_uint32)level;
+        state.anchor = src;
+        bl68_encode(&state);
+        out = (bp_uint32)(state.out - dst);
+        anchor = (bp_uint32)(state.anchor - src);
+        pos = src_len;
+    }
 #endif
     while (src_len - pos >= 4) {
 #if BOLTLZ_PIPELINE

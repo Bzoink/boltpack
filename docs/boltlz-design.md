@@ -40,6 +40,33 @@ slower and are disabled. The selected speed changes preserve encoded bytes.
 GCC/Clang builds use `-O2`. Guarded intrinsics have portable fallbacks, and
 memory-limited builds can exclude the encoder using `BOLTLZ_DECODE_ONLY`.
 
+## Motorola 68000 family
+
+The 68000 has no 32-bit multiply and traps on word or long access at an
+odd address, so on m68k compilers `BOLTLZ_M68K` (automatic) replaces the
+`memcpy` loads with aligned or byte-assembled loads, hashes with one 16x16
+`MULU.W`, compares match lengths a long at a time when both sides share
+parity, hashes each position once and selects the exact-copy decoder. The
+hash differs from other CPUs, so m68k output differs slightly (up to 0.25%
+larger); the format is unchanged. Other CPUs compile to the same code.
+
+`BOLTLZ_M68K_ASM=1` (`make atari amiga macos9-68k BOLTLZ_M68K_ASM=1`) adds
+[boltlz_m68k.S](../src/core/boltlz_m68k.S), the BALANCED and FAST encoder
+loop in 68000 assembly with byte-identical output to the C loop. A
+`-m68020` or later build also uses unaligned long access there. It is off by
+default. Measured in Hatari (emulated time, compression only):
+
+| CPU, build | Default level | Fast level |
+| --- | --- | --- |
+| 68000 8 MHz, assembly vs C | 1.9-2.0x faster | 1.2-1.5x faster |
+| 68030 32 MHz (TT), 68000 assembly vs C | 1.7x | 1.1x |
+| 68030 32 MHz (TT), 68020+ assembly vs 68000 C | 2.0x | 1.3x |
+
+`make atari-hatari-boltlz-asm-test HATARI_TOS=... [EMUTOS_ROM=...]` checks
+that the assembly output is identical to the C output over generated inputs
+(sizes 0 to 256 KiB, odd addresses, both levels), on TOS and, with EmuTOS,
+for 68030 builds on a TT. Decoding is still C.
+
 ## Evaluation
 
 Use the [benchmark driver](../test/bench_boltlz.py) to compare BoltLZ with
