@@ -11,6 +11,7 @@ int main(void)
     size_t n;
     long result;
     long guest_log;
+    long guest_input;
     int index = 0;
     char log_name[32];
     char executable[128];
@@ -40,7 +41,12 @@ int main(void)
             Fforce(2, (short)guest_log) < 0) return 2;
         Fwrite((short)guest_log, (long)n, line);
         Fwrite((short)guest_log, 2L, "\r\n");
+        /* An empty C:\NOINPUT.TXT, when present, is the command's standard
+         * input, so a command that would ask for media fails instead. */
+        guest_input = Fopen("C:\\NOINPUT.TXT", 0);
+        if (guest_input >= 0) Fforce(0, (short)guest_input);
         result = Pexec(0, executable, tail, 0L);
+        if (guest_input >= 0) Fclose((short)guest_input);
         Fclose((short)guest_log);
         fprintf(output, "%ld\n", result);
         fflush(output);
