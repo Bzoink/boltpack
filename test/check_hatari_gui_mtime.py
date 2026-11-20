@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 
+import bp_archive_bytes
+
 ROOT = Path(__file__).resolve().parent.parent
 MTIME_2040 = 2208988800
 PAYLOAD = b"Atari GEM must retain verified bytes when the archived time is out of range.\n"
@@ -22,21 +24,8 @@ def run(command, cwd, env=None, timeout=30):
 
 def archived_mtimes(path):
     data = Path(path).read_bytes()
-    table_offset, table_size = struct.unpack_from("<QQ", data, len(data) - 20)
-    count = struct.unpack_from("<I", data, table_offset + 4)[0]
-    record = table_offset + 16
-    result = {}
-    for _ in range(count):
-        name_len = struct.unpack_from("<H", data, record)[0]
-        name = data[record + 2:record + 2 + name_len].decode("utf-8")
-        fields = record + 2 + name_len
-        mtime = struct.unpack_from("<Q", data, fields + 18)[0]
-        flags = struct.unpack_from("<H", data, fields + 41)[0]
-        result[name] = (mtime, flags)
-        record = fields + 43
-    if record != table_offset + table_size:
-        raise RuntimeError("archive table length did not match its entry records")
-    return result
+    return {r["name"]: (r["mtime"], r["flags"])
+            for r in bp_archive_bytes.records(data)}
 
 
 def main():

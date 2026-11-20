@@ -88,9 +88,9 @@ To split an archive over diskettes, CDs or other media (Linux CLI):
 Sizes use K, M, G (x1000) or Ki, Mi, Gi (x1024); `--pause` asks for new media
 before each volume. Every full CLI except the GUIs takes the same options,
 as do the 16-bit DOS, Win16 and Linux mini CLIs (`bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS`
-on an 8086). Archive format 7 is written by every CLI and by the Linux and Windows FLTK GUIs
-(a volume set must be read with the CLI); the other GUIs cannot read it
-yet (see [docs/format.md](docs/format.md)).
+on an 8086). Archive format 7 is written by every CLI and every GUI; the GUIs read one volume
+at a time, so a volume set must be read with a CLI (see
+[docs/format.md](docs/format.md)).
 
 Run `boltpack help` for the full command list, or `boltpack help advanced` for
 expert tuning switches.

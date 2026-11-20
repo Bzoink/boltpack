@@ -635,12 +635,24 @@ static void v7_detect_creator(bp_archive_t *ar)
     ar->creator_os = BP_OS_OPENBSD;
 #elif defined(__APPLE__)
     ar->creator_os = BP_OS_MACOS;
+#elif defined(__amigaos__) || defined(AMIGA)
+    ar->creator_os = BP_OS_AMIGA;
+#elif defined(__atarist__)
+    ar->creator_os = BP_OS_ATARI;
+#elif defined(__PLAN9__)
+    ar->creator_os = BP_OS_PLAN9;
 #endif
 #endif
 #ifdef BP_CREATOR_CPU
     ar->creator_cpu = BP_CREATOR_CPU;
 #else
-#if defined(__x86_64__) || defined(_M_X64) || defined(__amd64__)
+#if defined(PLAN9_CPU_X86_64)
+    ar->creator_cpu = BP_CPU_X86_64;
+#elif defined(PLAN9_CPU_X86)
+    ar->creator_cpu = BP_CPU_X86;
+#elif defined(PLAN9_CPU_ARM32)
+    ar->creator_cpu = BP_CPU_ARM32;
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__amd64__)
     ar->creator_cpu = BP_CPU_X86_64;
 #elif defined(__i386__) || defined(_M_IX86)
     ar->creator_cpu = BP_CPU_X86;

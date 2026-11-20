@@ -1735,7 +1735,7 @@ haiku-host-stage-test: modern
 haiku-gui-extract-host-test:
 	mkdir -p build/haiku-gui-extract-test
 	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
-	    -Isrc/core -c src/core/archiver.c -o build/haiku-gui-extract-test/archiver.o
+	    -Isrc/core -c src/core/archiver7.c -o build/haiku-gui-extract-test/archiver.o
 	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
 	    -Isrc/core -c src/core/compress.c -o build/haiku-gui-extract-test/compress.o
 	$(CC) -ansi -pedantic -D_DEFAULT_SOURCE -ffunction-sections -fdata-sections \
@@ -2658,7 +2658,7 @@ usable-roundtrip-test: modern usable-roundtrip-unit-test
 GUI_COMMON     = src/frontend/gui_common
 
 # Core source list shared by all GUI builds
-GUI_CORE_SRCS  = $(COREDIR)/archiver.c \
+GUI_CORE_SRCS  = $(COREDIR)/archiver7.c \
                  $(COREDIR)/compress.c \
                  $(COREDIR)/boltlite.c \
                  $(COREDIR)/fluff.c \
@@ -3419,7 +3419,7 @@ haiku-gui:
 	set -e
 	mkdir -p $(HAIKU_GUI_BUILDDIR)
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
-	    -c $(COREDIR)/archiver.c -o $(HAIKU_GUI_BUILDDIR)/archiver.o
+	    -c $(COREDIR)/archiver7.c -o $(HAIKU_GUI_BUILDDIR)/archiver.o
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/compress.c -o $(HAIKU_GUI_BUILDDIR)/compress.o
 	x86_64-unknown-haiku-gcc $(GUI_CORE_FLAGS) \

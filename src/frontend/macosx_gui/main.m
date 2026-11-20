@@ -121,7 +121,7 @@ static const char *bp_strerror_local(int code)
     case BP_ERR_IO:                 return "I/O error";
     case BP_ERR_NOMEM:              return "out of memory";
     case BP_ERR_MAGIC:              return "not a BoltPack archive";
-    case BP_ERR_VERSION:            return "unsupported archive version";
+    case BP_ERR_VERSION:            return "unsupported archive version (this build reads archive format 7)";
     case BP_ERR_CHECKSUM:           return "checksum mismatch";
     case BP_ERR_CORRUPT:            return "archive is corrupt";
     case BP_ERR_TRUNCATED:          return "unexpected end of file";
@@ -133,6 +133,7 @@ static const char *bp_strerror_local(int code)
     case BP_ERR_PARTIAL:             return "some files or attributes were not restored";
     case BP_ERR_NOT_FOUND:          return "entry not found";
     case BP_ERR_INVALID_ARG:        return "invalid argument";
+    case BP_ERR_VOLUME:       return "this archive is split over several volumes; use the command-line tool to read it";
     default:                        return "unknown error";
     }
 }

@@ -64,8 +64,8 @@ def main():
         raise RuntimeError("Linux rejected its Unicode fixture: " + str(out))
     info = run([str(linux), "i", str(archive)], out)
     (out / "linux-info.log").write_text(info.stdout, encoding="utf-8")
-    if "Format version: 6" not in info.stdout:
-        raise RuntimeError("fixture is not a format-6 archive: " + str(out))
+    if "Format version: 7" not in info.stdout:
+        raise RuntimeError("fixture is not a format-7 archive: " + str(out))
 
     shutil.copy2(gui, host / "BOLTPACK.PRG")
     destination = host / "OUT"

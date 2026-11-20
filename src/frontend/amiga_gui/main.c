@@ -308,7 +308,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_IO:                return "I/O error";
     case BP_ERR_NOMEM:             return "out of memory";
     case BP_ERR_MAGIC:             return "not a BoltPack archive (bad magic)";
-    case BP_ERR_VERSION:           return "unsupported archive version";
+    case BP_ERR_VERSION:           return "unsupported archive version (this build reads archive format 7)";
     case BP_ERR_CHECKSUM:          return "checksum mismatch";
     case BP_ERR_CORRUPT:           return "archive is corrupt";
     case BP_ERR_TRUNCATED:         return "unexpected end of file";
@@ -320,6 +320,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_VOLUME:      return "this archive is split over several volumes; use the command-line tool to read it";
     default:                       return "unknown error";
     }
 }
@@ -2875,9 +2876,17 @@ int main(void)
     UWORD window_height;
     UWORD content_height;
     UWORD fixed_height;
+    struct DateStamp startup_time;
 
     init_log();
     log_message("BoltPack Amiga GUI startup begin");
+
+    /* set IDs of new archives need something that differs between runs;
+     * the core cannot use time() under libnix (see archiver7.c) */
+    DateStamp(&startup_time);
+    bp_archive_add_entropy((bp_uint32)startup_time.ds_Days);
+    bp_archive_add_entropy((bp_uint32)startup_time.ds_Minute * 3000UL +
+                           (bp_uint32)startup_time.ds_Tick);
 
     /* Open libraries */
     GadToolsBase = OpenLibrary((STRPTR)"gadtools.library", 37);

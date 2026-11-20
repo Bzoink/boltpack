@@ -469,7 +469,7 @@ def main():
 
     info = run([str(linux), "i", str(archive)], out)
     (out / "linux-info.log").write_text(info.stdout, encoding="utf-8")
-    for required in ("Format version: 6", "Creator OS:     Atari ST",
+    for required in ("Format version: 7", "Creator OS:     Atari ST",
                      "Creator CPU:    Motorola 68k"):
         if required not in info.stdout:
             raise RuntimeError("unexpected creator/format info; evidence: " + str(out))
