@@ -18,6 +18,8 @@
  *   long vol_hook_read(bp_vol_stream_t s, void *buf, unsigned n)
  *   void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
  *   int  vol_hook_getline(char *buf, int size)   read an answer; 0 at EOF
+ * With stdio streams, vol_hook_getline reads standard input with fgets unless
+ * the includer defines BP_VOL_OWN_GETLINE and supplies its own.
  * The includer provides, before including this header:
  *   bp_io_from_file(bp_io_t *, FILE *)        its stdio stream adapter
  *                                             (with stdio streams)
@@ -89,10 +91,12 @@ static void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
     bp_io_from_file(io, s);
 }
 
+#ifndef BP_VOL_OWN_GETLINE
 static int vol_hook_getline(char *buf, int size)
 {
     return fgets(buf, size, stdin) != NULL;
 }
+#endif
 #endif
 
 /* printf precisions that keep every message inside its buffer */

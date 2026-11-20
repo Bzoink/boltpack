@@ -356,6 +356,15 @@ void bp_archive_add_entropy(bp_uint32 value)
     g_v7_entropy = bp_crc32(g_v7_entropy ^ 0x5A17C0DEUL, b, 8);
 }
 
+/* libnix's time() links its time-zone and locale startup code, which opens
+ * locale.library and stops every program on AmigaOS 2.04; the Amiga frontend
+ * feeds bp_archive_add_entropy() the DateStamp instead. */
+#if defined(__AMIGA__) && defined(__libnix__)
+#define V7_TIME() 0UL
+#else
+#define V7_TIME() ((unsigned long)time(NULL))
+#endif
+
 /* A new set ID in *id.  The stack address goes through a volatile: the
  * RISC OS GCC 4.7 otherwise turns its low byte into a move from sp and
  * stops with an internal compiler error. */
@@ -363,7 +372,7 @@ static void v7_new_set_id(const void *salt, bp_uint64 *id)
 {
     bp_uint8 b[32];
     volatile unsigned long stack_addr = (unsigned long)(size_t)&b;
-    unsigned long t = (unsigned long)time(NULL);
+    unsigned long t = V7_TIME();
     unsigned long c = (unsigned long)clock();
     unsigned long a = (unsigned long)(size_t)salt;
     unsigned long s = stack_addr;
