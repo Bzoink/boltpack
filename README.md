@@ -78,6 +78,17 @@ make modern
 ./build/linux/boltpack c -F archive.bolt myfiles/
 ```
 
+To split an archive over diskettes, CDs or other media (Linux CLI):
+
+```sh
+./build/linux/boltpack c -v 1.44M backup.bolt myfiles/   # backup.000 ... backup.bolt
+./build/linux/boltpack x backup.bolt                     # asks for missing volumes
+```
+
+Sizes use K, M, G (x1000) or Ki, Mi, Gi (x1024); `--pause` asks for new media
+before each volume. The Linux CLI writes archive format 7, which the other
+frontends cannot read yet (see [docs/format.md](docs/format.md)).
+
 Run `boltpack help` for the full command list, or `boltpack help advanced` for
 expert tuning switches.
 
@@ -150,7 +161,8 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | File                                                   | Purpose                                                   |
 | ------------------------------------------------------ | --------------------------------------------------------- |
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
-| [docs/specification-1.0.md](docs/specification-1.0.md) | Normative archive and codec rules                         |
+| [docs/specification-2.0.md](docs/specification-2.0.md) | Archive format 7 (volume sets): Linux family              |
+| [docs/specification-1.0.md](docs/specification-1.0.md) | Archive format 6: other frontends                         |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
 | [docs/algorithms.md](docs/algorithms.md)               | BoltLite, BoltLZ, and Fluff implementation details            |
 | [docs/portability.md](docs/portability.md)             | Supported platforms, C89 constraints, and toolchain notes |

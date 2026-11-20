@@ -76,7 +76,15 @@ WIN32_BUILDDIR = build/win32
 WIN64_BUILDDIR = build/win64
 TOTALCMD_PLUGIN_README = packaging/totalcmd-plugin/README.txt
 
-CORE_OBJS  = $(BUILDDIR)/core/archiver.o \
+# Frontends built from src/frontend/linux/main.c (the Linux CLI and the POSIX
+# wrappers that include it) use the archive format 7 core, archiver7.c, which
+# writes volume sets.  Every other frontend still builds archiver.c, the
+# format 6 core, until it is moved over.
+FORMAT7_FRONTENDS = linux aix illumos irix freebsd netbsd tru64 hpux hurd \
+                    zos nextstep openbsd qnx solaris sco
+CORE_ARCHIVER = $(if $(filter $(FRONTEND),$(FORMAT7_FRONTENDS)),archiver7,archiver)
+
+CORE_OBJS  = $(BUILDDIR)/core/$(CORE_ARCHIVER).o \
 			 $(BUILDDIR)/core/fluff.o \
 			 $(FAST_FLUFF_CORE_OBJ) \
              $(BUILDDIR)/core/compress.o \
@@ -184,14 +192,14 @@ $(POSIX_DIRFD_HOST_DIR)/%/boltpack: Makefile src/frontend/%/main.c src/frontend/
 	    src/frontend/common/target_legacy_preflight.h \
 	    src/frontend/common/x68000_target_name.h src/frontend/common/target_utf8_preflight.h \
 	    src/frontend/posix/extract_paths.h \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 	mkdir -p $(@D)
 	$(CC) -U__linux__ $(if $(filter aix,$*),-D_AIX73,$(if $(filter zos,$*),,-DBP_POSIX_USE_DIRFD_EXTRACTION=1)) \
 	    -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c \
 	    src/frontend/$*/main.c $(BOLTLZDIR)/boltlz.c -o $@
 
@@ -274,6 +282,9 @@ $(BUILDDIR)/core/bp_codepage.o: $(COREDIR)/bp_sjis_table.h
 $(BUILDDIR)/core/archiver.o: $(COREDIR)/archiver.c $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
 	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) -I$(COREDIR) -c -o $@ $<
 
+$(BUILDDIR)/core/archiver7.o: $(COREDIR)/archiver7.c $(COREDIR)/archiver.h $(COREDIR)/bp_types.h $(BUILDDIR)/.version $(BUILDDIR)/.config | $(BUILDDIR)/core
+	$(CC) $(CFLAGS) $(FAST_FLUFF_CPPFLAGS) $(FAST_FLUFF_LDFLAGS) -I$(COREDIR) -c -o $@ $<
+
 # fluff.c is the hot decompression path: compile with -O3 and (on native
 # linux/x86-64 builds) -march=native so the compiler can exploit CMOV,
 # BMI2, and better instruction scheduling.  The source remains strict C89.
@@ -305,7 +316,9 @@ $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 	                          src/frontend/common/target_auto.h \
 	                          src/frontend/common/target_legacy_preflight.h \
 	                          src/frontend/common/x68000_target_name.h \
-	                          src/frontend/common/target_utf8_preflight.h
+	                          src/frontend/common/target_utf8_preflight.h \
+	                          src/frontend/common/volume_size.h \
+	                          src/frontend/posix/volume_files.h
 
 # boltlz vendored codec: compiled with warnings suppressed (lib code, strict
 # C89 port kept in src/core; the C89 port already suppresses the fallthrough
@@ -350,7 +363,7 @@ install-debug-tools:
 # 32-bit builds on 64-bit systems use -m32, which forces 32-bit Tier 3.
 tier3:
 	mkdir -p build/linux-tier3/core build/linux-tier3/frontend build/linux-tier3/boltlz build/linux
-	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/archiver.o $(COREDIR)/archiver.c
+	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/archiver.o $(COREDIR)/archiver7.c
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/fluff.o $(COREDIR)/fluff.c
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/compress.o $(COREDIR)/compress.c
 	$(CC) $(CFLAGS) -m32 -I$(COREDIR) -c -o build/linux-tier3/core/boltlite.o $(COREDIR)/boltlite.c
@@ -368,7 +381,7 @@ tier3:
 # 64-bit builds use the system's native word size and ULONG_MAX > 0xFFFFFFFFUL.
 tier4:
 	mkdir -p build/linux-tier4/core build/linux-tier4/frontend build/linux-tier4/boltlz build/linux
-	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/archiver.o $(COREDIR)/archiver.c
+	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/archiver.o $(COREDIR)/archiver7.c
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/fluff.o $(COREDIR)/fluff.c
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/compress.o $(COREDIR)/compress.c
 	$(CC) $(CFLAGS) -I$(COREDIR) -c -o build/linux-tier4/core/boltlite.o $(COREDIR)/boltlite.c
@@ -731,7 +744,7 @@ wasm:
 	mkdir -p $(WASM_BUILDDIR)
 	$(WASM_CC) $(WASM_CFLAGS) \
 		-I$(COREDIR) -I$(BOLTLZDIR) \
-		$(COREDIR)/archiver.c \
+		$(COREDIR)/archiver7.c \
 		$(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 		$(COREDIR)/fluff.c \
@@ -1180,7 +1193,7 @@ arm:
 	mkdir -p $(ARM_BUILDDIR)
 	$(ARM_CC) $(ARM_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1213,7 +1226,7 @@ ARM64_CORE_OBJS = \
 arm64:
 	mkdir -p $(ARM64_BUILDDIR)
 	$(ARM64_CC) $(ARM64_CFLAGS) $(ARM64_FAST_FLUFF_CPPFLAGS) $(ARM64_FAST_FLUFF_LDFLAGS) \
-	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/archiver.c \
+	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/archiver7.c \
 	    -o $(ARM64_BUILDDIR)/archiver.o
 	$(ARM64_CC) $(ARM64_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) -c $(COREDIR)/compress.c \
@@ -1314,7 +1327,7 @@ freebsd:
 	mkdir -p $(FREEBSD_BUILDDIR)
 	$(FREEBSD_CC) $(FREEBSD_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1335,7 +1348,7 @@ netbsd:
 	mkdir -p $(NETBSD_BUILDDIR)
 	$(NETBSD_CC) $(NETBSD_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1357,7 +1370,7 @@ riscv:
 	mkdir -p $(RISCV_BUILDDIR)
 	$(RISCV_CC) $(RISCV_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1377,7 +1390,7 @@ musl:
 	mkdir -p $(MUSL_BUILDDIR)
 	$(MUSL_CC) $(MUSL_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1398,7 +1411,7 @@ illumos:
 	mkdir -p $(ILLUMOS_BUILDDIR)
 	$(ILLUMOS_CC) $(ILLUMOS_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1419,7 +1432,7 @@ e2k:
 	mkdir -p $(E2K_BUILDDIR)
 	$(E2K_CC) $(E2K_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/bp_codepage.c \
@@ -1795,7 +1808,7 @@ hurd:
 	esac
 	$(HURD_CC) $(HURD_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -2114,7 +2127,12 @@ os2-publish-host-test:
 
 # Compile the full DOS adapter when its DJGPP toolchain is available. Runtime
 # coverage remains in the separate DOSBox interoperability target.
-test: modern unit-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test boltlz-m68k-c68-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
+# Multi-volume archives (archive format 7) through the Linux CLI.
+.PHONY: volume-test
+volume-test: modern
+	python3 test/check_volumes.py --boltpack build/linux/boltpack
+
+test: modern unit-test volume-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test boltlz-m68k-c68-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="
@@ -3436,6 +3454,7 @@ unit-test: $(UNIT_BUILD_DIR)/test_checksum \
            $(UNIT_BUILD_DIR)/test_mini_cp437 \
            $(UNIT_BUILD_DIR)/test_mini_cp850 \
            $(UNIT_BUILD_DIR)/test_archive_format \
+           $(UNIT_BUILD_DIR)/test_archive7 \
            $(UNIT_BUILD_DIR)/mini_test_compress \
            $(BOLTLZ_BUILD_DIR)/test_boltlz
 	@ok=1; \
@@ -3450,6 +3469,7 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
                 $(UNIT_BUILD_DIR)/test_compress_asan \
                 $(UNIT_BUILD_DIR)/test_codepage_asan \
                 $(UNIT_BUILD_DIR)/test_archive_format_asan \
+                $(UNIT_BUILD_DIR)/test_archive7_asan \
                 $(UNIT_BUILD_DIR)/mini_test_compress_asan \
                 $(BOLTLZ_BUILD_DIR)/test_boltlz_asan
 	@ok=1; \
@@ -3541,6 +3561,19 @@ $(UNIT_BUILD_DIR)/test_mini_cp850: $(UNIT_TEST_DIR)/test_mini_codepage.c \
     $(COREDIR)/bp_codepage.c $(COREDIR)/bp_codepage.h | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_CFLAGS) -DBP_MINI -DBP_CREATOR_OS=BP_OS_OS2 -o $@ \
 	    $(UNIT_TEST_DIR)/test_mini_codepage.c $(COREDIR)/bp_codepage.c
+
+# --- test_archive7: archive format 7 (volume sets), archiver7.c ---
+ARCHIVE7_TEST_SRCS = $(UNIT_TEST_DIR)/test_archive7.c $(COREDIR)/archiver7.c \
+    $(COREDIR)/compress.c $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+    $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+
+$(UNIT_BUILD_DIR)/test_archive7: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
+    $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_CFLAGS) -O2 -o $@ $(ARCHIVE7_TEST_SRCS)
+
+$(UNIT_BUILD_DIR)/test_archive7_asan: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
+    $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ $(ARCHIVE7_TEST_SRCS)
 
 # --- test_archive_format ---
 ARCHIVE_TEST_HEADERS = $(COREDIR)/archiver.h $(COREDIR)/bp_types.h \

@@ -1,0 +1,1818 @@
+# BoltPack Specification v2.0
+
+**Format Version:** 7 (only)
+**Software Version:** next release (Linux CLI family)
+**Status:** Draft; implemented by `src/core/archiver7.c`
+**Last updated:** 2026-11-20
+
+> **Archive format 7.** Every archive is a *volume set*: one or more volume
+> files that each carry a header naming the set and their place in it. A
+> single-file archive is a set of one volume. Writers emit archive data
+> strictly in order and never return to an earlier volume, so a set can be
+> written straight onto removable media one disk after another. The file
+> table and the end record are always in the last volume.
+> Readers accept only version 7 and reject every other archive version,
+> including format 6, with `BP_ERR_VERSION`. The codec representations
+> (methods 0–3) are unchanged from format 6.
+
+## 1. Introduction
+
+BoltPack is a portable file archiver designed for maximum compatibility across vintage and modern computer systems — from IBM PC/DOS to contemporary Linux, Windows, and embedded platforms.
+
+This specification defines the binary archive format (`.bolt` / `.blt` files and their numbered companion volumes), the mandatory decompression methods, and conformance requirements for any BoltPack implementation.
+
+### 1.1 Scope
+
+This document covers:
+
+- **Archive format:** volume sets, volume headers and trailers, entry records, file table, end record
+- **Compression methods:** method definitions, block structure, encoding/decoding rules
+- **Decompression:** mandatory algorithms, decoder specifications
+- **Data integrity:** checksums, error detection, recovery
+- **Portability:** byte order, character encoding, platform-independent data representation
+- **Conformance:** requirements for readers, writers, and tools
+
+Topics **not** covered here (see separate documentation):
+
+- **Encoding strategies:** match finding algorithms, Huffman tree generation (implementation detail)
+- **Performance tuning:** optimization techniques, memory trade-offs
+- **CLI interface:** command syntax, option formats, media-change prompts (platform-specific)
+- **GUI/IDE integration:** Total Commander support, shell extensions
+
+### 1.2 Normative References
+
+- ANSI C89 / ISO C90 (the portable implementation baseline; wire field widths
+  are defined explicitly by this specification)
+- RFC 1962 — The PPP Compression Control Protocol (LZW reference)
+- RFC 1950 — ZLIB Compressed Data Format (Huffman coding patterns)
+- BoltLZ format 2, defined in §3.3 (method 2)
+
+### 1.3 Terminology
+
+- **Archive / volume set:** the complete archive, stored as one or more volume files
+- **Volume:** one file of a volume set. Volumes are numbered from 0.
+- **Last volume:** the volume with the highest number; it holds the end record
+  and carries the archive's own name (`.bolt` / `.blt`)
+- **Single-volume archive:** a volume set with exactly one volume
+- **Set ID:** a 64-bit value shared by every volume of one set and by no other set
+- **Body:** the bytes of a volume between its volume header and its volume trailer
+- **Structure:** an entry header, a block, an entry trailer, the table header,
+  a table record, or the end record. Structures are never split between volumes.
+- **Entry:** a single file, symlink, directory, or supplementary record in an archive
+- **Block:** a variable-length chunk of compressed data with its 12-byte header
+- **Payload:** the uncompressed content of an entry or block
+- **Metadata:** modification time, permissions, platform origin (stored in entry headers)
+- **Location:** a (volume number, byte offset within that volume file) pair
+- **Little-endian:** least-significant byte first (all multi-byte integers in this format)
+- **UTF-8:** Unicode text encoding (all file names and paths in archives)
+
+### 1.4 Changes from format 6 (informative)
+
+Format 6 placed a 32-byte header holding the entry count, archive size and
+table CRC at the start of the file, and stored each entry's compressed size
+and checksum in its entry header. A writer could only fill those in by going
+back over data it had already written, which is impossible once an earlier
+disk has been removed. Format 7 therefore:
+
+1. Replaces the archive header with a 32-byte **volume header** at the start of
+   every volume, identifying the set, the volume number, and the creator.
+2. Moves everything that is known only after writing to later structures: an
+   **entry trailer** after each entry's blocks (compressed size and checksum),
+   and an **end record** in the last volume (table location, table CRC, entry
+   and volume counts).
+3. Ends every volume with a 32-byte **volume trailer** recording its own size
+   and whether it is the last volume.
+4. Stores every non-empty payload as blocks; the format 6 single-blob layout
+   (`block_size == 0`) and raw symlink payloads are removed, so payloads are
+   self-delimiting.
+5. Gives the entry header its own CRC-32 and drops the `compressed_size` and
+   `checksum` fields from it.
+6. Addresses entries by location (volume number plus offset) in the file table.
+7. Requires that no structure is split between volumes, and lets a writer
+   fill the end of a volume with a shorter block (an *end-of-volume block*),
+   so the block size does not have to shrink to suit small media.
+
+A single-volume archive costs 60 bytes more per archive than format 6
+(112 instead of 52 bytes of fixed overhead), 10 bytes more per entry (entry
+trailer and table location, less the fields removed from the entry header),
+and a further 12 bytes per symlink (its block header). The same
+layout is used for single- and multi-volume archives so that every reader and
+writer has one code path; a separate single-volume layout would save less than
+a hundred bytes per archive.
+
+---
+
+## 2. Archive Layer
+
+### 2.1 Volume Sets and Layout
+
+An archive is a sequence of volumes 0, 1, …, *n*−1 (1 ≤ *n* ≤ 1000). Each
+volume file has the same three parts:
+
+```text
+╔═══════════════╦═══════════════════════════════════════╦════════════════╗
+║ Volume header ║                 Body                  ║ Volume trailer ║
+║  (32 bytes)   ║   whole structures, in archive order  ║  (32 bytes)    ║
+╚═══════════════╩═══════════════════════════════════════╩════════════════╝
+```
+
+Concatenating the bodies of volumes 0 … *n*−1 in order gives the **archive
+stream**:
+
+```text
+Entry[0]: entry header, block, block, …, entry trailer
+Entry[1]: entry header, block, …, entry trailer
+…
+Entry[k−1]
+File table: table header, record[0], …, record[k−1]
+End record (48 bytes)
+```
+
+The end record is always the final structure of the last volume. A
+single-volume archive is the same layout with *n* = 1:
+
+```text
+volume header | entries | file table | end record | volume trailer
+```
+
+**Placement rule.** Each structure lies entirely within one volume body.
+When the next structure does not fit in the space left on the current
+volume, the writer ends that volume (writes its trailer) and continues in the
+body of the next volume, immediately after its header. There are no padding
+bytes: a body consists only of whole structures, back to back. Every body
+contains at least one structure.
+
+Consequently, when a reader has consumed a structure that ends exactly at the
+end of a volume's body, the next structure starts at offset 32 of the next
+volume. Otherwise it starts at the byte immediately after the previous one.
+An entry's blocks, and the records of a large file table, may therefore
+continue on later volumes, but a single block or record never does.
+
+Blocks are the one structure a writer can resize to fit: rather than moving
+a whole block to the next volume, it may end the current volume with a
+shorter block that covers only as much of the payload as fits, and continue
+the payload in the next volume (end-of-volume block, §2.3.2). Entry headers,
+entry trailers, table records and the end record are never shortened.
+
+A writer MAY end a volume before it is full (for example, to start the file
+table on a fresh last volume, see §9.2), but MUST NOT leave a body empty.
+
+**Volume size.** The size limit of a volume is chosen by the writer (for
+example, the capacity of a floppy disk) and is not recorded; every volume file
+records its own actual size in its trailer. Volumes of one set may differ in
+size. A writer creating a single-volume archive has no size limit.
+
+**Access patterns (informative).** Listing an archive needs only the last
+volume, plus earlier volumes only if the file table did not fit in the last
+one. Extracting needs the last volume (for the table) and then volumes 0,
+1, … in order. Writing visits volumes 0, 1, … in order exactly once.
+
+### 2.2 Volume Header (32 bytes)
+
+Every volume starts with this header.
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 4 | `magic` | u32 LE | `0x544C4F42` (bytes: `42 4F 4C 54` = "BOLT") |
+| 4 | 2 | `format_version` | u16 LE | `0x0007`; readers reject every other version |
+| 6 | 2 | `flags` | u16 LE | Reserved; MUST be `0x0000` |
+| 8 | 8 | `set_id` | u64 LE | Set ID, identical in every volume of the set; never zero |
+| 16 | 2 | `volume_number` | u16 LE | Number of this volume, 0 to 999 |
+| 18 | 1 | `creator_os` | u8 | Platform that created the archive (§6.1) |
+| 19 | 1 | `creator_cpu` | u8 | CPU architecture of the creator (§6.2) |
+| 20 | 2 | `creator_ver` | u8, u8 | BoltPack version (major, minor) at offsets 20 and 21 |
+| 22 | 6 | `reserved` | bytes | MUST be zero |
+| 28 | 4 | `header_crc` | u32 LE | CRC-32 of header bytes `[0, 28)` |
+
+The magic and version are at the same offsets as in format 6, so a format 6
+reader reports a format 7 volume as an unsupported version rather than as a
+foreign file.
+
+**Validation:**
+
+- `magic != 0x544C4F42` → `ERR_NOT_ARCHIVE`
+- `format_version != 7` → `BP_ERR_VERSION`
+- `header_crc` mismatch, nonzero `flags` or `reserved`, `set_id == 0`, or
+  `volume_number > 999` → `ERR_CORRUPT`
+- A volume whose `set_id` differs from the set being read, or whose
+  `volume_number` is not the one expected → `BP_ERR_VOLUME`. Interactive
+  readers SHOULD then ask for the right volume instead of failing (§5.4).
+
+**Set ID.** Writers MUST generate a new set ID for every archive they create
+and SHOULD make collisions between archives on the same media unlikely: mix a
+clock reading with as much resolution as the platform offers, a process or
+task identifier where one exists, and a per-run counter, then hash the result
+(for example with CRC-32 into each half). The value is not a security
+measure. Editing a single-volume archive in place (§9.5) keeps its set ID.
+
+**Creator fields** are informational and MUST be identical in every volume
+of a set.
+
+### 2.3 File Entries
+
+Entries are stored in the archive stream in table order. Each entry consists
+of an entry header, zero or more blocks, and an entry trailer. Each of these
+is a separate structure for the placement rule (§2.1).
+
+#### 2.3.1 Entry Header (variable size)
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 2 | `header_size` | u16 LE | Total entry header size in bytes, including `header_crc` |
+| 2 | 2 | `name_len` | u16 LE | Length of file name in bytes (no null terminator; 1 to 65501) |
+| 4 | N | `name` | bytes | File name (UTF-8, forward-slash separated; path is relative) |
+| 4+N | 8 | `original_size` | u64 LE | Uncompressed size in bytes |
+| 12+N | 1 | `method` | u8 | Compression method (0=stored, 1=BoltLite, 2=BoltLZ, 3=Fluff; 4 retired) |
+| 13+N | 1 | `checksum_type` | u8 | Checksum algorithm; MUST be 1 (CRC-32) |
+| 14+N | 4 | `block_size` | u32 LE | Maximum uncompressed block size |
+| 18+N | 1 | `entry_type` | u8 | Entry type (0=data, 1=rsrc, 2=metadata, 3=symlink, 4=dir) |
+| 19+N | 1 | `platform` | u8 | OS code or, for metadata only, namespace `0xFE` (portable) or `0xFD` (native attributes) |
+| 20+N | 8 | `mtime` | u64 LE | Modification time (unsigned Unix epoch seconds, UTC), when valid |
+| 28+N | 2 | `flags` | u16 LE | Entry flags (see below). Unknown bits MUST be accepted silently. |
+| 30+N | 4 | `header_crc` | u32 LE | CRC-32 of header bytes `[0, header_size − 4)` |
+
+Every field of the entry header is known before the entry's data is
+compressed. The compressed size and payload checksum, which are not, are in
+the entry trailer (§2.3.3).
+
+`method` is the codec used for the entry's compressed blocks. A block whose
+compressed and original sizes are equal is raw under any method (§2.3.2), so
+a writer that finds an entry incompressible does not need to change `method`
+after the fact.
+
+**Entry flags:**
+
+| Bit(s) | Constant | Description |
+| --- | --- | --- |
+| 15 | `BP_ENTRY_FLAG_MODE_VALID` | Bits 0–11 contain valid Unix permission bits |
+| 14 | `BP_ENTRY_FLAG_MTIME_VALID` | Modification time is known, including the Unix epoch |
+| 0–11 | `BP_ENTRY_FLAG_MODE_MASK` | Unix mode bits (`st_mode & 0x0FFF`) |
+| 12–13 | — | Reserved; writers MUST write zero; readers MUST accept any value |
+
+When bit 15 is set, bits 0–11 encode the 12-bit Unix permission+type-low field
+(`st_mode & 0x0FFF`). An extractor that supports POSIX permissions SHOULD apply
+`chmod(path, flags & 0x0FFF)` after writing the extracted file.
+
+When bit 14 is clear, `mtime` MUST be zero and extractors MUST leave the
+destination's modification time unchanged. When it is set, zero represents
+1970-01-01 00:00:00 UTC. Pre-1970 times cannot be represented by this unsigned
+field. Extractors MUST report times their destination API cannot represent.
+
+**Key constraints:**
+
+- `header_size` **MUST** equal `34 + name_len` in format 7. A future format
+  may add fields before `header_crc`; `header_crc` is always the last four
+  bytes of the header.
+- `header_crc` mismatch → `ERR_CORRUPT`.
+- `checksum_type` other than 1 → `ERR_CORRUPT`.
+- `name_len` MUST NOT be zero (empty names forbidden).
+- `name` MUST be valid UTF-8, without embedded NULs; readers MUST reject invalid sequences.
+- `name` MUST be a canonical relative path: no absolute or drive prefix,
+  backslashes, empty components, `.` components, or `..` components. Directory
+  entries MUST end in exactly one `/`; file and symlink entries MUST NOT.
+  Supplementary entries MUST use the exact subject spelling. Readers reject
+  noncanonical names before extraction or archive editing.
+- Primary entries (files, directories, and symbolic links) MUST have unique
+  UTF-8 names after removing trailing `/` bytes. Supplementary entries may
+  repeat the exact name of their subject as specified below.
+- `name_len > 65501` → entry is invalid: the fixed header plus name must fit in `u16`.
+- If `original_size > 0`, `block_size` MUST be in the range 1 to 16,777,216.
+  Writers use 8, 16, 32, 64 or 256 KiB. If `original_size == 0`, `block_size`
+  is not used; writers store zero and readers ignore it.
+- If `entry_type == 4` (directory), `original_size` MUST be zero.
+
+**Entry type details:**
+
+- **`0` (data):** Regular file or stream. Payload contains file content.
+- **`1` (rsrc):** Mac OS resource fork. Payload contains Classic Mac resource data. Ignore on non-Mac platforms.
+- **`2` (metadata):** Metadata entry. Payload is platform-specific, a portable envelope, or a native attribute container as defined below. Extractors report unsupported metadata.
+- **`3` (symlink):** Symbolic link. Payload contains the link target path (UTF-8, forward-slash separated, max 65535 bytes), stored in blocks like any other payload.
+- **`4` (directory):** Directory record. `original_size` MUST be zero, so the entry has no blocks. Platform-specific creation code applies (e.g., NTFS ACL, POSIX mode bits extracted from `mtime` / `flags`).
+
+#### 2.3.1.1 Portable metadata envelope
+
+The `platform` value `0xFE` is reserved for portable metadata and is not a
+creator OS. Its payload is an envelope of at most 256 uncompressed bytes:
+
+| Offset | Size | Field |
+| ------ | ---- | ----- |
+| 0 | 4 | ASCII `BPMT` |
+| 4 | 1 | Envelope version, currently `1` |
+| 5 | 1 | Subject entry type: `0` (file) or `4` (directory) |
+| 6 | 2 | Number of TLVs, little-endian |
+| 8 | variable | TLVs: kind `u16 LE`, value length `u16 LE`, then value bytes |
+
+Kind `1` is the FAT attribute record; its length is exactly two bytes: a
+validity mask followed by a value mask. Bits `0x01`, `0x02`, `0x04`, and
+`0x20` represent read-only, hidden, system, and archive respectively. Other
+bits in either mask and values outside the validity mask are invalid. The
+record is a singleton. An unknown, well-framed TLV may be skipped and must be
+reported as unsupported; truncated TLVs, duplicate FAT records, an incorrect
+count, trailing bytes, and bad checksums are corruption. Unknown envelope
+versions are unsupported rather than interpreted as version 1.
+
+For example, `42 50 4d 54 01 00 01 00 01 00 02 00 27 21` represents
+one file FAT record with all four attributes known, read-only and archive set.
+Portable metadata follows its subject or other supplementary entries for that
+subject, with the exact same archive name. It must not be applied unless that
+subject was successfully extracted. A subject has at most one portable
+envelope. When both native and portable values exist,
+native values for the matching platform take precedence per attribute; portable
+values are fallback for attributes not supplied by native metadata.
+
+#### 2.3.1.2 Native attribute container
+
+The `platform` value `0xFD` is reserved, like `0xFE`, as a `BP_TYPE_META`
+namespace rather than a creator OS. A metadata entry in this namespace carries
+named attribute values that exist only on the creating platform (the first user
+is macOS extended attributes). The format only recognises the container; the
+frontend of the origin platform interprets and restores the items. Every other
+reader skips it and reports it as unsupported metadata, and archive edits
+(add, delete, copy) preserve it, so an archive can pass through readers that do
+not understand it without losing the data. A reader that does not know the
+container treats it as it treats any unknown metadata platform.
+
+The payload is at most 65,536 bytes and uses little-endian integers:
+
+| Offset | Size | Field |
+| ------ | ---- | ----- |
+| 0 | 4 | ASCII `BPNA` |
+| 4 | 1 | Container version, currently `1` |
+| 5 | 1 | Origin platform, a creator OS code (macOS is `0x03`) |
+| 6 | 1 | Subject entry type: `0` (file) or `4` (directory) |
+| 7 | 1 | Reserved; writers store `0`, readers ignore it |
+| 8 | 2 | Item count, 0 to 64 |
+| 10 | variable | Items: name length `u16` (1 to 255), value length `u32` (0 to 32,768), name bytes, value bytes |
+
+Names are opaque byte strings without NUL bytes (UTF-8 on macOS) and are unique
+within a container. The entry follows its subject, and any resource fork, with
+the exact same archive name, and must not be applied unless that subject was
+extracted. A subject has at most one container per origin platform.
+
+A reader applies nothing from a container unless it validates in full. An
+unknown version is unsupported and is reported; bad magic, a count above 64, a
+truncated or oversized item, a NUL in a name, a duplicate name, an invalid
+subject type, or trailing bytes make the container malformed. The macOS reader
+reports a malformed or unsupported container, still extracts the subject, and
+counts the item as partial; it does not treat the container as archive
+corruption because the entry's own checksum has already been verified.
+
+The Linux writer uses origin platform `0x01`. It stores `user.*` attributes and
+the POSIX ACL attributes (`system.posix_acl_access`, `system.posix_acl_default`),
+and `security.*` and `trusted.*` only when asked; a Linux reader applies the
+`user.*` and ACL names by default and refuses the others unless asked. A Linux
+container also uses one reserved item, `boltpack.hardlink`, which is not an
+attribute (a real name always starts with a namespace and a dot): its value is the
+archive name of an earlier file entry that this file is a hard link to. The file's
+own data is still stored, so a reader that ignores the item has a complete copy.
+A reader recreates the link only to a regular file that it extracted with the same
+size and checksum.
+
+Writers do not store attributes that have their own entries or are managed by
+the system. The macOS writer omits `com.apple.ResourceFork` and
+`com.apple.FinderInfo` (carried by the resource fork and Classic Mac metadata
+entries) and `com.apple.system.*`, `com.apple.rootless`, `com.apple.macl` and
+`com.apple.provenance`; the macOS reader refuses to apply those names even if
+an archive contains them. Values over 32,768 bytes and attributes past the
+64-item or 64 KiB limit are not stored; the writer reports each one. Target
+profiles and Interchange Profile 1 do not carry the container.
+
+Applying attributes is a policy decision of the reading frontend, not of the
+format. The container makes no claim that a name or value means the same thing
+on another system, and extracting then repacking on a system that cannot hold
+the attributes loses them.
+
+#### 2.3.2 Compressed Data Layout
+
+The blocks of an entry follow its entry header in the archive stream. Every
+entry with `original_size > 0` is stored as one or more blocks; an entry with
+`original_size == 0` has none. There is no unblocked layout.
+
+Each block is one structure: a 12-byte block header followed by its data.
+
+| Offset | Size | Field             | Type   | Description                                             |
+| ------ | ---- | ----------------- | ------ | ------------------------------------------------------- |
+| 0      | 4    | `block_comp_size` | u32 LE | Size of this block's compressed data                    |
+| 4      | 4    | `block_orig_size` | u32 LE | Uncompressed size of this block (≤ `block_size`)        |
+| 8      | 4    | `block_crc`       | u32 LE | CRC-32 of `block_data` (the compressed bytes); see §4.1 |
+| 12     | M    | `block_data`      | bytes  | Compressed block data (M = `block_comp_size`)           |
+
+The `block_crc` field covers the compressed bytes **before** decompression. A
+reader MUST verify `block_crc` before decompressing; mismatch → `ERR_CHECKSUM`.
+
+**Semantics:**
+
+- A block is *full* when `block_orig_size == block_size`. Every block of an
+  entry MUST be full except:
+  - the entry's last block, which MAY be shorter; and
+  - an *end-of-volume block*: a block that is the last structure in its
+    volume body, which MAY be shorter; and
+  - a block that is the first structure in its volume body, which MAY be
+    shorter (the continuation of an end-of-volume block, see below).
+- A block shorter than `block_size` that is none of these → `ERR_CORRUPT`.
+- `block_orig_size > block_size` → `ERR_CORRUPT`.
+- `block_comp_size` and `block_orig_size` MUST be nonzero.
+- `block_comp_size == block_orig_size` means the block payload is stored raw.
+  Method 0 always uses raw blocks; methods 1–3 MAY also use raw blocks, for
+  example when a compression attempt fails the 99% threshold rule (§9.3) or
+  to fill the end of a volume.
+- `block_comp_size > block_orig_size` → `ERR_CORRUPT`.
+- Total uncompressed bytes from all blocks MUST equal `original_size`. A
+  reader reads blocks until exactly `original_size` bytes have been described;
+  a block that would exceed it → `ERR_CORRUPT`. The structure after the last
+  block is the entry trailer.
+- The sum of `12 + block_comp_size` over all blocks MUST equal the
+  `compressed_size` in the entry trailer and the file table.
+- Consecutive blocks of one entry MAY be in different volumes; each block is
+  whole (§2.1).
+
+**End-of-volume blocks.** When the next full block of an entry does not fit
+in the space left in the current volume, a writer MAY write a shorter block
+that does, covering the next part of the payload, and end the volume after
+it. The payload continues at the following byte in the first block of the
+next volume. That block MAY also be short: a writer can cut one block's worth
+of data into two pieces, one either side of the boundary, so that every block
+after it keeps its position and its already-compressed form (useful for
+writers that compress several blocks ahead, in parallel). A writer MAY
+instead make the continuing block full. A block that is both the first and
+the last structure of a volume body may be short for either reason.
+
+Block boundaries carry no meaning for the codecs: Stored, BoltLite and BoltLZ
+blocks are independent, and Fluff history (§3.4.3b) is kept by byte position
+in the entry, not by block number, while its repeat-distance ring (§3.4.8a)
+starts from zero in every block. Decoders therefore handle end-of-volume
+blocks with no special case. The cost of a volume boundary is at most one
+extra block, with its 12-byte header and, for Fluff, its own entropy tables;
+for the independent-block codecs (BoltLite, BoltLZ) the piece after the
+boundary also cannot refer back to the piece before it.
+
+Writers SHOULD write an end-of-volume block whenever at least 512 bytes of
+body space remain, and MAY end the volume without one when less remains.
+Because a raw block of `k` bytes needs exactly `k + 12` bytes, a writer can
+always fill the remaining space exactly with a raw block (informative: a
+writer usually first tries compressing a larger part of the payload, chosen
+from the compression ratio so far, and falls back to a smaller part or a raw
+block if the result does not fit. A writer that retries MUST restore any codec
+history, such as the Fluff window, to its state before the failed attempt).
+
+**Block size recommendations** (for implementers choosing a block size when creating archives):
+
+| System RAM | Suggested `block_size` | Rationale                                 |
+| ---------- | ---------------------- | ----------------------------------------- |
+| ≥ 16 MB    | 262,144 (256 KB)       | Maximize for modern hardware              |
+| 4–16 MB    | 65,536 (64 KB)         | Balance compression / speed               |
+| 1–4 MB     | 32,768 (32 KB)         | Backward-compatible default               |
+| 512 K–1 MB | 16,384 (16 KB)         | Reduced window for memory                 |
+| < 512 KB   | 8,192 (8 KB)           | Minimal overhead; suitable for DOS, Atari |
+
+The block size does not depend on the volume size: end-of-volume blocks
+let any block size fill any volume, so writers choose it by memory and
+compression needs as above, for multi-volume archives too.
+
+A reader MAY accept any block size within the limit above; it only needs to allocate `block_size + codec_overhead` working memory per block.
+
+#### 2.3.3 Entry Trailer (16 bytes)
+
+The entry trailer is the structure immediately after an entry's last block,
+or immediately after its entry header if it has no blocks.
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 8 | `compressed_size` | u64 LE | Sum of `12 + block_comp_size` over the entry's blocks; zero if none |
+| 8 | 4 | `checksum` | u32 LE | CRC-32 of the uncompressed payload (§4.1); zero for an empty payload |
+| 12 | 4 | `trailer_crc` | u32 LE | CRC-32 of trailer bytes `[0, 12)` |
+
+**Validation:** `trailer_crc` mismatch, or a `compressed_size` that differs
+from the bytes actually read → `ERR_CORRUPT`. A payload whose computed CRC-32
+differs from `checksum` → `ERR_CHECKSUM`.
+
+### 2.4 Volume Trailer (32 bytes)
+
+Every volume ends with this trailer: it occupies the last 32 bytes of the
+volume file and immediately follows the body.
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 8 | `set_id` | u64 LE | Same as the volume header |
+| 8 | 2 | `volume_number` | u16 LE | Same as the volume header |
+| 10 | 2 | `flags` | u16 LE | Bit 0 (`BP_VOLUME_LAST`): this is the last volume. Bits 1–15 reserved, MUST be zero |
+| 12 | 4 | `reserved` | u32 LE | MUST be zero |
+| 16 | 8 | `volume_size` | u64 LE | Size of this volume file in bytes, header and trailer included |
+| 24 | 4 | `trailer_crc` | u32 LE | CRC-32 of trailer bytes `[0, 24)` |
+| 28 | 4 | `magic` | u32 LE | `0x4C4F5642` (bytes: `42 56 4F 4C` = "BVOL") |
+
+The body of a volume is the byte range `[32, volume_size − 32)`. It MUST NOT
+be empty.
+
+**Validation:**
+
+- `magic` or `trailer_crc` mismatch, nonzero reserved bits or fields → `ERR_CORRUPT`
+- `set_id` or `volume_number` different from the volume header → `ERR_CORRUPT`
+- `volume_size` different from the actual file size → `ERR_TRUNCATED`
+- `BP_VOLUME_LAST` set on a volume whose number is not `volume_count − 1`
+  from the end record, or clear on the volume that is → `ERR_CORRUPT`
+
+The trailer lets a reader recognise a truncated or damaged volume, and the
+last volume, as soon as it opens the file, without parsing the body.
+
+### 2.5 Volume Naming
+
+The last volume carries the archive's own name, normally with the extension
+`.bolt` (or `.blt` where extensions are limited to three characters). Every
+other volume has the same name with the extension replaced by its volume
+number as three decimal digits:
+
+| Set of 1 volume | Set of 4 volumes |
+| --- | --- |
+| `backup.bolt` | `backup.000`, `backup.001`, `backup.002`, `backup.bolt` |
+
+If the archive name has no extension, the three digits are appended as one.
+On platforms whose extension separator is not `.` (for example `/` on RISC
+OS and `_` on the Sinclair QL), the platform's separator is used.
+
+A writer does not know which volume will be the last until the archive is
+finished. It names each volume by its number while writing it and renames
+the last one to the archive name when the end record has been written.
+
+Volume names are a convention for finding files; the headers and trailers,
+not the names, identify a volume. A reader given any one volume SHOULD find
+the others from its name: the numbered volumes by replacing the extension,
+and the last volume by trying `.bolt` and then `.blt`. When a volume is not
+where the name says, an interactive reader SHOULD ask the user to insert or
+locate it (§5.4).
+
+## 3. Compression Methods
+
+### 3.1 Method 0: Stored (Uncompressed)
+
+**ID:** `0`
+**Decoder complexity:** Trivial (byte copy)
+
+For data that does not compress well, method 0 stores payload verbatim:
+
+- `block_comp_size == block_orig_size`
+- Decompress by reading exactly `block_comp_size` bytes.
+
+**Use case:** Already-compressed data (JPEG, PNG, ZIP, executable binaries); rarely saves space after compression attempt.
+
+### 3.2 Method 1: BoltLite (LZ77 Sliding Window)
+
+**ID:** `1`
+
+**Codec:** BoltPack compact BoltLite, introduced with archive format 5
+
+**History window:** 4,096 bytes
+
+**Match lengths:** 3 through 66 bytes
+
+**Status:** Implemented in `src/core/boltlite.c`
+
+The stream is grouped by flag bytes. Each flag byte describes the next eight
+symbols, least-significant bit first. A set bit means one literal byte follows;
+a clear bit means a match token follows. Match tokens have three forms:
+
+| Prefix | Remaining fields | Meaning |
+| ------ | ---------------- | ------- |
+| `00` | 3-bit distance-minus-one, 3-bit length-minus-three | Distance 1–8, length 3–10; one byte |
+| `01` | 6-bit length-minus-three | Repeat previous match distance, length 3–66; one byte |
+| `1` | 15-bit payload: 12-bit distance-minus-one, 3-bit length-minus-three | Distance 1–4096, length 3–10; two bytes total |
+
+The previous distance starts unset and is updated by every local or explicit
+match. It persists across literals. A repeat-distance token before the first
+match is invalid. Distances refer only to bytes already produced; overlapping
+copies are decoded forward from the output buffer. Decoders produce exactly
+the declared output length and reject truncated tokens, invalid distances,
+overlong output, and trailing encoded bytes.
+
+The encoder requires `BOLTLITE_WORK_SIZE` (18,432) bytes and the usual worst-case
+output capacity `original_size + original_size / 8 + 16`. Decoding needs no
+scratch memory. On 16-bit mini targets, blocks are limited to 32 KiB and the
+matcher uses native 16-bit positions, lengths and distances. Format 7 retains
+this codec representation unchanged.
+
+### 3.3 Method 2: BoltLZ
+
+**Method ID:** `2`
+**Codec:** BoltLZ format 2, original BSD-2-Clause C89 implementation
+**Maximum uncompressed block size:** 262,144 bytes
+
+Each compressed block MUST begin with byte `0x02`. The remaining stream is
+an ordered sequence of tokens and their payloads. Both encoder modes use
+this representation; the compression level is not stored in the stream.
+
+| Token bits | Meaning                                                               |
+| ---------- | --------------------------------------------------------------------- |
+| 7          | Reuse the previous positive match distance when set                   |
+| 6–4        | Literal length: values 0–6 are inline; 7 adds a ULEB128 extension     |
+| 3–0        | Match length: values 0–14 mean 4–18 bytes; 15 adds an extension to 19 |
+
+Payload order is: token, optional literal-length extension, literal bytes,
+optional match-length extension, and explicit distance unless bit 7 is set.
+Length extensions and distances MUST be canonical unsigned LEB128, with at
+most three bytes. A terminal byte zero after an earlier byte is noncanonical;
+a continuation bit on the third byte or a third-byte payload above 16 is
+invalid. All decoded lengths MUST fit the declared output block.
+
+An explicit match distance MUST be positive and no greater than the number
+of bytes already produced. It becomes the previous distance for later reuse.
+The previous distance is initially invalid and persists through literals.
+Matches copy from already-produced output, allowing overlap byte by byte.
+
+A final literal-only sequence MUST have bit 7 clear, low four bits zero,
+and at least one literal. Its literals MUST consume the exact remaining
+compressed input and complete the exact expected output. A block MAY end
+immediately after a match. The one-byte stream `0x02` represents empty output;
+archive empty entries use Stored and have no data blocks.
+
+Readers MUST reject unknown block versions, noncanonical/truncated fields,
+invalid distances, extra sequences, or input/output overruns. Decoders MUST
+operate within the declared buffers without caller-supplied padding. The
+reference implementation is `boltlz_decompress()` in `src/core/boltlz.c`.
+The conservative encoder output bound is `n + floor(n / 63) + 16` bytes.
+
+### 3.4 Method 3: Fluff (LZ77 + FSE/tANS)
+
+**ID:** `3`
+**Codec:** Fluff
+**Decompressor complexity:** Moderate (~1000 lines of C89)
+**Speed:** ~467 MB/s decompression (modern 64-bit system)
+**Compression ratio:** ~29% on curated corpus (best ratio among the
+methods)
+
+#### 3.4.1 Overview
+
+Fluff is BoltPack's native higher-ratio codec. It combines two stages:
+
+1. **LZ77 match finding** — 256 KB sliding window; matches 3–258 bytes; 3-entry
+   repeat-distance ring
+2. **FSE/tANS entropy coding** — Finite State Entropy using tANS tables of size
+   `L = 1024` (lit/len) and `L = 512` (distance)
+
+The codec is **not DEFLATE-compatible**. The reference implementation is
+`src/core/fluff.c`.
+
+Blocks carry a stream version byte. Current FSE/tANS blocks use the compact
+version `0x09` (grouped fast-fluff batches use `0x89` when a group resets
+history and `0x09` on later blocks). The decoder also accepts the earlier
+FSE/tANS versions `0x07`/`0x87`, `0x08`/`0x88`, and the original adaptive range coder `0x06`
+for backward compatibility with archives written by previous releases.
+
+Version `0x08` differs from `0x07` only in the header encoding (compact count
+tables and narrower scalar fields, §3.4.4); the FSE bitstream and raw extra-bit
+stream that carry the LZ77 tokens are byte-for-byte identical between the two.
+
+Version `0x09`, introduced as the current Fluff encoder format in BoltPack 1.8,
+uses the same compact header, alphabets, and table sizes as `0x08`, but a
+different ANS state layout (§3.4.6b). Earlier decoders reject it. Header bytes
+must not be relabeled between `0x08` and `0x09` because the payloads have
+different semantics.
+
+#### 3.4.2 Block Layout — Versions `0x07` and `0x87` (legacy FSE/tANS layout)
+
+A v0x07 or v0x87 Fluff block is a fixed-size byte-aligned header followed by two
+backwards binary streams:
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         BYTE-ALIGNED HEADER (≥ 694 bytes)                        │
+│  stream hdr  │  litlen counts  │  dist counts  │  states  │  lengths             │
+│   (4 bytes)  │   (578 bytes)   │   (96 bytes)  │ (8 bytes)│  (8 bytes)           │
+├──────────────┴─────────────────┴───────────────┴──────────┴──────────────────────┤
+│  FSE bitstream   │  Raw extra-bits stream                                         │
+│  (fse_len bytes) │  (raw_len bytes)                                               │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Both bitstreams are written **backwards** by the encoder; the decoder reads them
+from the end towards the start.
+
+#### 3.4.3 Stream Header (4 bytes, byte-aligned)
+
+| Byte | Value | Field | Description |
+| --- | --- | --- | --- |
+| 0 | `0x46` | `magic[0]` | ASCII `'F'`; invalid value → `ERR_CORRUPT` |
+| 1 | `0x4C` | `magic[1]` | ASCII `'L'`; invalid value → `ERR_CORRUPT` |
+| 2 | `0x09` or `0x89` | `version` | `0x09` = shifted-state compact FSE; `0x89` = reset variant; `0x07`/`0x87` and `0x08`/`0x88` = legacy FSE; `0x06` = range coder |
+| 3 | `0x12` | `window_bits` | `18` = 256 KB window (informational; always 18) |
+
+Current encoders write version `0x09` for normal blocks and `0x89` when
+a grouped batch must reset history. Decoders MUST accept `0x06`, `0x07`,
+`0x87`, `0x08`, `0x88`, `0x09`, and `0x89`. Any other version value MUST be rejected with
+`ERR_CORRUPT`.
+
+#### 3.4.3a Reset Blocks and Grouped Fast-Fluff
+
+Version `0x87` uses the same byte layout as version `0x07`, but with one extra
+semantic rule: before decoding the block body, the decoder MUST reset the Fluff
+history window and repeat-distance ring for the current entry.
+
+This reset form is used by the optional grouped fast-fluff encoder on modern
+OpenMP-enabled builds. It lets a compressor process block groups in parallel
+without inventing a new archive method or a second FSE block layout.
+
+#### 3.4.3b Cross-Block History and Raw-Block Fallback
+
+Fluff maintains a 256 KB history window across blocks within the same entry.
+Later blocks may therefore refer back to bytes from earlier blocks of the same
+file.
+
+If a Fluff block does not beat the archive layer's 99% threshold, the encoder
+stores that block raw by writing it with `block_comp_size == block_orig_size`
+while leaving the entry method as Fluff.
+
+Decoders MUST mirror the encoder's history state in that case:
+
+1. Copy the raw block bytes verbatim to the output.
+1. Feed those same raw bytes into the Fluff history window before decoding the
+   next block of the same entry.
+
+The reference implementation performs this history advance with
+`fluff_ctx_feed_raw()` in `src/core/fluff.c`.
+
+#### 3.4.4 FSE Count Table Header (v0x07/v0x87 only)
+
+Immediately after the 4-byte stream header, the block contains two count tables
+in a flat byte-aligned format — no bitstream packing.
+
+**Lit/len count table** (578 bytes):
+
+- 289 entries × 2 bytes each, little-endian `uint16`.
+- Entry `i` holds the normalized frequency count for lit/len symbol `i`.
+- All counts sum exactly to `FSE_LL_L = 1024`.
+- Symbols with count 0 are unused (decoder assigns no states).
+
+**Distance count table** (96 bytes):
+
+- 48 entries × 2 bytes each, little-endian `uint16`.
+- All counts sum exactly to `FSE_D_L = 512`.
+
+**Validation:** reject any count table where the sum of non-zero entries does not
+equal the required `L` value → `ERR_CORRUPT`.
+
+#### 3.4.5 FSE State Fields (v0x07/v0x87 only)
+
+After the count tables, four 4-byte little-endian `uint32` fields appear:
+
+| Field      | Size | Description                                     |
+| ---------- | ---- | ----------------------------------------------- |
+| `ll_state` | 4    | Initial ANS state for the lit/len decode table  |
+| `d_state`  | 4    | Initial ANS state for the distance decode table |
+| `fse_len`  | 4    | Byte length of the FSE bitstream that follows   |
+| `raw_len`  | 4    | Byte length of the raw extra-bits stream        |
+
+**Total fixed header size:** 4 + 578 + 96 + 16 = **694 bytes**.
+
+#### 3.4.6 FSE Bitstreams (v0x07/v0x87 only)
+
+Immediately after the fixed header, the block contains two concatenated streams:
+
+1. **FSE bitstream** (`fse_len` bytes) — carries the ANS-coded sequence of
+   lit/len and distance symbol decisions. The encoder wrote this stream
+   backwards (last token first); the decoder reads it from the end.
+2. **Raw extra-bits stream** (`raw_len` bytes) — carries all length and
+   distance extra bits that are not entropy-coded. Also written and read
+   backwards.
+
+**FSE decoding step (per symbol):**
+
+```c
+/* Read next FSE symbol from the LL table. */
+sym     = ll_dtab[ll_state].symbol;
+nbits   = ll_dtab[ll_state].num_bits;
+new_base= ll_dtab[ll_state].new_base;
+ll_state = new_base + read_bits_backwards(fse_bits, nbits);
+```
+
+The distance symbol is decoded from `d_dtab` by the same pattern.
+
+**FSE table construction** follows the standard tANS spread algorithm: each
+symbol `s` with normalized count `c_s` receives `c_s` states spread uniformly
+across the table of size `L`.
+
+#### 3.4.6a Block Layout — Versions `0x08` and `0x88` (legacy compact FSE/tANS)
+
+A v0x08/v0x88 block has the same structure as v0x07 — 4-byte stream header,
+count tables, scalar fields, then the two backwards bitstreams — and the FSE
+bitstream and raw extra-bits stream (§3.4.6) are **identical** to what v0x07
+would produce for the same input. Only the header encoding is more compact, so
+the fixed 694-byte header of v0x07 becomes a variable header that is typically
+150–350 bytes smaller. `0x88` carries the same context-reset semantics as `0x87`
+(§3.4.3a).
+
+**Compact count tables.** Each table (lit/len, then distance) replaces the flat
+`uint16` array with a left-to-right token stream over its `nsym` entries:
+
+- A non-zero count `c` (`1 ≤ c ≤ L`) is written as `varint(c)`.
+- A run of `k ≥ 1` consecutive zero counts is written as a `0x00` marker byte
+  followed by `varint(k)`.
+
+`varint` is LSB-first base-128 (LEB128). A varint of any value `≥ 1` has a
+non-zero first byte, so the `0x00` zero-run marker is unambiguous. The decoder
+reconstructs `nsym` entries and MUST reject the table (→ `ERR_CORRUPT`) if a
+zero run overflows `nsym`, a value exceeds `L`, a varint is truncated, or the
+final entries do not sum to exactly `L`.
+
+**Compact scalar fields.** The four trailing fields shrink (R3):
+
+| Field      | v0x07 | v0x08 | Description                                |
+| ---------- | ----- | ----- | ------------------------------------------ |
+| `ll_state` | 4     | 2     | Initial ANS state, lit/len (`< 1024`)      |
+| `d_state`  | 4     | 2     | Initial ANS state, distance (`< 512`)      |
+| `fse_len`  | 4     | 3     | FSE bitstream byte length (block ≤ 256 KB) |
+| `raw_len`  | 4     | 3     | Raw extra-bits byte length                 |
+
+All are little-endian. Total scalar tail: 10 bytes (vs. 16 in v0x07).
+
+#### 3.4.6b Versions `0x09` and `0x89` (shifted-state FSE)
+
+These versions use the header, token grammar, symbol spread, and table sizes
+of §3.4.6a. `0x89` resets history before decoding; `0x09` preserves it. Only
+the ANS state transitions change, in **both** entropy alphabets.
+
+Let `L = 2^table_log`, `n` be a symbol's normalized count, and `k` its
+zero-based occurrence index when scanning the spread table in state order.
+For each used symbol define:
+
+```text
+d = floor(log2(L / n))
+m = (L >> d) - n
+```
+
+For legacy versions `0x07`/`0x87`/`0x08`/`0x88`, the decoder entry is:
+
+```text
+if k < m: bits = d + 1; base = k << bits
+else:     bits = d;     base = (m << (d + 1)) + ((k - m) << d)
+```
+
+For `0x09`/`0x89`, use the virtual state interval `[L, 2L)`, storing states
+with `L` subtracted:
+
+```text
+bits = d + (k < m)
+base = ((n + k) << bits) - L
+next_state = base + read_bits(bits)
+```
+
+The corresponding encoder transition for stored state `y` in `[0, L)` is:
+
+```text
+cutoff = (n << (d + 1)) - L
+bits = d + (y >= cutoff)
+k = ((y + L) >> bits) - n
+emit_low_bits(y, bits)
+next_state = slots[symbol_offset + k]
+```
+
+Here `slots` lists each symbol's spread positions in ascending state order.
+The encoder starts at stored state zero and processes tokens backwards as
+before. A singleton (`n == L`) emits zero bits. Version selection determines
+the layout; decoder table construction must retain the legacy mapping for
+older streams.
+
+#### 3.4.7 Block Layout — Version `0x06` (Range Coder, legacy read-only)
+
+A v0x06 block is a 4-byte byte-aligned stream header followed by a single
+continuous bit stream (no tree or count table header):
+
+```text
+┌──────────────┬────────────────────────────────────────────────────┐
+│ stream hdr   │  continuous adaptive range-coder bitstream         │
+│  (4 bytes)   │  (tokens until EOB)                                │
+└──────────────┴────────────────────────────────────────────────────┘
+```
+
+The range coder uses:
+
+- A 9-bit binary tree model for lit/len symbols (512 probability nodes,
+  `FL_LL_BITS = 9`).
+- A 6-bit binary tree model for distance symbols (64 probability nodes,
+  `FL_D_BITS = 6`).
+- 12-bit fixed-point probability (`FL_PROB_MAX = 4096`); initial value 2048
+  (50/50). Each decoded bit updates its node's probability with:
+  `p' = p + (direction × (4096 − p) >> adapt_shift)`.
+- No tree header or count tables are stored; the adaptive model rebuilds itself
+  from the 50/50 prior at the start of each block.
+
+Decoders MUST support v0x06 for reading. Encoders MUST NOT produce v0x06.
+
+#### 3.4.8 Lit/Len Symbol Alphabet (289 symbols)
+
+| Symbols | Meaning                |
+| ------- | ---------------------- |
+| 0–255   | Literal byte value     |
+| **256** | **End-of-block (EOB)** |
+| 257–285 | Match length codes     |
+| 286–288 | Repeat-distance match  |
+
+**Match length codes** — `length = base + read_bits(extra_bits)`:
+
+| Symbol | Base | Extra bits | Symbol | Base | Extra bits |
+| ------ | ---- | ---------- | ------ | ---- | ---------- |
+| 257    | 3    | 0          | 272    | 31   | 2          |
+| 258    | 4    | 0          | 273    | 35   | 3          |
+| 259    | 5    | 0          | 274    | 43   | 3          |
+| 260    | 6    | 0          | 275    | 51   | 3          |
+| 261    | 7    | 0          | 276    | 59   | 3          |
+| 262    | 8    | 0          | 277    | 67   | 4          |
+| 263    | 9    | 0          | 278    | 83   | 4          |
+| 264    | 10   | 0          | 279    | 99   | 4          |
+| 265    | 11   | 1          | 280    | 115  | 4          |
+| 266    | 13   | 1          | 281    | 131  | 5          |
+| 267    | 15   | 1          | 282    | 163  | 5          |
+| 268    | 17   | 1          | 283    | 195  | 5          |
+| 269    | 19   | 2          | 284    | 227  | 5          |
+| 270    | 23   | 2          | 285    | 258  | 0          |
+| 271    | 27   | 2          |        |      |            |
+
+Symbol 285 encodes length 258 exactly (no extra bits). Symbol 284 with extra=31
+also produces 258; a conformant encoder uses symbol 285 for that length.
+
+Symbols 286–288 are repeat-distance matches. The symbol selects which recent distance
+to reuse:
+
+| Symbol | Meaning                    |
+| ------ | -------------------------- |
+| 286    | reuse most-recent distance |
+| 287    | reuse second-most-recent   |
+| 288    | reuse third-most-recent    |
+
+Symbols 286–288 are each followed by a 5-bit length-code index into the same table
+above, plus any length extra bits.
+
+#### 3.4.8a Repeat-Distance Ring State
+
+Fluff tracks three recent distances:
+
+- `rep0` — most recent distance
+- `rep1` — second-most-recent distance
+- `rep2` — third-most-recent distance
+
+All three are zero at the start of every block; the ring does not carry over
+from one block to the next (only the history window does, §3.4.3b).
+
+After every regular match or repeat-distance match, the matched distance is
+applied to the ring with move-to-front semantics:
+
+- If `distance == rep0` or `distance == 0`, the ring is unchanged.
+- If `distance == rep1`, then `rep0` and `rep1` are swapped.
+- If `distance == rep2`, then `rep2` becomes `rep0`, old `rep0` becomes
+  `rep1`, and old `rep1` becomes `rep2`.
+- Otherwise, `distance` becomes the new `rep0`, old `rep0` becomes `rep1`, and
+  old `rep1` becomes `rep2`.
+
+This is the state transition implemented by `fl_update_rep_ring()` in the
+reference codec.
+
+#### 3.4.9 Distance Symbol Alphabet (up to 48 symbols)
+
+BoltPack v1.0 Fluff streams keep the DEFLATE layout for short distances, then use
+denser four-way buckets for 513–32768 to cut inline distance extra bits.
+
+`distance = base + read_bits(extra_bits)` (same for all supported stream versions):
+
+| Symbol | Base | Extra bits | Symbol | Base   | Extra bits |
+| ------ | ---- | ---------- | ------ | ------ | ---------- |
+| 0      | 1    | 0          | 24     | 1537   | 8          |
+| 1      | 2    | 0          | 25     | 1793   | 8          |
+| 2      | 3    | 0          | 26     | 2049   | 9          |
+| 3      | 4    | 0          | 27     | 2561   | 9          |
+| 4      | 5    | 1          | 28     | 3073   | 9          |
+| 5      | 7    | 1          | 29     | 3585   | 9          |
+| 6      | 9    | 2          | 30     | 4097   | 10         |
+| 7      | 13   | 2          | 31     | 5121   | 10         |
+| 8      | 17   | 3          | 32     | 6145   | 10         |
+| 9      | 25   | 3          | 33     | 7169   | 10         |
+| 10     | 33   | 4          | 34     | 8193   | 11         |
+| 11     | 49   | 4          | 35     | 10241  | 11         |
+| 12     | 65   | 5          | 36     | 12289  | 11         |
+| 13     | 97   | 5          | 37     | 14337  | 11         |
+| 14     | 129  | 6          | 38     | 16385  | 12         |
+| 15     | 193  | 6          | 39     | 20481  | 12         |
+| 16     | 257  | 7          | 40     | 24577  | 12         |
+| 17     | 385  | 7          | 41     | 28673  | 12         |
+| 18     | 513  | 7          | 42     | 32769  | 13         |
+| 19     | 641  | 7          | 43     | 40961  | 13         |
+| 20     | 769  | 7          | 44     | 49153  | 14         |
+| 21     | 897  | 7          | 45     | 65537  | 15         |
+| 22     | 1025 | 8          | 46     | 98305  | 15         |
+| 23     | 1281 | 8          | 47     | 131073 | 17         |
+
+The encoder always selects the symbol with the highest base ≤ distance. Distances greater
+than 262144 (the window size) or greater than the total bytes decompressed so far in the
+file are invalid → `ERR_CORRUPT`.
+
+#### 3.4.10 Token Stream
+
+After the code-length stream, the bitstream contains tokens until end-of-block:
+
+```text
+block           ::= token* EOB
+token           ::= literal | match | rep_match
+literal         ::= sym(0..255)
+match           ::= sym(257..285)  length_extra  dist_sym  dist_extra
+rep_match       ::= sym(286..288)  len_idx(5 bits)  length_extra
+EOB             ::= sym(256)
+```
+
+**Decoding a regular match:**
+
+1. Decode a lit/len symbol. If 257–285, it is a length code.
+2. Compute `length = LEN_BASE[sym − 257] + read_bits(LEN_EXTRA[sym − 257])`.
+3. Decode a distance symbol from the distance tree.
+4. Compute `distance = DIST_BASE[dist_sym] + read_bits(DIST_EXTRA[dist_sym])`.
+5. Validate distance (see §3.4.9). Copy `length` bytes from `distance` bytes behind the
+   current output position, using overlap-safe copy (see §3.4.11).
+
+**Decoding a repeat-distance match:**
+
+1. Decode lit/len symbol 286, 287, or 288.
+2. Read a 5-bit length-code index and decode the match length using the same length table.
+3. Reuse the most-recent, second-most-recent, or third-most-recent match distance.
+4. Validate distance and copy as for a regular match.
+5. Update the repeat-distance ring using the matched distance and the rule in §3.4.8a.
+
+#### 3.4.11 Decompression Algorithm
+
+`fluff_decompress_block_ctx()` dispatches on the stream version byte:
+
+```c
+/* 1. Validate stream header */
+if (src[0] != 0x46 || src[1] != 0x4C)
+    return ERR_CORRUPT;
+version = src[2];
+if (version != 0x09 && version != 0x89 &&
+    version != 0x08 && version != 0x88 &&
+    version != 0x07 && version != 0x87 && version != 0x06)
+    return ERR_CORRUPT;
+
+if (version == 0x09 || version == 0x89 ||
+    version == 0x08 || version == 0x88 ||
+    version == 0x07 || version == 0x87)
+    return fl_decompress_fse(src, src_len, dst, dst_len, ctx);
+else
+    return fl_decompress_rc(src, src_len, dst, dst_len, ctx);
+```
+
+**Versions `0x07` and `0x87` (FSE/tANS) — `fl_decompress_fse()`:**
+
+If the stream header carries version `0x87`, `0x88`, or `0x89`, the decoder MUST reset the Fluff
+history window and repeat-distance ring before reading the rest of the block.
+
+```c
+/* 2. Parse fixed header */
+hdr = src + 4;
+read_counts(hdr,           ll_norm, FLUFF_NUM_LITLEN);   /* 578 bytes */
+read_counts(hdr + 578,     d_norm,  FLUFF_NUM_DIST);     /*  96 bytes */
+ll_state = read_u32_le(hdr + 674);
+d_state  = read_u32_le(hdr + 678);
+fse_len  = read_u32_le(hdr + 682);
+raw_len  = read_u32_le(hdr + 686);
+fse_data = src + 694;
+raw_data = fse_data + fse_len;
+
+/* 3. Build decode tables */
+fse_build_dtab(ll_norm, FLUFF_NUM_LITLEN, ll_dtab, FSE_LL_BITS);
+fse_build_dtab(d_norm,  FLUFF_NUM_DIST,   d_dtab,  FSE_D_BITS);
+
+/* 4. Decode token stream forwards */
+for (;;) {
+    sym = ll_dtab[ll_state].symbol;
+    advance_ll_state(ll_dtab, &ll_state, fse_data, fse_len, &fse_pos);
+    if (sym < 256) {
+        output[out_pos++] = (unsigned char)sym;           /* literal */
+    } else if (sym == 256) {
+        break;                                            /* end-of-block */
+    } else if (sym >= 286 && sym <= 288) {                /* repeat-distance */
+        idx    = read_bits_raw(raw_data, raw_len, &raw_pos, 5);
+        length = LEN_BASE[idx] + read_bits_raw(raw_data, raw_len, &raw_pos,
+                                               LEN_EXTRA[idx]);
+        dist   = recent_distance(sym, rep0, rep1, rep2);
+        copy_lz77_overlap(output, out_pos, dist, length);
+        out_pos += length;
+    } else {                                              /* match 257..285 */
+        idx    = sym - 257;
+        length = LEN_BASE[idx] + read_bits_raw(raw_data, raw_len, &raw_pos,
+                                               LEN_EXTRA[idx]);
+        d_sym  = d_dtab[d_state].symbol;
+        advance_d_state(d_dtab, &d_state, fse_data, fse_len, &fse_pos);
+        dist   = DIST_BASE[d_sym] + read_bits_raw(raw_data, raw_len, &raw_pos,
+                                                  DIST_EXTRA[d_sym]);
+        copy_lz77_overlap(output, out_pos, dist, length);
+        out_pos += length;
+    }
+    update_rep_ring(&rep0, &rep1, &rep2, dist);
+}
+
+if (out_pos != block_orig_size)
+    return ERR_CORRUPT;
+```
+
+**Version `0x06` (range coder) — `fl_decompress_rc()`:**
+
+```c
+/* 2. Initialize adaptive probability model */
+init_rc_model(&ll_model, FL_LL_NODES, FL_PROB_HALF);
+init_rc_model(&d_model,  FL_D_NODES,  FL_PROB_HALF);
+rc_init_decoder(&rc, src + 4, src_len - 4);
+
+/* 3. Decode token stream */
+for (;;) {
+    sym = rc_decode_symbol(&rc, &ll_model, FL_LL_BITS);
+    if (sym < 256) {
+        output[out_pos++] = (unsigned char)sym;
+    } else if (sym == 256) {
+        break;
+    } else if (sym >= 286 && sym <= 288) {
+        idx    = rc_read_bits(&rc, 5);
+        length = LEN_BASE[idx] + rc_read_bits(&rc, LEN_EXTRA[idx]);
+        dist   = recent_distance(sym, rep0, rep1, rep2);
+        copy_lz77_overlap(output, out_pos, dist, length);
+        out_pos += length;
+    } else {
+        idx    = sym - 257;
+        length = LEN_BASE[idx] + rc_read_bits(&rc, LEN_EXTRA[idx]);
+        d_sym  = rc_decode_symbol(&rc, &d_model, FL_D_BITS);
+        dist   = DIST_BASE[d_sym] + rc_read_bits(&rc, DIST_EXTRA[d_sym]);
+        copy_lz77_overlap(output, out_pos, dist, length);
+        out_pos += length;
+    }
+    update_rep_ring(&rep0, &rep1, &rep2, dist);
+}
+
+if (out_pos != block_orig_size)
+    return ERR_CORRUPT;
+```
+
+**Overlap-safe LZ77 copy** (required when `distance < length`):
+
+```c
+/* Periodic-repeat expansion: copy 'distance' bytes at a time,
+ * doubling step each round so earlier output fills the buffer. */
+void copy_lz77_overlap(unsigned char *buf,
+                       unsigned int pos,
+                       unsigned int distance,
+                       unsigned int length) {
+    unsigned char *from = buf + pos - distance;
+    unsigned char *to   = buf + pos;
+    if (distance >= length) {
+        memcpy(to, from, length);               /* no overlap: one copy */
+    } else {
+        unsigned int step = distance, rem = length;
+        while (rem >= step) {
+            memcpy(to, from, step);
+            to += step; rem -= step; step += step;
+        }
+        if (rem > 0) memcpy(to, from, rem);
+    }
+}
+```
+
+#### 3.4.11.1 Decompression Validation
+
+In addition to the token-decoding rules above, a conformant decoder MUST
+validate:
+
+- repeat-distance length-code indices are in the range 0–28
+- distances satisfy `1 <= distance <= min(262144, bytes_decompressed_so_far)`
+- output never grows beyond `block_orig_size`
+- for v0x07/v0x87: litlen count sum equals `FSE_LL_L` (1024) and dist count sum equals
+  `FSE_D_L` (512)
+- the FSE or RC bitstream does not terminate before the EOB symbol is decoded
+
+#### 3.4.12 Decompression Requirements
+
+- MUST reject blocks where `magic[0] != 0x46` or `magic[1] != 0x4C` →
+  `ERR_CORRUPT`.
+- MUST reject blocks where `version` is not `0x06`, `0x07`, `0x87`, `0x08`, `0x88`, `0x09`, or `0x89` →
+  `ERR_CORRUPT`.
+- For v0x07/v0x87: MUST reject any count table whose entries do not sum to the
+  required `L` value → `ERR_CORRUPT`.
+- MUST support overlapping copies (`distance < length`) via the periodic-repeat
+  doubling algorithm shown in §3.4.11.
+- MUST reject distances exceeding the number of bytes decompressed so far in the
+  file → `ERR_CORRUPT`.
+- MUST reject distances exceeding 262144 (the window size) → `ERR_CORRUPT`.
+- MUST reject repeat-distance length-code indices outside 0–28 → `ERR_CORRUPT`.
+- MUST verify that total decompressed output equals `block_orig_size` →
+  `ERR_CORRUPT`.
+
+The reference implementation is `src/core/fluff.c` (`fluff_decompress_block_ctx`).
+
+---
+
+### 3.5 Method 4 (retired)
+
+Method 4 was Zstandard (zstd). It has been removed. Readers MUST return
+`ERR_UNSUPPORTED_METHOD` when encountering method 4; no zstd encoder or
+decoder is built.
+
+---
+
+## 4. Data Integrity
+
+### 4.1 CRC-32 Checksum (checksum_type = 1) — current
+
+**Checksum type:** `1` (CRC-32)
+**Polynomial:** IEEE 802.3 reflected `0xEDB88320` (zlib-compatible)
+**Detection:** All 1- and 2-bit errors, all odd numbers of bit errors, all
+bursts ≤ 32 bits; longer bursts with probability 1 − 2⁻³²
+
+CRC-32 is the **only** payload checksum current writers emit. Writers MUST
+write `checksum_type = 1`; any other value → `ERR_CORRUPT` on read. Seed
+the running value with `0`, fold each uncompressed block in stream order, and
+compare the final value against the `checksum` field of the entry trailer.
+Volume headers and trailers, entry headers and trailers, each **block**, the
+**file table**, and the end record are also protected by CRC-32
+(§2.2–§2.4, §5).
+
+**Validation:**
+
+- If computed payload checksum ≠ stored checksum → `ERR_CHECKSUM`
+- Decompression MUST NOT halt early; always validate checksum.
+
+### 4.1a Adler-32 Checksum (checksum_type = 0) — retired
+
+Earlier BoltPack versions used Adler-32 (RFC 1950) as the payload checksum.
+It has been **retired**: current writers never emit `checksum_type = 0`, and
+the reference implementation compiles the Adler-32 code only under the
+`BP_ENABLE_ADLER32` build flag (used by its unit tests). The `checksum_type`
+field is retained so a future algorithm can be assigned a new value without a
+format break. For reference, Adler-32 is defined as:
+
+```text
+A = (sum of uncompressed bytes + 1) mod 65521
+B = (sum of (65521 − position + byte_i)) mod 65521
+Adler32 = (B << 16) | A
+```
+
+A reader MAY still support `checksum_type = 0` for compatibility, but is not
+required to, and no conforming writer of this generation produces it.
+
+### 4.2 Decompression Integrity Checks
+
+Decompressor MUST perform the following checks during and after decompression:
+
+1. **Format validation:** Method ID is one of {0, 1, 2, 3}; 4 is retired.
+1. **Size tracking:** Decompressed output equals `block_orig_size` for each block.
+1. **Distance validity:** Match distances do not exceed available history.
+1. **End-of-block marker:** Fluff blocks terminate with symbol 256.
+1. **Checksum validation:** CRC-32 of uncompressed payload matches the entry trailer.
+
+Failure of any check → `ERR_CORRUPT`; abort extraction.
+
+---
+
+## 5. File Table and End Record
+
+### 5.1 File Table (Directory)
+
+**Purpose:** Rapid directory listing without scanning the entries, and the
+authoritative list of entries and their locations.
+
+**Position:** In the archive stream directly after the last entry trailer
+(or at the start of volume 0's body when the archive has no entries). The
+table header and each record are separate structures for the placement rule
+(§2.1); a large table may continue on following volumes. Its first byte is
+located by the end record.
+
+**Table header (16 bytes):**
+
+| Offset | Size | Field         | Type   | Description                                  |
+| ------ | ---- | ------------- | ------ | -------------------------------------------- |
+| 0      | 4    | `table_magic` | u32 LE | `0x544C4254` (bytes: `54 42 4C 54` = "TBLT") |
+| 4      | 4    | `entry_count` | u32 LE | Number of entries                            |
+| 8      | 8    | `total_orig`  | u64 LE | Sum of `original_size` across all entries    |
+
+The `total_orig` field allows readers to display total uncompressed size without
+scanning each entry record. Writers MUST store the correct sum; readers SHOULD
+use it in preference to iterating records.
+
+Followed by `entry_count` records, in the order the entries appear in the
+archive stream:
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 2 | `name_len` | u16 LE | Length of file name |
+| 2 | N | `name` | bytes | File name (UTF-8, forward-slash sep) |
+| 2+N | 8 | `original_size` | u64 LE | Uncompressed size |
+| 10+N | 8 | `compressed_size` | u64 LE | Compressed size (as in the entry trailer) |
+| 18+N | 1 | `entry_type` | u8 | Entry type (0–4) |
+| 19+N | 1 | `platform` | u8 | Metadata platform origin |
+| 20+N | 8 | `mtime` | u64 LE | Modification time (Unix epoch) |
+| 28+N | 2 | `volume` | u16 LE | Volume holding the entry header |
+| 30+N | 8 | `offset` | u64 LE | Byte offset of the entry header within that volume file |
+| 38+N | 1 | `method` | u8 | Compression method (0–3) |
+| 39+N | 2 | `header_size` | u16 LE | Entry header size |
+| 41+N | 4 | `checksum` | u32 LE | Entry payload checksum (as in the entry trailer) |
+| 45+N | 2 | `flags` | u16 LE | Entry flags, identical to the entry header |
+
+The fixed record tail is 45 bytes. Fields duplicated in the entry header or
+entry trailer, including the name, sizes, type, platform, time, method,
+checksum, header size, and flags, MUST match their inline counterparts. A
+reader MUST compare each entry header with its record before using the
+entry's data, and the entry trailer with the record before reporting the
+entry as extracted.
+
+**Validation:**
+
+- `table_magic != 0x544C4254` → `ERR_CORRUPT`
+- `entry_count` different from the end record's → `ERR_CORRUPT`
+- The whole table byte sequence, from the table header to the last record and
+  concatenated across volumes, is covered by the end record's `table_crc`.
+- Record locations MUST be strictly increasing in (volume, offset) order, each
+  `volume` MUST be less than `volume_count`, and each `offset` MUST lie inside
+  that volume's body. The first record's location MUST be (0, 32).
+- Locations and sizes must also agree with the archive stream: the reader that
+  walks the entries (§5.4) checks that each entry starts exactly where the
+  previous one ended, according to the placement rule, and that the table
+  starts where the last entry ended.
+
+A sequential reader can tell the table header from an entry header: the bytes
+`TBLT` read as an entry header give `header_size` 16980 and `name_len` 21580,
+which can never satisfy `header_size == 34 + name_len`.
+
+### 5.2 End Record (48 bytes)
+
+**Location:** The last structure of the last volume, so it ends 32 bytes
+before the end of that file, immediately followed by the volume trailer.
+
+| Offset | Size | Field | Type | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 8 | `set_id` | u64 LE | The set ID |
+| 8 | 2 | `volume_count` | u16 LE | Number of volumes in the set, 1 to 1000 |
+| 10 | 2 | `table_volume` | u16 LE | Volume holding the table header |
+| 12 | 4 | `table_crc` | u32 LE | CRC-32 of the whole file table (§5.1) |
+| 16 | 8 | `table_offset` | u64 LE | Offset of the table header within `table_volume` |
+| 24 | 8 | `table_size` | u64 LE | Total size of the file table in bytes, across all its volumes |
+| 32 | 4 | `entry_count` | u32 LE | Number of entries; equals the table header's |
+| 36 | 4 | `reserved` | u32 LE | MUST be zero |
+| 40 | 4 | `end_crc` | u32 LE | CRC-32 of end record bytes `[0, 40)` |
+| 44 | 4 | `end_magic` | u32 LE | `0x424F4C54` (bytes: `54 4C 4F 42` = "TLOB") |
+
+**Validation:**
+
+- `end_magic` or `end_crc` mismatch, or nonzero `reserved` → `ERR_CORRUPT`
+- `set_id` different from the last volume's header → `ERR_CORRUPT`
+- `volume_count != volume_number + 1` of the volume holding the end record → `ERR_CORRUPT`
+- `table_volume >= volume_count`, or `table_offset` outside the body of
+  `table_volume` → `ERR_CORRUPT`
+- The table, read from (`table_volume`, `table_offset`) following the
+  placement rule, MUST end exactly where the end record begins; any other
+  length → `ERR_CORRUPT`
+
+### 5.3 Opening an Archive
+
+A reader opening an archive:
+
+1. Opens the file it was given and validates its volume header (§2.2) and
+   volume trailer (§2.4).
+2. If the trailer does not have `BP_VOLUME_LAST` set, finds the last volume
+   by its name (§2.5) and validates its header and trailer. The two volumes
+   MUST have the same set ID.
+3. Reads and validates the end record (§5.2).
+4. Reads the file table from the location in the end record, continuing on
+   later volumes as the placement rule requires; each volume it opens is
+   validated as in step 1 and MUST have the expected set ID and number.
+   Verifies `table_crc`, then every record (§5.1).
+
+After step 4 a reader can list the archive. Only the last volume, and any
+earlier volumes holding part of a large table, have been read.
+
+### 5.4 Reading Entries
+
+A reader extracts or tests entries by walking the archive stream from volume
+0, opening each volume in turn and validating its header and trailer before
+reading its body. For each entry, in table order, it:
+
+1. Checks that the entry starts at the location recorded in the table and
+   exactly where the previous structure ended (§2.1).
+2. Reads the entry header, verifies `header_crc`, and compares it with the
+   table record. On mismatch → `ERR_CORRUPT` before any of the entry's data
+   is written.
+3. Reads the blocks, verifying each `block_crc` before decompressing it and
+   moving to the next volume when the current body is exhausted.
+4. Reads the entry trailer, verifies `trailer_crc`, and compares
+   `compressed_size` and `checksum` with the table record and with the values
+   it computed. An entry is reported as successfully extracted only after
+   this step.
+
+Finally it checks that the file table begins where the last entry ended.
+
+Because the table has been fully validated first (§5.3), names, types,
+sizes and locations are known to be consistent before any file is written.
+Payload damage is detected per block and per entry during the walk, so a
+damaged volume can cause the walk to stop after earlier entries have been
+extracted. A reader that has every volume available in seekable storage MAY
+additionally verify all entries before extracting any.
+
+A reader MAY also skip entries it does not need (for example, when extracting
+selected files) by seeking to their recorded locations, as long as it still
+performs steps 1–4 for every entry it uses.
+
+**Volume changes.** When a reader needs a volume that is not available, or
+opens one whose set ID or number is wrong, it reports `BP_ERR_VOLUME`.
+Interactive readers SHOULD instead tell the user which volume is needed (by
+number and by its file name, §2.5) and wait for it to be inserted or located.
+Readers SHOULD close a volume file before asking for the next one, so
+removable media can be changed.
+
+**Sequential reading without the table.** Entry headers, blocks and entry
+trailers are self-delimiting and CRC-protected, so a reader MAY walk volumes
+0, 1, … without first reading the last volume (for example, to recover data
+from a set whose last volume is lost). Such a reader recognises the end of
+the entries by the table header magic. It cannot check names for uniqueness
+in advance and MUST still apply the name rules of §2.3.1 to each entry before
+writing it.
+
+---
+
+## 6. Creator Identification
+
+### 6.1 Creator OS Codes
+
+| Code          | OS / Platform                        |
+| ------------- | ------------------------------------ |
+| `0x00`        | Unknown / generic                    |
+| `0x01`        | Linux                                |
+| `0x02`        | Mac OS (classic 1–9)                 |
+| `0x03`        | Mac OS X / macOS                     |
+| `0x04`        | AmigaOS (1.x–3.x)                    |
+| `0x05`        | AmigaOS 4.x                          |
+| `0x06`        | MorphOS                              |
+| `0x07`        | AROS                                 |
+| `0x08`        | MS-DOS                               |
+| `0x09`        | Windows (9x/NT/2000+/(NT/ARM64)      |
+| `0x0A`        | FreeBSD                              |
+| `0x0B`        | NetBSD                               |
+| `0x0C`        | OpenBSD                              |
+| `0x0D`        | Solaris / SunOS                      |
+| `0x0E`        | IRIX                                 |
+| `0x0F`        | HP-UX                                |
+| `0x10`        | AIX                                  |
+| `0x11`        | Atari TOS / MiNT                     |
+| `0x12`        | RISC OS (Acorn)                      |
+| `0x13`        | OS/2                                 |
+| `0x14`        | BeOS / Haiku                         |
+| `0x15`        | OpenVMS                              |
+| `0x16`        | z/OS (IBM mainframe)                 |
+| `0x17`        | WebAssembly (Node.js / browser)      |
+| `0x18`        | NeXTSTEP / OPENSTEP                  |
+| `0x19`        | QNX Neutrino                         |
+| `0x1A`        | Plan 9                               |
+| `0x1B`        | Tru64 UNIX (OSF/1)                   |
+| `0x1C`        | SCO OpenServer / UnixWare            |
+| `0x1D`        | CP/M-86                              |
+| `0x1E`        | Sinclair QL (QDOS)                   |
+| `0x1F`        | Windows 3.1 (Win16)                  |
+| `0x20`        | GNU Hurd                             |
+| `0x21`        | Sharp X68000                         |
+| `0x80`–`0xFF` | Reserved for private/user extensions |
+
+Decoders MAY display `creator_os` for diagnostics. Extraction behavior is platform-independent.
+
+### 6.2 Creator CPU Codes
+
+| Code          | Architecture             |
+| ------------- | ------------------------ |
+| `0x00`        | Unknown / generic        |
+| `0x01`        | x86 (i386+)              |
+| `0x02`        | x86-64 (AMD64)           |
+| `0x03`        | PowerPC (32-bit)         |
+| `0x04`        | PowerPC (64-bit)         |
+| `0x05`        | Motorola 68k             |
+| `0x06`        | ARM (32-bit)             |
+| `0x07`        | ARM64 / AArch64          |
+| `0x08`        | MIPS (32-bit)            |
+| `0x09`        | MIPS (64-bit)            |
+| `0x0A`        | SPARC                    |
+| `0x0B`        | Alpha                    |
+| `0x0C`        | PA-RISC                  |
+| `0x0D`        | RISC-V (32-bit)          |
+| `0x0E`        | RISC-V (64-bit)          |
+| `0x0F`        | SuperH (SH)              |
+| `0x10`        | 6502 / 65C816            |
+| `0x11`        | Z80                      |
+| `0x12`        | 8086 / 8088 (16-bit)     |
+| `0x13`        | e2k (Elbrus)             |
+| `0x14`        | z/Architecture           |
+| `0x15`        | SPARC64                  |
+| `0x16`        | Itanium (IA-64)          |
+| `0x80`–`0xFF` | Reserved for private use |
+
+---
+
+## 7. Byte Order and Portability
+
+### 7.1 Canonical Byte Order
+
+**All multi-byte integers are little-endian** (least-significant byte first).
+
+**Examples:**
+
+- `0x12345678` stored as: `78 56 34 12` (in memory order)
+- `0xDEADBEEF` stored as: `EF BE AD DE`
+
+### 7.2 Byte-Swapping for Big-Endian Hosts
+
+On big-endian platforms (PowerPC, 68k, SPARC, Alpha), decoders MUST byte-swap when reading:
+
+**C implementation (ANSI C89):**
+
+```c
+typedef unsigned char      bp_uint8;
+typedef unsigned short     bp_uint16;
+typedef unsigned int       bp_uint32;
+
+/* Read 16-bit little-endian */
+bp_uint16 read_le16(const bp_uint8 *p) {
+    return (p[0]) | (p[1] << 8);
+}
+
+/* Read 32-bit little-endian */
+bp_uint32 read_le32(const bp_uint8 *p) {
+    return (p[0]) | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
+}
+
+/* Read 64-bit little-endian (returns structure) */
+typedef struct {
+    bp_uint32 lo;
+    bp_uint32 hi;
+} bp_uint64;
+
+bp_uint64 read_le64(const bp_uint8 *p) {
+    bp_uint64 result;
+    result.lo = read_le32(p);
+    result.hi = read_le32(p + 4);
+    return result;
+}
+```
+
+The swap cost is negligible; byte-order detection is automatic via compile-time checks or CPU detection.
+
+### 7.3 Character Encoding
+
+**File names and paths:** UTF-8 (Unicode)
+**Encoding flow:**
+
+1. **Writer:** Convert native encoding (MacRoman, Shift-JIS, EBCDIC, etc.) to UTF-8.
+2. **Archive:** Store UTF-8 paths verbatim.
+3. **Reader:** Convert UTF-8 back to native encoding.
+
+On Linux/Unix/Windows, UTF-8 is native; no conversion needed in typical cases.
+
+---
+
+## 8. Error Handling and Status Codes
+
+### 8.1 Standard Error Codes
+
+The reference implementation defines error codes as negative integers in
+`src/core/bp_types.h`. Zero is success; any non-zero value is an error.
+
+| Code | Name                        | Meaning                                 |
+| ---- | --------------------------- | --------------------------------------- |
+| 0    | `BP_OK`                     | Operation completed successfully        |
+| -1   | `BP_ERR_IO`                 | I/O error (read/write/seek failed)      |
+| -2   | `BP_ERR_NOMEM`              | `malloc()` returned NULL                |
+| -3   | `BP_ERR_MAGIC`              | Bad magic bytes (not a BoltPack volume) |
+| -4   | `BP_ERR_VERSION`            | Archive format version is not supported |
+| -5   | `BP_ERR_CHECKSUM`           | CRC-32 mismatch on block or payload data |
+| -6   | `BP_ERR_CORRUPT`            | Structural corruption                   |
+| -7   | `BP_ERR_TRUNCATED`          | Unexpected end of file                  |
+| -8   | `BP_ERR_OVERFLOW`           | File, volume, or archive exceeds platform or format limits |
+| -9   | `BP_ERR_NAME_TOO_LONG`      | File name exceeds 65,501 bytes          |
+| -10  | `BP_ERR_UNSUPPORTED_METHOD` | Unknown compression method              |
+| -11  | `BP_ERR_COMPRESS`           | Compression backend call failed         |
+| -12  | `BP_ERR_DECOMPRESS`         | Decompression backend call failed       |
+| -13  | `BP_ERR_ABORTED`            | User cancelled (progress callback or volume prompt) |
+| -14  | `BP_ERR_NOT_FOUND`          | Named entry not found in archive        |
+| -15  | `BP_ERR_INVALID_ARG`        | NULL pointer or invalid parameter       |
+| -16  | `BP_ERR_PARTIAL`            | Some data or metadata could not be restored |
+| -17  | `BP_ERR_VOLUME`             | A volume is missing, belongs to another set, or has an unexpected number |
+
+---
+
+## 9. Conformance and Testing
+
+### 9.1 Decoder Conformance
+
+Every BoltPack reader **MUST:**
+
+1. Validate volume header magic and version, and reject archives whose format
+   version is not exactly 7.
+2. Validate volume trailers, the end record, and the complete file table
+   before extracting any entry (§5.3).
+3. Verify that every volume it opens belongs to the set and has the expected number.
+4. Support **method 0** (stored).
+5. Return `BP_ERR_UNSUPPORTED_METHOD` for any compressed method it does not implement.
+6. Compute and validate all CRC-32 values: volume headers and trailers, the
+   end record, the table, entry headers and trailers, blocks, and payloads.
+7. Handle zero-length entries, empty directories, and symlinks.
+8. Restore known modification times where representable, and report failures.
+9. Report clear error messages for all error conditions.
+
+Readers SHOULD support multi-volume archives. A reader that supports only
+single-volume archives MUST report a set whose end record has
+`volume_count > 1` with a clear message rather than as corruption.
+
+Full implementations SHOULD support all compressed methods:
+
+1. **Method 1** — BoltLite
+2. **Method 2** — BoltLZ
+3. **Method 3** — Fluff
+
+### 9.2 Encoder Conformance
+
+Every BoltPack writer **MUST:**
+
+1. Write every volume with a correct volume header (format version `0x0007`,
+   one new set ID per archive) and volume trailer.
+2. Write the archive stream in order, keep every structure whole within one
+   volume (§2.1), and never leave a volume body empty.
+3. Write correct entry trailers, file table, and end record.
+4. Abort the whole archive if an entry cannot be completed after its entry
+   header has been written (for example, a source file shrinks or cannot be
+   read). Format 7 has no way to mark a written entry as void.
+
+Every writer **SHOULD:**
+
+1. Set creator fields accurately (OS, CPU, BoltPack version).
+2. Choose compression method based on file characteristics:
+   - Method 3 (fluff) for text, source code, and other ratio-sensitive data.
+   - Method 2 (BoltLZ) for binary data and fast general-purpose compression.
+   - Method 1 (BoltLite) for constrained-memory or 16-bit targets.
+   - Raw blocks if compression saves < 1% (see Section 9.3).
+3. Choose an appropriate block size based on available memory (§2.3.2), and
+   fill the end of each volume with an end-of-volume block (§2.3.2).
+4. Preserve file metadata (mtime, entry type, platform codes).
+5. Start the file table on a new last volume when that keeps the whole table
+   and the end record in one volume and the current volume cannot hold them,
+   so that listing needs only the last volume.
+
+**Writing algorithm (informative).** The writer keeps the current volume
+open and knows how many bytes remain under its size limit after reserving 32
+bytes for the trailer. Before each structure it checks whether the structure
+fits. If a full block does not, it writes an end-of-volume block that fills
+the space left (§2.3.2). If any other structure does not fit, or after an
+end-of-volume block, it writes the trailer, closes the volume (asking for new
+media if needed), opens the next numbered volume, and writes its header. An
+entry header, table record or end record that would not fit even in an empty
+volume is an error (`BP_ERR_OVERFLOW`); with a 32-byte header and trailer, a
+volume must hold at least 64 bytes more than the largest of these. Blocks do
+not set a minimum, because they can be shortened. After
+the end record it writes the trailer with `BP_VOLUME_LAST`, closes the
+volume, and renames it to the archive name (§2.5). Nothing already written is
+ever read back or rewritten, so a writer needs no temporary copy of the
+archive and the output may be write-once media.
+
+**Volume size limits.** Writers take the limit from the user. A frontend
+MAY offer named sizes for common media; such presets SHOULD be the space
+available to one file on freshly formatted media, not the nominal capacity
+(for example 1,457,664 bytes for a 1.44 MB DOS diskette). Volume file sizes
+are limited by the platform's file size limits; a writer MUST report a limit
+the output filesystem cannot hold.
+
+### 9.3 Compression Method Selection Heuristic
+
+The **99% threshold rule** is recommended for encoder implementations:
+
+```c
+compressed_size = compress_block(original_data, block_size)
+
+if (compressed_size > (original_size * 99 / 100)) {
+    /* Savings less than 1%; store this block raw */
+    write_raw_block();
+} else {
+    /* Worthwhile compression savings */
+    write_compressed_block();
+}
+```
+
+This heuristic avoids decompression overhead for poorly-compressible data.
+
+### 9.4 BoltPack Interchange Profile 1
+
+This optional profile defines a practical archive subset for transfer to the
+smallest mini readers. A profile-conforming archive:
+
+1. Uses archive format 7 and only Stored (method 0) or BoltLite (method 1).
+2. Uses blocks no larger than 32 KiB. Writers SHOULD use 16 KiB blocks by default.
+3. Has at most 65,535 physical entries, counting directories, resource forks,
+   metadata, and symlinks, and no volume file larger than 2,147,483,647
+   bytes. A profile archive MAY have several volumes.
+4. Has no individual uncompressed entry larger than 4,294,967,295 bytes.
+5. Uses canonical relative UTF-8 paths as specified in §2.3. Destination APIs
+   may support a smaller subset and MUST report an unrepresentable or
+   colliding name before extracting that entry.
+
+BoltLZ and Fluff are optional extensions outside this profile. A target
+that implements only the profile MUST return `BP_ERR_UNSUPPORTED_METHOD` for
+those codecs. Writers that support the profile enforce its limits during
+creation and append. Full writers without the profile selected may produce
+larger or extended archives. Filesystem path limits and working-memory limits
+are separate capabilities and must be documented by each frontend.
+
+### 9.5 Editing Archives
+
+Adding entries to a **single-volume** archive in place is permitted: the
+writer validates the archive (§5.3, §5.4), then writes new entries over the
+old file table, followed by a new table, end record, and trailer. The set ID
+and creator fields are kept. Deleting entries produces a new archive with a
+new set ID.
+
+Editing a **multi-volume** archive in place is not defined by this
+specification. Implementations MAY refuse it, or MAY write a new set.
+
+---
+
+## 10. Format Extensibility and Future Compatibility
+
+### 10.1 Forward Compatibility
+
+To support future enhancements without breaking existing readers:
+
+1. **Entry header**: `header_size` allows fields to be added before
+   `header_crc`; format 7 readers reject other sizes because a new layout will
+   come with a new format version.
+2. **Volume header, volume trailer, end record**: `flags` and `reserved`
+   fields are reserved for future options (currently must be zero).
+3. **Compression methods**: New methods (4 is retired; 5, 6, ...) MAY be
+   assigned; readers without support MUST return `BP_ERR_UNSUPPORTED_METHOD`.
+4. **Checksum types**: `checksum_type` allows future algorithms (1 = CRC-32, 2 = SHA-256, etc.).
+5. **Entry flags**: Bits 12–13 of the entry `flags` field are reserved; new bits may be assigned without breaking old readers.
+
+### 10.2 Archive version policy
+
+Writers MUST emit archive version 7. Readers MUST reject every other version,
+including format 6, with `BP_ERR_VERSION` before interpreting any other
+structure. No conversion or compatibility decoding is performed; archives in
+format 6 must be extracted with a release that reads format 6 and created
+again.
+
+## 11. Reference Implementations
+
+### 11.1 Archive Library
+
+`src/core/archiver7.c` implements format 7 behind the `archiver.h` API, which
+adds volume sinks (`bp_archive_create_volumes`) and sources
+(`bp_archive_list_volumes`, `bp_archive_extract_volumes`,
+`bp_archive_test_volumes`, `bp_archive_info_volumes`); the functions that take
+one `bp_io_t` treat it as a one-volume set. The Linux CLI and the POSIX CLIs
+built from it use this core. The other frontends still build `archiver.c`
+(format 6) until they are ported, and cannot exchange archives with format 7
+builds in the meantime.
+
+The library is self-contained (includes BoltLite, BoltLZ, and Fluff codecs)
+and compiles with strict ANSI C89.
+
+### 11.2 Repository Test Coverage
+
+The repository ships test programs and regression suites in `test/`:
+
+1. `test/check_boltpack.py` — end-to-end archive creation and extraction checks.
+2. `make unit-test` — C unit suites in `test/unit/`.
+
+3. `test/unit/test_archive7.c` (`make unit-test`) — format 7 core: single
+   and multi-volume round trips for every codec, end-of-volume blocks, tables
+   spanning volumes, wrong, missing, truncated and foreign volumes, editing,
+   packed and parallel writers, and the volume size parser.
+4. `test/check_volumes.py` (`make volume-test`) — the Linux CLI: naming,
+   volume sizes, reading from any volume, refusals, and `--pause` media
+   changes.
+
+---
+
+## A. Glossary
+
+- **Archive:** A volume set of one or more volume files holding entries.
+- **Block:** A variable-length chunk of compressed data (8 KB to 256 KB) with its 12-byte header.
+- **Body:** The part of a volume between its header and trailer.
+- **Creator code:** OS or CPU identifier in the volume header (informational).
+- **End record:** The 48-byte structure at the end of the last volume that locates the file table.
+- **Entry:** A file, directory, symlink, or metadata record.
+- **End-of-volume block:** A block shorter than the entry's block size that ends a volume body so the volume is filled.
+- **Entry trailer:** The 16-byte structure after an entry's blocks holding its compressed size and checksum.
+- **Fluff:** BoltPack's native LZ77 + FSE/tANS codec (method 3).
+- **Little-endian:** Least-significant byte first; canonical byte order for this format.
+- **Location:** A volume number and a byte offset within that volume file.
+- **Metadata:** File creation time, platform origin, entry type.
+- **Method:** Compression algorithm (0=stored, 1=BoltLite, 2=BoltLZ, 3=fluff).
+- **Payload:** Uncompressed content of an entry.
+- **Set ID:** The 64-bit value that ties the volumes of one archive together.
+- **UTF-8:** Unicode text encoding for file names and paths.
+- **Volume:** One file of an archive; numbered from 0, the last carries the archive's name.
+
+---
+
+## B. References
+
+- **RFC 1950:** ZLIB Compressed Data Format Specification (Huffman coding, Adler-32)
+- **ANSI C89/C90:** ISO C language standard (for portable type definitions)
+- **ZIP format:** PKWARE AppNote (for design inspiration and compatibility lessons, including spanned archives)
+
+---
+
+**Document version:** 2.0 draft 2
+**Last updated:** 2026-11-20
+**Status:** Draft for review

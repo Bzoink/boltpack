@@ -24,7 +24,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPERS = ["qnx", "hpux", "irix", "nextstep", "sco", "tru64", "aix"]
-CORE = ["archiver", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"]
+# These wrappers include src/frontend/linux/main.c, which uses the archive
+# format 7 core.
+CORE = ["archiver7", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"]
 
 passes = 0
 failures = []

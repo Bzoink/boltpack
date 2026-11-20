@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Multi-volume archives (archive format 7, Linux CLI and the POSIX CLIs built
+  from it). `boltpack create -v 1.44M backup.bolt docs` splits an archive over
+  volumes of at most the given size, named `backup.000`, `backup.001`, ... with
+  the last one `backup.bolt`, for diskettes, CDs or other media. Sizes use
+  K, M, G (x1000) or Ki, Mi, Gi (x1024), so `1.44M`, `720K` and `700M` fit
+  their media. `--pause` asks for new media before each volume. The set is
+  written in one pass with no temporary copy, so it can go straight onto
+  removable media. List, test, extract and info accept any volume of a set
+  and ask for missing ones when run from a terminal; otherwise extraction
+  checks that every volume is present before writing anything. Each volume
+  records its set and number, so a wrong or damaged disk is recognised when it
+  is opened. A block at the end of a volume is cut to fill it, so volumes are
+  full to within a few hundred bytes and the block size is independent of the
+  volume size. Add and delete work on single-volume archives only.
+- Archive format 7 ([specification 2.0](docs/specification-2.0.md)) replaces
+  format 6 in these CLIs, for single-volume archives too. They read and write
+  format 7 only; the other frontends still read and write format 6 only, so
+  archives cannot be exchanged between the two groups until those frontends
+  are moved over. The format 6 core (`archiver.c`) remains for them; the new
+  core is `src/core/archiver7.c`.
+
 - Amiga CLI and GUI: when `BP_TZ_OFFSET` is not set, the time zone now comes
   from the Locale preferences (AmigaOS 2.1 and later), so file times are
   stored instead of being recorded as unknown. `locale.library` is opened only

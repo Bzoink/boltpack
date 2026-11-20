@@ -1,5 +1,28 @@
 # BoltPack archive format
 
+**Archive format 7** ([specification 2.0](specification-2.0.md)) is written
+and read by the Linux CLI and the POSIX CLIs built from it
+(`src/core/archiver7.c`). Every archive is a set of one or more volume files:
+
+- Each volume starts with a 32-byte volume header (magic `BOLT`, version 7,
+  64-bit set ID, volume number, creator) and ends with a 32-byte trailer (set
+  ID, number, last-volume flag, its own size).
+- Entries are an entry header (with its own CRC-32), blocks, and a 16-byte
+  entry trailer holding the compressed size and payload checksum, so the
+  writer never revisits what it has written.
+- The file table and a 48-byte end record are in the last volume. Table
+  records locate entries by volume number and offset.
+- No structure is split between volumes; a block at the end of a volume may be
+  shortened to fill it.
+- Volume names: `backup.000`, `backup.001`, ..., last `backup.bolt`. A
+  single-volume archive is just `backup.bolt`.
+
+The other frontends still use **archive format 6**, summarised below and
+defined by [specification 1.0](specification-1.0.md). The two formats share
+the codecs (methods 0-3) and block layout but are not interchangeable.
+
+## Format 6
+
 **Archive format:** 6, little-endian. Writers emit version 6 and readers
 reject every other version. The [normative specification](specification-1.0.md)
 defines every field and codec representation.

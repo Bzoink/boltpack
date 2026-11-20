@@ -31,7 +31,9 @@ typedef struct {
     bp_uint64   mtime;
     bp_uint16   flags;
     bp_uint16   header_size;
-    bp_uint64   offset;          /* byte offset in archive (set during list) */
+    bp_uint64   offset;          /* byte offset in archive (set during list);
+                                  * format 7: offset within `volume` */
+    bp_uint16   volume;          /* format 7: volume holding the entry header */
 } bp_entry_t;
 
 /* Packed entry blob plus metadata, used by queued cross-entry compression.
@@ -110,6 +112,7 @@ typedef struct {
     bp_uint8       *seq_out_buf;         /* cached sequential compress output buffer */
     bp_uint32       seq_buf_block_size;  /* block_size when seq bufs were allocated */
     void           *seq_boltlz_work;     /* cached encoder workspace; released with archive */
+    void           *v7;                  /* format 7 writer state (archiver7.c) */
 } bp_archive_t;
 
 /* --- Archive creation --------------------------------------------------- */
@@ -290,6 +293,10 @@ typedef struct {
     bp_uint64   total_original;
     bp_uint64   total_compressed;
     bp_uint32   method_counts[8]; /* [0]=stored [1]=BoltLite [2]=BoltLZ [3]=fluff [4-7]=reserved */
+    /* format 7 */
+    bp_uint16   volume_count;    /* volumes in the set (1 = single volume) */
+    bp_uint64   set_id;          /* set ID shared by every volume */
+    /* archive_size is the size of the last volume in format 7 */
 } bp_archive_info_t;
 
 /* Read archive header and file table to fill info struct. */
@@ -350,5 +357,71 @@ void bp_set_fast_fluff(bp_archive_t *ar, int nthreads);
  * -DBOLTPACK_FAST_FLUFF and -fopenmp, and must be called after archive create
  * and before adding entries. The archive method must be BP_METHOD_BOLTLZ. */
 void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads);
+
+/* --- Volume sets (archive format 7, archiver7.c only) --------------------
+ *
+ * A format 7 archive is a set of one or more volume files.  The functions
+ * above that take a single bp_io_t treat it as a one-volume set (and report
+ * BP_ERR_VOLUME for a multi-volume set).  The functions below reach the
+ * volumes through frontend callbacks, which own naming, opening, closing,
+ * and any prompting for removable media.
+ */
+
+/* Writing.  create() returns a new, empty stream for volume `number`
+ * (0-based; the frontend names it as a numbered volume).  finish() is called
+ * once for every created volume, after its trailer has been written (status
+ * BP_OK) or when the archive is abandoned (status != BP_OK).  is_last is set
+ * on the last volume, which the frontend renames to the archive name.  A
+ * nonzero return from finish() fails the archive. */
+typedef struct {
+    bp_io_t *(*create)(void *user, bp_uint16 number);
+    int      (*finish)(void *user, bp_io_t *io, bp_uint16 number,
+                       int is_last, int status);
+    void     *user;
+} bp_volume_sink_t;
+
+/* Create an archive written as volumes of at most volume_size bytes each
+ * (volume_size 0 = one volume of any size).  The sink is copied.  Use the
+ * normal add/pack/commit/finalize/close calls afterwards. */
+int bp_archive_create_volumes(bp_archive_t *ar, const bp_volume_sink_t *sink,
+                              bp_uint64 volume_size, bp_uint32 block_size,
+                              bp_uint8 method);
+
+/* After a successful bp_archive_finalize() on a single-stream archive
+ * (bp_archive_create/open_append), report the archive's size in bytes.  A
+ * frontend that appended in place truncates the file to this size. */
+int bp_archive_output_size(const bp_archive_t *ar, bp_uint64 *size);
+
+/* Mix frontend entropy (process id, clock) into future set IDs. */
+void bp_archive_add_entropy(bp_uint32 value);
+
+/* Reading.  open() returns a stream for volume `number`, or for the last
+ * volume when number is BP_VOLUME_LAST_REQUEST.  The last volume is always
+ * requested that way, never by its number, because it carries the archive
+ * name rather than a numbered one.  reason is BP_OK on the
+ * first request for that volume; otherwise it is the error that rejected the
+ * stream returned last time (BP_ERR_VOLUME: another set or the wrong volume;
+ * BP_ERR_MAGIC / BP_ERR_VERSION / BP_ERR_CORRUPT / BP_ERR_TRUNCATED: not a
+ * usable volume).  Return NULL to give up; the operation then fails with
+ * that reason (BP_ERR_VOLUME on a first request).  close() releases a
+ * stream; the core closes each volume before asking for another one. */
+typedef struct {
+    bp_io_t *(*open)(void *user, bp_uint16 number, int reason);
+    void     (*close)(void *user, bp_io_t *io);
+    void     *user;
+} bp_volume_source_t;
+
+int bp_archive_list_volumes(const bp_volume_source_t *src, bp_list_fn fn,
+                            void *user_data);
+int bp_archive_extract_volumes(const bp_volume_source_t *src,
+                               bp_extract_fn open_fn,
+                               bp_extract_done_status_fn done_fn,
+                               bp_progress_fn progress_fn, void *user_data);
+int bp_archive_test_volumes(const bp_volume_source_t *src, bp_test_fn fn,
+                            void *user_data, bp_progress_fn progress_fn,
+                            void *progress_data);
+int bp_archive_info_volumes(const bp_volume_source_t *src,
+                            bp_archive_info_t *info,
+                            bp_uint32 *sidecar_count);
 
 #endif /* BP_ARCHIVER_H */

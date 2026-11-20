@@ -1062,7 +1062,8 @@ headers, and fixed-width type definitions are byte-for-byte synchronized.
 
 | File | Role |
 | --- | --- |
-| `src/core/archiver.c` | Archive format read/write |
+| `src/core/archiver.c` | Archive format 6 read/write (frontends not yet on format 7) |
+| `src/core/archiver7.c` | Archive format 7 read/write, volume sets (Linux family) |
 | `src/core/compress.c` | boltlz compression wrapper |
 | `src/core/boltlite.c` | BoltLite codec |
 | `src/core/fluff.c` | fluff codec |

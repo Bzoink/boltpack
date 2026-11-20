@@ -46,6 +46,7 @@ SHARED_CORE_FILES = {
     "fluff.h",
 }
 INTENTIONALLY_NOT_COPIED = {
+    "archiver7.c",       # archive format 7; Classic Mac still builds format 6
     "boltpack_dll.c",
     "boltpack_dll.h",
     "bp_time.h",

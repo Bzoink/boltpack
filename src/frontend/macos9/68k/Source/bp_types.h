@@ -109,6 +109,13 @@ typedef struct {
  * is rejected before table or block data is interpreted. */
 #define BP_FORMAT_VERSION      6
 
+/* Archive format 7 (specification 2.0): volume sets.  Implemented by
+ * archiver7.c, which builds select instead of archiver.c while the
+ * frontends move over one by one. */
+#define BP_FORMAT7_VERSION     7
+#define BP_VOLUME_MAX_COUNT    1000U  /* volumes 0..999 */
+#define BP_VOLUME_LAST_REQUEST 0xFFFFU /* source request: "the last volume" */
+
 #define BP_MAGIC_0  0x42  /* 'B' */
 #define BP_MAGIC_1  0x4F  /* 'O' */
 #define BP_MAGIC_2  0x4C  /* 'L' */
@@ -283,6 +290,7 @@ typedef struct {
 #define BP_ERR_NOT_FOUND          -14
 #define BP_ERR_INVALID_ARG        -15
 #define BP_ERR_PARTIAL            -16 /* data or metadata could not be restored */
+#define BP_ERR_VOLUME             -17 /* volume missing, from another set, or out of order */
 
 /* --- I/O callback interface --------------------------------------------- */
 
