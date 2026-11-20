@@ -4,7 +4,8 @@
 and read by every CLI: the full CLIs (`src/core/archiver7.c`) and the mini
 frontends (16-bit DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini,
 `src/core/mini/archiver.c`, Stored and BoltLite writing, BoltLZ reading,
-blocks up to 32 KiB, volumes up to 2 GiB). The GUIs still use format 6.
+blocks up to 32 KiB, volumes up to 2 GiB). The Linux and Windows FLTK GUIs read and write single-volume format 7
+archives; the other GUIs still use format 6.
 Every archive is a set of one or more volume files:
 
 - Each volume starts with a 32-byte volume header (magic `BOLT`, version 7,

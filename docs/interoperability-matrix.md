@@ -54,7 +54,8 @@ remain unqualified.
 ## Core evidence
 
 - The full core `archiver.c` emits and accepts format 6 only and is now used
-  only by the GUIs. The format 7 core `archiver7.c`, used by every full CLI
+  only by the GUIs other than the Linux and Windows FLTK GUIs, which use
+  `archiver7.c` for single-volume archives and refuse a volume set. The format 7 core `archiver7.c`, used by every full CLI
   (Linux and the POSIX CLIs built from it, DOS, Windows, macOS, Haiku, OS/2,
   Plan 9, AmigaOS, Atari, X68000, QL and RISC OS), and the mini core, used by
   the DOS16, Win16, OS/2-16, CP/M-86 and Linux mini CLIs, emit and accept

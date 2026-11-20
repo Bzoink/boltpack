@@ -2687,7 +2687,7 @@ LINUX_GUI_CORE_OBJS = \
 linux-gui:
 	mkdir -p $(LINUX_GUI_BUILDDIR)
 	gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
-	    -c $(COREDIR)/archiver.c    -o $(LINUX_GUI_BUILDDIR)/archiver.o
+	    -c $(COREDIR)/archiver7.c    -o $(LINUX_GUI_BUILDDIR)/archiver.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/compress.c    -o $(LINUX_GUI_BUILDDIR)/compress.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/boltlite.c        -o $(LINUX_GUI_BUILDDIR)/boltlite.o
 	gcc $(GUI_CORE_FLAGS) -c $(COREDIR)/fluff.c       -o $(LINUX_GUI_BUILDDIR)/fluff.o
@@ -2729,12 +2729,12 @@ linux-gui-native-attrs-test: modern linux-gui
 .PHONY: linux-gui-interoperability-test
 LINUX_GUI_PREFIX_FIXTURE = $(LINUX_GUI_BUILDDIR)/prefix-conflict-fixture
 $(LINUX_GUI_PREFIX_FIXTURE): test/haiku_name_conflict_fixture.c \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
 	mkdir -p $(LINUX_GUI_BUILDDIR)
 	$(CC) -std=c89 -Wall -Wextra -Wno-unused-function \
 	    -I$(COREDIR) test/haiku_name_conflict_fixture.c \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c -lm -o $@
 
@@ -2926,7 +2926,7 @@ win64-fltk-gui:
 	fi
 	mkdir -p $(WIN64_FLTK_GUI_BUILDDIR)
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) \
-	    -c $(COREDIR)/archiver.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/archiver.o
+	    -c $(COREDIR)/archiver7.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/archiver.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
 	    -c $(COREDIR)/compress.c    -o $(WIN64_FLTK_GUI_BUILDDIR)/compress.o
 	x86_64-w64-mingw32-gcc $(GUI_CORE_FLAGS) \
@@ -3054,7 +3054,7 @@ win32-fltk-gui:
 	fi
 	mkdir -p $(WIN32_FLTK_GUI_BUILDDIR)
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) $(GUI_FAST_FLUFF_CPPFLAGS) $(GUI_FAST_FLUFF_LDFLAGS) -m32 \
-	    -c $(COREDIR)/archiver.c    -o $(WIN32_FLTK_GUI_BUILDDIR)/archiver.o
+	    -c $(COREDIR)/archiver7.c    -o $(WIN32_FLTK_GUI_BUILDDIR)/archiver.o
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 \
 	    -c $(COREDIR)/compress.c    -o $(WIN32_FLTK_GUI_BUILDDIR)/compress.o
 	i686-w64-mingw32-gcc $(GUI_CORE_FLAGS) -m32 \

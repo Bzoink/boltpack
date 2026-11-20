@@ -19,6 +19,8 @@ import tempfile
 import time
 import sys
 
+import bp_archive_bytes
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -466,23 +468,17 @@ def main() -> int:
         subprocess.run([str(cli), "t", str(created_archive)], check=True,
                        stdout=subprocess.DEVNULL)
         created_bytes = created_archive.read_bytes()
-        table_offset = struct.unpack_from("<Q", created_bytes,
-                                          len(created_bytes) - 20)[0]
-        entry_count = struct.unpack_from("<I", created_bytes,
-                                         table_offset + 4)[0]
-        if entry_count != 1:
+        created_records = bp_archive_bytes.records(created_bytes)
+        if len(created_records) != 1:
             raise SystemExit("GUI Profile 1 fixture has an unexpected entry count")
-        record = table_offset + 16
-        name_length = struct.unpack_from("<H", created_bytes, record)[0]
-        fields = record + 2 + name_length
-        stored_mtime = struct.unpack_from("<Q", created_bytes, fields + 18)[0]
-        entry_flags = struct.unpack_from("<H", created_bytes, fields + 41)[0]
+        stored_mtime = created_records[0]["mtime"]
+        entry_flags = created_records[0]["flags"]
         if stored_mtime != 0 or entry_flags & 0x4000:
             raise SystemExit("GUI stored a pre-1970 source time as known")
-        entry_offset = struct.unpack_from("<Q", created_bytes, fields + 26)[0]
-        inline = entry_offset + 4 + name_length
-        method = created_bytes[inline + 20]
-        block_size = struct.unpack_from("<I", created_bytes, inline + 22)[0]
+        created_header = bp_archive_bytes.entry_header(
+            created_bytes, created_records[0]["entry_offset"])
+        method = created_header["method"]
+        block_size = created_header["block_size"]
         if (method, block_size) != (1, 16384):
             raise SystemExit(
                 "GUI Profile 1 did not create BoltLite/16 KiB: "

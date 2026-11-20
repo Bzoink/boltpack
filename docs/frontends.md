@@ -2687,8 +2687,9 @@ first where the platform's rename does not replace).
 The OS/2 16-bit and CP/M-86 mini CLIs read and write archive format 7 but
 have no `-v`: the OS/2 16-bit build's single code segment is 64,503 of 65,536
 bytes (the volume code would need the program split over segments), and the
-CP/M-86 toolchain is not installed here. The GUIs still build the format 6
-core.
+CP/M-86 toolchain is not installed here. The Linux and Windows FLTK GUIs
+read and write format 7 archives of one volume and tell the user to use the
+CLI for a set; the other GUIs still build the format 6 core.
 
 On AmigaOS 2.04 the format 7 core must not call `time()`: libnix links its
 time-zone and locale startup code, which opens `locale.library` and stops the

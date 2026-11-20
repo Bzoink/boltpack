@@ -1774,8 +1774,11 @@ Before any output it validates the whole file table, and for a one-volume
 archive it also walks every entry's framing. The 16-bit DOS, Win16, OS/2
 16-bit, CP/M-86 and Linux mini CLIs use it.
 
-The GUIs still build `archiver.c` (format 6) until they are ported, and
-cannot exchange archives with format 7 builds in the meantime.
+The Linux and Windows FLTK GUIs also use this core, for single-volume
+archives: they report a volume set as needing the command-line tool. The
+other GUIs (Win32 and .NET, Haiku, Amiga, Atari, macOS) still build
+`archiver.c` (format 6) until they are ported, and cannot exchange archives
+with format 7 builds in the meantime.
 
 The library is self-contained (includes BoltLite, BoltLZ, and Fluff codecs)
 and compiles with strict ANSI C89.
