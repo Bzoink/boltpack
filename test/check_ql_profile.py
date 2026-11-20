@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 
+import bp_archive_bytes
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXPECTED = json.loads((ROOT / "test/reference/interoperability/ql-profile-host.json")
                       .read_text(encoding="utf-8"))
@@ -94,15 +96,12 @@ def entry_times(path):
 
 
 def corrupt_first_payload(path):
+    """Flip a payload byte of the first entry that has one, without
+    updating its block CRC."""
     archive = bytearray(pathlib.Path(path).read_bytes())
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    record = table_offset + 16
-    name_length = struct.unpack_from("<H", archive, record)[0]
-    fields = record + 2 + name_length
-    entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
-    inline_fields = entry_offset + 4 + name_length
-    block_data = inline_fields + 38 + 12  # v3 block header precedes data
-    archive[block_data] ^= 0x40
+    first = next(r for r in bp_archive_bytes.records(archive)
+                 if r["original_size"] > 0)
+    archive[bp_archive_bytes.first_block_data(archive, first["entry_offset"])] ^= 0x40
     pathlib.Path(path).write_bytes(archive)
 
 

@@ -29,6 +29,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import bp_archive_bytes
+
 
 FILE_ATTRIBUTE_HIDDEN = 0x00000002
 FILE_ATTRIBUTE_SYSTEM = 0x00000004
@@ -183,40 +185,17 @@ def check_archive_attributes_after_edit(path: Path, operation: str) -> None:
 
 def primary_entry_properties(path: Path) -> dict[str, tuple[int, int]]:
     archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = {}
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", archive, record)[0]
-        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        entry_type = archive[fields + 16]
-        entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
-        inline = entry_offset + 4 + name_length
-        method = archive[inline + 20]
-        block_size = struct.unpack_from("<I", archive, inline + 22)[0]
-        if entry_type in (0, 3, 4):
-            entries[name] = (method, block_size)
-        record = fields + 43
-    return entries
+    properties = {}
+    for r in bp_archive_bytes.records(archive):
+        if r["entry_type"] in (0, 3, 4):
+            header = bp_archive_bytes.entry_header(archive, r["entry_offset"])
+            properties[r["name"]] = (header["method"], header["block_size"])
+    return properties
 
 
 def primary_entry_times(path: Path) -> dict[str, tuple[int, int]]:
-    archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = {}
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", archive, record)[0]
-        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
-        entries[name] = (mtime, flags)
-        record = fields + 43
-    return entries
+    return {r["name"]: (r["mtime"], r["flags"])
+            for r in bp_archive_bytes.records(path.read_bytes())}
 
 
 def main() -> int:

@@ -40,6 +40,24 @@
 #endif
 #endif
 
+/* Optional ARM-state match scan (link boltlz_arm.S). GCCSDK targets
+ * without unaligned loads otherwise use memcpy for each prefix and word
+ * comparison. Reuse the prefix and keep naturally aligned table entries. */
+#ifndef BOLTLZ_ARM_ASM
+#define BOLTLZ_ARM_ASM 0
+#endif
+#if BOLTLZ_ARM_ASM
+#if !defined(__arm__) || !defined(__ARMEL__) || defined(__thumb__)
+#error "BOLTLZ_ARM_ASM needs little-endian ARM state"
+#endif
+#ifndef BOLTLZ_HASH_CACHE
+#define BOLTLZ_HASH_CACHE 1
+#endif
+#ifndef BOLTLZ_NARROW_TABLE
+#define BOLTLZ_NARROW_TABLE 0
+#endif
+#endif
+
 #ifndef BOLTLZ_HASH_BITS
 #define BOLTLZ_HASH_BITS 13
 #endif
@@ -167,7 +185,8 @@
     (BOLTLZ_PIPELINE != 0 && BOLTLZ_PIPELINE != 1) || \
     (BOLTLZ_FULL_CAPACITY != 0 && BOLTLZ_FULL_CAPACITY != 1) || \
     (BOLTLZ_M68K != 0 && BOLTLZ_M68K != 1) || \
-    (BOLTLZ_M68K_ASM != 0 && BOLTLZ_M68K_ASM != 1)
+    (BOLTLZ_M68K_ASM != 0 && BOLTLZ_M68K_ASM != 1) || \
+    (BOLTLZ_ARM_ASM != 0 && BOLTLZ_ARM_ASM != 1)
 #error "BoltLZ experiment switches must be zero or one"
 #endif
 #if BOLTLZ_M68K && defined(__BYTE_ORDER__) && \

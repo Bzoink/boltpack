@@ -9,6 +9,8 @@ import struct
 import subprocess
 import tempfile
 
+import bp_archive_bytes
+
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "test/reference/interoperability/riscos-host.json"
 EXPECTED = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -39,22 +41,9 @@ def verify_tree(path):
 
 
 def primary_mtimes(path):
-    archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = {}
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", archive, record)[0]
-        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        entry_type = archive[fields + 16]
-        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
-        if entry_type in (0, 3, 4):
-            entries[name] = (mtime, flags)
-        record = fields + 43
-    return entries
+    return {r["name"]: (r["mtime"], r["flags"])
+            for r in bp_archive_bytes.records(path.read_bytes())
+            if r["entry_type"] in (0, 3, 4)}
 
 
 def main():
@@ -88,7 +77,7 @@ def main():
                 raise RuntimeError("pre-epoch RISC OS time was not encoded unknown: " +
                                    suffix)
         info = run([args.linux_boltpack.resolve(), "i", archive], root).stdout
-        if "Format version: 6" not in info or "RISC OS" not in info or "ARM" not in info:
+        if "Format version: 7" not in info or "RISC OS" not in info or "ARM" not in info:
             raise RuntimeError("RISC OS writer identity/profile missing from info:\n" + info)
         if "BoltLite" not in info:
             raise RuntimeError("Profile 1 writer did not select BoltLite:\n" + info)

@@ -417,7 +417,7 @@ all-tiers: tier3 tier4
 WCX_SRCDIR = src/frontend/win_wcx
 WCX_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -I$(COREDIR) -I$(BOLTLZDIR)
 WCX_SRCS   = $(WCX_SRCDIR)/boltpack_wcx.c \
-             $(COREDIR)/archiver.c \
+             $(COREDIR)/archiver7.c \
              $(COREDIR)/compress.c \
              $(COREDIR)/boltlite.c \
              $(COREDIR)/fluff.c \
@@ -429,7 +429,7 @@ WIN_SRCDIR = src/frontend/win
 WIN_FLAGS  = -Wall -Wextra -Wno-unused-function -O2 -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -I$(COREDIR) -I$(BOLTLZDIR)
 WIN_SRCS   = $(WIN_SRCDIR)/main.c \
              $(WIN_SRCDIR)/bp_net_win.c \
-             $(COREDIR)/archiver.c \
+             $(COREDIR)/archiver7.c \
              $(COREDIR)/compress.c \
              $(COREDIR)/boltlite.c \
              $(COREDIR)/fluff.c \
@@ -814,7 +814,7 @@ amiga68k:
 	rm -f $(AMIGA68K_BUILDDIR)/BoltPack $(AMIGA68K_BUILDDIR)/boltpack-gui
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -869,7 +869,7 @@ atari-cli:
 	rm -f $(ATARI_BUILDDIR)/boltpack $(ATARI_BUILDDIR)/boltpack.ttp
 	$(ATARI_CC) $(ATARI_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -886,7 +886,7 @@ atari-cli-source-race-test:
 	$(ATARI_CC) $(ATARI_CFLAGS) -DBP_TEST_PAUSE_AFTER_SOURCE_STAT \
 	    -DBP_TEST_PAUSE_AFTER_SOURCE_OPEN \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c \
 	    src/frontend/atari/main.c $(BOLTLZDIR)/boltlz.c \
 	    -o $(ATARI_SOURCE_RACE_BIN)
@@ -901,7 +901,7 @@ atari-cli-parent-race-test: modern
 	$(ATARI_CC) $(ATARI_CFLAGS) -DBP_ATARI_TEST_PAUSE_BEFORE_ROOT_CHECK \
 	    -DBP_ATARI_TEST_PAUSE_AFTER_EXTRACT_STAGE \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c \
 	    src/frontend/atari/main.c $(BOLTLZDIR)/boltlz.c \
 	    -o $(ATARI_PARENT_RACE_BIN)
@@ -995,7 +995,7 @@ macos9-68k: macos9-core-sync-test
 	$(if $(MACOS68K_ASM_OBJ),$(MACOS68K_ENV) $(MACOS68K_CC) $(if $(M68K_CPU),-m$(M68K_CPU)) -c $(M68K_ASM_SRCS) -o $(MACOS68K_ASM_OBJ))
 	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1012,7 +1012,7 @@ macos9-68k: macos9-core-sync-test
 	    $(MACOS68K_BUILDDIR)/.rsrc/BoltPack
 	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1050,7 +1050,7 @@ macos9-ppc-xcoff:
 	$(MACOS68K_ENV) $(MACOS9_PPC_CC) -O2 \
 	    -I$(RETRO68_ROOT)/universal/CIncludes \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1070,7 +1070,7 @@ macosx:
 	mkdir -p $(MACOSX_BUILDDIR)
 	$(MACOSX_CC) $(MACOSX_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1134,7 +1134,7 @@ haiku:
 	mkdir -p $(HAIKU_BUILDDIR)
 	$(HAIKU_CC) $(HAIKU_CFLAGS) -DBOLTPACK_NET \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1167,7 +1167,7 @@ riscos:
 	mkdir -p $(RISCOS_BUILDDIR)
 	$(RISCOS_CC) $(RISCOS_CFLAGS) $(RISCOS_BOLTLZ_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1271,7 +1271,7 @@ aros:
 	mkdir -p $(AROS_BUILDDIR)
 	$(AROS_CC) $(AROS_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1291,7 +1291,7 @@ amigaos4:
 	mkdir -p $(AMIGAOS4_BUILDDIR)
 	$(AMIGAOS4_CC) $(AMIGAOS4_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1311,7 +1311,7 @@ morphos:
 	mkdir -p $(MORPHOS_BUILDDIR)
 	$(MORPHOS_CC) $(MORPHOS_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1460,7 +1460,7 @@ os2:
 	mkdir -p $(OS2_BUILDDIR)
 	$(OS2_CC) $(OS2_CFLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/fluff.c \
@@ -1474,7 +1474,7 @@ os2:
 # default ANSI-compatible mode for this target.
 os2-watcom:
 	mkdir -p $(OS2_WATCOM_BUILDDIR)
-	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/archiver.obj $(COREDIR)/archiver.c
+	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/archiver.obj $(COREDIR)/archiver7.c
 	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/compress.obj $(COREDIR)/compress.c
 	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/boltlite.obj $(COREDIR)/boltlite.c
 	$(MINI_ENV) $(WATCOM_BIN)/wcc386 $(OS2_WATCOM_FLAGS) $(OS2_WATCOM_INCS) -fo=$(OS2_WATCOM_BUILDDIR)/fluff.obj $(COREDIR)/fluff.c
@@ -1531,7 +1531,7 @@ ql:
 	cd src/frontend/ql
 	if ! PATH="$(QL_CC_DIR):$$PATH" $(QL_CC) $(QL_CFLAGS) $(QL_ASM) \
 	    -I../../core -I../../../$(BOLTLZDIR) \
-	    ../../core/archiver.c \
+	    ../../core/archiver7.c \
 	    ../../core/compress.c \
 	    ../../core/boltlite.c \
 	    ../../core/fluff.c \
@@ -1560,12 +1560,12 @@ ql-host-test:
 	    -DBP_CREATOR_OS=BP_OS_QL -DBP_CREATOR_CPU=BP_CPU_M68K \
 	    -DBP_QL_HOST_TEST \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
-	    -Isrc/core src/core/archiver.c src/core/compress.c \
+	    -Isrc/core src/core/archiver7.c src/core/compress.c \
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/ql/main.c src/core/boltlz.c -o $(QL_HOST_BIN)
 	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
-	    -Isrc/core test/ql_host/create_collision_archive.c src/core/archiver.c \
+	    -Isrc/core test/ql_host/create_collision_archive.c src/core/archiver7.c \
 	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
 	    src/core/bp_codepage.c src/core/boltlz.c \
 	    -o $(QL_HOST_DIR)/create_collision_archive
@@ -1646,7 +1646,7 @@ x68k:
 	mkdir -p $(X68K_BUILDDIR)
 	$(X68K_ENV) $(X68K_CC) $(X68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/archiver7.c \
 	    $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c \
 	    $(COREDIR)/bp_codepage.c \
@@ -1673,12 +1673,12 @@ x68k-host-test:
 	    -DX68K_HOST_TEST \
 	    -DBP_CREATOR_OS=BP_OS_X68K -DBP_CREATOR_CPU=BP_CPU_M68K \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
-	    -Itest/x68k_host -Isrc/core src/core/archiver.c src/core/compress.c \
+	    -Itest/x68k_host -Isrc/core src/core/archiver7.c src/core/compress.c \
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/x68k/main.c test/x68k_host/dos_stub.c src/core/boltlz.c \
 	    -o $(X68K_HOST_BIN)
 	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Isrc/core \
-	    test/x68k_host/create_collision_archive.c src/core/archiver.c \
+	    test/x68k_host/create_collision_archive.c src/core/archiver7.c \
 	    src/core/compress.c src/core/boltlite.c src/core/boltlz.c \
 	    src/core/fluff.c -o $(X68K_HOST_DIR)/create_collision_archive
 	$(MAKE) CC=$(CC) all linuxmini
@@ -1698,18 +1698,18 @@ plan9-host-test:
 	$(CC) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -Isrc/core test/plan9_host/create_collision_archive.c \
-	    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+	    src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
 	    src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c \
 	    -o $(PLAN9_HOST_DIR)/create_collision_archive
 	$(CC) -D_DEFAULT_SOURCE -std=gnu89 -Wno-main -Wall -Wextra \
 	    -Wno-unused-function -O2 \
 	    -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
-	    -Itest/plan9_host -Isrc/core src/core/archiver.c src/core/compress.c \
+	    -Itest/plan9_host -Isrc/core src/core/archiver7.c src/core/compress.c \
 	    src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
 	    src/frontend/plan9/main.c test/plan9_host/plan9_stubs.c src/core/boltlz.c \
 	    -o $(PLAN9_HOST_BIN)
 	$(CC) -ansi -pedantic -Wall -Wextra -O2 -Isrc/core \
-	    test/plan9_host/check_target_metadata.c src/core/archiver.c \
+	    test/plan9_host/check_target_metadata.c src/core/archiver7.c \
 	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
 	    src/core/bp_codepage.c src/core/boltlz.c \
 	    -o $(PLAN9_META_CHECK)
@@ -1764,7 +1764,7 @@ riscos-stage-host-test:
 	$(CC) -m32 -D_DEFAULT_SOURCE -std=c89 -Wall -Wextra \
 	    -Wno-unused-function -DBP_VERSION_MAJOR=$(BP_VERSION_MAJOR) \
 	    -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) -Itest/riscos_host -Isrc/core \
-	    test/unit/test_riscos_staged_extract.c src/core/archiver.c \
+	    test/unit/test_riscos_staged_extract.c src/core/archiver7.c \
 	    src/core/compress.c src/core/boltlite.c src/core/fluff.c \
 	    src/core/bp_codepage.c src/core/boltlz.c -lm \
 	    -o build/riscos-stage-test/test
@@ -1778,7 +1778,7 @@ riscos-profile-host-test: modern linuxmini
 	    -DBP_VERSION_MINOR=$(BP_VERSION_MINOR) \
 	    -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32 \
 	    -Itest/riscos_host -Isrc/core test/riscos_host/profile_fixture.c \
-	    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+	    src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
 	    src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c -lm \
 	    -o build/riscos-profile-test/boltpack-riscos-host
 	python3 test/check_riscos_profile.py \
@@ -1969,7 +1969,7 @@ amiga68k-publish-failure-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_FAIL_PUBLISH \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PUBLISH_TEST_BIN)
@@ -1979,7 +1979,7 @@ amiga68k-publish-pause-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_BACKUP \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PUBLISH_PAUSE_TEST_BIN)
@@ -1990,7 +1990,7 @@ amiga68k-native-publish-pause-test:
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_BACKUP \
 	    -DBP_TEST_PAUSE_MARKER \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_NATIVE_PUBLISH_PAUSE_BIN)
@@ -2000,7 +2000,7 @@ amiga68k-source-pause-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_SOURCE_OPEN \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_SOURCE_PAUSE_TEST_BIN)
@@ -2010,7 +2010,7 @@ amiga68k-parent-substitution-test:
 	mkdir -p $(AMIGA68K_BUILDDIR)
 	$(AMIGA68K_CC) $(AMIGA68K_CFLAGS) -DBP_TEST_PAUSE_AFTER_EXTRACT_STAGE \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
-	    $(COREDIR)/archiver.c $(COREDIR)/compress.c \
+	    $(COREDIR)/archiver7.c $(COREDIR)/compress.c \
 	    $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c src/frontend/amiga/main.c \
 	    $(BOLTLZDIR)/boltlz.c -o $(AMIGA_PARENT_SUBSTITUTION_TEST_BIN)

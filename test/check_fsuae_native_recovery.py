@@ -285,7 +285,7 @@ def main():
         ROOT / "test/check_fsuae_native_recovery.py",
         ROOT / "test/reference/interoperability/amiga-native-recovery.json",
         ROOT / "src/frontend/amiga/main.c",
-        ROOT / "src/core/archiver.c",
+        ROOT / "src/core/archiver7.c",
         ROOT / "src/core/compress.c",
         ROOT / "src/core/boltlite.c",
         ROOT / "src/core/boltlz.c",

@@ -72,12 +72,23 @@ BL_FORCE_INLINE bp_uint32 bl_hash_value(bp_uint32 value)
     return (bp_uint32)((bp_uint16)(lo * 0x9E37U) >> (16 - BL_HASH_BITS));
 }
 #else
+#if BOLTLZ_ARM_ASM
+BL_FORCE_INLINE bp_uint32 bl_load32(const bp_uint8 *p)
+{
+    return (bp_uint32)p[0] | ((bp_uint32)p[1] << 8) |
+           ((bp_uint32)p[2] << 16) | ((bp_uint32)p[3] << 24);
+}
+
+bp_uint32 bl_arm_count(const bp_uint8 *current, const bp_uint8 *previous,
+                       bp_uint32 length);
+#else
 static bp_uint32 bl_load32(const bp_uint8 *p)
 {
     bp_uint32 value;
     memcpy(&value, p, 4);
     return value;
 }
+#endif
 
 BL_FORCE_INLINE bp_uint32 bl_hash_value(bp_uint32 value)
 {
@@ -261,6 +272,10 @@ static
 bp_uint32 bl_count(const bp_uint8 *src, bp_uint32 size,
                          bp_uint32 pos, bp_uint32 ref)
 {
+#if BOLTLZ_ARM_ASM
+    /* The caller has already verified the four-byte prefix. */
+    return 4 + bl_arm_count(src + pos + 4, src + ref + 4, size - pos - 4);
+#else
     bp_uint32 length;
 #if BOLTLZ_WORD_MATCH && (defined(__GNUC__) || defined(__clang__)) && \
     defined(__BYTE_ORDER__) && \
@@ -324,6 +339,7 @@ bp_uint32 bl_count(const bp_uint8 *src, bp_uint32 size,
     while (length < size - pos && src[pos + length] == src[ref + length])
         length++;
     return length;
+#endif
 }
 
 #if BOLTLZ_INLINE_FIND

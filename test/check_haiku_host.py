@@ -5,9 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import stat
-import struct
 import tempfile
-import zlib
+
+import bp_archive_bytes
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,64 +23,30 @@ def run(command, cwd=None, expected=0, env=None):
 
 
 def primary_times(path):
-    archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = {}
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", archive, record)[0]
-        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        entry_type = archive[fields + 16]
-        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
-        if entry_type in (0, 3, 4):
-            entries[name] = (mtime, flags)
-        record = fields + 43
-    return entries
+    return {r["name"]: (r["mtime"], r["flags"])
+            for r in bp_archive_bytes.records(path.read_bytes())
+            if r["entry_type"] in (0, 3, 4)}
 
 
 def haiku_meta_payload(path, subject):
-    archive = path.read_bytes()
-    offset = 32
-    while offset + 4 <= len(archive):
-        header_size, name_length = struct.unpack_from("<HH", archive, offset)
-        if header_size < 42 + name_length or offset + header_size > len(archive):
-            break
-        name_start = offset + 4
-        name = archive[name_start:name_start + name_length].decode("utf-8")
-        fields = name_start + name_length
-        original_size = struct.unpack_from("<Q", archive, fields)[0]
-        compressed_size = struct.unpack_from("<Q", archive, fields + 8)[0]
-        entry_type = archive[fields + 26]
-        platform = archive[fields + 27]
-        payload_start = offset + header_size
-        if name == subject and entry_type == 2 and platform == 0x14:
-            if compressed_size != original_size + 12:
+    parsed = bp_archive_bytes.parse7(path.read_bytes())
+    for e in parsed["entries"]:
+        if e["name"] == subject.encode("utf-8") and e["entry_type"] == 2 and \
+                e["platform"] == 0x14:
+            if e["method"] != 0 or len(e["blocks"]) != 1:
                 raise RuntimeError("stored Haiku metadata payload has unexpected size")
-            block_size, block_original = struct.unpack_from("<II", archive,
-                                                              payload_start)
-            if block_size != original_size or block_original != original_size:
+            orig, data = e["blocks"][0]
+            if orig != e["original_size"] or len(data) != orig:
                 raise RuntimeError("Haiku metadata block lengths are inconsistent")
-            return archive[payload_start + 12:payload_start + 12 + original_size]
-        offset = payload_start + compressed_size
+            return data
     raise RuntimeError("archive has no Haiku metadata record for " + subject)
 
 
 def set_first_entry_mode(source, target, mode):
-    archive = bytearray(source.read_bytes())
-    table_offset, table_size = struct.unpack_from("<QQ", archive, len(archive) - 20)
-    record = table_offset + 16
-    name_length = struct.unpack_from("<H", archive, record)[0]
-    fields = record + 2 + name_length
-    entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
-    flags = (struct.unpack_from("<H", archive, fields + 41)[0] & 0x4000) | 0x8000 | mode
-    struct.pack_into("<H", archive, fields + 41, flags)
-    struct.pack_into("<H", archive, entry_offset + 4 + name_length + 36, flags)
-    struct.pack_into("<I", archive, 24, zlib.crc32(archive[table_offset:table_offset + table_size]))
-    struct.pack_into("<I", archive, 28, zlib.crc32(archive[:28]))
-    target.write_bytes(archive)
+    parsed = bp_archive_bytes.parse7(source.read_bytes())
+    first = parsed["entries"][0]
+    first["flags"] = (first["flags"] & 0x4000) | 0x8000 | mode
+    target.write_bytes(bp_archive_bytes.build7(parsed))
 
 
 def main():
@@ -120,7 +86,7 @@ def main():
     host_compile = [args.cc, "-ansi", "-pedantic", "-Wall", "-Wextra",
          "-Wno-unused-function", "-Wno-overlength-strings", "-D_DEFAULT_SOURCE",
          "-I" + str(stub), "-I" + str(ROOT / "src/core"),
-         str(ROOT / "src/core/archiver.c"),
+         str(ROOT / "src/core/archiver7.c"),
          str(ROOT / "src/core/compress.c"),
          str(ROOT / "src/core/boltlite.c"),
          str(ROOT / "src/core/fluff.c"),
@@ -132,7 +98,7 @@ def main():
     run([args.cc, "-ansi", "-pedantic", "-Wall", "-Wextra",
          "-D_DEFAULT_SOURCE", "-I" + str(ROOT / "src/core"),
          str(ROOT / "test/haiku_name_conflict_fixture.c"),
-         str(ROOT / "src/core/archiver.c"),
+         str(ROOT / "src/core/archiver7.c"),
          str(ROOT / "src/core/compress.c"),
          str(ROOT / "src/core/boltlite.c"),
          str(ROOT / "src/core/fluff.c"),
@@ -801,16 +767,9 @@ def main():
 
     # A valid archive timestamp outside the host's signed range must report
     # partial, preserve link data and never touch the target.
-    huge_link = bytearray((work / "safe-link.blt").read_bytes())
-    huge_table, huge_table_size = struct.unpack_from("<QQ", huge_link, len(huge_link) - 20)
-    huge_name = struct.unpack_from("<H", huge_link, huge_table + 16)[0]
-    huge_fields = huge_table + 18 + huge_name
-    huge_inline = 32 + 4 + huge_name
-    struct.pack_into("<Q", huge_link, huge_fields + 18, 1 << 63)
-    struct.pack_into("<Q", huge_link, huge_inline + 28, 1 << 63)
-    struct.pack_into("<I", huge_link, 24,
-                     zlib.crc32(huge_link[huge_table:huge_table + huge_table_size]))
-    struct.pack_into("<I", huge_link, 28, zlib.crc32(huge_link[:28]))
+    huge_parsed = bp_archive_bytes.parse7((work / "safe-link.blt").read_bytes())
+    huge_parsed["entries"][0]["mtime"] = 1 << 63
+    huge_link = bp_archive_bytes.build7(huge_parsed)
     huge_archive = work / "huge-link-time.blt"
     huge_archive.write_bytes(huge_link)
     huge_output = work / "huge-link-time-output"
@@ -874,24 +833,9 @@ def main():
 
     # Construct a structurally valid link whose target exceeds the Haiku
     # frontend buffer, without relying on the host filesystem's link limit.
-    oversized = bytearray((work / "safe-link.blt").read_bytes())
-    table_offset, table_size = struct.unpack_from("<QQ", oversized, len(oversized) - 20)
-    name_length = struct.unpack_from("<H", oversized, 34)[0]
-    inline = 36 + name_length
-    header_size = struct.unpack_from("<H", oversized, 32)[0]
-    payload_offset = 32 + header_size
-    target_bytes = b"a" * 4096
-    oversized[payload_offset:table_offset] = target_bytes
-    table_offset = payload_offset + len(target_bytes)
-    fields = table_offset + 16 + 2 + name_length
-    checksum = zlib.crc32(target_bytes)
-    struct.pack_into("<QQI", oversized, inline, len(target_bytes), len(target_bytes), checksum)
-    struct.pack_into("<QQ", oversized, fields, len(target_bytes), len(target_bytes))
-    struct.pack_into("<I", oversized, fields + 37, checksum)
-    struct.pack_into("<Q", oversized, len(oversized) - 20, table_offset)
-    struct.pack_into("<Q", oversized, 16, len(oversized))
-    struct.pack_into("<I", oversized, 24, zlib.crc32(oversized[table_offset:table_offset + table_size]))
-    struct.pack_into("<I", oversized, 28, zlib.crc32(oversized[:28]))
+    oversized_parsed = bp_archive_bytes.parse7((work / "safe-link.blt").read_bytes())
+    bp_archive_bytes.set_payload(oversized_parsed["entries"][0], b"a" * 4096)
+    oversized = bp_archive_bytes.build7(oversized_parsed)
     oversized_archive = work / "oversized-link.blt"
     oversized_archive.write_bytes(oversized)
     run([str(args.linux_boltpack.resolve()), "t", str(oversized_archive)])

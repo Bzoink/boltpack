@@ -43,7 +43,7 @@
  * Cross-compilation from Linux:
  *   arm64-apple-macosx11-clang -ansi -pedantic -Wall -Wextra -O2 \
  *       -I src/core                           \
- *       src/core/compress.c src/core/archiver.c                  \
+ *       src/core/compress.c src/core/archiver7.c                  \
  *       src/core/bp_codepage.c                                   \
  *       src/frontend/macosx/main.c                               \
  *       src/core/boltlz.c                               \

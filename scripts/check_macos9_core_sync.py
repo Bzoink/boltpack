@@ -8,7 +8,7 @@ SHARED = ROOT / "src/core"
 COPIED = ROOT / "src/frontend/macos9/68k/Source"
 CORE_FILES = (
     "archive_name.h",
-    "archiver.c",
+    "archiver7.c",
     "archiver.h",
     "boltlite.c",
     "boltlite.h",
@@ -28,7 +28,7 @@ CORE_FILES = (
 SUPPORT_FILES = ("mini/stack_probe.h",)
 SHARED_CORE_FILES = {
     "archive_name.h",
-    "archiver.c",
+    "archiver7.c",
     "archiver.h",
     "boltlite.c",
     "boltlite.h",
@@ -46,7 +46,7 @@ SHARED_CORE_FILES = {
     "fluff.h",
 }
 INTENTIONALLY_NOT_COPIED = {
-    "archiver7.c",       # archive format 7; Classic Mac still builds format 6
+    "archiver.c",        # archive format 6; Classic Mac builds format 7
     "boltpack_dll.c",
     "boltpack_dll.h",
     "bp_time.h",

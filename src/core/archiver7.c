@@ -356,14 +356,17 @@ void bp_archive_add_entropy(bp_uint32 value)
     g_v7_entropy = bp_crc32(g_v7_entropy ^ 0x5A17C0DEUL, b, 8);
 }
 
-static bp_uint64 v7_new_set_id(const void *salt)
+/* A new set ID in *id.  The stack address goes through a volatile: the
+ * RISC OS GCC 4.7 otherwise turns its low byte into a move from sp and
+ * stops with an internal compiler error. */
+static void v7_new_set_id(const void *salt, bp_uint64 *id)
 {
     bp_uint8 b[32];
-    bp_uint64 id;
+    volatile unsigned long stack_addr = (unsigned long)(size_t)&b;
     unsigned long t = (unsigned long)time(NULL);
     unsigned long c = (unsigned long)clock();
     unsigned long a = (unsigned long)(size_t)salt;
-    unsigned long s = (unsigned long)(size_t)&b;
+    unsigned long s = stack_addr;
 
     g_v7_counter++;
     memset(b, 0, sizeof(b));
@@ -377,10 +380,9 @@ static bp_uint64 v7_new_set_id(const void *salt)
     bp_write_le32(b + 24, (bp_uint32)((t >> 32) ^ (a >> 32)));
     bp_write_le32(b + 28, (bp_uint32)((s >> 32) ^ (c >> 32)));
 #endif
-    id.lo = bp_crc32(0, b, sizeof(b));
-    id.hi = bp_crc32(id.lo ^ 0x9E3779B9UL, b, sizeof(b));
-    if (id.lo == 0 && id.hi == 0) id.lo = 1;
-    return id;
+    id->lo = bp_crc32(0, b, sizeof(b));
+    id->hi = bp_crc32(id->lo ^ 0x9E3779B9UL, b, sizeof(b));
+    if (id->lo == 0 && id->hi == 0) id->lo = 1;
 }
 
 /* ---- structure encoders ------------------------------------------------ */
@@ -682,7 +684,7 @@ static int v7_init(bp_archive_t *ar, bp_uint32 block_size, bp_uint8 method)
     w = (v7w_t *)calloc(1, sizeof(*w));
     if (w == NULL) return BP_ERR_NOMEM;
     ar->v7 = w;
-    w->set_id = v7_new_set_id(ar);
+    v7_new_set_id(ar, &w->set_id);
     return BP_OK;
 }
 
@@ -888,6 +890,31 @@ static int write_block_now(bp_archive_t *ar, const bp_uint8 *comp,
     return rc;
 }
 
+/* floor(x * y / z) without floating point (some targets link no soft-float
+ * library), saturating at 0xFFFFFFFF; z == 0 also saturates. */
+static bp_uint32 v7_muldiv(bp_uint32 x, bp_uint32 y, bp_uint32 z)
+{
+    bp_uint32 xl = x & 0xFFFFUL, xh = (x >> 16) & 0xFFFFUL;
+    bp_uint32 yl = y & 0xFFFFUL, yh = (y >> 16) & 0xFFFFUL;
+    bp_uint32 ll = xl * yl, lh = xl * yh, hl = xh * yl, hh = xh * yh;
+    bp_uint32 mid = (ll >> 16) + (lh & 0xFFFFUL) + (hl & 0xFFFFUL);
+    bp_uint32 lo = (ll & 0xFFFFUL) | ((mid & 0xFFFFUL) << 16);
+    bp_uint32 hi = hh + (lh >> 16) + (hl >> 16) + (mid >> 16);
+    int i;
+
+    if (z == 0 || hi >= z) return 0xFFFFFFFFUL;
+    for (i = 0; i < 32; i++) {          /* (hi:lo) / z, hi < z throughout */
+        bp_uint32 carry = (hi >> 31) & 1UL;
+        hi = ((hi << 1) | (lo >> 31)) & 0xFFFFFFFFUL;
+        lo = (lo << 1) & 0xFFFFFFFFUL;
+        if (carry || hi >= z) {
+            hi = (hi - z) & 0xFFFFFFFFUL;
+            lo |= 1UL;
+        }
+    }
+    return lo;
+}
+
 /* Choose and write the largest piece of orig[0..olen) that, compressed on
  * its own, fits in `room` bytes of block data.  Returns its length. */
 static int write_fitting_piece(bp_archive_t *ar, bp_uint8 method,
@@ -898,7 +925,7 @@ static int write_fitting_piece(bp_archive_t *ar, bp_uint8 method,
     v7w_t *w = W(ar);
     bp_uint32 a, best_a = 0, pl;
     int tries, rc;
-    double est;
+    bp_uint32 est;
 
     rc = split_ensure(ar, method, olen);
     if (rc != BP_OK) return rc;
@@ -920,23 +947,25 @@ static int write_fitting_piece(bp_archive_t *ar, bp_uint8 method,
         bp_uint32 slack = room / 256U < 128U ? 128U : room / 256U;
         int out_holds_best = 0;
 
-        est = hint_clen > 0 ? (double)room * (double)olen / (double)hint_clen
-                            : (double)room;
-        est *= 0.98;
+        est = hint_clen > 0 ? v7_muldiv(room, olen, hint_clen) : room;
+        est -= est / 50U;                          /* 98% */
         for (tries = 0; tries < 12; tries++) {
             if (best_a > 0 && too_pl > 0) {
                 /* Both ends known: interpolate between them (the local
                  * ratio, which differs from the block average when the
                  * data changes character), bisecting every third try. */
-                if (tries % 3 == 2 || too_pl <= best_pl)
-                    est = (double)best_a + (double)(too_big - best_a) * 0.5;
+                bp_uint32 want = room - best_pl;   /* > slack: not yet full */
+                if (tries % 3 == 2 || too_pl <= best_pl || want <= slack / 2U)
+                    est = best_a + (too_big - best_a) / 2U;
                 else
-                    est = (double)best_a + ((double)(room - best_pl) - (double)slack * 0.5) *
-                          (double)(too_big - best_a) / (double)(too_pl - best_pl);
+                    est = best_a + v7_muldiv(want - slack / 2U,
+                                             too_big - best_a,
+                                             too_pl - best_pl);
+                if (est < best_a) est = 0xFFFFFFFFUL;   /* wrapped */
             }
-            if (est >= (double)too_big) a = too_big - 1U;
-            else if (est < 1.0) a = 1;
-            else a = (bp_uint32)est;
+            if (est >= too_big) a = too_big - 1U;
+            else if (est < 1U) a = 1;
+            else a = est;
             if (a <= best_a || a >= too_big) a = best_a + (too_big - best_a) / 2U;
             if (a <= best_a || a >= too_big) break;
             rc = compress_piece(ar, method, orig, a, &pl);
@@ -946,12 +975,12 @@ static int write_fitting_piece(bp_archive_t *ar, bp_uint8 method,
                 best_pl = pl;
                 out_holds_best = 1;
                 if (a == olen || room - pl <= slack) break;
-                est = (double)a * (double)room / (double)(pl ? pl : 1);
+                est = v7_muldiv(a, room, pl ? pl : 1U);
             } else {
                 too_big = a;
                 too_pl = pl;
                 out_holds_best = 0;
-                est = (double)a * ((double)room - (double)slack * 0.5) / (double)pl;
+                est = v7_muldiv(a, room - slack / 2U, pl);
             }
         }
         if (best_a < room && best_a < olen) {

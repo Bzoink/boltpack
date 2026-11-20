@@ -17,7 +17,7 @@
  * Cross-compilation from Linux:
  *   os2-gcc -ansi -Wall -Wextra -O2                        \
  *       -I src/core                     \
- *       src/core/archiver.c src/core/compress.c            \
+ *       src/core/archiver7.c src/core/compress.c            \
  *       src/core/bp_codepage.c                             \
  *       src/frontend/os2/main.c                            \
  *       src/core/boltlz.c                         \

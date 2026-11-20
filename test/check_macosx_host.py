@@ -20,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 
+import bp_archive_bytes
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_DIR = None
@@ -93,7 +95,7 @@ def write_run_record():
         ROOT / "src/frontend/posix/path.h",
         ROOT / "test/macosx_stubs/sys/xattr.h",
         ROOT / "test/unit/test_posix_restore_mode.c",
-        ROOT / "src/core/archiver.c",
+        ROOT / "src/core/archiver7.c",
         ROOT / "src/core/compress.c",
         ROOT / "src/core/boltlite.c",
         ROOT / "src/core/boltlz.c",
@@ -210,7 +212,7 @@ def build_host_cli(cc, output):
         "-ansi", "-pedantic", "-Wall", "-Wextra", "-Wno-unused-function",
         "-O2", "-DBP_VERSION_MAJOR=1", "-DBP_VERSION_MINOR=9",
         "-I" + str(ROOT / "src/core"),
-        str(ROOT / "src/core/archiver.c"),
+        str(ROOT / "src/core/archiver7.c"),
         str(ROOT / "src/core/compress.c"),
         str(ROOT / "src/core/boltlite.c"),
         str(ROOT / "src/core/fluff.c"),
@@ -223,37 +225,14 @@ def build_host_cli(cc, output):
 
 
 def primary_mtimes(path):
-    archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
-    count = struct.unpack_from("<I", archive, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = {}
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", archive, record)[0]
-        name = archive[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        entry_type = archive[fields + 16]
-        mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
-        if entry_type in (0, 3, 4):
-            entries[name] = (mtime, flags)
-        record = fields + 43
-    return entries
+    return {r["name"]: (r["mtime"], r["flags"])
+            for r in bp_archive_bytes.records(Path(path).read_bytes())
+            if r["entry_type"] in (0, 3, 4)}
 
 
 def archive_entries(path):
-    data = Path(path).read_bytes()
-    table_offset = struct.unpack_from("<Q", data, len(data) - 20)[0]
-    count = struct.unpack_from("<I", data, table_offset + 4)[0]
-    record = table_offset + 16
-    entries = []
-    for _ in range(count):
-        name_length = struct.unpack_from("<H", data, record)[0]
-        name = data[record + 2:record + 2 + name_length].decode("utf-8")
-        fields = record + 2 + name_length
-        entries.append((name, data[fields + 16]))
-        record = fields + 43
-    return entries
+    return [(r["name"], r["entry_type"])
+            for r in bp_archive_bytes.records(Path(path).read_bytes())]
 
 
 def check_apple_branches_syntax(cc):

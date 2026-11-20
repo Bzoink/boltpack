@@ -127,7 +127,7 @@ build_cli() {
         -arch "$arch_flag" \
         -DBP_CREATOR_CPU=$creator_cpu \
         -Isrc/core  \
-        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
+        src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         src/frontend/macosx/main.c \

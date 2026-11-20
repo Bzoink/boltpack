@@ -133,7 +133,7 @@ def main():
         ROOT / "test/reference/interoperability/amiga-host-directory.json",
         ROOT / "src/frontend/atari/main.c",
         ROOT / "src/frontend/amiga/main.c",
-        ROOT / "src/core/archiver.c",
+        ROOT / "src/core/archiver7.c",
         ROOT / "src/core/compress.c",
     )
     result = {

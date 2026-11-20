@@ -26,7 +26,7 @@
  * Cross-compilation from Linux:
  *   x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
  *       -I src/core                         \
- *       src/core/compress.c src/core/archiver.c                \
+ *       src/core/compress.c src/core/archiver7.c                \
  *       src/core/bp_codepage.c                                 \
  *       src/frontend/haiku/main.c                              \
  *       src/core/boltlz.c                             \

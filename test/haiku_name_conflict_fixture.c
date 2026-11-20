@@ -35,41 +35,46 @@ static void fixture_io(bp_io_t *io, FILE *fp)
     io->handle = fp;
 }
 
+/* Rename the first entry of a single-volume format 7 archive in its entry
+ * header and table record, and recompute the entry header, table and end
+ * record CRCs, so only the name check can refuse it. */
 static int mutate_archive_name(FILE *fp, const char *replacement,
                                unsigned int name_length)
 {
     long file_size;
     unsigned char *bytes;
+    unsigned long end, table_pos, table_len, header_size;
     bp_uint64 table_offset, table_size;
-    unsigned long table_pos, table_len;
     int ok = 0;
 
     if (fflush(fp) != 0 || fseek(fp, 0, SEEK_END) != 0) return -1;
     file_size = ftell(fp);
-    if (file_size < (long)(BP_HEADER_SIZE + BP_FOOTER_SIZE) ||
-        fseek(fp, 0, SEEK_SET) != 0) return -1;
+    if (file_size < 32L + 48L + 32L || fseek(fp, 0, SEEK_SET) != 0) return -1;
     bytes = (unsigned char *)malloc((size_t)file_size);
     if (bytes == NULL) return -1;
     if (fread(bytes, 1, (size_t)file_size, fp) != (size_t)file_size)
         goto done;
-    table_offset = bp_read_le64(bytes + file_size - BP_FOOTER_SIZE);
-    table_size = bp_read_le64(bytes + file_size - BP_FOOTER_SIZE + 8);
-    if (table_offset.hi != 0 || table_size.hi != 0 ||
-        table_offset.lo > (bp_uint32)file_size ||
-        table_size.lo > (bp_uint32)file_size - table_offset.lo ||
-        table_offset.lo + BP_TABLE_HDR_V3 + 2U + name_length >
-            table_offset.lo + table_size.lo ||
-        bp_read_le16(bytes + table_offset.lo + BP_TABLE_HDR_V3) != name_length ||
+    end = (unsigned long)file_size - 32UL - 48UL;
+    table_offset = bp_read_le64(bytes + end + 16);
+    table_size = bp_read_le64(bytes + end + 24);
+    header_size = 34UL + name_length;
+    if (memcmp(bytes + end + 44, "TLOB", 4) != 0 ||
+        table_offset.hi != 0 || table_size.hi != 0 ||
+        table_offset.lo + table_size.lo != end ||
+        bp_read_le16(bytes + 32) != header_size ||
+        bp_read_le16(bytes + 34) != name_length ||
+        bp_read_le16(bytes + table_offset.lo + 16) != name_length ||
         name_length != 4U || strlen(replacement) != name_length)
         goto done;
-    table_pos = table_offset.lo + BP_TABLE_HDR_V3 + 2U;
+    table_pos = table_offset.lo + 16UL + 2UL;
     table_len = table_size.lo;
-    memcpy(bytes + BP_HEADER_SIZE + 4U, replacement, name_length);
+    memcpy(bytes + 36, replacement, name_length);
     memcpy(bytes + table_pos, replacement, name_length);
-    bp_write_le32(bytes + BP_HEADER_TABLE_CRC_OFF,
+    bp_write_le32(bytes + 32 + header_size - 4,
+                  bp_crc32(0, bytes + 32, header_size - 4));
+    bp_write_le32(bytes + end + 12,
                   bp_crc32(0, bytes + table_offset.lo, table_len));
-    bp_write_le32(bytes + BP_HEADER_CRC_OFF,
-                  bp_crc32(0, bytes, BP_HEADER_CRC_OFF));
+    bp_write_le32(bytes + end + 40, bp_crc32(0, bytes + end, 40));
     if (fseek(fp, 0, SEEK_SET) != 0 ||
         fwrite(bytes, 1, (size_t)file_size, fp) != (size_t)file_size ||
         fflush(fp) != 0)

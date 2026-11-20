@@ -7,6 +7,8 @@ import struct
 import subprocess
 import tempfile
 
+import bp_archive_bytes
+
 
 def run_windows(binary: str, wine: str, *args: str, cwd: pathlib.Path,
                 check: bool = True):
@@ -48,18 +50,8 @@ def make_fixture(linux: str, root: pathlib.Path, directory: str,
 
 
 def archive_entries(path: pathlib.Path):
-    data = path.read_bytes()
-    table = struct.unpack_from("<Q", data, len(data) - 20)[0]
-    count = struct.unpack_from("<I", data, table + 4)[0]
-    record = table + 16
-    entries = []
-    for _ in range(count):
-        name_len = struct.unpack_from("<H", data, record)[0]
-        name = data[record + 2:record + 2 + name_len].decode("utf-8")
-        fields = record + 2 + name_len
-        entries.append((name, data[fields + 16]))
-        record = fields + 43
-    return entries
+    return [(r["name"], r["entry_type"])
+            for r in bp_archive_bytes.records(path.read_bytes())]
 
 
 def check_rejected_append(binary: str, wine: str, archive: pathlib.Path,
