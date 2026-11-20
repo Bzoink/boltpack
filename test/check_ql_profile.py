@@ -36,9 +36,19 @@ def run(binary, *args, cwd, env=None):
     return subprocess.run(command, cwd=cwd, capture_output=True, env=env)
 
 
+def table_layout(archive):
+    """Return (format, table offset, record tail size) of a single-volume
+    archive in format 6 (header and footer) or format 7 (volume set)."""
+    version = struct.unpack_from("<H", archive, 4)[0]
+    if version == 7:
+        end_record = len(archive) - 32 - 48
+        return 7, struct.unpack_from("<Q", archive, end_record + 16)[0], 45
+    return 6, struct.unpack_from("<Q", archive, len(archive) - 20)[0], 43
+
+
 def entry_properties(path):
     archive = pathlib.Path(path).read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    version, table_offset, tail = table_layout(archive)
     count = struct.unpack_from("<I", archive, table_offset + 4)[0]
     record = table_offset + 16
     entries = {}
@@ -46,21 +56,27 @@ def entry_properties(path):
         name_length = struct.unpack_from("<H", archive, record)[0]
         name = archive[record + 2:record + 2 + name_length].decode("utf-8")
         fields = record + 2 + name_length
-        entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
-        inline_fields = entry_offset + 4 + name_length
         entry_type = archive[fields + 16]
+        if version == 7:
+            entry_offset = struct.unpack_from("<Q", archive, fields + 28)[0]
+            inline_fields = entry_offset + 4 + name_length
+            method_at, block_at = inline_fields + 8, inline_fields + 10
+        else:
+            entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
+            inline_fields = entry_offset + 4 + name_length
+            method_at, block_at = inline_fields + 20, inline_fields + 22
         if entry_type in (0, 3, 4):
             entries[name] = (
-                archive[inline_fields + 20],
-                struct.unpack_from("<I", archive, inline_fields + 22)[0],
+                archive[method_at],
+                struct.unpack_from("<I", archive, block_at)[0],
             )
-        record = fields + 43
+        record = fields + tail
     return entries
 
 
 def entry_times(path):
     archive = pathlib.Path(path).read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    version, table_offset, tail = table_layout(archive)
     count = struct.unpack_from("<I", archive, table_offset + 4)[0]
     record = table_offset + 16
     entries = {}
@@ -70,10 +86,10 @@ def entry_times(path):
         fields = record + 2 + name_length
         entry_type = archive[fields + 16]
         mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
+        flags = struct.unpack_from("<H", archive, fields + tail - 2)[0]
         if entry_type in (0, 3, 4):
             entries[name] = (mtime, flags)
-        record = fields + 43
+        record = fields + tail
     return entries
 
 

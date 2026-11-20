@@ -1,8 +1,8 @@
 # BoltPack archive format
 
 **Archive format 7** ([specification 2.0](specification-2.0.md)) is written
-and read by the Linux CLI and the POSIX CLIs built from it
-(`src/core/archiver7.c`). Every archive is a set of one or more volume files:
+and read by the Linux CLI, the POSIX CLIs built from it, and the 32-bit DOS
+CLI (`src/core/archiver7.c`). Every archive is a set of one or more volume files:
 
 - Each volume starts with a 32-byte volume header (magic `BOLT`, version 7,
   64-bit set ID, volume number, creator) and ends with a 32-byte trailer (set

@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Multi-volume archives (archive format 7, Linux CLI and the POSIX CLIs built
-  from it). `boltpack create -v 1.44M backup.bolt docs` splits an archive over
+- Multi-volume archives (archive format 7: the Linux CLI, the POSIX CLIs built
+  from it, and the 32-bit DOS CLI). `boltpack create -v 1.44M backup.bolt docs`
+  splits an archive over
   volumes of at most the given size, named `backup.000`, `backup.001`, ... with
   the last one `backup.bolt`, for diskettes, CDs or other media. Sizes use
   K, M, G (x1000) or Ki, Mi, Gi (x1024), so `1.44M`, `720K` and `700M` fit
@@ -15,7 +16,10 @@
   records its set and number, so a wrong or damaged disk is recognised when it
   is opened. A block at the end of a volume is cut to fill it, so volumes are
   full to within a few hundred bytes and the block size is independent of the
-  volume size. Add and delete work on single-volume archives only.
+  volume size. Add and delete work on single-volume archives only. On DOS a
+  diskette set is typically `boltpack c -v 1.44M --pause A:\BACKUP.BLT DOCS`,
+  giving `BACKUP.000`, `BACKUP.001`, ... `BACKUP.BLT`; DOS volumes are limited
+  to 2 GiB.
 - Archive format 7 ([specification 2.0](docs/specification-2.0.md)) replaces
   format 6 in these CLIs, for single-volume archives too. They read and write
   format 7 only; the other frontends still read and write format 6 only, so

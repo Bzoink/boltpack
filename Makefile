@@ -77,11 +77,11 @@ WIN64_BUILDDIR = build/win64
 TOTALCMD_PLUGIN_README = packaging/totalcmd-plugin/README.txt
 
 # Frontends built from src/frontend/linux/main.c (the Linux CLI and the POSIX
-# wrappers that include it) use the archive format 7 core, archiver7.c, which
-# writes volume sets.  Every other frontend still builds archiver.c, the
+# wrappers that include it) and the full DOS CLI use the archive format 7
+# core, archiver7.c, which writes volume sets.  Every other frontend still builds archiver.c, the
 # format 6 core, until it is moved over.
 FORMAT7_FRONTENDS = linux aix illumos irix freebsd netbsd tru64 hpux hurd \
-                    zos nextstep openbsd qnx solaris sco
+                    zos nextstep openbsd qnx solaris sco dos
 CORE_ARCHIVER = $(if $(filter $(FRONTEND),$(FORMAT7_FRONTENDS)),archiver7,archiver)
 
 CORE_OBJS  = $(BUILDDIR)/core/$(CORE_ARCHIVER).o \
@@ -164,6 +164,8 @@ dos-host-test:
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
 	python3 test/check_dos_profile.py \
 	    --boltpack build/dos-host-test/boltpack --linux-boltpack build/linux/boltpack
+	python3 test/check_volumes.py --boltpack build/dos-host-test/boltpack \
+	    --flavor dos
 
 # QNX, unidentified/pre-7.3 AIX, HP-UX, IRIX, NeXTSTEP, SCO, and Tru64 have no
 # openat() family, so they extract by pathname, which cannot stop another
@@ -318,7 +320,9 @@ $(BUILDDIR)/frontend/main.o: src/frontend/posix/extract_paths.h \
 	                          src/frontend/common/x68000_target_name.h \
 	                          src/frontend/common/target_utf8_preflight.h \
 	                          src/frontend/common/volume_size.h \
-	                          src/frontend/posix/volume_files.h
+	                          src/frontend/common/volume_files.h \
+	                          src/frontend/posix/volume_files.h \
+	                          src/frontend/dos/dos_volumes.h
 
 # boltlz vendored codec: compiled with warnings suppressed (lib code, strict
 # C89 port kept in src/core; the C89 port already suppresses the fallthrough
@@ -1927,6 +1931,14 @@ dos-djgpp-dosboxx-fat12-test: modern dos-djgpp
 	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
 	python3 test/check_djgpp_dosboxx.py --cwsdpmi "$(CWSDPMI)" \
 	    --dos-cc "$(DOS_CC)"
+
+# Volume sets (archive format 7) with the DJGPP DOS CLI: a set written onto a
+# FAT12 1.44 MB floppy image, read back, replaced, and exchanged with Linux.
+.PHONY: dos-djgpp-dosboxx-volume-test
+dos-djgpp-dosboxx-volume-test: modern dos-djgpp
+	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
+	python3 test/check_djgpp_dosboxx_volumes.py --cwsdpmi "$(CWSDPMI)" \
+	    --dosbox-x "$(DOSBOX_X)"
 
 .PHONY: dos-djgpp-parent-race-test
 dos-djgpp-parent-race-test: modern dos-djgpp-parent-race

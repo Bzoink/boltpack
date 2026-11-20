@@ -3651,10 +3651,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
 
     rc = extract_preflight_archive(&src);
     if (rc != BP_OK) {
-        if (vf.aborted || vf.problem[0] || rc == BP_ERR_VOLUME ||
-            rc == BP_ERR_MAGIC || rc == BP_ERR_VERSION || rc == BP_ERR_CORRUPT ||
-            rc == BP_ERR_TRUNCATED || rc == BP_ERR_IO)
-            vol_report(&vf, rc, bp_strerror);
+        if (vf.aborted || vf.problem[0])
+            vol_report(&vf, rc, bp_strerror);   /* a volume was at fault */
         else
             fprintf(stderr, "boltpack: archive has names that cannot be mapped safely: %s\n",
                     bp_strerror(rc));
@@ -3667,19 +3665,8 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
         bp_archive_info_t vinfo;
         rc = bp_archive_info_volumes(&src, &vinfo, NULL);
         vol_source_done(&vf);
-        if (rc == BP_OK) {
-            unsigned v;
-            for (v = 0; v + 1U < vinfo.volume_count; v++) {
-                char name[BP_VOL_PATH_MAX + 8];
-                vol_numbered_name(&vf, v, name, sizeof(name));
-                if (!vol_exists(name)) {
-                    fprintf(stderr,
-                            "boltpack: %s (volume %u of %u) is missing; nothing was extracted\n",
-                            name, v + 1U, (unsigned)vinfo.volume_count);
-                    return 1;
-                }
-            }
-        }
+        if (rc == BP_OK && !vol_all_present(&vf, vinfo.volume_count))
+            return 1;
     }
 
 #if defined(BP_REFUSE_PATH_RACE_EXTRACTION) && \

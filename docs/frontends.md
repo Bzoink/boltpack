@@ -513,6 +513,40 @@ python3 test/check_dos_profile.py --boltpack build/dos-host-test/boltpack \
   --mini-boltpack build/linux32mini/bpmini
 ```
 
+### DOS: Volume sets
+
+The DOS CLI reads and writes archive format 7, including volume sets for
+diskettes. `boltpack c -v 1.44M --pause A:\BACKUP.BLT DOCS` asks for a disk
+before each volume and writes `BACKUP.000`, `BACKUP.001`, ... `BACKUP.BLT`;
+`boltpack x -o C:\RESTORE A:\BACKUP.BLT` reads the last disk for the file
+table and then asks for each disk in turn. Volumes are written as `BPxxxxxx.TMP`
+siblings and moved into place with a no-replace rename, after any old file of
+that name (from an earlier set) is removed. Paths may use `\`, `/` or a drive prefix. Volume sizes are limited
+to 2 GiB. The shared naming, prompting and reading code is in
+`src/frontend/common/volume_files.h`; `src/frontend/dos/dos_volumes.h` holds
+the DOS hooks.
+
+The host build runs the same volume checks as Linux:
+
+```sh
+make dos-host-test
+python3 test/check_volumes.py --boltpack build/dos-host-test/boltpack --flavor dos
+```
+
+The DJGPP build is checked under DOSBox-X with
+`make dos-djgpp-dosboxx-volume-test CWSDPMI=/path/to/CWSDPMI.EXE`: a set is
+written onto a FAT12 1.44 MB floppy image (answering `--pause` from a file),
+listed, tested and extracted through either volume, replaced by a smaller set,
+refused when a volume is missing, and exchanged with the Linux CLI both ways.
+DOSBox-X cannot answer the prompts one at a time, so disk swapping is checked
+with the host build instead. Rewriting a set on a full diskette needs room for
+the new volume beside the old files, so use an empty disk for a new set.
+
+The test sets `FNCASE=y`. Without it DJGPP reports 8.3 names in lower case,
+which the DOS CLI then stores in archives and, on a DOS without long file
+names, refuses to extract again; this predates format 7. The 16-bit `dos16`
+mini build still reads and writes format 6 only.
+
 It runs the mini reader as a native 32-bit Linux process on this host. `make dos-djgpp` builds the DOS
 executable when the `i586-pc-msdosdjgpp-gcc` toolchain is available. To run
 the full frontend on DOSBox-X FAT12, provide `CWSDPMI.EXE` from DJGPP's
@@ -1063,7 +1097,7 @@ headers, and fixed-width type definitions are byte-for-byte synchronized.
 | File | Role |
 | --- | --- |
 | `src/core/archiver.c` | Archive format 6 read/write (frontends not yet on format 7) |
-| `src/core/archiver7.c` | Archive format 7 read/write, volume sets (Linux family) |
+| `src/core/archiver7.c` | Archive format 7 read/write, volume sets (Linux family, 32-bit DOS) |
 | `src/core/compress.c` | boltlz compression wrapper |
 | `src/core/boltlite.c` | BoltLite codec |
 | `src/core/fluff.c` | fluff codec |

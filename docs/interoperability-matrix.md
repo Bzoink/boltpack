@@ -54,8 +54,8 @@ remain unqualified.
 ## Core evidence
 
 - The full core `archiver.c` and the mini core emit and accept format 6 only.
-  The format 7 core `archiver7.c`, used by the Linux CLI and the POSIX CLIs
-  built from it, emits and accepts format 7 only, single- and multi-volume;
+  The format 7 core `archiver7.c`, used by the Linux CLI, the POSIX CLIs
+  built from it, and the 32-bit DOS CLI, emits and accepts format 7 only, single- and multi-volume;
   archives do not cross between the two groups.
 - Both cores validate counted UTF-8 names, canonical relative path components,
   primary-name uniqueness, inline/table agreement, and supplementary-group

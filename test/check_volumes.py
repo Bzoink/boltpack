@@ -2,7 +2,12 @@
 """Integration tests for multi-volume archives (archive format 7).
 
 Usage:
-    python3 test/check_volumes.py [--boltpack PATH] [--verbose]
+    python3 test/check_volumes.py [--boltpack PATH] [--flavor linux|dos]
+                                  [--verbose]
+
+--flavor dos runs the same checks against the DOS CLI (for example the host
+build from `make dos-host-test`), which has no -2 option (BoltLZ is its
+default) and stores no symbolic links.
 
 Covers creating volume sets with -v, reading them from any volume, naming,
 volume sizes, stale-volume clean-up, missing/foreign/truncated volumes,
@@ -23,6 +28,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAILS = []
 VERBOSE = False
+FLAVOR = "linux"
 
 
 def check(cond, what):
@@ -63,7 +69,8 @@ def make_tree(base):
     for i in range(30):
         with open(os.path.join(src, "sub", "small%02d.txt" % i), "wb") as f:
             f.write(b"small file %d\n" % i * (i + 1))
-    os.symlink("text.txt", os.path.join(src, "link"))
+    if FLAVOR != "dos":
+        os.symlink("text.txt", os.path.join(src, "link"))
     return src
 
 
@@ -84,6 +91,11 @@ def same_tree(a, b):
                for d in cmp.common_dirs)
 
 
+def boltlz():
+    """Option list selecting BoltLZ."""
+    return [] if FLAVOR == "dos" else ["-2"]
+
+
 def volumes(d, stem="backup"):
     return sorted(n for n in os.listdir(d)
                   if n.startswith(stem + ".") and n != stem + ".tmp")
@@ -95,7 +107,8 @@ def test_basic(bp, work, src):
                         ("-0", "1.44M"), ("-F", "64Ki")):
         d = tempfile.mkdtemp(dir=work)
         shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
-        rc, out, err = run(bp, ["c", codec, "-v", size, "backup.bolt", "src"], d)
+        opts = boltlz() if codec == "-2" else [codec]
+        rc, out, err = run(bp, ["c"] + opts + ["-v", size, "backup.bolt", "src"], d)
         check(rc == 0, "create %s -v %s (%s)" % (codec, size, err.strip()[-200:]))
         names = volumes(d)
         limit = {"200K": 200000, "300K": 300000, "250000": 250000,
@@ -161,8 +174,8 @@ def test_errors(bp, work, src):
     print("missing, foreign and truncated volumes; editing sets")
     d = tempfile.mkdtemp(dir=work)
     shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
-    run(bp, ["c", "-2", "-v", "200K", "backup.bolt", "src"], d)
-    run(bp, ["c", "-2", "-v", "200K", "other.bolt", "src"], d)
+    run(bp, ["c"] + boltlz() + ["-v", "200K", "backup.bolt", "src"], d)
+    run(bp, ["c"] + boltlz() + ["-v", "200K", "other.bolt", "src"], d)
     os.rename(os.path.join(d, "backup.002"), os.path.join(d, "away"))
     rc, out, err = run(bp, ["x", "-o", "out", "backup.bolt"], d, stdin=b"")
     check(rc != 0 and "backup.002" in err and "nothing was extracted" in err and
@@ -235,8 +248,8 @@ def test_pause(bp, work, src):
     os.mkdir(drive)
     disks = []
 
-    s = Session(bp, ["c", "-2", "-v", "300K", "--pause", "drive/backup.bolt",
-                     "src"], d)
+    s = Session(bp, ["c"] + boltlz() + ["-v", "300K", "--pause",
+                                       "drive/backup.bolt", "src"], d)
     prompts = 0
     while True:
         text = s.wait_prompt()
@@ -315,13 +328,15 @@ def test_pause(bp, work, src):
 
 
 def main():
-    global VERBOSE
+    global VERBOSE, FLAVOR
     ap = argparse.ArgumentParser()
     ap.add_argument("--boltpack",
                     default=os.path.join(ROOT, "build", "linux", "boltpack"))
+    ap.add_argument("--flavor", choices=("linux", "dos"), default="linux")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
     VERBOSE = a.verbose
+    FLAVOR = a.flavor
     bp = os.path.abspath(a.boltpack)
     work = tempfile.mkdtemp(prefix="bpvol_")
     try:

@@ -1,7 +1,7 @@
 # BoltPack Specification v2.0
 
 **Format Version:** 7 (only)
-**Software Version:** next release (Linux CLI family)
+**Software Version:** next release (Linux CLI family, 32-bit DOS CLI)
 **Status:** Draft; implemented by `src/core/archiver7.c`
 **Last updated:** 2026-11-20
 
@@ -1758,8 +1758,8 @@ again.
 adds volume sinks (`bp_archive_create_volumes`) and sources
 (`bp_archive_list_volumes`, `bp_archive_extract_volumes`,
 `bp_archive_test_volumes`, `bp_archive_info_volumes`); the functions that take
-one `bp_io_t` treat it as a one-volume set. The Linux CLI and the POSIX CLIs
-built from it use this core. The other frontends still build `archiver.c`
+one `bp_io_t` treat it as a one-volume set. The Linux CLI, the POSIX CLIs
+built from it, and the 32-bit DOS CLI use this core. The other frontends still build `archiver.c`
 (format 6) until they are ported, and cannot exchange archives with format 7
 builds in the meantime.
 

@@ -20,7 +20,7 @@ make
 | File | Purpose |
 | --- | --- |
 | `architecture.md` | Layer boundaries, core interfaces, progress model, and error flow |
-| `specification-2.0.md` | Normative rules for archive format 7 (volume sets), used by the Linux family |
+| `specification-2.0.md` | Normative rules for archive format 7 (volume sets), used by the Linux family and the 32-bit DOS CLI |
 | `specification-1.0.md` | Normative rules for archive format 6, used by the other frontends |
 | `format.md` | Concise overview of the `.bolt` / `.blt` file format |
 | `algorithms.md` | BoltLite, boltlz, and Fluff implementation behavior |

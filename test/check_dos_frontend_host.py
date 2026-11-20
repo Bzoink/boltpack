@@ -109,8 +109,10 @@ def run(command, cwd, **kwargs):
 
 
 def primary_mtimes(path):
+    """Read primary entry times from a single-volume format 7 archive."""
     archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    end_record = len(archive) - 32 - 48       # volume trailer, end record
+    table_offset = struct.unpack_from("<Q", archive, end_record + 16)[0]
     count = struct.unpack_from("<I", archive, table_offset + 4)[0]
     record = table_offset + 16
     entries = {}
@@ -120,10 +122,10 @@ def primary_mtimes(path):
         fields = record + 2 + name_length
         entry_type = archive[fields + 16]
         mtime = struct.unpack_from("<Q", archive, fields + 18)[0]
-        flags = struct.unpack_from("<H", archive, fields + 41)[0]
+        flags = struct.unpack_from("<H", archive, fields + 43)[0]
         if entry_type in (0, 3, 4):
             entries[name] = (mtime, flags)
-        record = fields + 43
+        record = fields + 45
     return entries
 
 
