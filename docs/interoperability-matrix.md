@@ -53,16 +53,21 @@ remain unqualified.
 
 ## Core evidence
 
-- The full core `archiver.c` emits and accepts format 6 only. The format 7
-  core `archiver7.c`, used by the Linux CLI, the POSIX CLIs built from it,
-  and the 32-bit DOS CLI, and the mini core, used by the DOS16, Win16,
-  OS/2-16, CP/M-86 and Linux mini CLIs, emit and accept format 7 only,
-  single- and multi-volume; archives do not cross between the format 6 and
-  format 7 groups. Of the mini CLIs, DOS16 writes and reads volume sets
-  (`make dos16-dosboxx-volume-test`: a three-volume set on a FAT12 floppy
-  image with `--pause`, read from any volume, replaced by a smaller set, a
-  missing volume refused before output, and sets exchanged with Linux in both
-  directions); the others use one-volume archives.
+- The full core `archiver.c` emits and accepts format 6 only and is now used
+  only by the GUIs. The format 7 core `archiver7.c`, used by every full CLI
+  (Linux and the POSIX CLIs built from it, DOS, Windows, macOS, Haiku, OS/2,
+  Plan 9, AmigaOS, Atari, X68000, QL and RISC OS), and the mini core, used by
+  the DOS16, Win16, OS/2-16, CP/M-86 and Linux mini CLIs, emit and accept
+  format 7 only, single- and multi-volume; archives do not cross between the
+  format 6 and format 7 groups. All of those CLIs except Win16, OS/2-16 and
+  CP/M-86 write and read volume sets with `-v` and `--pause`. DOS16 is
+  checked with `make dos16-dosboxx-volume-test` (a three-volume set on a FAT12
+  floppy image with `--pause`, read from any volume, replaced by a smaller
+  set, a missing volume refused before output, and sets exchanged with Linux
+  in both directions). Of the others, Amiga (FS-UAE) and Atari (Hatari) are
+  run in emulators, the Windows CLI under Wine, and Plan 9, macOS, Haiku,
+  X68000 and QL on host shims; OS/2 and RISC OS are cross-built only (see
+  [frontends.md](frontends.md#volume-sets-on-the-other-clis)).
 - Both cores validate counted UTF-8 names, canonical relative path components,
   primary-name uniqueness, inline/table agreement, and supplementary-group
   framing before extraction or archive editing.

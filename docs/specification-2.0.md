@@ -1758,8 +1758,11 @@ again.
 adds volume sinks (`bp_archive_create_volumes`) and sources
 (`bp_archive_list_volumes`, `bp_archive_extract_volumes`,
 `bp_archive_test_volumes`, `bp_archive_info_volumes`); the functions that take
-one `bp_io_t` treat it as a one-volume set. The Linux CLI, the POSIX CLIs
-built from it, and the 32-bit DOS CLI use this core.
+one `bp_io_t` treat it as a one-volume set. Every full CLI uses this core: the
+Linux CLI and the POSIX CLIs built from it, DOS, Windows, macOS, Haiku, OS/2,
+Plan 9, AmigaOS (and its AmigaOS 4, MorphOS and AROS builds), Atari, X68000,
+QL and RISC OS. They also write and read volume sets; the Win16, OS/2 16-bit
+and CP/M-86 mini CLIs do not.
 
 `src/core/mini/archiver.c` implements format 7 for 16-bit and other small
 targets (ANSI C89 with 16-bit `int`, no floating point) behind
@@ -1771,8 +1774,8 @@ Before any output it validates the whole file table, and for a one-volume
 archive it also walks every entry's framing. The 16-bit DOS, Win16, OS/2
 16-bit, CP/M-86 and Linux mini CLIs use it.
 
-The other frontends still build `archiver.c` (format 6) until they are
-ported, and cannot exchange archives with format 7 builds in the meantime.
+The GUIs still build `archiver.c` (format 6) until they are ported, and
+cannot exchange archives with format 7 builds in the meantime.
 
 The library is self-contained (includes BoltLite, BoltLZ, and Fluff codecs)
 and compiles with strict ANSI C89.

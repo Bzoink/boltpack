@@ -86,10 +86,10 @@ To split an archive over diskettes, CDs or other media (Linux CLI):
 ```
 
 Sizes use K, M, G (x1000) or Ki, Mi, Gi (x1024); `--pause` asks for new media
-before each volume. The 32-bit and 16-bit DOS CLIs take the same options
-(`bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS` on an 8086). Archive format 7
-is written by the Linux, DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini
-CLIs; the other frontends cannot read it yet (see [docs/format.md](docs/format.md)).
+before each volume. Every full CLI except the GUIs takes the same options,
+as do the 16-bit DOS and Linux mini CLIs (`bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS`
+on an 8086). Archive format 7 is written by every CLI; the GUIs cannot read it
+yet (see [docs/format.md](docs/format.md)).
 
 Run `boltpack help` for the full command list, or `boltpack help advanced` for
 expert tuning switches.
@@ -163,7 +163,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | File                                                   | Purpose                                                   |
 | ------------------------------------------------------ | --------------------------------------------------------- |
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
-| [docs/specification-2.0.md](docs/specification-2.0.md) | Archive format 7 (volume sets): Linux family, DOS, mini   |
+| [docs/specification-2.0.md](docs/specification-2.0.md) | Archive format 7 (volume sets): every CLI                |
 | [docs/specification-1.0.md](docs/specification-1.0.md) | Archive format 6: other frontends                         |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
 | [docs/algorithms.md](docs/algorithms.md)               | BoltLite, BoltLZ, and Fluff implementation details            |

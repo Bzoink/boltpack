@@ -1,10 +1,10 @@
 # BoltPack archive format
 
 **Archive format 7** ([specification 2.0](specification-2.0.md)) is written
-and read by the Linux CLI, the POSIX CLIs built from it, and the 32-bit DOS
-CLI (`src/core/archiver7.c`), and by the mini frontends: 16-bit DOS, Win16,
-OS/2 16-bit, CP/M-86 and Linux mini (`src/core/mini/archiver.c`, Stored and
-BoltLite writing, BoltLZ reading, blocks up to 32 KiB, volumes up to 2 GiB).
+and read by every CLI: the full CLIs (`src/core/archiver7.c`) and the mini
+frontends (16-bit DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini,
+`src/core/mini/archiver.c`, Stored and BoltLite writing, BoltLZ reading,
+blocks up to 32 KiB, volumes up to 2 GiB). The GUIs still use format 6.
 Every archive is a set of one or more volume files:
 
 - Each volume starts with a 32-byte volume header (magic `BOLT`, version 7,
