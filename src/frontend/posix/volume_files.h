@@ -8,7 +8,8 @@
  *
  * Included by src/frontend/linux/main.c after its FILE * stream adapters
  * (bp_io_from_file), g_verbosity and g_tmp_archive.  A frontend without a
- * signal handler that removes g_tmp_archive defines BP_VOL_NO_NOTE first.
+ * signal handler that removes g_tmp_archive defines BP_VOL_NO_NOTE first,
+ * and one without g_verbosity defines BP_VOL_VERBOSE_EXPR.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
@@ -80,9 +81,13 @@ static void vol_hook_note_tmp(const char *tmp)
 #endif
 }
 
+#ifndef BP_VOL_VERBOSE_EXPR
+#define BP_VOL_VERBOSE_EXPR (g_verbosity < VERB_SILENT)
+#endif
+
 static int vol_hook_verbose(void)
 {
-    return g_verbosity < VERB_SILENT;
+    return BP_VOL_VERBOSE_EXPR;
 }
 
 #include "../common/volume_files.h"

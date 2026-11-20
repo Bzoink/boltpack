@@ -51,6 +51,32 @@
 /* ---- globals ----------------------------------------------------------- */
 
 static int g_verbose = 1;
+static int g_pause;                 /* --pause: ask for each disk */
+static bp_uint32 g_volume_size;     /* -v SIZE, 0 = one archive file */
+
+/* volume sets: the POSIX hooks, without a signal handler */
+#define BP_VOL_NO_NOTE 1
+#define BP_VOL_VERBOSE_EXPR (g_verbose)
+#define BP_VOLUME_SIZE_32
+#include "../common/volume_size.h"
+#include "../posix/volume_files.h"
+
+static bp_vol_files_t g_vf;
+
+/* Open the archive (any volume of a set) for reading. */
+static int open_source(const char *arc_path, bp_volume_source_t *src)
+{
+    return vol_source_open(&g_vf, src, arc_path, g_pause);
+}
+
+/* Report a failed operation, naming the volume when one was at fault. */
+static void report_failure(const char *what, int rc)
+{
+    if (g_vf.aborted || g_vf.problem[0] != '\0')
+        vol_report(&g_vf, rc, bp_mini_strerror);
+    else
+        fprintf(stderr, PROG_NAME ": %s: %s\n", what, bp_mini_strerror(rc));
+}
 static int g_create_partial = 0;
 
 /* ---- platform I/O ------------------------------------------------------ */
@@ -160,13 +186,13 @@ static int preflight_name_cb(const bp_mini_entry_t *e, void *user_data)
     return 0;
 }
 
-static int preflight_extract_names(bp_io_t *archive_io)
+static int preflight_extract_names(const bp_volume_source_t *src)
 {
     extract_preflight_t preflight;
     int rc;
 
     memset(&preflight, 0, sizeof(preflight));
-    rc = bp_mini_archive_list(archive_io, preflight_name_cb, &preflight);
+    rc = bp_mini_archive_list_volumes(src, preflight_name_cb, &preflight);
     if (preflight.error != BP_OK) rc = preflight.error;
     if (rc == BP_OK) rc = bp_posix_preflight_finish(&preflight.names);
     bp_posix_preflight_free(&preflight.names);
@@ -569,6 +595,68 @@ static int add_path(bp_mini_archive_t *ar, const char *arc_prefix,
 
 /* ---- cmd_create -------------------------------------------------------- */
 
+/* c -v SIZE: write the archive as a volume set. */
+static int cmd_create_volumes(const char *arc_path, int argc, char **argv,
+                              bp_uint32 block_size, bp_uint8 method)
+{
+    bp_volume_sink_t sink;
+    bp_mini_archive_t ar;
+    int rc, i;
+
+    if (vol_files_init(&g_vf, arc_path) != 0 || vol_has_number_ext(arc_path)) {
+        fprintf(stderr, PROG_NAME ": %s cannot name a volume set "
+                "(use a name such as backup.bolt)\n", arc_path);
+        return 1;
+    }
+    g_vf.pause = g_pause;
+    vol_sink_init(&g_vf, &sink);
+    rc = bp_mini_compress_init();
+    if (rc == BP_OK)
+        rc = bp_mini_archive_create_volumes(&ar, &sink, g_volume_size,
+                                            block_size, method);
+    if (rc != BP_OK) {
+        report_failure("create failed", rc);
+        return 1;
+    }
+    for (i = 0; i < argc; i++) {
+        char arc_name[BP_MAX_PATH];
+        char *p;
+
+        strncpy(arc_name, argv[i], BP_MAX_PATH - 1);
+        arc_name[BP_MAX_PATH - 1] = '\0';
+        while (arc_name[0] == '.' && arc_name[1] == '/')
+            memmove(arc_name, arc_name + 2, strlen(arc_name) - 1);
+        p = arc_name + strlen(arc_name) - 1;
+        while (p > arc_name && *p == '/') { *p-- = '\0'; }
+        rc = add_path(&ar, arc_name, argv[i], BP_OS_LINUX);
+        if (rc != BP_OK) {
+            if (g_vf.aborted || g_vf.problem[0] != '\0')
+                report_failure("create failed", rc);
+            break;
+        }
+    }
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_finalize(&ar);
+        if (rc != BP_OK) report_failure("finalize failed", rc);
+    }
+    bp_mini_archive_close(&ar);
+    if (rc != BP_OK) {
+        vol_remove_written(&g_vf);
+        return 1;
+    }
+    vol_remove_stale(&g_vf, g_vf.written);
+    if (g_verbose) {
+        char first[BP_VOL_PATH_MAX + 8];
+        vol_numbered_name(&g_vf, 0, first, sizeof(first));
+        printf("Archive: %s (%u entr%s)\n", arc_path,
+               (unsigned)ar.entries_written,
+               ar.entries_written == 1 ? "y" : "ies");
+        if (g_vf.written > 1)
+            printf("%u volumes: %s ... %s\n", g_vf.written, first, arc_path);
+    }
+    return g_create_partial ? 1 : 0;
+}
+
 static int cmd_create(const char *arc_path, int argc, char **argv,
                       bp_uint32 block_size, bp_uint8 method)
 {
@@ -578,6 +666,8 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
     int rc;
     int i;
 
+    if (g_volume_size != 0)
+        return cmd_create_volumes(arc_path, argc, argv, block_size, method);
     fp = fopen(arc_path, "wb");
     if (fp == NULL) {
         fprintf(stderr, PROG_NAME ": cannot create %s\n", arc_path);
@@ -643,59 +733,69 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 
 static int cmd_extract(const char *arc_path, const char *dest)
 {
-    FILE *fp;
-    bp_io_t arc_io;
+    bp_volume_source_t src;
     extract_ctx_t ctx;
     int rc;
 
-    fp = fopen(arc_path, "rb");
-    if (fp == NULL) {
-        fprintf(stderr, PROG_NAME ": cannot open %s\n", arc_path);
-        return 1;
-    }
-    bp_io_from_file(&arc_io, fp);
+    if (open_source(arc_path, &src) != 0) return 1;
 
     memset(&ctx, 0, sizeof(ctx));
     if (dest) {
         if (strlen(dest) >= sizeof(ctx.dest)) {
             fprintf(stderr, PROG_NAME ": output directory is too long\n");
-            fclose(fp);
+            vol_source_done(&g_vf);
             return 1;
         }
         strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
     }
-    rc = preflight_extract_names(&arc_io);
+    rc = preflight_extract_names(&src);
     if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": archive has names that cannot be mapped safely: %s\n",
-                bp_mini_strerror(rc));
-        fclose(fp);
+        if (g_vf.aborted || g_vf.problem[0] != '\0')
+            vol_report(&g_vf, rc, bp_mini_strerror);   /* a volume was at fault */
+        else
+            fprintf(stderr, PROG_NAME ": archive has names that cannot be mapped safely: %s\n",
+                    bp_mini_strerror(rc));
+        vol_source_done(&g_vf);
         return 1;
+    }
+    if (!g_vf.interactive) {
+        /* Nobody can be asked for a disk: make sure every volume is here
+         * before anything is written. */
+        bp_mini_archive_info_t vinfo;
+        rc = bp_mini_archive_info_volumes(&src, &vinfo);
+        vol_source_done(&g_vf);
+        if (rc != BP_OK) {
+            report_failure("extract failed", rc);
+            return 1;
+        }
+        if (!vol_all_present(&g_vf, vinfo.volume_count)) return 1;
     }
 
     if (ctx.dest[0]) {
         make_parents(ctx.dest);
         if (mkdir(ctx.dest, 0755) != 0 && errno != EEXIST) {
             fprintf(stderr, PROG_NAME ": cannot create output directory: %s\n", ctx.dest);
-            fclose(fp);
+            vol_source_done(&g_vf);
             return 1;
         }
     }
     ctx.root_fd = open(ctx.dest[0] ? ctx.dest : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (ctx.root_fd < 0) {
         fprintf(stderr, PROG_NAME ": cannot open output directory: %s\n", ctx.dest);
-        fclose(fp);
+        vol_source_done(&g_vf);
         return 1;
     }
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_extract_all_ex(&arc_io,
-                                         on_extract_open,
-                                         on_extract_done,
-                                         &ctx);
+        rc = bp_mini_archive_extract_volumes(&src,
+                                             on_extract_open,
+                                             on_extract_done,
+                                             NULL, NULL,
+                                             &ctx);
     }
 
-    fclose(fp);
+    vol_source_done(&g_vf);
     if (rc == BP_OK && ctx.error != BP_OK) rc = ctx.error;
     {
         int dir_rc = finish_directories(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
@@ -705,8 +805,7 @@ static int cmd_extract(const char *arc_path, const char *dest)
     close(ctx.root_fd);
 
     if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": extract failed: %s\n",
-                bp_mini_strerror(rc));
+        report_failure("extract failed", rc);
         return 1;
     }
     return 0;
@@ -716,24 +815,18 @@ static int cmd_extract(const char *arc_path, const char *dest)
 
 static int cmd_list(const char *arc_path)
 {
-    FILE *fp;
-    bp_io_t arc_io;
+    bp_volume_source_t src;
     int rc;
 
-    fp = fopen(arc_path, "rb");
-    if (fp == NULL) {
-        fprintf(stderr, PROG_NAME ": cannot open %s\n", arc_path);
-        return 1;
-    }
-    bp_io_from_file(&arc_io, fp);
+    if (open_source(arc_path, &src) != 0) return 1;
 
     printf("  Type  Size          Name\n");
     printf("  ----  ------------  ----\n");
-    rc = bp_mini_archive_list(&arc_io, on_list, NULL);
-    fclose(fp);
+    rc = bp_mini_archive_list_volumes(&src, on_list, NULL);
+    vol_source_done(&g_vf);
 
     if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": list failed: %s\n", bp_mini_strerror(rc));
+        report_failure("list failed", rc);
         return 1;
     }
     return 0;
@@ -743,25 +836,19 @@ static int cmd_list(const char *arc_path)
 
 static int cmd_test(const char *arc_path)
 {
-    FILE *fp;
-    bp_io_t arc_io;
+    bp_volume_source_t src;
     int rc;
 
-    fp = fopen(arc_path, "rb");
-    if (fp == NULL) {
-        fprintf(stderr, PROG_NAME ": cannot open %s\n", arc_path);
-        return 1;
-    }
-    bp_io_from_file(&arc_io, fp);
+    if (open_source(arc_path, &src) != 0) return 1;
 
     rc = bp_mini_compress_init();
     if (rc == BP_OK) {
-        rc = bp_mini_archive_test(&arc_io, on_test, NULL);
+        rc = bp_mini_archive_test_volumes(&src, on_test, NULL);
     }
-    fclose(fp);
+    vol_source_done(&g_vf);
 
     if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": test failed: %s\n", bp_mini_strerror(rc));
+        report_failure("test failed", rc);
         return 1;
     }
     return 0;
@@ -785,23 +872,17 @@ static const char *os_name(bp_uint8 os)
 
 static int cmd_info(const char *arc_path)
 {
-    FILE *fp;
-    bp_io_t arc_io;
+    bp_volume_source_t src;
     bp_mini_archive_info_t info;
     char buf[32];
     int rc;
 
-    fp = fopen(arc_path, "rb");
-    if (fp == NULL) {
-        fprintf(stderr, PROG_NAME ": cannot open %s\n", arc_path);
-        return 1;
-    }
-    bp_io_from_file(&arc_io, fp);
-    rc = bp_mini_archive_info(&arc_io, &info);
-    fclose(fp);
+    if (open_source(arc_path, &src) != 0) return 1;
+    rc = bp_mini_archive_info_volumes(&src, &info);
+    vol_source_done(&g_vf);
 
     if (rc != BP_OK) {
-        fprintf(stderr, PROG_NAME ": info failed: %s\n", bp_mini_strerror(rc));
+        report_failure("info failed", rc);
         return 1;
     }
 
@@ -831,7 +912,29 @@ static int cmd_info(const char *arc_path)
     format_size64_mini(info.total_compressed, buf);
     printf("Comp size:   %s\n", buf);
     format_size64_mini(info.archive_size, buf);
-    printf("Archive:     %s\n", buf);
+    if (info.volume_count > 1) {
+        /* add up the volumes that are at hand */
+        unsigned v, found = 0;
+        bp_uint64 total = info.archive_size;
+        for (v = 0; v + 1U < info.volume_count; v++) {
+            char name[BP_VOL_PATH_MAX + 8];
+            struct stat st;
+            vol_numbered_name(&g_vf, v, name, sizeof(name));
+            if (stat(name, &st) == 0 && st.st_size >= 0) {
+                total = bp_u64_add(total, bp_u64_from_u32((bp_uint32)st.st_size));
+                found++;
+            }
+        }
+        printf("Volumes:     %u\n", (unsigned)info.volume_count);
+        format_size64_mini(total, buf);
+        if (found + 1U == info.volume_count)
+            printf("Archive:     %s (all volumes)\n", buf);
+        else
+            printf("Archive:     %s at hand (%u of %u volumes)\n", buf,
+                   found + 1U, (unsigned)info.volume_count);
+    } else {
+        printf("Archive:     %s\n", buf);
+    }
     return 0;
 }
 
@@ -852,6 +955,8 @@ static void usage(void)
           "  -m1                            BoltLite compression\n"
           "  -m2                            boltlz compression (default)\n"
           "  --interchange-profile-1        create Interchange Profile 1 archives\n"
+          "  -v SIZE                        create volumes of at most SIZE bytes\n"
+          "  --pause                        ask for each disk (create -v, l, t, i, x)\n"
           "  -q                             quiet mode\n"
           "Compression:\n"
           "  create:   stored (0), BoltLite (1), boltlz (2)\n"
@@ -873,6 +978,36 @@ int main(int argc, char **argv)
     int block_size_explicit = 0;
     int method_explicit = 0;
 
+    {
+        int out = 1;
+        for (i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--pause") == 0) {
+                g_pause = 1;
+            } else if (strcmp(argv[i], "-v") == 0) {
+                bp_uint32 size;
+                if (i + 1 >= argc) {
+                    fprintf(stderr, PROG_NAME ": -v requires a size, such as 1.44M or 720K\n");
+                    return 1;
+                }
+                i++;
+                if (bp_parse_volume_size32(argv[i], &size) != 0) {
+                    fprintf(stderr, PROG_NAME ": invalid volume size: %s "
+                            "(examples: 360K, 720K, 1.44M, 1474560)\n", argv[i]);
+                    return 1;
+                }
+                if (size > BP_MINI_MAX_ARCHIVE_SIZE || size < BP_VOLUME_SIZE_MIN) {
+                    fprintf(stderr, PROG_NAME ": volume size %s is outside "
+                            "16K to 2 GiB\n", argv[i]);
+                    return 1;
+                }
+                g_volume_size = size;
+            } else {
+                argv[out++] = argv[i];
+            }
+        }
+        argc = out;
+        argv[argc] = NULL;
+    }
     if (argc < 3) {
         usage();
         return 1;
@@ -931,6 +1066,20 @@ int main(int argc, char **argv)
         files_start++;
     }
 
+    if (g_volume_size != 0 && cmd != 'c') {
+        fprintf(stderr, PROG_NAME ": -v applies to create; to read a volume "
+                "set, name any of its volumes\n");
+        return 1;
+    }
+    if (g_pause && cmd != 'c' && cmd != 'l' && cmd != 't' && cmd != 'i' &&
+        cmd != 'x') {
+        fprintf(stderr, PROG_NAME ": --pause applies to c -v SIZE, l, t, i and x\n");
+        return 1;
+    }
+    if (g_pause && cmd == 'c' && g_volume_size == 0) {
+        fprintf(stderr, PROG_NAME ": --pause with create needs -v SIZE\n");
+        return 1;
+    }
     switch (cmd) {
     case 'c':
         return cmd_create(arc_path, argc - files_start, argv + files_start,

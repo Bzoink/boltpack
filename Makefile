@@ -1892,6 +1892,7 @@ LINUXMINI_RUNNER ?=
 .PHONY: linuxmini-interoperability-test dos16-interoperability-test dos16-stack-interoperability-test dosboxx-fat12-interoperability-test dosboxx-fat12-cp850-interoperability-test freedos-cp850-interoperability-test dos-djgpp-dosboxx-fat12-test dos-djgpp-parent-race-test
 linuxmini-interoperability-test: modern linuxmini
 	BP_TEST_LINUXMINI_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_linuxmini_interop.py
+	BP_TEST_LINUXMINI_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_linuxmini_volumes.py
 	python3 test/check_extract_race.py --boltpack build/linux/boltpack
 	BP_TEST_RUNNER="$(LINUXMINI_RUNNER)" python3 test/check_extract_race.py \
 	    --boltpack $(LINUXMINI_EXE) --mini
