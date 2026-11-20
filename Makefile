@@ -1132,12 +1132,23 @@ RISCOS_CC      = arm-unknown-riscos-gcc
 RISCOS_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
 	-DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32
 RISCOS_BUILDDIR = build/riscos
+RISCOS_ARM_FLAGS = -marm -mcpu=arm610 -mlibscl
+BOLTLZ_ARM_ASM ?= 0
 
-.PHONY: riscos
+ifeq ($(BOLTLZ_ARM_ASM),1)
+RISCOS_BOLTLZ_FLAGS = $(RISCOS_ARM_FLAGS) -DBOLTLZ_ARM_ASM=1
+RISCOS_BOLTLZ_SRC = $(BOLTLZDIR)/boltlz_arm.S
+endif
+
+.PHONY: riscos riscos-optimized riscos-boltlz-check
+riscos-optimized:
+	$(MAKE) riscos BOLTLZ_ARM_ASM=1 RISCOS_BUILDDIR=build/riscos-optimized
+
+# GCCSDK's AIF converter needs a regular output file; the probe uses /dev/null.
 riscos:
-	$(call check_cc,$(RISCOS_CC) $(RISCOS_CFLAGS),riscos)
+	$(call check_cc,$(RISCOS_CC) $(filter-out -mlibscl,$(RISCOS_CFLAGS) $(RISCOS_BOLTLZ_FLAGS)),riscos)
 	mkdir -p $(RISCOS_BUILDDIR)
-	$(RISCOS_CC) $(RISCOS_CFLAGS) \
+	$(RISCOS_CC) $(RISCOS_CFLAGS) $(RISCOS_BOLTLZ_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -1145,8 +1156,18 @@ riscos:
 	    $(COREDIR)/fluff.c \
 	    $(COREDIR)/bp_codepage.c \
 	    src/frontend/riscos/main.c \
-	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz.c $(RISCOS_BOLTLZ_SRC) \
 	    -o $(RISCOS_BUILDDIR)/boltpack,ff8
+
+# Run these on RISC OS and compare the BOLTLZ reports, excluding timing lines.
+riscos-boltlz-check:
+	$(call check_cc,$(RISCOS_CC) $(filter-out -mlibscl,$(RISCOS_CFLAGS) $(RISCOS_ARM_FLAGS)),riscos-boltlz-check)
+	mkdir -p build/riscos-boltlz-check/C build/riscos-boltlz-check/ARM
+	$(RISCOS_CC) $(RISCOS_CFLAGS) $(RISCOS_ARM_FLAGS) -I$(BOLTLZDIR) \
+	    test/atari/boltlz_check.c $(BOLTLZDIR)/boltlz.c -o build/riscos-boltlz-check/C/Check,ff8
+	$(RISCOS_CC) $(RISCOS_CFLAGS) $(RISCOS_ARM_FLAGS) -I$(BOLTLZDIR) -DBOLTLZ_ARM_ASM=1 \
+	    test/atari/boltlz_check.c $(BOLTLZDIR)/boltlz.c $(BOLTLZDIR)/boltlz_arm.S \
+	    -o build/riscos-boltlz-check/ARM/Check,ff8
 
 # ARM Linux (32-bit)
 ARM_CC      = arm-linux-gnueabihf-gcc

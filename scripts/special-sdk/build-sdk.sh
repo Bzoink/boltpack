@@ -24,6 +24,7 @@ Targets:
 Environment:
   CC      Compiler override for the selected target
   CFLAGS  Extra compiler flags for the selected target
+  BOLTLZ_ARM_ASM=1  Enable the ARM BoltLZ encoder for RISC OS GCCSDK builds
 
 Notes:
   - The AmigaOS 4.x, MorphOS, and AROS wrappers include src/frontend/amiga/.
@@ -119,12 +120,19 @@ build_riscos() {
         return 1
     }
     cflags="${CFLAGS:--ansi -pedantic -Wall -Wextra -Wno-unused-function -O2} -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32"
+    outdir="${RISCOS_OUTDIR:-build/riscos}"
+    set -- src/frontend/riscos/main.c src/core/boltlz.c
+    if [ "${BOLTLZ_ARM_ASM:-0}" = 1 ]; then
+        cflags="$cflags -marm -mcpu=arm610 -mlibscl -DBOLTLZ_ARM_ASM=1"
+        outdir="${RISCOS_OUTDIR:-build/riscos-optimized}"
+        set -- "$@" src/core/boltlz_arm.S
+    fi
 
-    build_with_sources "$compiler" "$cflags" "${RISCOS_OUTDIR:-build/riscos}" \
+    build_with_sources "$compiler" "$cflags" "$outdir" \
         "boltpack,ff8" "RISC OS CLI" \
         src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
-        src/frontend/riscos/main.c src/core/boltlz.c
+        "$@"
 }
 
 build_ql() {

@@ -82,7 +82,7 @@ write_build_notes() {
             build_cmd="sh scripts/special-sdk/build-sdk.sh riscos"
             output_path="build/riscos/boltpack,ff8"
             requirements="- GCCSDK or another setup that provides arm-unknown-riscos-gcc or arm-unknown-riscos-cc."
-            notes="- Override the compiler with CC=... or add flags with CFLAGS=... if needed."
+            notes="- Set BOLTLZ_ARM_ASM=1 to build the optional ARM BoltLZ encoder with GCCSDK. Output goes to build/riscos-optimized/boltpack,ff8.\n- Override the compiler with CC=... or add flags with CFLAGS=... if needed."
             ;;
         ql)
             label="Sinclair QL / SMSQ-E"
@@ -168,6 +168,10 @@ create_kit() {
     case "$platform" in
         amigaos4|morphos|aros)
             stage_amiga_wrapper_support "$kitdir"
+            ;;
+        riscos)
+            copy_file "$PROJROOT/src/frontend/posix/archive_preflight.h" \
+                "$kitdir/src/frontend/posix/archive_preflight.h"
             ;;
     esac
 

@@ -1904,6 +1904,18 @@ arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
 
 The `,ff8` suffix embeds the RISC OS filetype (0xFF8 = Absolute) in the filename, which is the RISC OS convention for storing filetypes on non-RISC OS filesystems.
 
+Build the optional ARM610-targeted BoltLZ encoder with `make riscos-optimized`
+from a full checkout or `BOLTLZ_ARM_ASM=1 sh scripts/special-sdk/build-sdk.sh riscos`
+from the source kit. Both commands use GCCSDK and the Shared C Library to build
+`build/riscos-optimized/boltpack,ff8`. The encoder uses an assembly match scan
+and produces the same BoltLZ bitstream as the C build.
+
+`make riscos-boltlz-check` builds the C and ARM codec checks under
+`build/riscos-boltlz-check`. Run each `Check,ff8` in its own current directory
+on RISC OS. The two `BOLTLZ` reports should agree except for `time` and `dtime`
+lines, which give compression and decompression times in centiseconds. Each
+timed sample runs 32 times.
+
 **GCCSDK setup:**
 
 ```sh

@@ -1,16 +1,12 @@
 /*
- * boltlz_check.c -- BoltLZ encoder and decoder check for 68k systems
+ * boltlz_check.c -- BoltLZ encoder and decoder check for 68k and RISC OS
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  *
- * Writes BOLTLZ.TXT (C:\ on Atari TOS, win1_ on the Sinclair QL, the current
- * directory on the X68000): the length
- * and CRC-32 of every compressed stream for many generated inputs and both
- * levels, and the result code and output CRC of decoding many corrupted
- * streams, so builds with the C codec, with boltlz_m68k.S and from different
- * compilers can be compared byte for byte; plus round-trip failures and
- * compression and decompression times. On TOS the times are 200 Hz ticks of
- * emulated time; on the QL and the X68000 they are not measured (0).
+ * Reports compressed lengths and CRC-32s for both levels, decoded CRC-32s
+ * and statuses for corrupted streams, round-trip failures, and timings.
+ * Timings are 200 Hz ticks on TOS, centiseconds on RISC OS, and zero on
+ * the QL and X68000.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,12 +21,27 @@ static long now(void) { return 0; }
 #elif defined(__human68k__)
 #define CHECK_OUTPUT "BOLTLZ.TXT"
 static long now(void) { return 0; }
+#elif defined(__riscos__)
+#include <kernel.h>
+#include <swis.h>
+#define CHECK_OUTPUT "BOLTLZ"
+#define TIMING_REPEATS 32
+static long now(void)
+{
+    _kernel_swi_regs regs = {{0}};
+    _kernel_swi(OS_ReadMonotonicTime, &regs, &regs);
+    return regs.r[0];
+}
 #else
 #include <osbind.h>
 #define CHECK_OUTPUT "C:\\BOLTLZ.TXT"
 static long ticks;
 static long read_hz200(void) { ticks = *(volatile long *)0x4baL; return 0; }
 static long now(void) { Supexec(read_hz200); return ticks; }
+#endif
+
+#ifndef TIMING_REPEATS
+#define TIMING_REPEATS 1
 #endif
 
 static unsigned long seed;
@@ -71,13 +82,36 @@ int main(void)
     static const unsigned long sizes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 18, 19, 20,
         31, 33, 63, 64, 65, 127, 128, 129, 1000, 4097, 16384, 65535, 65536, 65537, 200001, 262144 };
     FILE *out = fopen(CHECK_OUTPUT, "w");
+#if defined(__riscos__)
+    _kernel_swi_regs memory = {{0}};
+    unsigned char *buf, *enc, *dec, *work;
+    bp_uint32 work_size = boltlz_work_size(BOLTLZ_BALANCED);
+    bp_uint32 enc_size = boltlz_compress_bound(MAXB);
+#else
     unsigned char *buf = malloc(MAXB + 2), *enc = malloc(boltlz_compress_bound(MAXB)),
                   *dec = malloc(MAXB), *work = malloc(boltlz_work_size(BOLTLZ_BALANCED));
+#endif
     unsigned int si, kind, level, odd;
     unsigned long n, failures = 0, cases = 0;
     bp_uint32 len;
     if (!out) return 1;
+#if defined(__riscos__)
+    /* Claim the fixture buffers in the RMA so it can run from a small
+     * application slot, including when launched by RPCEmu HostCmd. */
+    memory.r[0] = 6; /* OS_Module: claim */
+    memory.r[3] = work_size + enc_size + MAXB * 2 + 2;
+    if (_kernel_swi(OS_Module, &memory, &memory) != NULL) {
+        fputs("alloc failed\n", out);
+        fclose(out);
+        return 1;
+    }
+    work = (unsigned char *)memory.r[2];
+    buf = work + work_size;
+    dec = buf + MAXB + 2;
+    enc = dec + MAXB;
+#else
     if (!buf || !enc || !dec || !work) { fputs("alloc failed\n", out); fclose(out); return 1; }
+#endif
     for (kind = 0; kind < 7; kind++)
         for (si = 0; si < sizeof sizes / sizeof sizes[0]; si++)
             for (odd = 0; odd < 2; odd++) {
@@ -136,22 +170,37 @@ int main(void)
     for (level = 1; level <= 2; level++) {
         /* Timing: four 64 KiB blocks of text-like and copy-heavy data. */
         long start, total = 0, dtotal = 0;
+        unsigned int repeat;
         for (kind = 2; kind < 6; kind++) {
             seed = 99 + kind;
             fill(buf, 65536UL, (int)kind);
-            len = boltlz_compress_bound(65536UL);
             start = now();
-            if (boltlz_compress(buf, 65536UL, enc, &len, work, (int)level) != BP_OK) failures++;
+            for (repeat = 0; repeat < TIMING_REPEATS; repeat++) {
+                len = boltlz_compress_bound(65536UL);
+                if (boltlz_compress(buf, 65536UL, enc, &len, work, (int)level) != BP_OK)
+                    failures++;
+            }
             total += now() - start;
             start = now();
-            if (boltlz_decompress(enc, len, dec, 65536UL) != BP_OK ||
-                memcmp(dec, buf, 65536UL) != 0) failures++;
+            for (repeat = 0; repeat < TIMING_REPEATS; repeat++)
+                if (boltlz_decompress(enc, len, dec, 65536UL) != BP_OK) failures++;
+#if !defined(__riscos__)
+            if (memcmp(dec, buf, 65536UL) != 0) failures++;
+#endif
             dtotal += now() - start;
+#if defined(__riscos__)
+            if (memcmp(dec, buf, 65536UL) != 0) failures++;
+#endif
         }
         fprintf(out, "time level %u ticks %ld\n", level, total);
         fprintf(out, "dtime level %u ticks %ld\n", level, dtotal);
     }
     fprintf(out, "done cases %lu failures %lu\n", cases, failures);
     fclose(out);
+#if defined(__riscos__)
+    memory.r[0] = 7; /* OS_Module: free */
+    memory.r[2] = (int)work;
+    _kernel_swi(OS_Module, &memory, &memory);
+#endif
     return 0;
 }
