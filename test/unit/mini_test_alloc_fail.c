@@ -8,8 +8,12 @@ void bp_test_alloc_fail_after(long successful_allocations);
 void bp_test_alloc_disable(void);
 long bp_test_alloc_live_count(void);
 
+/* One step of a writer sweep: fail the allocation after `fail_after`
+ * successful ones.  The add must either succeed (*done = 1) or return
+ * BP_ERR_NOMEM, keeping at most the codec workspace the compressor retains
+ * between calls. */
 static int run_archive_failure(const char *archive_name, long fail_after,
-                               int use_data, int expected_live_delta)
+                               int use_data, int *done)
 {
     FILE *archive_file;
     FILE *source_file = NULL;
@@ -53,10 +57,23 @@ static int run_archive_failure(const char *archive_name, long fail_after,
     fclose(archive_file);
     remove(archive_name);
 
+    if (rc == BP_OK) { *done = 1; return 0; }
     if (rc != BP_ERR_NOMEM ||
-        bp_test_alloc_live_count() != live_before + expected_live_delta)
+        bp_test_alloc_live_count() < live_before ||
+        bp_test_alloc_live_count() > live_before + 1)
         return 1;
     return 0;
+}
+
+/* Fail every allocation of one add in turn until it succeeds. */
+static int run_archive_sweep(const char *archive_name, int use_data)
+{
+    long fail_after;
+    int done = 0;
+    for (fail_after = 0; fail_after < 64 && !done; fail_after++)
+        if (run_archive_failure(archive_name, fail_after, use_data, &done) != 0)
+            return 1;
+    return done && fail_after > 1 ? 0 : 1;
 }
 
 static int run_common_failure(int kind, long fail_after)
@@ -198,7 +215,7 @@ static int make_read_fixture(void)
     return rc == BP_OK ? 0 : 1;
 }
 
-static int run_test_read_failure(long fail_after, int expect_nomem)
+static int run_test_read_failure(long fail_after, int *done)
 {
     FILE *archive_file;
     bp_io_t archive_io;
@@ -213,9 +230,8 @@ static int run_test_read_failure(long fail_after, int expect_nomem)
     rc = bp_mini_archive_test(&archive_io, NULL, NULL);
     bp_test_alloc_disable();
     fclose(archive_file);
-    if (expect_nomem) {
-        if (rc != BP_ERR_NOMEM) return 1;
-    } else if (rc != BP_OK) return 1;
+    if (rc == BP_OK) *done = 1;
+    else if (rc != BP_ERR_NOMEM) return 1;
     if (bp_test_alloc_live_count() != live_before) return 1;
     return 0;
 }
@@ -255,8 +271,10 @@ static int finish_extract_output(const bp_mini_entry_t *entry, bp_io_t *out,
     return BP_OK;
 }
 
-static int run_extract_read_failure(long fail_after, int expect_nomem,
-                                   int expect_output)
+/* One extraction step: success writes one verified file; a failed
+ * allocation returns BP_ERR_NOMEM and, if the output was already opened,
+ * reports that failure to its completion callback. */
+static int run_extract_read_failure(long fail_after, int *done)
 {
     FILE *archive_file;
     bp_io_t archive_io;
@@ -276,14 +294,14 @@ static int run_extract_read_failure(long fail_after, int expect_nomem,
     bp_test_alloc_disable();
     if (context.file != NULL) fclose(context.file);
     fclose(archive_file);
-    if (expect_nomem) {
-        if (rc != BP_ERR_NOMEM) return 1;
-        if (expect_output &&
-            (context.done_count != 1 || context.last_status != BP_ERR_NOMEM))
+    if (rc == BP_OK) {
+        if (context.done_count != 1 || context.last_status != BP_OK) return 1;
+        *done = 1;
+    } else {
+        if (rc != BP_ERR_NOMEM || context.done_count > 1) return 1;
+        if (context.done_count == 1 && context.last_status != BP_ERR_NOMEM)
             return 1;
-        if (!expect_output && context.done_count != 0) return 1;
-    } else if (rc != BP_OK || context.done_count != 1 ||
-               context.last_status != BP_OK) return 1;
+    }
     if (bp_test_alloc_live_count() != live_before) return 1;
     remove("OUT.DAT");
     return 0;
@@ -293,17 +311,16 @@ static int run_read_failure_sweeps(void)
 {
     long fail_after;
     if (make_read_fixture() != 0) return 1;
-    for (fail_after = 0; fail_after < 6; fail_after++) {
-        if (run_test_read_failure(fail_after, 1) != 0) return 1;
+    {
+        int done = 0;
+        for (fail_after = 0; fail_after < 64 && !done; fail_after++)
+            if (run_test_read_failure(fail_after, &done) != 0) return 1;
+        if (!done || fail_after < 3) return 1;
+        done = 0;
+        for (fail_after = 0; fail_after < 64 && !done; fail_after++)
+            if (run_extract_read_failure(fail_after, &done) != 0) return 1;
+        if (!done || fail_after < 3) return 1;
     }
-    if (run_test_read_failure(6, 0) != 0) return 1;
-    for (fail_after = 0; fail_after < 4; fail_after++) {
-        if (run_extract_read_failure(fail_after, 1, 0) != 0) return 1;
-    }
-    for (fail_after = 4; fail_after < 6; fail_after++) {
-        if (run_extract_read_failure(fail_after, 1, 1) != 0) return 1;
-    }
-    if (run_extract_read_failure(6, 0, 1) != 0) return 1;
     remove("READ.BLT");
     return 0;
 }
@@ -326,12 +343,10 @@ int main(void)
     }
     fclose(source);
 
-    failures += run_archive_failure("FAIL0.BLT", 0, 0, 0); /* entry table */
-    failures += run_archive_failure("FAIL1.BLT", 1, 0, 0); /* entry name */
-    failures += run_archive_failure("FAIL2.BLT", 1, 1, 0); /* input block */
-    failures += run_archive_failure("FAIL3.BLT", 2, 1, 0); /* output block */
-    failures += run_archive_failure("FAIL4.BLT", 3, 1, 0); /* BoltLite workspace */
-    failures += run_archive_failure("FAIL5.BLT", 4, 1, 1); /* retained workspace, then name */
+    /* every writer allocation (entry table, entry header, blocks, codec
+     * workspace, recorded name) for a directory and a data entry */
+    failures += run_archive_sweep("FAIL0.BLT", 0);
+    failures += run_archive_sweep("FAIL1.BLT", 1);
     failures += run_common_failure(0, 0); /* projected-index allocation */
     failures += run_common_failure(1, 0); /* directory queue node */
     failures += run_common_failure(1, 1); /* directory queue path */
@@ -347,7 +362,7 @@ int main(void)
         fclose(result);
         return 1;
     }
-    fprintf(result, "PASS: 26 writer/reader/extraction/index/queue/path-buffer/name allocation failures; temporary allocations released\n");
+    fprintf(result, "PASS: writer/reader/extraction/index/queue/path-buffer/name allocation failures; temporary allocations released\n");
     fclose(result);
     return 0;
 }

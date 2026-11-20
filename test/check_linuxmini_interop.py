@@ -58,9 +58,15 @@ def make_path_conflict_archive(helper, destination, reverse=False):
     subprocess.run(command, check=True, cwd=ROOT, capture_output=True)
 
 
+def table_offset_of(archive):
+    """Table offset of a single-volume archive format 7 file: the end record
+    sits before the 32-byte volume trailer."""
+    return struct.unpack_from("<Q", archive, len(archive) - 32 - 48 + 16)[0]
+
+
 def mini_entry_properties(path):
     archive = path.read_bytes()
-    table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+    table_offset = table_offset_of(archive)
     count = struct.unpack_from("<I", archive, table_offset + 4)[0]
     record = table_offset + 16
     entries = {}
@@ -68,14 +74,14 @@ def mini_entry_properties(path):
         name_length = struct.unpack_from("<H", archive, record)[0]
         name = bytes(archive[record + 2:record + 2 + name_length]).decode("utf-8")
         fields = record + 2 + name_length
-        entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
+        entry_offset = struct.unpack_from("<Q", archive, fields + 28)[0]
         inline_fields = entry_offset + 4 + name_length
-        method = archive[inline_fields + 20]
-        block_size = struct.unpack_from("<I", archive, inline_fields + 22)[0]
+        method = archive[inline_fields + 8]
+        block_size = struct.unpack_from("<I", archive, inline_fields + 10)[0]
         entry_type = archive[fields + 16]
         if entry_type in (0, 3, 4):
             entries[name] = (method, block_size)
-        record = fields + 43
+        record = fields + 45
     return entries
 
 
@@ -253,7 +259,7 @@ def main():
                       for path in full_existing.rglob("*")) == ["sentinel"]
 
         archive = bytearray((root / "mini.blt").read_bytes())
-        table_offset = struct.unpack_from("<Q", archive, len(archive) - 20)[0]
+        table_offset = table_offset_of(archive)
         count = struct.unpack_from("<I", archive, table_offset + 4)[0]
         record = table_offset + 16
         found = False
@@ -262,12 +268,12 @@ def main():
             name = bytes(archive[record + 2:record + 2 + name_len])
             fields = record + 2 + name_len
             if name == b"src/child/file.txt":
-                entry_offset = struct.unpack_from("<Q", archive, fields + 26)[0]
+                entry_offset = struct.unpack_from("<Q", archive, fields + 28)[0]
                 header_size = struct.unpack_from("<H", archive, entry_offset)[0]
                 archive[entry_offset + header_size + 12] ^= 1
                 found = True
                 break
-            record = fields + 43
+            record = fields + 45
         assert found, "file entry not found"
         (root / "corrupt.blt").write_bytes(archive)
         result = run(MINI, "x", "corrupt.blt", "corrupt-out", cwd=root)

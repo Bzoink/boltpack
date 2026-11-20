@@ -1,7 +1,8 @@
 /*
  * archiver.h -- mini archive read/write interface for BoltPack
  *
- * Subset of the full archiver API.  Fluff codec is absent.
+ * Subset of the full archiver API for archive format 7 (specification 2.0),
+ * including volume sets.  Fluff codec is absent.
  * Capability limits are enforced at *create* time only; list and info
  * always iterate and display all entries regardless of archive size.
  *
@@ -35,8 +36,10 @@ typedef struct {
     bp_uint8    platform;      /* BP_OS_* */
     bp_uint64   mtime;         /* Unix epoch seconds */
     bp_uint16   flags;
-    bp_uint16   header_size;   /* 42 + name_len */
-    bp_uint64   offset;        /* byte offset of this entry in the archive */
+    /* the entry header size is always 34 + name_len in format 7; it is not
+     * stored, which keeps this record at 54 bytes on 16-bit targets */
+    bp_uint64   offset;        /* byte offset of the entry header in its volume */
+    bp_uint16   volume;        /* volume holding the entry header */
 } bp_mini_entry_t;
 
 /* ---- Archive create context ------------------------------------------- */
@@ -52,6 +55,15 @@ typedef struct {
     bp_uint32         entry_list_cap;
     bp_uint64         archive_orig_total;
     bp_uint64         archive_comp_total;
+    /* format 7 writer state */
+    int               multi;         /* volumes through `sink` */
+    bp_volume_sink_t  sink;
+    bp_uint32         limit;         /* max bytes per volume, 0 = no limit */
+    bp_uint32         pos;           /* bytes written to the current volume */
+    bp_uint16         number;        /* current volume number */
+    int               vol_open;
+    int               finalized;
+    bp_uint64         set_id;
 } bp_mini_archive_t;
 
 /* ---- Archive info (for 'i' command) ------------------------------------ */
@@ -70,6 +82,8 @@ typedef struct {
     bp_uint64  total_original;
     bp_uint64  total_compressed;
     bp_uint32  method_counts[5]; /* file count per method: [0]=stored [1]=BoltLite [2]=boltlz [3]=fluff [4]=reserved */
+    bp_uint16  volume_count;     /* format 7: volumes in the set */
+    /* archive_size is the size of the last volume */
 } bp_mini_archive_info_t;
 
 /* ---- Utility ----------------------------------------------------------- */
@@ -112,10 +126,22 @@ int bp_mini_archive_add_entry_ex(bp_mini_archive_t *ar, const char *name,
                                  bp_io_t *file_io, bp_uint64 file_size,
                                  bp_uint64 mtime, bp_uint16 flags);
 
-/* Write file table and footer, patch the header.  Must call before close. */
+/* Write the file table, end record and last volume trailer.  Must be called
+ * before close. */
 int bp_mini_archive_finalize(bp_mini_archive_t *ar);
 
-/* Free internal resources (does not close the io). */
+/* Create an archive written as volumes of at most volume_size bytes (at most
+ * BP_MINI_MAX_ARCHIVE_SIZE; 0 = one volume).  See bp_volume_sink_t. */
+int bp_mini_archive_create_volumes(bp_mini_archive_t *ar,
+                                   const bp_volume_sink_t *sink,
+                                   bp_uint32 volume_size,
+                                   bp_uint32 block_size, bp_uint8 method);
+
+/* Mix frontend entropy (clock, process id) into future set IDs. */
+void bp_mini_archive_add_entropy(bp_uint32 value);
+
+/* Free internal resources (does not close the io).  An unfinished volume
+ * set's open volume is handed back to the sink with an error status. */
 void bp_mini_archive_close(bp_mini_archive_t *ar);
 
 /* ---- List -------------------------------------------------------------- */
@@ -201,7 +227,26 @@ int bp_mini_archive_test(bp_io_t *io, bp_mini_test_fn fn, void *user_data);
 
 /* ---- Info -------------------------------------------------------------- */
 
-/* Read archive header and file table to fill *info. */
+/* Read the end record and file table to fill *info. */
 int bp_mini_archive_info(bp_io_t *io, bp_mini_archive_info_t *info);
+
+/* ---- Volume sets -------------------------------------------------------- */
+
+/* The functions above that take one bp_io_t treat it as a one-volume set and
+ * report BP_ERR_VOLUME for a multi-volume set.  These reach the volumes of a
+ * set through a frontend source (see bp_volume_source_t). */
+int bp_mini_archive_list_volumes(const bp_volume_source_t *src,
+                                 bp_mini_list_fn fn, void *user_data);
+int bp_mini_archive_info_volumes(const bp_volume_source_t *src,
+                                 bp_mini_archive_info_t *info);
+int bp_mini_archive_test_volumes(const bp_volume_source_t *src,
+                                 bp_mini_test_fn fn, void *user_data);
+/* directory_fn and metadata_fn may be NULL. */
+int bp_mini_archive_extract_volumes(const bp_volume_source_t *src,
+                                    bp_mini_extract_fn open_fn,
+                                    bp_mini_extract_done_status_fn done_fn,
+                                    bp_mini_extract_directory_fn directory_fn,
+                                    bp_mini_metadata_fn metadata_fn,
+                                    void *user_data);
 
 #endif /* BP_MINI_ARCHIVER_H */

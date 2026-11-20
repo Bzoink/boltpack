@@ -459,7 +459,11 @@ static long prog_read(void *handle, void *buf, bp_uint32 count)
     unsigned int pct;
 
     ctx = (prog_ctx_t *)handle;
-    n = (long)read(ctx->fd, buf, (unsigned)count);
+    {
+        int r = read(ctx->fd, buf, (unsigned)count);
+        n = BP_IO_COUNT(r);
+    }
+    if (n < 0) return n;
     ctx->done += (bp_uint32)n;
 
     if (g_verbose && ctx->total > 0) {

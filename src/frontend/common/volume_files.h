@@ -9,22 +9,38 @@
  * volume that is missing or wrong when the frontend can ask (a terminal, or
  * --pause); otherwise it reports which volume is missing.
  *
+ * Volume files are stdio streams (bp_vol_stream_t is FILE *) unless the
+ * includer defines BP_VOL_OWN_STREAMS and supplies its own stream type:
+ *   typedef ... bp_vol_stream_t;  #define BP_VOL_NO_STREAM (its null value)
+ *   bp_vol_stream_t vol_hook_open_read(const char *path)
+ *   int  vol_hook_close(bp_vol_stream_t s)    0 on success
+ *   int  vol_hook_flush(bp_vol_stream_t s)    write buffered data; 0 = ok
+ *   long vol_hook_read(bp_vol_stream_t s, void *buf, unsigned n)
+ *   void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
+ *   int  vol_hook_getline(char *buf, int size)   read an answer; 0 at EOF
  * The includer provides, before including this header:
  *   bp_io_from_file(bp_io_t *, FILE *)        its stdio stream adapter
- *   FILE *vol_hook_create(const char *target, char *tmp, size_t tmp_size)
+ *                                             (with stdio streams)
+ *   bp_vol_stream_t vol_hook_create(const char *target, char *tmp,
+ *                                   size_t tmp_size)
  *       create a new, empty temporary file in the directory of `target`
  *       (which may not exist yet); store its name in tmp
  *   int  vol_hook_publish(const char *tmp, const char *target)
  *       give the finished temporary file its final name, replacing an
  *       existing file of that name; 0 on success
- *   int  vol_hook_sync(FILE *fp)              flush to the device; 0 = ok
+ *   int  vol_hook_sync(bp_vol_stream_t s)     flush to the device; 0 = ok
  *   int  vol_hook_interactive(void)           1 if the user can be asked
  *   int  vol_hook_exists(const char *path)    1 if path exists
  *   void vol_hook_note_tmp(const char *tmp)   remember / forget ("") the
  *                                             temporary file for cleanup
  *   int  vol_hook_verbose(void)               1 to report finished volumes
- * and may define BP_VOL_DIR_SEPS (path separators, default "/") and
- * BP_VOL_PATH_MAX (default 4096) first.  ANSI C (C89) plus stdio.
+ * and may define BP_VOL_DIR_SEPS (path separators, default "/"),
+ * BP_VOL_PATH_MAX (default 4096) and BP_VOL_PROG (the program name in
+ * messages, default "boltpack") first.  ANSI C (C89) plus stdio.
+ *
+ * The callbacks keep their message buffers in static storage, not on the
+ * stack: the core calls them from deep inside an add, and 16-bit frontends
+ * have small stacks.  They are never re-entered.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
@@ -38,6 +54,44 @@
 #endif
 #ifndef BP_VOL_DIR_SEPS
 #define BP_VOL_DIR_SEPS "/"
+#endif
+#ifndef BP_VOL_PROG
+#define BP_VOL_PROG "boltpack"
+#endif
+
+#ifndef BP_VOL_OWN_STREAMS
+typedef FILE *bp_vol_stream_t;
+#define BP_VOL_NO_STREAM NULL
+
+static bp_vol_stream_t vol_hook_open_read(const char *path)
+{
+    return fopen(path, "rb");
+}
+
+static int vol_hook_close(bp_vol_stream_t s)
+{
+    return fclose(s);
+}
+
+static int vol_hook_flush(bp_vol_stream_t s)
+{
+    return fflush(s);
+}
+
+static long vol_hook_read(bp_vol_stream_t s, void *buf, unsigned n)
+{
+    return (long)fread(buf, 1, n, s);
+}
+
+static void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
+{
+    bp_io_from_file(io, s);
+}
+
+static int vol_hook_getline(char *buf, int size)
+{
+    return fgets(buf, size, stdin) != NULL;
+}
 #endif
 
 /* printf precisions that keep every message inside its buffer */
@@ -53,7 +107,7 @@ typedef struct {
     int       aborted;                      /* the user typed q */
     char      problem[BP_VOL_PATH_MAX + 400];
     /* the one open stream */
-    FILE     *fp;
+    bp_vol_stream_t fp;
     bp_io_t   io;
     /* writing */
     char      tmp_name[BP_VOL_PATH_MAX + 32];
@@ -104,6 +158,7 @@ static int vol_files_init(bp_vol_files_t *v, const char *name)
     size_t len;
 
     memset(v, 0, sizeof(*v));
+    v->fp = BP_VOL_NO_STREAM;
     len = strlen(name);
     if (len == 0 || len >= BP_VOL_PATH_MAX - 8 || *vol_base(name) == '\0')
         return -1;
@@ -156,7 +211,7 @@ static int vol_prompt(bp_vol_files_t *v, const char *message)
     char line[64];
     fprintf(stderr, "%s\nPress Enter when ready, or type q to quit: ", message);
     fflush(stderr);
-    if (fgets(line, sizeof(line), stdin) == NULL ||
+    if (!vol_hook_getline(line, (int)sizeof(line)) ||
         line[0] == 'q' || line[0] == 'Q') {
         fprintf(stderr, "\n");
         v->aborted = 1;
@@ -167,8 +222,8 @@ static int vol_prompt(bp_vol_files_t *v, const char *message)
 
 static void vol_close_fp(bp_vol_files_t *v)
 {
-    if (v->fp != NULL) fclose(v->fp);
-    v->fp = NULL;
+    if (v->fp != BP_VOL_NO_STREAM) vol_hook_close(v->fp);
+    v->fp = BP_VOL_NO_STREAM;
 }
 
 /* ---- reading ----------------------------------------------------------- */
@@ -188,10 +243,10 @@ static const char *vol_reason_text(int reason)
 static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
 {
     bp_vol_files_t *v = (bp_vol_files_t *)user;
-    char name[BP_VOL_PATH_MAX + 8];
+    static char name[BP_VOL_PATH_MAX + 8];
     char what[64];
     /* room for the problem text and the volume name together */
-    char msg[2 * BP_VOL_PATH_MAX + 512];
+    static char msg[2 * BP_VOL_PATH_MAX + 512];
     int named_last = number == BP_VOLUME_LAST_REQUEST && v->last_given;
 
     vol_close_fp(v);
@@ -214,14 +269,14 @@ static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
         if (!v->interactive ||
             (named_last && (reason == BP_ERR_MAGIC || reason == BP_ERR_VERSION)))
             return NULL;
-        sprintf(msg, "boltpack: %.*s.\nInsert or locate %s, %.*s.",
+        sprintf(msg, BP_VOL_PROG ": %.*s.\nInsert or locate %s, %.*s.",
                 BP_VOL_TEXT_PREC, v->problem, what, BP_VOL_NAME_PREC, name);
         if (!vol_prompt(v, msg)) return NULL;
         if (number == BP_VOLUME_LAST_REQUEST) vol_last_name(v, name, sizeof(name));
     }
     for (;;) {
-        v->fp = fopen(name, "rb");
-        if (v->fp != NULL) break;
+        v->fp = vol_hook_open_read(name);
+        if (v->fp != BP_VOL_NO_STREAM) break;
         if (named_last)
             sprintf(v->problem, "cannot open %.*s: %s", BP_VOL_NAME_PREC, name,
                     vol_errtext());
@@ -229,13 +284,13 @@ static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
             sprintf(v->problem, "cannot open %.*s (%s): %s", BP_VOL_NAME_PREC, name,
                     what, vol_errtext());
         if (!v->interactive) return NULL;
-        sprintf(msg, "boltpack: %.*s.\nInsert or locate %s, %.*s.",
+        sprintf(msg, BP_VOL_PROG ": %.*s.\nInsert or locate %s, %.*s.",
                 BP_VOL_TEXT_PREC, v->problem, what, BP_VOL_NAME_PREC, name);
         if (!vol_prompt(v, msg)) return NULL;
         if (number == BP_VOLUME_LAST_REQUEST) vol_last_name(v, name, sizeof(name));
     }
     v->problem[0] = '\0';
-    bp_io_from_file(&v->io, v->fp);
+    vol_hook_io(&v->io, v->fp);
     return &v->io;
 }
 
@@ -251,7 +306,7 @@ static int vol_source_open(bp_vol_files_t *v, bp_volume_source_t *src,
                            const char *name, int pause)
 {
     if (vol_files_init(v, name) != 0) {
-        fprintf(stderr, "boltpack: invalid or too long archive name: %s\n", name);
+        fprintf(stderr, BP_VOL_PROG ": invalid or too long archive name: %s\n", name);
         return -1;
     }
     v->interactive = pause || vol_hook_interactive();
@@ -270,11 +325,11 @@ static void vol_source_done(bp_vol_files_t *v)
 static void vol_report(const bp_vol_files_t *v, int rc, const char *(*err)(int))
 {
     if (v->aborted)
-        fprintf(stderr, "boltpack: stopped at your request\n");
+        fprintf(stderr, BP_VOL_PROG ": stopped at your request\n");
     else if (v->problem[0] != '\0')
-        fprintf(stderr, "boltpack: %s\n", v->problem);
+        fprintf(stderr, BP_VOL_PROG ": %s\n", v->problem);
     else
-        fprintf(stderr, "boltpack: %s\n", err(rc));
+        fprintf(stderr, BP_VOL_PROG ": %s\n", err(rc));
 }
 
 /* Before extracting without anyone to ask for media: is every numbered
@@ -287,7 +342,7 @@ static int vol_all_present(const bp_vol_files_t *v, unsigned count)
         vol_numbered_name(v, i, name, sizeof(name));
         if (!vol_exists(name)) {
             fprintf(stderr,
-                    "boltpack: %s (volume %u of %u) is missing; nothing was extracted\n",
+                    BP_VOL_PROG ": %s (volume %u of %u) is missing; nothing was extracted\n",
                     name, i + 1U, count);
             return 0;
         }
@@ -300,26 +355,26 @@ static int vol_all_present(const bp_vol_files_t *v, unsigned count)
 static bp_io_t *vol_sink_create(void *user, bp_uint16 number)
 {
     bp_vol_files_t *v = (bp_vol_files_t *)user;
-    char name[BP_VOL_PATH_MAX + 8];
-    char msg[2 * BP_VOL_PATH_MAX + 512];
+    static char name[BP_VOL_PATH_MAX + 8];
+    static char msg[2 * BP_VOL_PATH_MAX + 512];
 
     vol_numbered_name(v, number, name, sizeof(name));
     if (v->pause) {
-        sprintf(msg, "boltpack: insert the disk for volume %u (%.*s).",
+        sprintf(msg, BP_VOL_PROG ": insert the disk for volume %u (%.*s).",
                 (unsigned)number + 1U, BP_VOL_NAME_PREC, name);
         if (!vol_prompt(v, msg)) return NULL;
     }
     for (;;) {
         v->fp = vol_hook_create(name, v->tmp_name, sizeof(v->tmp_name));
-        if (v->fp != NULL) break;
+        if (v->fp != BP_VOL_NO_STREAM) break;
         sprintf(v->problem, "cannot create volume %u beside %.*s: %s",
                 (unsigned)number + 1U, BP_VOL_NAME_PREC, name, vol_errtext());
         if (!v->pause) return NULL;
-        sprintf(msg, "boltpack: %.*s.", BP_VOL_TEXT_PREC, v->problem);
+        sprintf(msg, BP_VOL_PROG ": %.*s.", BP_VOL_TEXT_PREC, v->problem);
         if (!vol_prompt(v, msg)) return NULL;
     }
     vol_hook_note_tmp(v->tmp_name);
-    bp_io_from_file(&v->io, v->fp);
+    vol_hook_io(&v->io, v->fp);
     return &v->io;
 }
 
@@ -327,20 +382,20 @@ static int vol_sink_finish(void *user, bp_io_t *io, bp_uint16 number,
                            int is_last, int status)
 {
     bp_vol_files_t *v = (bp_vol_files_t *)user;
-    char name[BP_VOL_PATH_MAX + 8];
+    static char name[BP_VOL_PATH_MAX + 8];
     int ok;
 
     (void)io;
-    if (v->fp == NULL) return BP_ERR_IO;
+    if (v->fp == BP_VOL_NO_STREAM) return BP_ERR_IO;
     if (status != BP_OK) {
         vol_close_fp(v);
         remove(v->tmp_name);
         vol_hook_note_tmp("");
         return 0;
     }
-    ok = fflush(v->fp) == 0 && vol_hook_sync(v->fp) == 0;
-    if (fclose(v->fp) != 0) ok = 0;
-    v->fp = NULL;
+    ok = vol_hook_flush(v->fp) == 0 && vol_hook_sync(v->fp) == 0;
+    if (vol_hook_close(v->fp) != 0) ok = 0;
+    v->fp = BP_VOL_NO_STREAM;
     if (is_last) {
         strncpy(name, v->last_name, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
@@ -365,7 +420,7 @@ static int vol_sink_finish(void *user, bp_io_t *io, bp_uint16 number,
     v->written = (unsigned)number + 1U;
     v->have_last = is_last;
     if (v->pause && vol_hook_verbose())
-        fprintf(stderr, "boltpack: volume %u written: %s\n",
+        fprintf(stderr, BP_VOL_PROG ": volume %u written: %s\n",
                 (unsigned)number + 1U, name);
     return 0;
 }
@@ -403,18 +458,18 @@ static void vol_remove_stale(bp_vol_files_t *v, unsigned count)
     unsigned i;
     if (v->pause || count == 0) return;
     for (i = count - 1U; i < 1000U; i++) {
-        FILE *fp;
+        bp_vol_stream_t fp;
         unsigned char h[6];
         int stale;
         vol_numbered_name(v, i, name, sizeof(name));
-        fp = fopen(name, "rb");
-        if (fp == NULL) break;
-        stale = fread(h, 1, 6, fp) == 6 && h[0] == 'B' && h[1] == 'O' &&
+        fp = vol_hook_open_read(name);
+        if (fp == BP_VOL_NO_STREAM) break;
+        stale = vol_hook_read(fp, h, 6) == 6 && h[0] == 'B' && h[1] == 'O' &&
                 h[2] == 'L' && h[3] == 'T' && h[4] == 7 && h[5] == 0;
-        fclose(fp);
+        vol_hook_close(fp);
         if (!stale) break;
         if (remove(name) == 0 && vol_hook_verbose())
-            fprintf(stderr, "boltpack: removed %s, left over from an older set\n",
+            fprintf(stderr, BP_VOL_PROG ": removed %s, left over from an older set\n",
                     name);
     }
 }

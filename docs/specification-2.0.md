@@ -1,7 +1,7 @@
 # BoltPack Specification v2.0
 
 **Format Version:** 7 (only)
-**Software Version:** next release (Linux CLI family, 32-bit DOS CLI)
+**Software Version:** next release (Linux CLI family, 32-bit DOS CLI, mini CLIs)
 **Status:** Draft; implemented by `src/core/archiver7.c`
 **Last updated:** 2026-11-20
 
@@ -1759,9 +1759,20 @@ adds volume sinks (`bp_archive_create_volumes`) and sources
 (`bp_archive_list_volumes`, `bp_archive_extract_volumes`,
 `bp_archive_test_volumes`, `bp_archive_info_volumes`); the functions that take
 one `bp_io_t` treat it as a one-volume set. The Linux CLI, the POSIX CLIs
-built from it, and the 32-bit DOS CLI use this core. The other frontends still build `archiver.c`
-(format 6) until they are ported, and cannot exchange archives with format 7
-builds in the meantime.
+built from it, and the 32-bit DOS CLI use this core.
+
+`src/core/mini/archiver.c` implements format 7 for 16-bit and other small
+targets (ANSI C89 with 16-bit `int`, no floating point) behind
+`src/core/mini/archiver.h`, with the same volume sink and source model
+(`bp_mini_archive_create_volumes`, `bp_mini_archive_*_volumes`). It writes
+Stored and BoltLite, reads Stored, BoltLite and BoltLZ, and refuses blocks
+over 32 KiB, entries of 4 GiB or more and volumes over 2,147,483,647 bytes.
+Before any output it validates the whole file table, and for a one-volume
+archive it also walks every entry's framing. The 16-bit DOS, Win16, OS/2
+16-bit, CP/M-86 and Linux mini CLIs use it.
+
+The other frontends still build `archiver.c` (format 6) until they are
+ported, and cannot exchange archives with format 7 builds in the meantime.
 
 The library is self-contained (includes BoltLite, BoltLZ, and Fluff codecs)
 and compiles with strict ANSI C89.

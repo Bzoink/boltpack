@@ -14,6 +14,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include "test_runner.h"
+
+/* This file tests the format 6 full core (archiver.c).  The mini core reads
+ * and writes format 7 now, so mini checks that exercise it on format 6
+ * archives only run where both cores share a format (test_mini7.c defines
+ * MINI_SAME_FORMAT 1 and repeats them against archiver7.c). */
+#ifndef MINI_SAME_FORMAT
+#define MINI_SAME_FORMAT 0
+#endif
+#define MINI_CHECK(cond, name) \
+    do { if (MINI_SAME_FORMAT) { UNIT_CHECK(cond, name); } } while (0)
 #include "bp_types.h"
 #include "compress.h"
 #include "archiver.h"
@@ -519,8 +529,9 @@ static void test_format6_single_blob_golden_archive(void)
     mem.cap = mem.size;
     UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
                "full test detects corruption in an unframed Stored blob");
-    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CHECKSUM,
-               "mini test detects corruption in an unframed Stored blob");
+    UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) ==
+               (MINI_SAME_FORMAT ? BP_ERR_CHECKSUM : BP_ERR_VERSION),
+               "mini test refuses the format 6 single-blob archive");
 
     mem.buf = (unsigned char *)FORMAT6_SINGLE_BOLTLITE_GOLDEN_ARCHIVE;
     mem.pos = 0;
@@ -971,10 +982,12 @@ static void test_previous_versions_rejected(void)
                    "full info rejects reserved archive flags");
         UNIT_CHECK(bp_archive_test(&io, test_cb, NULL) == BP_ERR_CORRUPT,
                    "full test rejects reserved archive flags");
-        UNIT_CHECK(bp_mini_archive_info(&io, &mini_info) == BP_ERR_CORRUPT,
-                   "mini info rejects reserved archive flags");
-        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
-                   "mini test rejects reserved archive flags");
+        UNIT_CHECK(bp_mini_archive_info(&io, &mini_info) ==
+                   (MINI_SAME_FORMAT ? BP_ERR_CORRUPT : BP_ERR_VERSION),
+                   "mini info rejects a format 6 archive with reserved flags");
+        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) ==
+                   (MINI_SAME_FORMAT ? BP_ERR_CORRUPT : BP_ERR_VERSION),
+                   "mini test rejects a format 6 archive with reserved flags");
         {
             MemIO dst;
             bp_io_t dst_io;
@@ -1959,7 +1972,7 @@ static void test_block_payload_boundaries(void)
                       bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
         UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
                    "full reader rejects blocked payload size mismatch");
-        UNIT_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+        MINI_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
                    "mini reader rejects blocked payload size mismatch");
         memset(&state, 0, sizeof(state));
         state.output.buf = output; state.output.cap = sizeof(output);
@@ -1973,7 +1986,7 @@ static void test_block_payload_boundaries(void)
         state.io = make_mem_io(&state.output);
         rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
                                              mini_interop_done, &state);
-        UNIT_CHECK(rc == BP_ERR_CORRUPT && state.done_status == BP_ERR_CORRUPT,
+        MINI_CHECK(rc == BP_ERR_CORRUPT && state.done_status == BP_ERR_CORRUPT,
                    "mini extraction reports malformed framing to cleanup");
         memcpy(before, mem.buf, (size_t)mem.size);
         rc = bp_archive_open_append(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
@@ -2010,9 +2023,10 @@ static void test_block_payload_boundaries(void)
     bp_write_le32(mem.buf + BP_HEADER_CRC_OFF,
                   bp_crc32(0, mem.buf, BP_HEADER_CRC_OFF));
     memcpy(before, mem.buf, (size_t)mem.size);
-    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT &&
-               bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
-               "full and mini reject nonempty unframed entry without payload");
+    UNIT_CHECK(bp_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+               "full reader rejects nonempty unframed entry without payload");
+    MINI_CHECK(bp_mini_archive_test(&io, NULL, NULL) == BP_ERR_CORRUPT,
+               "mini reader rejects nonempty unframed entry without payload");
     memset(&state, 0, sizeof(state));
     rc = bp_archive_extract_all_ex(&io, full_metadata_test_open,
                                     full_metadata_test_done, NULL, &state);
@@ -2021,7 +2035,7 @@ static void test_block_payload_boundaries(void)
     memset(&state, 0, sizeof(state));
     rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
                                          mini_interop_done, &state);
-    UNIT_CHECK(rc == BP_ERR_CORRUPT && state.count == 0,
+    MINI_CHECK(rc == BP_ERR_CORRUPT && state.count == 0,
                "mini extraction refuses empty unframed payload before output");
     rc = bp_archive_open_append(&ar, &io, BP_BLOCK_8K, BP_METHOD_STORED);
     UNIT_CHECK(rc == BP_ERR_CORRUPT && memcmp(before, mem.buf, (size_t)mem.size) == 0,
@@ -2130,7 +2144,7 @@ static void test_portable_metadata_archive(void)
         UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
                    "full archive test validates portable metadata framing");
         rc = bp_mini_archive_test(&io, NULL, NULL);
-        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
+        MINI_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_OK),
                    "mini archive test validates portable metadata framing");
         memset(&state, 0, sizeof(state));
         state.output.buf = output; state.output.cap = sizeof(output);
@@ -2164,7 +2178,7 @@ static void test_portable_metadata_archive(void)
         state.io = make_mem_io(&state.output);
         rc = bp_mini_archive_extract_all_ex(&io, mini_interop_open,
                                              mini_interop_done, &state);
-        UNIT_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_ERR_PARTIAL),
+        MINI_CHECK(rc == (malformed ? BP_ERR_CORRUPT : BP_ERR_PARTIAL),
                    "mini extraction rejects malformed or reports skipped metadata");
         if (!malformed) {
             MemIO copied, deleted_mem;
@@ -2180,7 +2194,7 @@ static void test_portable_metadata_archive(void)
             state.io = make_mem_io(&state.output);
             rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
                                     mini_interop_done, mini_metadata_test, &state);
-            UNIT_CHECK(rc == BP_OK && state.metadata_count == 1,
+            MINI_CHECK(rc == BP_OK && state.metadata_count == 1,
                        "mini delivers validated FAT metadata after successful file extraction");
             for (payload_pos = 0;
                  payload_pos + (long)FILE1_LEN <= mem.size;
@@ -2198,7 +2212,7 @@ static void test_portable_metadata_archive(void)
                 state.io = make_mem_io(&state.output);
                 rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
                                         mini_interop_done, mini_metadata_test, &state);
-                UNIT_CHECK(rc == BP_ERR_CHECKSUM && state.done_status == BP_ERR_CHECKSUM &&
+                MINI_CHECK(rc == BP_ERR_CHECKSUM && state.done_status == BP_ERR_CHECKSUM &&
                            state.metadata_count == 0,
                            "mini checksum failure suppresses supplementary metadata");
                 mem.buf[payload_pos] ^= 0x20;
@@ -2209,7 +2223,7 @@ static void test_portable_metadata_archive(void)
             state.report_partial = 1;
             rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
                                     mini_interop_done, mini_metadata_test, &state);
-            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 1,
+            MINI_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 1,
                        "mini applies portable metadata after verified subject with partial native restore");
             memset(&state, 0, sizeof(state));
             state.output.buf = output; state.output.cap = sizeof(output);
@@ -2217,12 +2231,12 @@ static void test_portable_metadata_archive(void)
             state.done_result = BP_ERR_IO;
             rc = bp_mini_archive_extract_all_with_metadata(&io, mini_interop_open,
                                     mini_interop_done, mini_metadata_test, &state);
-            UNIT_CHECK(rc == BP_ERR_IO && state.metadata_count == 0,
+            MINI_CHECK(rc == BP_ERR_IO && state.metadata_count == 0,
                        "mini aborts before supplementary metadata on hard completion error");
             memset(&state, 0, sizeof(state));
             rc = bp_mini_archive_extract_all_with_metadata(&io, mini_skip_test,
                                     mini_interop_done, mini_metadata_test, &state);
-            UNIT_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 0,
+            MINI_CHECK(rc == BP_ERR_PARTIAL && state.metadata_count == 0,
                        "mini does not apply metadata when the subject was skipped");
 
             copied.buf = (unsigned char *)malloc(MEM_IO_CAP);
@@ -2635,7 +2649,7 @@ static void test_full_interchange_profile(void)
                "full profile output uses mini-compatible entry methods and block sizes");
     mem_rewind(&mem);
     rc = bp_mini_archive_test(&io, NULL, NULL);
-    UNIT_CHECK(rc == BP_OK,
+    MINI_CHECK(rc == BP_OK,
                "mini reader verifies an archive emitted by the full profile writer");
 
     copied.buf = (unsigned char *)malloc(MEM_IO_CAP);
@@ -2650,7 +2664,7 @@ static void test_full_interchange_profile(void)
     bp_archive_close(&copied_ar);
     mem_rewind(&copied);
     if (rc == BP_OK) rc = bp_mini_archive_test(&copied_io, NULL, NULL);
-    UNIT_CHECK(rc == BP_OK,
+    MINI_CHECK(rc == BP_OK,
                "profile copy preserves mini compatibility and validates source entries");
     free(copied.buf);
 
@@ -2678,10 +2692,13 @@ static void test_full_interchange_profile(void)
     memcpy(saved, mem.buf, (size_t)saved_size);
     mem_rewind(&mem);
     rc = bp_archive_open_append(&ar, &io, BP_BLOCK_16K, BP_METHOD_BOLTLITE);
-    if (rc == BP_OK) rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
-    UNIT_CHECK(rc == BP_ERR_UNSUPPORTED_METHOD,
-               "profile append refuses an existing archive with an extended codec");
-    if (rc != BP_ERR_UNSUPPORTED_METHOD) bp_archive_close(&ar);
+    {
+        int opened = rc == BP_OK;
+        if (opened) rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+        UNIT_CHECK(rc == BP_ERR_UNSUPPORTED_METHOD,
+                   "profile append refuses an existing archive with an extended codec");
+        if (opened) bp_archive_close(&ar);
+    }
     UNIT_CHECK(mem.size == saved_size &&
                memcmp(mem.buf, saved, (size_t)saved_size) == 0,
                "refused profile append leaves the archive bytes unchanged");
@@ -2765,21 +2782,13 @@ int main(void)
     test_previous_versions_rejected();
     test_format6_flags_and_names();
     test_format6_name_length_boundary();
-    test_format6_full_mini_interop();
-    test_mini_independent_format6_golden_archive();
-    test_mini_single_blob_resource_preflight();
-    test_mini_archive_size_limit();
-    test_mini_directory_outcomes();
-    test_mini_directory_queue();
     test_dos_time_interop();
     test_atari_name_projection();
     test_cpm86_name_projection();
-    test_mini_projected_name_index();
     test_portable_metadata();
     test_portable_metadata_archive();
     test_block_payload_boundaries();
     test_archive_edit_preserves_complete_groups();
-    test_mini_local_directory_names();
     test_duplicate_writer_names();
     test_full_interchange_profile();
 

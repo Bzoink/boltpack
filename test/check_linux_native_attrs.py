@@ -297,17 +297,13 @@ def main():
               (t / "out/src/solo").read_bytes() == (t / "out/src/d1/one").read_bytes(),
               "a separate file with equal bytes stays separate")
         # an archive made without the record, and the mini reader, give copies
-        # The mini reader still reads archive format 6 only; this check
-        # returns when it is moved to format 7.
-        if False and Path(args.mini).exists():
+        if Path(args.mini).exists():
             (t / "outm").mkdir()
             r = run([args.mini, "x", "t.bp", "outm"], t)
             check((t / "outm/src/d2/two").read_bytes() == b"shared content\n" * 100 and
                   (t / "outm/src/d2/two").stat().st_ino != (t / "outm/src/d1/one").stat().st_ino,
                   "the mini reader, which does not know the record, extracts independent copies",
                   r.stderr)
-        else:
-            print("  SKIP  the mini reader (format 6 only) cannot read format 7 archives yet")
         # deleting the first name leaves records that point at nothing
         shutil.copy(t / "t.bp", t / "d.bp")
         listing = [l.split()[-1] for l in run([cli, "l", "d.bp"], t).stdout.splitlines()

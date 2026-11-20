@@ -514,6 +514,7 @@ const char *bp_mini_strerror(int code)
     case BP_ERR_NOT_FOUND:           return "entry not found";
     case BP_ERR_INVALID_ARG:         return "invalid argument";
     case BP_ERR_PARTIAL:             return "some entries or attributes were not restored";
+    case BP_ERR_VOLUME:              return "volume missing or from another archive";
     default:                          return "unknown error";
     }
 }
@@ -604,12 +605,14 @@ int parse_block_size_mini(const char *s, bp_uint32 *out)
 /* handle I/O callbacks using low-level read/write/lseek */
 static long handle_read(void *h, void *buf, bp_uint32 n)
 {
-    return (long)read((int)(long)h, buf, (unsigned)n);
+    int r = read((int)(long)h, buf, (unsigned)n);
+    return BP_IO_COUNT(r);
 }
 
 static long handle_write(void *h, const void *buf, bp_uint32 n)
 {
-    return (long)write((int)(long)h, buf, (unsigned)n);
+    int r = write((int)(long)h, buf, (unsigned)n);
+    return BP_IO_COUNT(r);
 }
 
 static int handle_seek(void *h, bp_off_t off, int org)

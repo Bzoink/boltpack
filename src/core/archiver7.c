@@ -1079,6 +1079,101 @@ static int report_write_progress(bp_archive_t *ar, const char *name,
     return ar->progress_fn(&p, ar->progress_data) != 0 ? BP_ERR_ABORTED : BP_OK;
 }
 
+/* Allocate the sequential codec buffers and state for `method`.  The
+ * BoltLite workspace is returned in *boltlite_work for the caller to free. */
+static int seq_setup(bp_archive_t *ar, bp_uint8 method,
+                     bp_uint8 **boltlite_work, fluff_ctx_t **fctx)
+{
+    bp_uint32 bsize = ar->block_size;
+
+    *boltlite_work = NULL;
+    *fctx = NULL;
+    if (ar->seq_buf_block_size != bsize) {
+        free(ar->seq_in_buf);  ar->seq_in_buf = NULL;
+        free(ar->seq_out_buf); ar->seq_out_buf = NULL;
+        ar->seq_buf_block_size = 0;
+    }
+    if (ar->seq_in_buf == NULL) {
+        ar->seq_in_buf = (bp_uint8 *)malloc((size_t)bsize);
+        if (ar->seq_in_buf == NULL) return BP_ERR_NOMEM;
+        ar->seq_buf_block_size = bsize;
+    }
+    if (ar->seq_out_buf == NULL) {
+        /* sized for the largest method bound at this block size */
+        bp_uint32 sz = bp_method_compress_bound(BP_METHOD_FLUFF, bsize);
+        bp_uint32 s2 = bp_method_compress_bound(BP_METHOD_BOLTLZ, bsize);
+        bp_uint32 s3 = bp_method_compress_bound(BP_METHOD_BOLTLITE, bsize);
+        if (s2 > sz) sz = s2;
+        if (s3 > sz) sz = s3;
+        if (bsize > sz) sz = bsize;
+        ar->seq_out_buf = (bp_uint8 *)malloc((size_t)sz);
+        if (ar->seq_out_buf == NULL) return BP_ERR_NOMEM;
+    }
+    if (method == BP_METHOD_BOLTLITE) {
+        *boltlite_work = (bp_uint8 *)malloc((size_t)BOLTLITE_WORK_SIZE);
+        if (*boltlite_work == NULL) return BP_ERR_NOMEM;
+    }
+    if (method == BP_METHOD_BOLTLZ && ar->seq_boltlz_work == NULL) {
+        ar->seq_boltlz_work = malloc((size_t)bp_compress_work_size());
+        if (ar->seq_boltlz_work == NULL) {
+            free(*boltlite_work);
+            *boltlite_work = NULL;
+            return BP_ERR_NOMEM;
+        }
+    }
+    if (method == BP_METHOD_FLUFF) {
+        if (ar->seq_fluff_ctx == NULL) {
+            ar->seq_fluff_ctx = (void *)fluff_ctx_alloc();
+            if (ar->seq_fluff_ctx == NULL) {
+                free(*boltlite_work);
+                *boltlite_work = NULL;
+                return BP_ERR_NOMEM;
+            }
+        }
+        *fctx = (fluff_ctx_t *)ar->seq_fluff_ctx;
+        if (ar->method_level > 0) fluff_ctx_reset_level(*fctx, (int)ar->method_level);
+        else fluff_ctx_reset(*fctx);
+    }
+    return BP_OK;
+}
+
+/* Compress one chunk of ar->seq_in_buf into ar->seq_out_buf.  *data points
+ * at the bytes to store: the input itself when compression saves less than
+ * 1% (a raw block, clen == chunk). */
+static int seq_compress(bp_archive_t *ar, bp_uint8 method, bp_uint32 chunk,
+                        bp_uint8 *boltlite_work, fluff_ctx_t *fctx,
+                        const bp_uint8 **data, bp_uint32 *clen)
+{
+    bp_uint8 *in_buf = ar->seq_in_buf;
+    bp_uint8 *out_buf = ar->seq_out_buf;
+    bp_uint32 comp_len = 0;
+    int rc;
+
+    if (method == BP_METHOD_BOLTLITE) {
+        comp_len = boltlite_compress(in_buf, chunk, out_buf, boltlite_work);
+        if (comp_len == 0) comp_len = chunk;
+    } else if (method == BP_METHOD_BOLTLZ) {
+        comp_len = bp_method_compress_bound(BP_METHOD_BOLTLZ, ar->block_size);
+        if (comp_len < ar->block_size) comp_len = ar->block_size;
+        rc = bp_compress_block_work(in_buf, chunk, out_buf, &comp_len,
+                                    ar->seq_boltlz_work, ar->method_level);
+        if (rc != BP_OK) return rc;
+    } else if (method == BP_METHOD_FLUFF) {
+        rc = fluff_compress_block_ctx(in_buf, chunk, out_buf, &comp_len, fctx);
+        if (rc != BP_OK) return rc;
+    } else {
+        comp_len = chunk;
+    }
+    if (method == BP_METHOD_STORED || comp_len >= chunk - chunk / 100) {
+        *data = in_buf;
+        *clen = chunk;
+    } else {
+        *data = out_buf;
+        *clen = comp_len;
+    }
+    return BP_OK;
+}
+
 /* Compress and write the payload blocks of one entry. */
 static int write_entry_blocks(bp_archive_t *ar, eout_t *o, const char *name,
                               bp_uint8 method, bp_io_t *file_io,
@@ -1089,7 +1184,7 @@ static int write_entry_blocks(bp_archive_t *ar, eout_t *o, const char *name,
     bp_uint32 bsize = ar->block_size;
     bp_uint32 out_buf_size = bp_method_compress_bound(method, bsize);
     bp_uint32 crc = 0;
-    bp_uint8 *in_buf, *out_buf;
+    bp_uint8 *in_buf;
     bp_uint8 *boltlite_work = NULL;
     fluff_ctx_t *fctx = NULL;
     int rc = BP_OK;
@@ -1242,47 +1337,9 @@ static int write_entry_blocks(bp_archive_t *ar, eout_t *o, const char *name,
 sequential:
 #endif /* BOLTPACK_FAST_FLUFF */
 
-    if (ar->seq_buf_block_size != bsize) {
-        free(ar->seq_in_buf);  ar->seq_in_buf = NULL;
-        free(ar->seq_out_buf); ar->seq_out_buf = NULL;
-        ar->seq_buf_block_size = 0;
-    }
-    if (ar->seq_in_buf == NULL) {
-        ar->seq_in_buf = (bp_uint8 *)malloc((size_t)bsize);
-        if (ar->seq_in_buf == NULL) return BP_ERR_NOMEM;
-        ar->seq_buf_block_size = bsize;
-    }
-    if (ar->seq_out_buf == NULL) {
-        /* sized for the largest method bound at this block size */
-        bp_uint32 sz = bp_method_compress_bound(BP_METHOD_FLUFF, bsize);
-        bp_uint32 s2 = bp_method_compress_bound(BP_METHOD_BOLTLZ, bsize);
-        bp_uint32 s3 = bp_method_compress_bound(BP_METHOD_BOLTLITE, bsize);
-        if (s2 > sz) sz = s2;
-        if (s3 > sz) sz = s3;
-        if (bsize > sz) sz = bsize;
-        ar->seq_out_buf = (bp_uint8 *)malloc((size_t)sz);
-        if (ar->seq_out_buf == NULL) return BP_ERR_NOMEM;
-    }
+    rc = seq_setup(ar, method, &boltlite_work, &fctx);
+    if (rc != BP_OK) return rc;
     in_buf = ar->seq_in_buf;
-    out_buf = ar->seq_out_buf;
-
-    if (method == BP_METHOD_BOLTLITE) {
-        boltlite_work = (bp_uint8 *)malloc((size_t)BOLTLITE_WORK_SIZE);
-        if (boltlite_work == NULL) return BP_ERR_NOMEM;
-    }
-    if (method == BP_METHOD_BOLTLZ && ar->seq_boltlz_work == NULL) {
-        ar->seq_boltlz_work = malloc((size_t)bp_compress_work_size());
-        if (ar->seq_boltlz_work == NULL) { free(boltlite_work); return BP_ERR_NOMEM; }
-    }
-    if (method == BP_METHOD_FLUFF) {
-        if (ar->seq_fluff_ctx == NULL) {
-            ar->seq_fluff_ctx = (void *)fluff_ctx_alloc();
-            if (ar->seq_fluff_ctx == NULL) { free(boltlite_work); return BP_ERR_NOMEM; }
-        }
-        fctx = (fluff_ctx_t *)ar->seq_fluff_ctx;
-        if (ar->method_level > 0) fluff_ctx_reset_level(fctx, (int)ar->method_level);
-        else fluff_ctx_reset(fctx);
-    }
 
     while (!bp_u64_is_zero(remaining)) {
         bp_uint32 chunk = u64_cap32(remaining, bsize);
@@ -1293,27 +1350,9 @@ sequential:
         n = file_io->read(file_io->handle, in_buf, chunk);
         if (n != (long)chunk) { rc = read_failed(ar, name, chunk, n); break; }
         crc = bp_crc32(crc, in_buf, chunk);
-
-        if (method == BP_METHOD_BOLTLITE) {
-            comp_len = boltlite_compress(in_buf, chunk, out_buf, boltlite_work);
-            if (comp_len == 0) comp_len = chunk;
-        } else if (method == BP_METHOD_BOLTLZ) {
-            comp_len = out_buf_size;
-            rc = bp_compress_block_work(in_buf, chunk, out_buf, &comp_len,
-                                        ar->seq_boltlz_work, ar->method_level);
-            if (rc != BP_OK) break;
-        } else if (method == BP_METHOD_FLUFF) {
-            rc = fluff_compress_block_ctx(in_buf, chunk, out_buf, &comp_len, fctx);
-            if (rc != BP_OK) break;
-        } else {
-            comp_len = chunk;
-        }
-        if (method == BP_METHOD_STORED || comp_len >= chunk - chunk / 100) {
-            data = in_buf;
-            comp_len = chunk;
-        } else {
-            data = out_buf;
-        }
+        rc = seq_compress(ar, method, chunk, boltlite_work, fctx,
+                          &data, &comp_len);
+        if (rc != BP_OK) break;
         rc = eo_block(o, method, in_buf, chunk, data, comp_len, total_comp);
         if (rc != BP_OK) break;
         remaining = bp_u64_sub(remaining, bp_u64_from_u32(chunk));
@@ -1348,6 +1387,8 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
     bp_uint64 total_comp = BP_UINT64_ZERO;
     bp_uint16 loc_vol = 0;
     bp_uint64 loc_off = BP_UINT64_ZERO;
+    const bp_uint8 *single_data = NULL;
+    bp_uint32 single_len = 0, single_clen = 0;
     int rc;
 
     /* Packing into a blob needs no writer state: parallel frontends pack
@@ -1380,6 +1421,48 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
     out = packed != NULL ? packed : &local;
     memset(out, 0, sizeof(*out));
 
+    /* An entry that fits in one block is compressed before its header is
+     * written, and recorded as Stored when the block stays raw (as format 6
+     * recorded every entry without a compressed block), so readers without
+     * the codec, such as the mini frontends reading Fluff, can extract it.
+     * Larger entries keep the requested method: the header precedes their
+     * blocks and the writer never seeks back. */
+    if (method != BP_METHOD_STORED && !bp_u64_is_zero(file_size) &&
+        bp_u64_cmp(file_size, bp_u64_from_u32(ar->block_size)) <= 0) {
+        bp_uint8 *boltlite_work;
+        fluff_ctx_t *fctx;
+        long n;
+        single_len = u64_cap32(file_size, ar->block_size);
+        rc = seq_setup(ar, method, &boltlite_work, &fctx);
+        if (rc != BP_OK) return rc;
+        n = file_io->read(file_io->handle, ar->seq_in_buf, single_len);
+        if (n != (long)single_len) {
+            free(boltlite_work);
+            return read_failed(ar, name, single_len, n);
+        }
+        checksum = bp_crc32(0, ar->seq_in_buf, single_len);
+        rc = seq_compress(ar, method, single_len, boltlite_work, fctx,
+                          &single_data, &single_clen);
+        free(boltlite_work);
+        if (rc != BP_OK) return rc;
+        if (single_clen == single_len) method = BP_METHOD_STORED;
+        /* Record the smallest standard block size that holds the block
+         * (readers only allocate block_size), unless an interchange profile
+         * fixes the block size. */
+        if (ar->profile == BP_PROFILE_NONE) {
+            static const bp_uint32 sizes[] = {
+                BP_BLOCK_8K, BP_BLOCK_16K, BP_BLOCK_32K, BP_BLOCK_64K
+            };
+            unsigned i;
+            for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+                if (sizes[i] >= single_len && sizes[i] < block_size) {
+                    block_size = sizes[i];
+                    break;
+                }
+            }
+        }
+    }
+
     hdr_size = (bp_uint16)(V7_ENTRY_FIXED + name_len);
     hdr = (bp_uint8 *)malloc((size_t)hdr_size);
     if (hdr == NULL) return BP_ERR_NOMEM;
@@ -1404,7 +1487,14 @@ static int bp_archive_write_entry(bp_archive_t *ar, const char *name,
     free(hdr);
     if (rc != BP_OK) return rc;
 
-    if (!bp_u64_is_zero(file_size)) {
+    if (single_data != NULL) {
+        rc = eo_block(&o, method, ar->seq_in_buf, single_len, single_data,
+                      single_clen, &total_comp);
+        if (rc == BP_OK && record_entry)
+            rc = report_write_progress(ar, name, file_size, file_size,
+                                       total_comp);
+        if (rc != BP_OK) return rc;
+    } else if (!bp_u64_is_zero(file_size)) {
         rc = write_entry_blocks(ar, &o, name, method, file_io, file_size,
                                 record_entry, &checksum, &total_comp);
         if (rc != BP_OK) return rc;

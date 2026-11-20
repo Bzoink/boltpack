@@ -146,6 +146,10 @@ int parse_block_size_mini(const char *s, bp_uint32 *out);
 #include <fcntl.h>
 #include <dos.h>
 
+/* The byte count of a 16-bit read() or write(): they return int, so a
+ * transfer of 32 KiB or more reads as negative.  Only -1 is an error. */
+#define BP_IO_COUNT(r) ((r) == -1 ? -1L : (long)(unsigned)(r))
+
 /* Fill a bp_io_t from a Watcom file descriptor (from open()).
  * Uses read/write/lseek directly -- no stdio buffering. */
 void bp_io_from_handle(bp_io_t *io, int fd);

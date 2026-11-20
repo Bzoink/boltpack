@@ -367,18 +367,7 @@ void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads);
  * and any prompting for removable media.
  */
 
-/* Writing.  create() returns a new, empty stream for volume `number`
- * (0-based; the frontend names it as a numbered volume).  finish() is called
- * once for every created volume, after its trailer has been written (status
- * BP_OK) or when the archive is abandoned (status != BP_OK).  is_last is set
- * on the last volume, which the frontend renames to the archive name.  A
- * nonzero return from finish() fails the archive. */
-typedef struct {
-    bp_io_t *(*create)(void *user, bp_uint16 number);
-    int      (*finish)(void *user, bp_io_t *io, bp_uint16 number,
-                       int is_last, int status);
-    void     *user;
-} bp_volume_sink_t;
+/* Writing: see bp_volume_sink_t in bp_types.h. */
 
 /* Create an archive written as volumes of at most volume_size bytes each
  * (volume_size 0 = one volume of any size).  The sink is copied.  Use the
@@ -395,21 +384,7 @@ int bp_archive_output_size(const bp_archive_t *ar, bp_uint64 *size);
 /* Mix frontend entropy (process id, clock) into future set IDs. */
 void bp_archive_add_entropy(bp_uint32 value);
 
-/* Reading.  open() returns a stream for volume `number`, or for the last
- * volume when number is BP_VOLUME_LAST_REQUEST.  The last volume is always
- * requested that way, never by its number, because it carries the archive
- * name rather than a numbered one.  reason is BP_OK on the
- * first request for that volume; otherwise it is the error that rejected the
- * stream returned last time (BP_ERR_VOLUME: another set or the wrong volume;
- * BP_ERR_MAGIC / BP_ERR_VERSION / BP_ERR_CORRUPT / BP_ERR_TRUNCATED: not a
- * usable volume).  Return NULL to give up; the operation then fails with
- * that reason (BP_ERR_VOLUME on a first request).  close() releases a
- * stream; the core closes each volume before asking for another one. */
-typedef struct {
-    bp_io_t *(*open)(void *user, bp_uint16 number, int reason);
-    void     (*close)(void *user, bp_io_t *io);
-    void     *user;
-} bp_volume_source_t;
+/* Reading: see bp_volume_source_t in bp_types.h. */
 
 int bp_archive_list_volumes(const bp_volume_source_t *src, bp_list_fn fn,
                             void *user_data);

@@ -544,8 +544,28 @@ the new volume beside the old files, so use an empty disk for a new set.
 
 Without long file names DJGPP reports 8.3 names in lower case, and the DOS
 CLI stores them that way. Extraction accepts them as 8.3 names regardless of
-case (FAT upper-cases them); the volume test extracts such a set on DOS. The
-16-bit `dos16` mini build still reads and writes format 6 only.
+case (FAT upper-cases them); the volume test extracts such a set on DOS.
+
+### DOS 16-bit mini: Volume sets
+
+The 16-bit `dos16` mini build (`BPMINI.EXE`, Open Watcom, 8086) reads and
+writes archive format 7 through the mini core and takes the same volume
+options: `bpmini c -v 1.44M --pause A:\BACKUP.BLT C:\DOCS` writes
+`BACKUP.000`, `BACKUP.001`, ... `BACKUP.BLT`, and `l`, `t`, `i` and `x` accept
+any volume, asking at the console for one that is missing (`--pause` also
+asks when input is redirected). Without anyone to ask, extraction first checks
+that every volume is present. Volumes are created as `BPK####.TMP` stages
+beside their final names and renamed into place; an older file of the same
+name is removed first unless it is read-only or a directory. Sizes are
+parsed in 32 bits (fractions to six digits) and limited to 16K-2 GiB. It uses
+the shared `src/frontend/common/volume_files.h` with DOS handles instead of
+stdio streams (`BP_VOL_OWN_STREAMS`), because the program must fit one
+64 KiB code segment. The Win16, OS/2 16-bit, CP/M-86 and Linux mini CLIs use
+the same core with one-volume archives.
+
+```sh
+make dos16-dosboxx-volume-test   # DOSBox-X, FAT12 floppy image, Linux exchange
+```
 
 It runs the mini reader as a native 32-bit Linux process on this host. `make dos-djgpp` builds the DOS
 executable when the `i586-pc-msdosdjgpp-gcc` toolchain is available. To run

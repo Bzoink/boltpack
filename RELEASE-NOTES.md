@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- The mini core (`src/core/mini/archiver.c`) reads and writes archive format
+  7, so the 16-bit DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini CLIs
+  exchange archives with the Linux and DOS CLIs again, and no longer with
+  format 6 frontends. The 16-bit DOS CLI also writes and reads volume sets:
+  `bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS` writes `BACKUP.000`,
+  `BACKUP.001`, ... `BACKUP.BLT`, and `l`, `t`, `i` and `x` accept any volume,
+  asking for missing disks at the console. The other mini CLIs read and write
+  single-volume archives and report a volume set as such.
+- 16-bit DOS and Win16 mini CLIs: files of 32 KiB or more can be archived with
+  the default 32 KiB blocks. A full block made the 16-bit `read()` count
+  negative, so `bpmini c` failed with "I/O error" on any such file.
+- Format 7 writer: an entry that fits in one block is compressed before its
+  header is written, recorded as Stored when compression does not help, and
+  given the smallest standard block size that holds it. Small files in an
+  archive made with the 64-bit default (Fluff, 256 KiB blocks) can therefore
+  be extracted by the mini CLIs, which have no Fluff and allow 32 KiB blocks.
+  Larger entries keep the requested method and block size.
 - DOS CLI: with long file names (LFN) enabled, extraction no longer fails with
   "staged output path changed" and no longer leaves `BPxxxxxx.TMP` files
   behind, and add/delete no longer report "archive changed while opening".

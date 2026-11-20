@@ -317,10 +317,12 @@ def main():
         entry_header_size = struct.unpack_from("<H", broken, 32)[0]
         name_len = struct.unpack_from("<H", broken, 34)[0]
         data_offset = 32 + entry_header_size
-        assert entry_header_size == 42 + name_len
+        # format 7: the first entry follows the 32-byte volume header, and
+        # the end record sits before the 32-byte volume trailer
+        assert entry_header_size == 34 + name_len
         assert struct.unpack_from("<I", broken, data_offset)[0] > 0
         payload_offset = data_offset + 12
-        table_offset = struct.unpack_from("<Q", broken, len(broken) - 20)[0]
+        table_offset = struct.unpack_from("<Q", broken, len(broken) - 32 - 48 + 16)[0]
         assert payload_offset < table_offset
         broken[payload_offset] ^= 0x80
         (root / "BROKEN.BLT").write_bytes(broken)

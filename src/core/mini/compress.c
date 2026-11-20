@@ -246,11 +246,20 @@ bp_uint32 bp_mini_compress_work_size(void)
 
 /* ---- CRC-32 and typed-checksum helpers (shared by both paths) ----------- */
 
+/* Four bits at a time from a 64-byte table: about four times faster than
+ * the bitwise loop on 16-bit CPUs, where every 32-bit shift is several
+ * instructions, without the 1 KB of a byte-wide table. */
+static const bp_uint32 bp_mini_crc_nibble[16] = {
+    0x00000000UL, 0x1DB71064UL, 0x3B6E20C8UL, 0x26D930ACUL,
+    0x76DC4190UL, 0x6B6B51F4UL, 0x4DB26158UL, 0x5005713CUL,
+    0xEDB88320UL, 0xF00F9344UL, 0xD6D6A3E8UL, 0xCB61B38CUL,
+    0x9B64C2B0UL, 0x86D3D2D4UL, 0xA00AE278UL, 0xBDBDF21CUL
+};
+
 bp_uint32 bp_mini_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len)
 {
     bp_uint32 c;
     bp_uint32 i;
-    int k;
 
     if (len == 0 || data == NULL) {
         return crc;
@@ -258,9 +267,8 @@ bp_uint32 bp_mini_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len)
     c = crc ^ 0xFFFFFFFFUL;
     for (i = 0; i < len; i++) {
         c ^= data[i];
-        for (k = 0; k < 8; k++) {
-            c = (c & 1U) ? (0xEDB88320UL ^ (c >> 1)) : (c >> 1);
-        }
+        c = (c >> 4) ^ bp_mini_crc_nibble[(unsigned)c & 15U];
+        c = (c >> 4) ^ bp_mini_crc_nibble[(unsigned)c & 15U];
     }
     return c ^ 0xFFFFFFFFUL;
 }

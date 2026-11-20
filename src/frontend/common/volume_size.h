@@ -10,6 +10,11 @@
  *
  * Header-only, ANSI C (C89/C90), 16-bit int safe.
  *
+ * With BP_VOLUME_SIZE_32 defined, the header instead provides the smaller
+ * bp_parse_volume_size32(), for frontends whose volumes stay below 4 GiB:
+ * the same syntax, fractions to six digits (further digits are ignored),
+ * and -1 for any size of 4 GiB or more.
+ *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  */
@@ -21,6 +26,82 @@
 
 /* Smallest volume a frontend accepts (16K = 16,000 bytes). */
 #define BP_VOLUME_SIZE_MIN 16000UL
+
+static int bp_vs_lower(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
+}
+
+/* The unit suffix at p: sets the power of the base (0 = bytes) and the
+ * base, and returns 0, or -1 if anything follows the unit. */
+static int bp_vs_unit(const char *p, int *power, bp_uint32 *base)
+{
+    *power = 0;
+    switch (bp_vs_lower(*p)) {
+    case 'k': *power = 1; p++; break;
+    case 'm': *power = 2; p++; break;
+    case 'g': *power = 3; p++; break;
+    case 't': *power = 4; p++; break;
+    default: break;
+    }
+    *base = 1000UL;
+    if (*power > 0 && bp_vs_lower(*p) == 'i') {
+        *base = 1024UL;
+        p++;
+    }
+    if (bp_vs_lower(*p) == 'b') p++;
+    return *p == '\0' ? 0 : -1;
+}
+
+#ifdef BP_VOLUME_SIZE_32
+
+/* Parse s into *bytes.  Returns 0 on success, -1 on a syntax error or a
+ * size of 4 GiB or more.  The minimum size is left to the caller. */
+static int bp_parse_volume_size32(const char *s, bp_uint32 *bytes)
+{
+    bp_uint32 total = 0, frac = 0, scale = 1, base;
+    int digits = 0, frac_digits = 0, power, i;
+    const char *p = s;
+
+    if (s == NULL || bytes == NULL) return -1;
+    while (*p >= '0' && *p <= '9') {
+        bp_uint32 d = (bp_uint32)(*p - '0');
+        if (total > (0xFFFFFFFFUL - d) / 10UL) return -1;
+        total = total * 10UL + d;
+        p++;
+        digits++;
+    }
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9') {
+            if (frac_digits < 6) {
+                frac = frac * 10UL + (bp_uint32)(*p - '0');
+                scale *= 10UL;
+                frac_digits++;
+            }
+            p++;
+            digits++;
+        }
+    }
+    if (digits == 0 || bp_vs_unit(p, &power, &base) != 0) return -1;
+    /* total + frac / scale, multiplied by the base `power` times; the
+     * fraction carries its whole part into total at each step (exact, as
+     * frac * base < 10^6 * 1024 fits) */
+    for (i = 0; i < power; i++) {
+        bp_uint32 carry;
+        if (total > 0xFFFFFFFFUL / base) return -1;
+        frac *= base;
+        carry = frac / scale;
+        frac %= scale;
+        total *= base;
+        if (total > 0xFFFFFFFFUL - carry) return -1;
+        total += carry;
+    }
+    *bytes = total;
+    return 0;
+}
+
+#else /* !BP_VOLUME_SIZE_32 */
 
 /* a * b for a 64-bit a and 32-bit b; returns 0 on overflow */
 static int bp_vs_mul(bp_uint64 a, bp_uint32 b, bp_uint64 *out)
@@ -78,11 +159,6 @@ static bp_uint64 bp_vs_div(bp_uint64 a, bp_uint32 d)
     return q;
 }
 
-static int bp_vs_lower(int c)
-{
-    return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
-}
-
 /* Parse s into *bytes.  Returns 0 on success, -1 on a syntax error or a
  * value too large for 64 bits.  The minimum size is left to the caller. */
 static int bp_parse_volume_size(const char *s, bp_uint64 *bytes)
@@ -115,20 +191,7 @@ static int bp_parse_volume_size(const char *s, bp_uint64 *bytes)
     }
     if (digits == 0) return -1;
 
-    switch (bp_vs_lower(*p)) {
-    case 'k': power = 1; p++; break;
-    case 'm': power = 2; p++; break;
-    case 'g': power = 3; p++; break;
-    case 't': power = 4; p++; break;
-    default: break;
-    }
-    base = 1000UL;
-    if (power > 0 && bp_vs_lower(*p) == 'i') {
-        base = 1024UL;
-        p++;
-    }
-    if (bp_vs_lower(*p) == 'b') p++;
-    if (*p != '\0') return -1;
+    if (bp_vs_unit(p, &power, &base) != 0) return -1;
 
     /* whole * base^power + frac * base^power / frac_scale */
     total = whole;
@@ -146,5 +209,7 @@ static int bp_parse_volume_size(const char *s, bp_uint64 *bytes)
     *bytes = total;
     return 0;
 }
+
+#endif /* BP_VOLUME_SIZE_32 */
 
 #endif /* BP_VOLUME_SIZE_H */

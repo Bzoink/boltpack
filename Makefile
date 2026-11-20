@@ -1940,6 +1940,12 @@ dos-djgpp-dosboxx-volume-test: modern dos-djgpp
 	python3 test/check_djgpp_dosboxx_volumes.py --cwsdpmi "$(CWSDPMI)" \
 	    --dosbox-x "$(DOSBOX_X)"
 
+# Volume sets with the 16-bit DOS mini CLI: the same floppy scenario, with
+# --pause answered from a file and files that fill 32 KiB blocks.
+.PHONY: dos16-dosboxx-volume-test
+dos16-dosboxx-volume-test: modern dos16
+	python3 test/check_dos16_dosboxx_volumes.py --dosbox-x "$(DOSBOX_X)"
+
 .PHONY: dos-djgpp-parent-race-test
 dos-djgpp-parent-race-test: modern dos-djgpp-parent-race
 	@test -n "$(CWSDPMI)" || { echo "Set CWSDPMI=/path/to/CWSDPMI.EXE (DJGPP csdpmi package)" >&2; exit 2; }
@@ -3467,6 +3473,7 @@ unit-test: $(UNIT_BUILD_DIR)/test_checksum \
            $(UNIT_BUILD_DIR)/test_mini_cp850 \
            $(UNIT_BUILD_DIR)/test_archive_format \
            $(UNIT_BUILD_DIR)/test_archive7 \
+           $(UNIT_BUILD_DIR)/test_mini7 \
            $(UNIT_BUILD_DIR)/mini_test_compress \
            $(BOLTLZ_BUILD_DIR)/test_boltlz
 	@ok=1; \
@@ -3482,6 +3489,7 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
                 $(UNIT_BUILD_DIR)/test_codepage_asan \
                 $(UNIT_BUILD_DIR)/test_archive_format_asan \
                 $(UNIT_BUILD_DIR)/test_archive7_asan \
+                $(UNIT_BUILD_DIR)/test_mini7_asan \
                 $(UNIT_BUILD_DIR)/mini_test_compress_asan \
                 $(BOLTLZ_BUILD_DIR)/test_boltlz_asan
 	@ok=1; \
@@ -3586,6 +3594,21 @@ $(UNIT_BUILD_DIR)/test_archive7: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
 $(UNIT_BUILD_DIR)/test_archive7_asan: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
     $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ $(ARCHIVE7_TEST_SRCS)
+
+# --- test_mini7: mini core (archive format 7) against archiver7.c ---
+MINI7_TEST_SRCS = $(UNIT_TEST_DIR)/test_mini7.c $(COREDIR)/archiver7.c \
+    $(COREDIR)/compress.c $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+    $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c \
+    $(COREDIR)/mini/archiver.c $(COREDIR)/mini/compress.c \
+    $(COREDIR)/mini/boltlz_decomp.c src/frontend/mini_shared/mini_common.c
+
+$(UNIT_BUILD_DIR)/test_mini7: $(MINI7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
+    $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_CFLAGS) -DBP_MINI -O2 -o $@ $(MINI7_TEST_SRCS)
+
+$(UNIT_BUILD_DIR)/test_mini7_asan: $(MINI7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
+    $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
+	$(CC) $(UNIT_ASAN_FLAGS) -DBP_MINI $(DEBUG_LDFLAGS) -o $@ $(MINI7_TEST_SRCS)
 
 # --- test_archive_format ---
 ARCHIVE_TEST_HEADERS = $(COREDIR)/archiver.h $(COREDIR)/bp_types.h \
@@ -3855,7 +3878,7 @@ unit-test-dos16: unit-build-dos16
 	@grep -Fq 'PASS: deferred_directory_queue_entries=256 overflow refused' \
 	    $(UNIT_DOS16_BDIR)/RESOURCE.TXT
 	@cat $(UNIT_DOS16_BDIR)/ALLOCFL.TXT
-	@grep -Fq 'PASS: 26 writer/reader/extraction/index/queue/path-buffer/name allocation failures; temporary allocations released' \
+	@grep -Fq 'PASS: writer/reader/extraction/index/queue/path-buffer/name allocation failures; temporary allocations released' \
 	    $(UNIT_DOS16_BDIR)/ALLOCFL.TXT
 	@grep -Fq 'result=1 error=-1 live=0' $(UNIT_DOS16_BDIR)/AF0.TXT
 	@grep -Fq 'result=1 error=-1 live=0' $(UNIT_DOS16_BDIR)/AF1.TXT
