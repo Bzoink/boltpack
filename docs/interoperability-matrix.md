@@ -59,7 +59,7 @@ remain unqualified.
   Plan 9, AmigaOS, Atari, X68000, QL and RISC OS), and the mini core, used by
   the DOS16, Win16, OS/2-16, CP/M-86 and Linux mini CLIs, emit and accept
   format 7 only, single- and multi-volume; archives do not cross between the
-  format 6 and format 7 groups. All of those CLIs except Win16, OS/2-16 and
+  format 6 and format 7 groups. All of those CLIs except OS/2-16 and
   CP/M-86 write and read volume sets with `-v` and `--pause`. DOS16 is
   checked with `make dos16-dosboxx-volume-test` (a three-volume set on a FAT12
   floppy image with `--pause`, read from any volume, replaced by a smaller

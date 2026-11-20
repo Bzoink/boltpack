@@ -53,6 +53,8 @@ static int g_verbose = 1;
 #ifdef __WATCOMC__
 static int g_time_partial = 0;
 #endif
+static int g_pause;                 /* --pause: ask for each disk */
+static bp_uint32 g_volume_size;     /* -v SIZE, 0 = one archive file */
 
 /* ---- platform helpers -------------------------------------------------- */
 
@@ -689,6 +691,209 @@ done:
 
 #endif /* __WATCOMC__ */
 
+#ifdef __WATCOMC__
+/* ---- volume sets ------------------------------------------------------ */
+
+#define BP_VOL_DIR_SEPS "/\\:"
+#define BP_VOL_PATH_MAX BP_MAX_PATH
+#define BP_VOL_PROG     PROG_NAME
+
+/* Volume files are DOS handles, like the archive files of this frontend. */
+#define BP_VOL_OWN_STREAMS
+typedef int bp_vol_stream_t;
+#define BP_VOL_NO_STREAM (-1)
+
+static bp_vol_stream_t vol_hook_open_read(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_BINARY);
+    return fd < 0 ? BP_VOL_NO_STREAM : fd;
+}
+
+static int vol_hook_close(bp_vol_stream_t s)
+{
+    return close(s);
+}
+
+static int vol_hook_flush(bp_vol_stream_t s)
+{
+    (void)s;
+    return 0;
+}
+
+static long vol_hook_read(bp_vol_stream_t s, void *buf, unsigned n)
+{
+    int r = read(s, buf, n);
+    return BP_IO_COUNT(r);
+}
+
+static void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
+{
+    bp_io_from_handle(io, s);
+}
+
+/* One answer line from the console; 0 at end of input. */
+static int vol_hook_getline(char *buf, int size)
+{
+    int n = 0;
+    char c;
+    while (n + 1 < size) {
+        if (read(0, &c, 1) != 1) {
+            if (n == 0) return 0;
+            break;
+        }
+        buf[n++] = c;
+        if (c == '\n') break;
+    }
+    buf[n] = '\0';
+    return 1;
+}
+
+/* Create a BPVnnnnn.TMP file beside the final name, exclusively. */
+static bp_vol_stream_t vol_hook_create(const char *target, char *tmp,
+                                       size_t tmp_size)
+{
+    static unsigned int sequence = 0;
+    const char *p, *sep = target;
+    size_t prefix;
+    int attempt, fd;
+
+    for (p = target; *p; p++)
+        if (*p == '/' || *p == '\\' || *p == ':') sep = p + 1;
+    prefix = (size_t)(sep - target);
+    if (prefix + 13 >= tmp_size) return BP_VOL_NO_STREAM;
+    for (attempt = 0; attempt < 1000; attempt++) {
+        memcpy(tmp, target, prefix);
+        sprintf(tmp + prefix, "BPV%05u.TMP", sequence++ % 100000U);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0);
+        if (fd >= 0) return fd;
+    }
+    return BP_VOL_NO_STREAM;
+}
+
+/* DOS writes a file's buffers and directory entry when its handle is
+ * closed, which the volume writer does before asking for the next disk. */
+static int vol_hook_sync(bp_vol_stream_t s)
+{
+    (void)s;
+    return 0;
+}
+
+/* A volume replaces a file of its name (its set is being rewritten), but
+ * never a directory or a read-only file.  DOS rename does not replace. */
+static int vol_hook_publish(const char *tmp, const char *target)
+{
+    unsigned attr;
+    if (_dos_getfileattr(target, &attr) == 0 &&
+        ((attr & (_A_SUBDIR | _A_RDONLY)) != 0 || remove(target) != 0))
+        return -1;
+    return rename(tmp, target);
+}
+
+static int vol_hook_interactive(void)
+{
+    return isatty(0);
+}
+
+static int vol_hook_exists(const char *path)
+{
+    return access(path, 0) == 0;
+}
+
+static void vol_hook_note_tmp(const char *tmp)
+{
+    (void)tmp;
+}
+
+static int vol_hook_verbose(void)
+{
+    return g_verbose;
+}
+
+#define BP_VOLUME_SIZE_32
+#include "../common/volume_size.h"
+#include "../common/volume_files.h"
+
+static bp_vol_files_t g_vf;
+
+/* Open the archive (any volume of a set) for reading. */
+static int open_source(const char *arc_path, bp_volume_source_t *src)
+{
+    return vol_source_open(&g_vf, src, arc_path, g_pause);
+}
+
+/* Report a failed operation, naming the volume when one was at fault. */
+static void report_failure(const char *what, int rc)
+{
+    if (g_vf.aborted || g_vf.problem[0] != '\0')
+        vol_report(&g_vf, rc, bp_mini_strerror);
+    else
+        fprintf(stderr, PROG_NAME ": %s: %s\n", what, bp_mini_strerror(rc));
+}
+
+/* c -v SIZE: write the archive as a volume set. */
+static int cmd_create_volumes(const char *arc_path, int argc, char **argv,
+                              bp_uint32 block_size, bp_uint8 method)
+{
+    bp_volume_sink_t sink;
+    bp_mini_archive_t ar;
+    int rc, i;
+
+    if (vol_files_init(&g_vf, arc_path) != 0 || vol_has_number_ext(arc_path)) {
+        fprintf(stderr, PROG_NAME ": %s cannot name a volume set "
+                "(use a name such as BACKUP.BLT)\n", arc_path);
+        return 1;
+    }
+    g_vf.pause = g_pause;
+    vol_sink_init(&g_vf, &sink);
+    rc = bp_mini_compress_init();
+    if (rc == BP_OK)
+        rc = bp_mini_archive_create_volumes(&ar, &sink, g_volume_size,
+                                            block_size, method);
+    if (rc != BP_OK) {
+        report_failure("create failed", rc);
+        return 1;
+    }
+    for (i = 0; i < argc; i++) {
+        char arc_name[BP_MAX_PATH];
+        char *p;
+        strncpy(arc_name, argv[i], BP_MAX_PATH - 1);
+        arc_name[BP_MAX_PATH - 1] = '\0';
+        for (p = arc_name; *p; p++) if (*p == '\\') *p = '/';
+        if (arc_name[0] == '.' && arc_name[1] == '/')
+            memmove(arc_name, arc_name + 2, strlen(arc_name) - 1);
+        rc = add_path(&ar, arc_name, argv[i], BP_OS_WIN16);
+        if (rc != BP_OK) {
+            if (g_vf.aborted || g_vf.problem[0] != '\0')
+                vol_report(&g_vf, rc, bp_mini_strerror);
+            else
+                fprintf(stderr, PROG_NAME ": error adding %s: %s\n", argv[i],
+                        bp_mini_strerror(rc));
+            break;
+        }
+    }
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_finalize(&ar);
+        if (rc != BP_OK) report_failure("finalize failed", rc);
+    }
+    bp_mini_archive_close(&ar);
+    if (rc != BP_OK) {
+        vol_remove_written(&g_vf);
+        return 1;
+    }
+    vol_remove_stale(&g_vf, g_vf.written);
+    if (g_verbose) {
+        char first[BP_VOL_PATH_MAX + 8];
+        vol_numbered_name(&g_vf, 0, first, sizeof(first));
+        printf("Archive: %s (%lu entr%s)\n", arc_path,
+               (unsigned long)ar.entries_written,
+               ar.entries_written == 1 ? "y" : "ies");
+        if (g_vf.written > 1)
+            printf("%u volumes: %s ... %s\n", g_vf.written, first, arc_path);
+    }
+    return g_time_partial ? 1 : 0;
+}
+#endif /* __WATCOMC__ */
+
 static int cmd_create(const char *arc_path, int argc, char **argv,
                       bp_uint32 block_size, bp_uint8 method)
 {
@@ -703,6 +908,8 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
     int i;
 
 #ifdef __WATCOMC__
+    if (g_volume_size != 0)
+        return cmd_create_volumes(arc_path, argc, argv, block_size, method);
     fd = open(arc_path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0);
     if (fd < 0) {
         bp_wstr(2, PROG_NAME ": cannot create ");
@@ -812,6 +1019,7 @@ static int cmd_create(const char *arc_path, int argc, char **argv,
 
 /* ---- cmd_extract ------------------------------------------------------- */
 
+#ifndef __WATCOMC__
 static int cmd_extract(const char *arc_path, const char *dest)
 {
 #ifdef __WATCOMC__
@@ -897,8 +1105,74 @@ static int cmd_extract(const char *arc_path, const char *dest)
     return 0;
 }
 
+#endif /* !__WATCOMC__ */
+
+#ifdef __WATCOMC__
+static int cmd_extract(const char *arc_path, const char *dest)
+{
+    bp_volume_source_t src;
+    extract_ctx_t ctx;
+    bp_mini_projected_index_t name_index;
+    bp_mini_projected_preflight_t preflight;
+    int rc;
+
+    if (open_source(arc_path, &src) != 0) return 1;
+
+    memset(&ctx, 0, sizeof(ctx));
+    if (dest) strncpy(ctx.dest, dest, BP_MAX_PATH - 1);
+
+    preflight.index = &name_index;
+    preflight.result = BP_OK;
+    rc = bp_mini_projected_index_init(&name_index);
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_list_volumes(&src, bp_mini_projected_name_preflight,
+                                          &preflight);
+        if (rc == BP_OK && preflight.result != BP_OK) rc = preflight.result;
+    }
+    bp_mini_projected_index_free(&name_index);
+    if (rc != BP_OK) {
+        vol_source_done(&g_vf);
+        report_failure("destination-name preflight failed", rc);
+        return 1;
+    }
+    if (!g_vf.interactive) {
+        /* Nobody can be asked for a disk: make sure every volume is here
+         * before anything is written. */
+        bp_mini_archive_info_t vinfo;
+        rc = bp_mini_archive_info_volumes(&src, &vinfo);
+        vol_source_done(&g_vf);
+        if (rc != BP_OK) {
+            report_failure("extract", rc);
+            return 1;
+        }
+        if (!vol_all_present(&g_vf, vinfo.volume_count)) return 1;
+    }
+
+    rc = bp_mini_compress_init();
+    if (rc == BP_OK) {
+        rc = bp_mini_archive_extract_volumes(&src, on_extract_open,
+                                             on_extract_done,
+                                             on_extract_directory,
+                                             on_extract_metadata, &ctx);
+    }
+    if (rc == BP_OK && ctx.name_error) rc = BP_ERR_PARTIAL;
+    {
+        int dir_rc = bp_mini_directory_finish(&ctx.directories, rc == BP_OK || rc == BP_ERR_PARTIAL,
+                                               finish_directory, &ctx);
+        if (dir_rc != BP_OK && (rc == BP_OK || rc == BP_ERR_PARTIAL)) rc = dir_rc;
+    }
+    vol_source_done(&g_vf);
+
+    if (rc != BP_OK) {
+        report_failure("extract", rc);
+        return 1;
+    }
+    return 0;
+}
+#endif /* __WATCOMC__ */
 /* ---- cmd_list ---------------------------------------------------------- */
 
+#ifndef __WATCOMC__
 static int cmd_list(const char *arc_path)
 {
 #ifdef __WATCOMC__
@@ -950,8 +1224,29 @@ static int cmd_list(const char *arc_path)
     return 0;
 }
 
+#endif /* !__WATCOMC__ */
+
+#ifdef __WATCOMC__
+static int cmd_list(const char *arc_path)
+{
+    bp_volume_source_t src;
+    int rc;
+
+    if (open_source(arc_path, &src) != 0) return 1;
+    write(1, "  Type  Size          Name\n"
+             "  ----  ------------  ----\n", 54);
+    rc = bp_mini_archive_list_volumes(&src, on_list, NULL);
+    vol_source_done(&g_vf);
+    if (rc != BP_OK) {
+        report_failure("list", rc);
+        return 1;
+    }
+    return 0;
+}
+#endif /* __WATCOMC__ */
 /* ---- cmd_test ---------------------------------------------------------- */
 
+#ifndef __WATCOMC__
 static int cmd_test(const char *arc_path)
 {
 #ifdef __WATCOMC__
@@ -1000,8 +1295,28 @@ static int cmd_test(const char *arc_path)
     return 0;
 }
 
+#endif /* !__WATCOMC__ */
+
+#ifdef __WATCOMC__
+static int cmd_test(const char *arc_path)
+{
+    bp_volume_source_t src;
+    int rc;
+
+    if (open_source(arc_path, &src) != 0) return 1;
+    rc = bp_mini_compress_init();
+    if (rc == BP_OK) rc = bp_mini_archive_test_volumes(&src, on_test, NULL);
+    vol_source_done(&g_vf);
+    if (rc != BP_OK) {
+        report_failure("test", rc);
+        return 1;
+    }
+    return 0;
+}
+#endif /* __WATCOMC__ */
 /* ---- cmd_info ---------------------------------------------------------- */
 
+#ifndef __WATCOMC__
 static int cmd_info(const char *arc_path)
 {
 #ifdef __WATCOMC__
@@ -1098,6 +1413,53 @@ static int cmd_info(const char *arc_path)
     return 0;
 }
 
+#endif /* !__WATCOMC__ */
+
+#ifdef __WATCOMC__
+static int cmd_info(const char *arc_path)
+{
+    bp_volume_source_t src;
+    bp_mini_archive_info_t info;
+    char buf[32];
+    int rc;
+
+    if (open_source(arc_path, &src) != 0) return 1;
+    rc = bp_mini_archive_info_volumes(&src, &info);
+    vol_source_done(&g_vf);
+    if (rc != BP_OK) {
+        report_failure("info", rc);
+        return 1;
+    }
+    {
+        static const char * const mn[4] = {"stored","BoltLite","boltlz","fluff"};
+        int j;
+        int mfirst;
+        write(1, "Entries:  ", 10); bp_wulong(1, (unsigned long)info.entry_count); write(1, "\n", 1);
+        format_size64_mini(info.total_original, buf);
+        write(1, "Orig:     ", 10); bp_wstr(1, buf); write(1, "\n", 1);
+        format_size64_mini(info.total_compressed, buf);
+        write(1, "Comp:     ", 10); bp_wstr(1, buf); write(1, "\n", 1);
+        if (info.volume_count > 1) {
+            write(1, "Volumes:  ", 10);
+            bp_wulong(1, (unsigned long)info.volume_count);
+            write(1, "\n", 1);
+        }
+        write(1, "Methods:  ", 10);
+        mfirst = 1;
+        for (j = 0; j < 4; j++) {
+            if (info.method_counts[j] > 0) {
+                if (!mfirst) write(1, ", ", 2);
+                bp_wstr(1, mn[j]); write(1, ": ", 2);
+                bp_wulong(1, (unsigned long)info.method_counts[j]);
+                mfirst = 0;
+            }
+        }
+        if (mfirst) write(1, "none", 4);
+        write(1, "\n", 1);
+    }
+    return 0;
+}
+#endif /* __WATCOMC__ */
 /* ---- usage ------------------------------------------------------------- */
 
 static void usage(void)
@@ -1115,6 +1477,8 @@ static void usage(void)
         "  -b8k / -b16k / -b32k           block size (create only)\n"
         "  -m0                            store, no compression\n"
         "  -m1                            BoltLite compression (default)\n"
+        "  -v SIZE                        create volumes of at most SIZE bytes\n"
+        "  --pause                        ask for each disk (c -v, l, t, i, x)\n"
         "  -q                             quiet mode\n"
         "Compression:\n"
         "  create:   store (0), BoltLite (1)\n"
@@ -1150,6 +1514,38 @@ int main(int argc, char **argv)
     bp_uint32 block_size = BP_BLOCK_32K;
     bp_uint8  method     = BP_METHOD_BOLTLITE;
 
+#ifdef __WATCOMC__
+    {
+        int out = 1;
+        for (i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--pause") == 0) {
+                g_pause = 1;
+            } else if (strcmp(argv[i], "-v") == 0) {
+                bp_uint32 size;
+                if (i + 1 >= argc) {
+                    fprintf(stderr, PROG_NAME ": -v requires a size, such as 1.44M or 720K\n");
+                    return 1;
+                }
+                i++;
+                if (bp_parse_volume_size32(argv[i], &size) != 0) {
+                    fprintf(stderr, PROG_NAME ": invalid volume size: %s "
+                            "(examples: 360K, 720K, 1.44M, 1474560)\n", argv[i]);
+                    return 1;
+                }
+                if (size > BP_MINI_MAX_ARCHIVE_SIZE || size < BP_VOLUME_SIZE_MIN) {
+                    fprintf(stderr, PROG_NAME ": volume size %s is outside "
+                            "16K to 2 GiB\n", argv[i]);
+                    return 1;
+                }
+                g_volume_size = size;
+            } else {
+                argv[out++] = argv[i];
+            }
+        }
+        argc = out;
+        argv[argc] = NULL;
+    }
+#endif
     if (argc < 3) { usage(); return 1; }
 
     for (i = 1; i < argc; i++) {
@@ -1175,6 +1571,18 @@ int main(int argc, char **argv)
     }
     if (arc_path == NULL) { usage(); return 1; }
     while (files_start < argc && argv[files_start][0] == '-') files_start++;
+#ifdef __WATCOMC__
+    if (g_volume_size != 0 && cmd != 'c') {
+        fprintf(stderr, PROG_NAME ": -v applies to create; to read a volume "
+                "set, name any of its volumes\n");
+        return 1;
+    }
+    if (g_pause && (cmd == 'c' ? g_volume_size == 0 : cmd != 'l' && cmd != 't' &&
+                    cmd != 'i' && cmd != 'x')) {
+        fprintf(stderr, PROG_NAME ": --pause applies to c -v SIZE, l, t, i and x\n");
+        return 1;
+    }
+#endif
 
     switch (cmd) {
     case 'c':

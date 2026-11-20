@@ -2681,12 +2681,14 @@ first where the platform's rename does not replace).
 | X68000 | `src/frontend/x68k/x68k_volumes.h` | volumes up to 2 GiB; the CLI also gains `-1` | `make x68k-host-test` host shim runs `test/check_volumes.py`; the Human68k build creates a set under `run68` |
 | Sinclair QL | `src/frontend/ql/ql_volumes.h` | `_` and `/` end a directory; dates of directories are restored in one pass per depth, so a set on removable media is asked for again for each pass | `make ql-host-test` runs `test/check_volumes.py --files`; the sQLux interoperability test passes |
 | RISC OS | `src/frontend/riscos/riscos_volumes.h` | native handles; a set is `Backup/000`, `Backup/001`, ... `Backup/blt` | GCCSDK build only; no RISC OS runtime |
+| Win16 mini | handle hooks in `src/frontend/win16/main.c`, as DOS16 | `BPVnnnnn.TMP` staging; 32-bit sizes, 16K-2 GiB; code segments 47,139 and 36,084 bytes | Open Watcom build only (0 warnings); no Windows 3.x runtime |
 | Linux mini | POSIX hooks, mini core | 32-bit sizes, 16K-2 GiB | `test/check_linuxmini_volumes.py`, part of `make linuxmini-interoperability-test` |
 
-The Win16, OS/2 16-bit and CP/M-86 mini CLIs read and write archive format 7
-but have no `-v`: Win16 avoids `printf`, OS/2 16-bit has about 1 KiB left in
-its 64 KiB code segment, and the CP/M-86 toolchain is not installed here. The
-GUIs still build the format 6 core.
+The OS/2 16-bit and CP/M-86 mini CLIs read and write archive format 7 but
+have no `-v`: the OS/2 16-bit build's single code segment is 64,503 of 65,536
+bytes (the volume code would need the program split over segments), and the
+CP/M-86 toolchain is not installed here. The GUIs still build the format 6
+core.
 
 On AmigaOS 2.04 the format 7 core must not call `time()`: libnix links its
 time-zone and locale startup code, which opens `locale.library` and stops the

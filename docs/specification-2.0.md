@@ -1761,8 +1761,8 @@ adds volume sinks (`bp_archive_create_volumes`) and sources
 one `bp_io_t` treat it as a one-volume set. Every full CLI uses this core: the
 Linux CLI and the POSIX CLIs built from it, DOS, Windows, macOS, Haiku, OS/2,
 Plan 9, AmigaOS (and its AmigaOS 4, MorphOS and AROS builds), Atari, X68000,
-QL and RISC OS. They also write and read volume sets; the Win16, OS/2 16-bit
-and CP/M-86 mini CLIs do not.
+QL and RISC OS. They also write and read volume sets, as do the 16-bit DOS,
+Win16 and Linux mini CLIs; the OS/2 16-bit and CP/M-86 mini CLIs do not.
 
 `src/core/mini/archiver.c` implements format 7 for 16-bit and other small
 targets (ANSI C89 with 16-bit `int`, no floating point) behind

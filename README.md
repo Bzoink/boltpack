@@ -87,7 +87,7 @@ To split an archive over diskettes, CDs or other media (Linux CLI):
 
 Sizes use K, M, G (x1000) or Ki, Mi, Gi (x1024); `--pause` asks for new media
 before each volume. Every full CLI except the GUIs takes the same options,
-as do the 16-bit DOS and Linux mini CLIs (`bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS`
+as do the 16-bit DOS, Win16 and Linux mini CLIs (`bpmini c -v 1.44M --pause A:\BACKUP.BLT DOCS`
 on an 8086). Archive format 7 is written by every CLI; the GUIs cannot read it
 yet (see [docs/format.md](docs/format.md)).
 
