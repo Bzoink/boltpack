@@ -104,6 +104,10 @@
 #define VERB_SILENT  2
 
 static int g_verbosity = VERB_DEFAULT;
+static int g_volume_mode;              /* -v SIZE: write a volume set */
+static bp_uint64 g_volume_size;        /* bytes per volume */
+static const char *g_volume_size_text; /* as typed, for messages */
+static int g_pause;                    /* --pause: ask for media */
 
 /* ---- bp_io_t adapters for FILE * --------------------------------------- */
 
@@ -142,6 +146,11 @@ static void bp_io_from_file(bp_io_t *io, FILE *fp)
     io->tell   = file_tell;
     io->handle = fp;
 }
+
+#include "../common/volume_size.h"
+#include "../common/volume_one.h"
+#define BP_VOL_NO_NOTE 1
+#include "../posix/volume_files.h"
 
 /* ---- read-only memory buffer I/O (for metadata payload) --------------- */
 
@@ -282,6 +291,7 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
+    case BP_ERR_VOLUME:            return "a volume is missing, out of order, or from another archive";
     default:                       return "unknown error";
     }
 }
@@ -1507,18 +1517,21 @@ static int extract_done_status(const bp_entry_t *entry, bp_io_t *out,
 
 #ifdef BOLTPACK_NET
 /* Extract a verified network-received archive using the Haiku callbacks. */
-static int haiku_extract_preflight(bp_io_t *io, const char *out_dir);
+static int haiku_extract_preflight(const bp_volume_source_t *src,
+                                   const char *out_dir);
 
 int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
+    bp_volume_source_t one;
     int rc;
     memset(&ctx, 0, sizeof(ctx));
     ctx.subject_fd = -1;
     ctx.subject_parent_fd = -1;
     ctx.out_dir = out_dir;
     ctx.force = force;
-    rc = haiku_extract_preflight(aio, out_dir);
+    bp_volume_source_one(&one, aio);
+    rc = haiku_extract_preflight(&one, out_dir);
     if (rc != BP_OK) return rc;
     if (out_dir && mkdirs(out_dir) != 0) return BP_ERR_IO;
     ctx.root_fd = open(out_dir ? out_dir : ".", O_RDONLY | O_DIRECTORY);
@@ -1644,22 +1657,17 @@ static const char *format_methods(const bp_uint32 *counts)
 
 static int cmd_info(const char *archive_name)
 {
-    FILE *fp;
-    bp_io_t aio;
+    static bp_vol_files_t vf;
+    bp_volume_source_t src;
     bp_archive_info_t info;
     int rc;
 
-    fp = fopen(archive_name, "rb");
-    if (fp == NULL) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
-    bp_io_from_file(&aio, fp);
-    rc = bp_archive_info(&aio, &info);
-    fclose(fp);
+    if (vol_source_open(&vf, &src, archive_name, g_pause) != 0) return 1;
+    rc = bp_archive_info_volumes(&src, &info, NULL);
+    vol_source_done(&vf);
 
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        vol_report(&vf, rc, bp_strerror);
         return 1;
     }
 
@@ -1679,7 +1687,33 @@ static int cmd_info(const char *archive_name)
         printf("Creator OS:     %s\n", os_name(info.creator_os));
         printf("Creator CPU:    %s\n", cpu_name(info.creator_cpu));
         printf("Method:         %s\n", format_methods(info.method_counts));
-        printf("Archive size:   %s\n", arcbuf);
+        if (info.volume_count > 1) {
+            /* add up the volumes that are at hand */
+            unsigned v, found = 0;
+            bp_uint64 total = BP_UINT64_ZERO;
+            for (v = 0; v + 1U < info.volume_count; v++) {
+                char name[BP_VOL_PATH_MAX + 8];
+                struct stat st;
+                vol_numbered_name(&vf, v, name, sizeof(name));
+                if (stat(name, &st) == 0 && st.st_size >= 0) {
+                    total = bp_u64_add(total, bp_off_to_u64((bp_off_t)st.st_size));
+                    found++;
+                }
+            }
+            total = bp_u64_add(total, info.archive_size);
+            format_size64(total, arcbuf, sizeof(arcbuf));
+            printf("Volumes:        %u\n", (unsigned)info.volume_count);
+            if (found + 1U == info.volume_count)
+                printf("Archive size:   %s (all volumes)\n", arcbuf);
+            else {
+                format_size64(info.archive_size, arcbuf, sizeof(arcbuf));
+                printf("Archive size:   %s in the last volume (%u of %u volumes at hand)\n",
+                       arcbuf, found + 1U, (unsigned)info.volume_count);
+            }
+        } else {
+            format_size64(info.archive_size, arcbuf, sizeof(arcbuf));
+            printf("Archive size:   %s\n", arcbuf);
+        }
         printf("Entries:        %lu (%lu file%s, %lu director%s)\n",
                (unsigned long)info.entry_count,
                (unsigned long)file_count, file_count == 1 ? "" : "s",
@@ -1754,6 +1788,14 @@ static int cmd_delete(int argc, char **argv)
                            &deleted);
     if (fclose(src_fp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
 
+    if (rc == BP_ERR_VOLUME) {
+        fprintf(stderr,
+                "boltpack: %s is part of a multi-volume archive; delete works on single-volume archives only\n",
+                archive_name);
+        fclose(dst_fp);
+        remove(tmp_name);
+        return 1;
+    }
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: delete failed: %s\n", bp_strerror(rc));
         fclose(dst_fp);
@@ -1854,6 +1896,13 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
     }
     bp_io_from_file(&io, fp);
     rc = bp_archive_open_append(&ar, &io, block_size, method);
+    if (rc == BP_ERR_VOLUME) {
+        fprintf(stderr,
+                "boltpack: %s is part of a multi-volume archive; add works on single-volume archives only\n",
+                archive_name);
+        fclose(fp); unlink(stage_path);
+        return 1;
+    }
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
         fclose(fp); unlink(stage_path);
@@ -1914,13 +1963,26 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method,
 
 /* ---- cmd_create -------------------------------------------------------- */
 
+static bp_vol_files_t g_create_vf;
+
+/* Abandon an unfinished create: close and remove the staging archive, and
+ * remove the volumes already written. */
+static void create_abort(FILE *fp, const char *stage_path)
+{
+    if (fp != NULL) fclose(fp);
+    if (stage_path[0] != '\0') unlink(stage_path);
+    if (g_volume_mode) vol_remove_written(&g_create_vf);
+}
+
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
                       bp_uint8 method, int level, int interchange_profile)
 {
     const char *archive_name;
-    FILE *fp;
+    FILE *fp = NULL;
     bp_io_t aio;
     bp_archive_t ar;
+    bp_volume_sink_t vsink;
+    bp_vol_files_t *vf = &g_create_vf;
     archive_target_meta_t target_meta;
     char stage_path[4096];
     int rc, i, partial = 0;
@@ -1929,6 +1991,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
 
 #ifdef BOLTPACK_NET
     bp_net_cli_strip_create_args(&argc, argv);
+    if (g_volume_mode && g_send_target != NULL) {
+        fprintf(stderr, "boltpack: --send cannot be combined with -v\n");
+        return 1;
+    }
 #endif
 
     if (argc < 2) {
@@ -1936,8 +2002,10 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
     archive_name = argv[0];
+    stage_path[0] = '\0';
 
-    if (capture_archive_target(archive_name, &target_meta) != 0) {
+    if (!g_volume_mode &&
+        capture_archive_target(archive_name, &target_meta) != 0) {
         fprintf(stderr, "boltpack: archive target is not a replaceable regular file: %s\n",
                 archive_name);
         return 1;
@@ -1949,19 +2017,48 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
                 bp_strerror(rc));
         return 1;
     }
-    if (create_sibling_stage(archive_name, stage_path, sizeof(stage_path),
-                             &fp) != 0) {
-        fprintf(stderr, "boltpack: cannot create archive stage for: %s\n",
-                archive_name);
-        return 1;
-    }
-    bp_io_from_file(&aio, fp);
-    rc = interchange_profile
-        ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
-        : bp_archive_create(&ar, &aio, block_size, method);
-    if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
-        fclose(fp); unlink(stage_path); return 1;
+    if (g_volume_mode) {
+        /* Volumes are written straight to their directory (or media), each
+         * under a temporary name until it is complete. */
+        memset(vf, 0, sizeof(*vf));
+        if (vol_files_init(vf, archive_name) != 0 ||
+            vol_has_number_ext(archive_name)) {
+            fprintf(stderr,
+                    "boltpack: %s cannot name a volume set (use a name such as backup.bolt)\n",
+                    archive_name);
+            return 1;
+        }
+        vf->pause = g_pause;
+        vol_sink_init(vf, &vsink);
+        rc = bp_archive_create_volumes(&ar, &vsink, g_volume_size,
+                                       interchange_profile ? BP_BLOCK_16K : block_size,
+                                       interchange_profile ? BP_METHOD_BOLTLITE : method);
+        if (rc == BP_OK && interchange_profile) {
+            rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+            if (rc != BP_OK) bp_archive_close(&ar);
+        }
+        if (rc != BP_OK) {
+            if (vf->aborted || vf->problem[0])
+                vol_report(vf, rc, bp_strerror);
+            else
+                fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+            return 1;
+        }
+    } else {
+        if (create_sibling_stage(archive_name, stage_path, sizeof(stage_path),
+                                 &fp) != 0) {
+            fprintf(stderr, "boltpack: cannot create archive stage for: %s\n",
+                    archive_name);
+            return 1;
+        }
+        bp_io_from_file(&aio, fp);
+        rc = interchange_profile
+            ? bp_archive_create_profile(&ar, &aio, BP_PROFILE_INTERCHANGE_1)
+            : bp_archive_create(&ar, &aio, block_size, method);
+        if (rc != BP_OK) {
+            fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+            create_abort(fp, stage_path); return 1;
+        }
     }
     if (interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
@@ -1974,17 +2071,24 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         const char *arcname = clean_path(path);
         rc = add_path(&ar, path, arcname);
         if (rc != BP_OK) {
-            fprintf(stderr, "boltpack: error adding %s: %s\n", path,
-                    bp_strerror(rc));
-            bp_archive_close(&ar); fclose(fp); unlink(stage_path); return 1;
+            if (g_volume_mode && (vf->aborted || vf->problem[0]))
+                vol_report(vf, rc, bp_strerror);
+            else
+                fprintf(stderr, "boltpack: error adding %s: %s\n", path,
+                        bp_strerror(rc));
+            bp_archive_close(&ar); create_abort(fp, stage_path); return 1;
         }
     }
     rc = bp_archive_finalize(&ar);
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
-        bp_archive_close(&ar); fclose(fp); unlink(stage_path); return 1;
+        if (g_volume_mode && (vf->aborted || vf->problem[0]))
+            vol_report(vf, rc, bp_strerror);
+        else
+            fprintf(stderr, "boltpack: finalize failed: %s\n", bp_strerror(rc));
+        bp_archive_close(&ar); create_abort(fp, stage_path); return 1;
     }
 
+    if (g_volume_mode) vol_remove_stale(vf, vf->written);
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
 
     if (g_verbosity < VERB_SILENT) {
@@ -2020,6 +2124,18 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
         printf("\n");
     }
     bp_archive_close(&ar);
+    if (g_volume_mode) {
+        if (g_verbosity < VERB_SILENT) {
+            char first[BP_VOL_PATH_MAX + 8];
+            vol_numbered_name(vf, 0, first, sizeof(first));
+            if (vf->written <= 1)
+                printf("1 volume (up to %s): %s\n", g_volume_size_text, archive_name);
+            else
+                printf("%u volumes (up to %s each): %s ... %s\n", vf->written,
+                       g_volume_size_text, first, archive_name);
+        }
+        return 0;
+    }
     if (fflush(fp) != 0) {
         fclose(fp); unlink(stage_path);
         fprintf(stderr, "boltpack: cannot flush archive stage: %s\n", archive_name);
@@ -2050,24 +2166,19 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
 
 static int cmd_list(const char *archive_name)
 {
-    FILE *fp;
-    bp_io_t aio;
+    static bp_vol_files_t vf;
+    bp_volume_source_t src;
     int rc;
     list_ctx_t ctx;
 
-    fp = fopen(archive_name, "rb");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
-    bp_io_from_file(&aio, fp);
+    if (vol_source_open(&vf, &src, archive_name, g_pause) != 0) return 1;
     printf("%10s %10s  %s  %s\n", "Size", "Compressed", "Type", "Name");
 
     memset(&ctx, 0, sizeof(ctx));
-    rc = bp_archive_list(&aio, list_cb, &ctx);
-    fclose(fp);
+    rc = bp_archive_list_volumes(&src, list_cb, &ctx);
+    vol_source_done(&vf);
     if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        vol_report(&vf, rc, bp_strerror);
         return 1;
     }
     {
@@ -2121,13 +2232,14 @@ static int haiku_extract_preflight_entry(const bp_entry_t *entry,
     return 0;
 }
 
-static int haiku_extract_preflight(bp_io_t *io, const char *out_dir)
+static int haiku_extract_preflight(const bp_volume_source_t *src,
+                                   const char *out_dir)
 {
     haiku_extract_preflight_t ctx;
     int rc;
     memset(&ctx, 0, sizeof(ctx));
     ctx.out_dir = out_dir;
-    rc = bp_archive_list(io, haiku_extract_preflight_entry, &ctx);
+    rc = bp_archive_list_volumes(src, haiku_extract_preflight_entry, &ctx);
     if (ctx.error != BP_OK) rc = ctx.error;
     if (rc == BP_OK) rc = bp_posix_preflight_finish(&ctx.paths);
     bp_posix_preflight_free(&ctx.paths);
@@ -2137,35 +2249,42 @@ static int haiku_extract_preflight(bp_io_t *io, const char *out_dir)
 static int cmd_extract(const char *archive_name, const char *out_dir,
                        int force, int dry_run)
 {
-    FILE *fp;
-    bp_io_t aio;
+    static bp_vol_files_t vf;
+    bp_volume_source_t src;
     extract_ctx_t ctx;
     int rc;
     clock_t start;
     double elapsed;
 
-    fp = fopen(archive_name, "rb");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
-        fclose(fp); return 1;
-    }
-    bp_io_from_file(&aio, fp);
-    rc = haiku_extract_preflight(&aio, out_dir);
-    if (rc != BP_OK) {
-        fprintf(stderr, "boltpack: destination name preflight failed: %s\n",
-                bp_strerror(rc));
-        fclose(fp);
         return 1;
+    }
+    if (vol_source_open(&vf, &src, archive_name, g_pause) != 0) return 1;
+    rc = haiku_extract_preflight(&src, out_dir);
+    if (rc != BP_OK) {
+        if (vf.aborted || vf.problem[0])
+            vol_report(&vf, rc, bp_strerror);   /* a volume was at fault */
+        else
+            fprintf(stderr, "boltpack: destination name preflight failed: %s\n",
+                    bp_strerror(rc));
+        vol_source_done(&vf);
+        return 1;
+    }
+    if (!vf.interactive) {
+        /* Nobody can be asked for media: make sure every volume is here
+         * before anything is written. */
+        bp_archive_info_t vinfo;
+        rc = bp_archive_info_volumes(&src, &vinfo, NULL);
+        vol_source_done(&vf);
+        if (rc == BP_OK && !vol_all_present(&vf, vinfo.volume_count))
+            return 1;
     }
     if (out_dir && !dry_run && mkdirs(out_dir) != 0) {
         fprintf(stderr, "boltpack: cannot create output directory: %s\n", out_dir);
-        fclose(fp);
+        vol_source_done(&vf);
         return 1;
     }
 
@@ -2179,19 +2298,19 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
     if (ctx.root_fd < 0 && dry_run) ctx.root_fd = open(".", O_RDONLY | O_DIRECTORY);
     if (ctx.root_fd < 0) {
         fprintf(stderr, "boltpack: cannot open extraction root\n");
-        fclose(fp);
+        vol_source_done(&vf);
         return 1;
     }
     start = clock();
 
-    rc = bp_archive_extract_all_ex(&aio, extract_open, extract_done_status,
+    rc = bp_archive_extract_volumes(&src, extract_open, extract_done_status,
                                 g_verbosity == VERB_DEFAULT ? progress_cb : NULL,
                                 &ctx);
     finish_directories(&ctx, rc == BP_OK || rc == BP_ERR_PARTIAL);
     if (close(ctx.root_fd) != 0) ctx.partial_count++;
-    fclose(fp);
+    vol_source_done(&vf);
     if (rc != BP_OK && rc != BP_ERR_PARTIAL) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        vol_report(&vf, rc, bp_strerror);
         return 1;
     }
     elapsed = (double)(clock() - start) / (double)CLOCKS_PER_SEC;
@@ -2220,29 +2339,24 @@ static int cmd_extract(const char *archive_name, const char *out_dir,
 
 static int cmd_test(const char *archive_name)
 {
-    FILE *fp;
-    bp_io_t aio;
+    static bp_vol_files_t vf;
+    bp_volume_source_t src;
     test_ctx_t ctx;
     int rc;
 
-    fp = fopen(archive_name, "rb");
-    if (!fp) {
-        fprintf(stderr, "boltpack: cannot open: %s\n", archive_name);
-        return 1;
-    }
     rc = bp_compress_init();
     if (rc != BP_OK) {
         fprintf(stderr, "boltpack: compression init failed: %s\n",
                 bp_strerror(rc));
-        fclose(fp); return 1;
+        return 1;
     }
-    bp_io_from_file(&aio, fp);
+    if (vol_source_open(&vf, &src, archive_name, g_pause) != 0) return 1;
     memset(&ctx, 0, sizeof(ctx));
-    rc = bp_archive_test(&aio, test_cb, &ctx);
-    fclose(fp);
+    rc = bp_archive_test_volumes(&src, test_cb, &ctx, NULL, NULL);
+    vol_source_done(&vf);
 
     if (rc != BP_OK && rc != BP_ERR_CHECKSUM) {
-        fprintf(stderr, "boltpack: %s\n", bp_strerror(rc));
+        vol_report(&vf, rc, bp_strerror);
         return 1;
     }
     if (g_verbosity < VERB_SILENT) {
@@ -2290,6 +2404,13 @@ static void usage_basic(void)
         "  -f         Force overwrite existing files\n"
         "  -n         Dry run\n"
         "  -q / -qq   Quiet / silent\n");
+    fprintf(stderr,
+        "\nVolumes (split an archive over several files or disks):\n"
+        "  -v SIZE    Split into volumes of at most SIZE bytes (create)\n"
+        "             K, M, G = x1000; Ki, Mi, Gi = x1024; e.g. 1.44M, 700M, 4G\n"
+        "  --pause    Ask for new media before each volume\n"
+        "  Volumes are named backup.000, backup.001, ... and the last backup.bolt.\n"
+        "  To list, test or extract a set, give any of its volumes.\n");
     fprintf(stderr,
         "\nExamples:\n"
         "  boltpack create backup.bolt folder\n"
@@ -2469,6 +2590,30 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-n") == 0 ||
                    strcmp(argv[i], "--dry-run") == 0) {
             dry_run = 1; i++;
+        } else if (strcmp(argv[i], "-v") == 0 ||
+                   strcmp(argv[i], "--volume-size") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "boltpack: %s requires a size, such as 1.44M or 700M\n",
+                        argv[i]);
+                return 1;
+            }
+            if (bp_parse_volume_size(argv[i + 1], &g_volume_size) != 0) {
+                fprintf(stderr,
+                        "boltpack: invalid volume size: %s (examples: 1.44M, 720K, 700M, 4G, 1474560)\n",
+                        argv[i + 1]);
+                return 1;
+            }
+            if (bp_u64_cmp(g_volume_size, bp_u64_from_u32(BP_VOLUME_SIZE_MIN)) < 0) {
+                fprintf(stderr, "boltpack: volume size %s is below the 16K minimum\n",
+                        argv[i + 1]);
+                return 1;
+            }
+            g_volume_mode = 1;
+            g_volume_size_text = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--pause") == 0) {
+            g_pause = 1;
+            i++;
 #ifdef BOLTPACK_NET
         } else if (bp_net_cli_take_option(&i, argc, argv)) {
             /* consumed a network option */
@@ -2516,6 +2661,26 @@ int main(int argc, char **argv)
     if (interchange_profile && command != 'c' && command != 'a') {
         fprintf(stderr,
                 "boltpack: Interchange Profile 1 applies only to create and add\n");
+        return 1;
+    }
+    if (g_volume_mode && command != 'c') {
+        fprintf(stderr,
+                "boltpack: -v applies to create; to read a volume set, name any of its volumes\n");
+        return 1;
+    }
+    if (g_pause && command != 'c' && command != 'l' && command != 'x' &&
+        command != 't' && command != 'i') {
+        fprintf(stderr, "boltpack: --pause applies to create, list, extract, test and info\n");
+        return 1;
+    }
+    if (g_pause && command == 'c' && !g_volume_mode) {
+        fprintf(stderr, "boltpack: --pause with create needs -v SIZE\n");
+        return 1;
+    }
+    if (g_volume_mode && (interchange_profile) &&
+        (g_volume_size.hi != 0 || g_volume_size.lo > 2147483647UL)) {
+        fprintf(stderr,
+                "boltpack: this profile limits each volume to 2 GiB; choose a smaller -v\n");
         return 1;
     }
     if (command == 'x' && i + 1 < argc) {

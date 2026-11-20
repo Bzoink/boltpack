@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import stat
+import sys
 import tempfile
 
 import bp_archive_bytes
@@ -94,6 +95,9 @@ def main():
          str(ROOT / "src/frontend/haiku/main.c"),
          str(ROOT / "src/core/boltlz.c"), str(stub_impl), "-lm", "-o", str(binary)]
     run(host_compile)
+    # Volume sets: -v, --pause, reading from any volume.
+    run([sys.executable, str(ROOT / "test/check_volumes.py"),
+         "--boltpack", str(binary)])
     conflict_fixture = work / "haiku-name-conflict-fixture"
     run([args.cc, "-ansi", "-pedantic", "-Wall", "-Wextra",
          "-D_DEFAULT_SOURCE", "-I" + str(ROOT / "src/core"),
