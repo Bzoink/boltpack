@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- DOS CLI: extraction on a DOS without long file names no longer refuses
+  lower-case 8.3 names. The DOS CLI stores names in lower case there (as
+  DJGPP reports them), so it could not extract its own archives; `-o` with a
+  lower-case directory name was refused for the same reason.
 - Multi-volume archives (archive format 7: the Linux CLI, the POSIX CLIs built
   from it, and the 32-bit DOS CLI). `boltpack create -v 1.44M backup.bolt docs`
   splits an archive over

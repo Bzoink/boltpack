@@ -542,10 +542,10 @@ DOSBox-X cannot answer the prompts one at a time, so disk swapping is checked
 with the host build instead. Rewriting a set on a full diskette needs room for
 the new volume beside the old files, so use an empty disk for a new set.
 
-The test sets `FNCASE=y`. Without it DJGPP reports 8.3 names in lower case,
-which the DOS CLI then stores in archives and, on a DOS without long file
-names, refuses to extract again; this predates format 7. The 16-bit `dos16`
-mini build still reads and writes format 6 only.
+Without long file names DJGPP reports 8.3 names in lower case, and the DOS
+CLI stores them that way. Extraction accepts them as 8.3 names regardless of
+case (FAT upper-cases them); the volume test extracts such a set on DOS. The
+16-bit `dos16` mini build still reads and writes format 6 only.
 
 It runs the mini reader as a native 32-bit Linux process on this host. `make dos-djgpp` builds the DOS
 executable when the `i586-pc-msdosdjgpp-gcc` toolchain is available. To run

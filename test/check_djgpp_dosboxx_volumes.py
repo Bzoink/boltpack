@@ -6,10 +6,9 @@ prompts from a file), reads it back from any volume, replaces it with a
 smaller set, checks the refusal when a volume is missing, and exchanges sets
 with the Linux CLI in both directions.
 
-DOS runs with FNCASE=y so that DJGPP keeps the upper-case names it finds on
-FAT; without it DJGPP reports them in lower case, and the DOS CLI then cannot
-extract its own archives on a DOS without long file names (an existing
-limitation of the DOS frontend, not of volume sets).  Disk swapping itself is covered by
+DOS runs without long file names, so DJGPP reports names in lower case and
+the DOS CLI stores them that way; extracting its own set then also checks
+that lower-case 8.3 names are accepted.  Disk swapping itself is covered by
 test/check_volumes.py against the DOS host build; DOSBox-X cannot feed the
 prompts one Enter at a time.
 
@@ -58,8 +57,7 @@ def dosbox(args, cdir, image, commands, log, limit=420):
     cmd = [args.dosbox_x, "-nopromptfolder", "-nogui", "-fastlaunch",
            "-time-limit", str(limit),
            "-c", "mount c " + str(cdir),
-           "-c", "imgmount a " + str(image) + " -t floppy", "-c", "c:",
-           "-c", "SET FNCASE=y"]
+           "-c", "imgmount a " + str(image) + " -t floppy", "-c", "c:"]
     for c in commands:
         cmd.extend(("-c", c))
     cmd.extend(("-c", "echo done > DONE.TXT", "-c", "exit"))

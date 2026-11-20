@@ -888,13 +888,25 @@ static int dos_component_supported(const char *component, size_t length)
 
 /* Return true only for a component that can be represented without a
  * generated short-name alias.  DJGPP has the platform's own 8.3 predicate;
- * the portable fallback accepts a conservative ASCII subset. */
+ * the portable fallback accepts a conservative ASCII subset.
+ *
+ * Case does not matter: FAT keeps 8.3 names in upper case and DOS upper-cases
+ * a name when it creates the file, so "small.txt" and "SMALL.TXT" name the
+ * same file.  _is_DOS83() rejects lower-case letters, and without long file
+ * names DJGPP reports directory entries in lower case, so the DOS CLI stores
+ * lower-case names; fold ASCII letters before asking, or it would refuse its
+ * own archives.  Names differing only in case are still caught as collisions
+ * by the case-folding destination index. */
 static int dos_component_is_83(const char *component, size_t length)
 {
 #ifdef __DJGPP__
     char name[BP_MAX_PATH];
+    size_t i;
     if (length == 0 || length >= sizeof(name)) return 0;
-    memcpy(name, component, length);
+    for (i = 0; i < length; i++) {
+        char ch = component[i];
+        name[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
+    }
     name[length] = '\0';
     return _is_DOS83(name) != 0;
 #else
