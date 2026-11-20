@@ -37,6 +37,8 @@
  *                                             temporary file for cleanup
  *   int  vol_hook_verbose(void)               1 to report finished volumes
  * and may define BP_VOL_DIR_SEPS (path separators, default "/"),
+ * BP_VOL_EXT_CHAR and BP_VOL_EXT_STR (the extension separator as a character
+ * and as a string, default '.' and "."; RISC OS uses '/'),
  * BP_VOL_PATH_MAX (default 4096), BP_VOL_PROG (the program name in
  * messages, default "boltpack") and BP_VOL_ERRTEXT() (the last system
  * error as text, default strerror(errno)) first.  ANSI C (C89) plus stdio.
@@ -60,6 +62,10 @@
 #endif
 #ifndef BP_VOL_PROG
 #define BP_VOL_PROG "boltpack"
+#endif
+#ifndef BP_VOL_EXT_CHAR
+#define BP_VOL_EXT_CHAR '.'
+#define BP_VOL_EXT_STR "."
 #endif
 
 #ifndef BP_VOL_OWN_STREAMS
@@ -151,7 +157,7 @@ static const char *vol_base(const char *name)
 static const char *vol_ext_dot(const char *name)
 {
     const char *base = vol_base(name);
-    const char *dot = strrchr(base, '.');
+    const char *dot = strrchr(base, BP_VOL_EXT_CHAR);
     if (dot == NULL || dot == base) return NULL;
     return dot;
 }
@@ -188,7 +194,7 @@ static void vol_numbered_name(const bp_vol_files_t *v, unsigned number,
                               char *out, size_t size)
 {
     char num[8];
-    sprintf(num, ".%03u", number % 1000U);
+    sprintf(num, BP_VOL_EXT_STR "%03u", number % 1000U);
     if (strlen(v->stem) + 5 > size) { out[0] = '\0'; return; }
     strcpy(out, v->stem);
     strcat(out, num);
@@ -210,10 +216,10 @@ static void vol_last_name(const bp_vol_files_t *v, char *out, size_t size)
     }
     if (strlen(v->stem) + 6 > size) { out[0] = '\0'; return; }
     strcpy(out, v->stem);
-    strcat(out, ".blt");
+    strcat(out, BP_VOL_EXT_STR "blt");
     if (vol_exists(out)) return;
     strcpy(out, v->stem);
-    strcat(out, ".bolt");
+    strcat(out, BP_VOL_EXT_STR "bolt");
 }
 
 /* Ask the user to change media.  Returns 1 to retry, 0 to give up. */
