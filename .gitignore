@@ -39,3 +39,5 @@ docs/fluff-improvement-plan.md
 
 # One-off migration script, superseded (targeted fluff stream version 0x05)
 scripts/rewrite_fluff_rc.py
+# Open Watcom diagnostic logs written to the current directory
+/*.err

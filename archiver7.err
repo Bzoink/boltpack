@@ -1,6 +1,0 @@
-src/core/bp_types.h(376): Warning! W202: Symbol 'bp_u64_to_ulong' has been defined, but not referenced
-src/core/bp_types.h(364): Warning! W202: Symbol 'bp_u64_from_ulong' has been defined, but not referenced
-src/core/bp_types.h(421): Warning! W202: Symbol 'bp_u64_gte' has been defined, but not referenced
-src/core/bp_types.h(426): Warning! W202: Symbol 'bp_u64_to_u32' has been defined, but not referenced
-src/core/bp_metadata.h(24): Warning! W202: Symbol 'bp_metadata_matches_subject' has been defined, but not referenced
-src/core/bp_metadata.h(190): Warning! W202: Symbol 'bp_metadata_fat_encode' has been defined, but not referenced
