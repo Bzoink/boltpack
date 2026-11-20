@@ -1688,6 +1688,7 @@ x68k-host-test:
 	    src/core/fluff.c -o $(X68K_HOST_DIR)/create_collision_archive
 	$(MAKE) CC=$(CC) all linuxmini
 	python3 test/check_x68k_profile.py $(X68K_HOST_BIN) build/linux/boltpack build/linux32mini/bpmini test/reference/interoperability/x68k-host-shim.json $(X68K_HOST_DIR)/create_collision_archive --output-root $(X68K_HOST_OUTPUT_ROOT) --compiler "$(CC)" --version-major $(BP_VERSION_MAJOR) --version-minor $(BP_VERSION_MINOR)
+	python3 test/check_volumes.py --flavor dos --codecs=-2,-1,-0 --boltpack $(X68K_HOST_BIN)
 
 # Build the Plan 9 frontend against host shims for profile CLI testing. Native
 # Plan 9 runtime qualification is unavailable on this host.

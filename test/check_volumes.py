@@ -3,12 +3,15 @@
 
 Usage:
     python3 test/check_volumes.py [--boltpack PATH] [--flavor linux|dos]
-                                  [--runner COMMAND] [--verbose]
+                                  [--runner COMMAND] [--codecs LIST]
+                                  [--verbose]
 
 --flavor dos runs the same checks against the DOS CLI (for example the host
 build from `make dos-host-test`), which has no -2 option (BoltLZ is its
 default) and stores no symbolic links.  --runner prefixes every command (for
-example `wine` to test the Windows CLI).
+example `wine` to test the Windows CLI).  --codecs lists the codec options
+the CLI has (default -2,-F,-1,-0), for frontends such as the X68000 CLI that
+offer only some of them.
 
 Covers creating volume sets with -v, reading them from any volume, naming,
 volume sizes, stale-volume clean-up, missing/foreign/truncated volumes,
@@ -32,6 +35,7 @@ FAILS = []
 VERBOSE = False
 FLAVOR = "linux"
 RUNNER = []
+CODECS = ("-2", "-F", "-1", "-0")
 
 
 def check(cond, what):
@@ -108,6 +112,8 @@ def test_basic(bp, work, src):
     print("create, read from any volume, extract")
     for codec, size in (("-2", "200K"), ("-F", "300K"), ("-1", "250000"),
                         ("-0", "1.44M"), ("-F", "64Ki")):
+        if codec not in CODECS:
+            continue
         d = tempfile.mkdtemp(dir=work)
         shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
         opts = boltlz() if codec == "-2" else [codec]
@@ -331,15 +337,17 @@ def test_pause(bp, work, src):
 
 
 def main():
-    global VERBOSE, FLAVOR, RUNNER
+    global VERBOSE, FLAVOR, RUNNER, CODECS
     ap = argparse.ArgumentParser()
     ap.add_argument("--boltpack",
                     default=os.path.join(ROOT, "build", "linux", "boltpack"))
     ap.add_argument("--flavor", choices=("linux", "dos"), default="linux")
     ap.add_argument("--runner", default="")
+    ap.add_argument("--codecs", default="-2,-F,-1,-0")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
     RUNNER = a.runner.split()
+    CODECS = tuple(a.codecs.split(","))
     VERBOSE = a.verbose
     FLAVOR = a.flavor
     bp = os.path.abspath(a.boltpack)
