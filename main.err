@@ -1,0 +1,11 @@
+src/frontend/os2/../../core/bp_types.h(376): Warning! W202: Symbol 'bp_u64_to_ulong' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(421): Warning! W202: Symbol 'bp_u64_gte' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(445): Warning! W202: Symbol 'bp_off_to_u64' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(433): Warning! W202: Symbol 'bp_u64_to_off' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(460): Warning! W202: Symbol 'bp_write_le16' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(474): Warning! W202: Symbol 'bp_write_le64' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(480): Warning! W202: Symbol 'bp_read_le16' has been defined, but not referenced
+src/frontend/os2/../../core/bp_types.h(493): Warning! W202: Symbol 'bp_read_le64' has been defined, but not referenced
+src/frontend/os2/../../core/bp_metadata.h(49): Warning! W202: Symbol 'bp_metadata_group_close' has been defined, but not referenced
+src/frontend/os2/../../core/bp_metadata.h(70): Warning! W202: Symbol 'bp_metadata_group_record' has been defined, but not referenced
+src/frontend/os2/../../core/bp_metadata.h(142): Warning! W202: Symbol 'bp_metadata_sink_init' has been defined, but not referenced
