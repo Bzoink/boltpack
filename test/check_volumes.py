@@ -4,6 +4,7 @@
 Usage:
     python3 test/check_volumes.py [--boltpack PATH] [--flavor linux|dos]
                                   [--runner COMMAND] [--codecs LIST]
+                                  [--files]
                                   [--verbose]
 
 --flavor dos runs the same checks against the DOS CLI (for example the host
@@ -11,7 +12,8 @@ build from `make dos-host-test`), which has no -2 option (BoltLZ is its
 default) and stores no symbolic links.  --runner prefixes every command (for
 example `wine` to test the Windows CLI).  --codecs lists the codec options
 the CLI has (default -2,-F,-1,-0), for frontends such as the X68000 CLI that
-offer only some of them.
+offer only some of them.  --files names the source files one by one instead of
+passing the `src` directory, for CLIs that cannot walk a directory on the host.
 
 Covers creating volume sets with -v, reading them from any volume, naming,
 volume sizes, stale-volume clean-up, missing/foreign/truncated volumes,
@@ -35,6 +37,7 @@ FAILS = []
 VERBOSE = False
 FLAVOR = "linux"
 RUNNER = []
+FILES = False
 CODECS = ("-2", "-F", "-1", "-0")
 
 
@@ -98,6 +101,18 @@ def same_tree(a, b):
                for d in cmp.common_dirs)
 
 
+def sources(d):
+    """Arguments naming the tree to archive in directory d."""
+    if not FILES:
+        return ["src"]
+    names = []
+    for root, dirs, files in os.walk(os.path.join(d, "src")):
+        dirs.sort()
+        for f in sorted(files):
+            names.append(os.path.relpath(os.path.join(root, f), d))
+    return names
+
+
 def boltlz():
     """Option list selecting BoltLZ."""
     return [] if FLAVOR == "dos" else ["-2"]
@@ -117,7 +132,7 @@ def test_basic(bp, work, src):
         d = tempfile.mkdtemp(dir=work)
         shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
         opts = boltlz() if codec == "-2" else [codec]
-        rc, out, err = run(bp, ["c"] + opts + ["-v", size, "backup.bolt", "src"], d)
+        rc, out, err = run(bp, ["c"] + opts + ["-v", size, "backup.bolt"] + sources(d), d)
         check(rc == 0, "create %s -v %s (%s)" % (codec, size, err.strip()[-200:]))
         names = volumes(d)
         limit = {"200K": 200000, "300K": 300000, "250000": 250000,
@@ -152,10 +167,10 @@ def test_single_and_names(bp, work, src):
     print("single volume sets, .blt names, stale volumes")
     d = tempfile.mkdtemp(dir=work)
     shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
-    rc, out, err = run(bp, ["c", "-v", "700M", "backup.bolt", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "700M", "backup.bolt"] + sources(d), d)
     check(rc == 0 and volumes(d) == ["backup.bolt"],
           "a set that fits one volume is just backup.bolt")
-    rc, out, err = run(bp, ["c", "-v", "200K", "data.blt", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "200K", "data.blt"] + sources(d), d)
     names = volumes(d, "data")
     check(rc == 0 and names[-1] == "data.blt" and names[0] == "data.000",
           "a .blt archive name keeps .blt for the last volume")
@@ -164,7 +179,7 @@ def test_single_and_names(bp, work, src):
                                 os.path.join(d, "o1", "src")),
           "extract via a numbered volume finds data.blt")
     before = len(volumes(d, "data"))
-    rc, out, err = run(bp, ["c", "-v", "600K", "data.blt", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "600K", "data.blt"] + sources(d), d)
     after = volumes(d, "data")
     check(rc == 0 and len(after) < before and "left over" in err,
           "a smaller set removes stale numbered volumes (%d -> %d)"
@@ -173,7 +188,7 @@ def test_single_and_names(bp, work, src):
     check(rc == 0, "the smaller set tests clean")
     with open(os.path.join(d, "notes.005"), "wb") as f:
         f.write(b"not a volume")
-    rc, out, err = run(bp, ["c", "-v", "200K", "notes.005", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "200K", "notes.005"] + sources(d), d)
     check(rc != 0 and "cannot name a volume set" in err,
           "an archive name with a three-digit extension is refused")
     shutil.rmtree(d)
@@ -183,8 +198,8 @@ def test_errors(bp, work, src):
     print("missing, foreign and truncated volumes; editing sets")
     d = tempfile.mkdtemp(dir=work)
     shutil.copytree(src, os.path.join(d, "src"), symlinks=True)
-    run(bp, ["c"] + boltlz() + ["-v", "200K", "backup.bolt", "src"], d)
-    run(bp, ["c"] + boltlz() + ["-v", "200K", "other.bolt", "src"], d)
+    run(bp, ["c"] + boltlz() + ["-v", "200K", "backup.bolt"] + sources(d), d)
+    run(bp, ["c"] + boltlz() + ["-v", "200K", "other.bolt"] + sources(d), d)
     os.rename(os.path.join(d, "backup.002"), os.path.join(d, "away"))
     rc, out, err = run(bp, ["x", "-o", "out", "backup.bolt"], d, stdin=b"")
     check(rc != 0 and "backup.002" in err and "nothing was extracted" in err and
@@ -206,9 +221,9 @@ def test_errors(bp, work, src):
     check(rc != 0 and "multi-volume" in err, "add refuses a volume set")
     rc, out, err = run(bp, ["d", "other.bolt", "src/text.txt"], d)
     check(rc != 0 and "multi-volume" in err, "delete refuses a volume set")
-    rc, out, err = run(bp, ["c", "-v", "15K", "x.bolt", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "15K", "x.bolt"] + sources(d), d)
     check(rc != 0 and "16K" in err, "volumes below 16K are refused")
-    rc, out, err = run(bp, ["c", "-v", "1.44X", "x.bolt", "src"], d)
+    rc, out, err = run(bp, ["c", "-v", "1.44X", "x.bolt"] + sources(d), d)
     check(rc != 0 and "invalid volume size" in err, "bad sizes are refused")
     rc, out, err = run(bp, ["x", "-v", "1M", "other.bolt"], d)
     check(rc != 0 and "-v applies to create" in err, "-v only with create")
@@ -258,7 +273,7 @@ def test_pause(bp, work, src):
     disks = []
 
     s = Session(bp, ["c"] + boltlz() + ["-v", "300K", "--pause",
-                                       "drive/backup.bolt", "src"], d)
+                                       "drive/backup.bolt"] + sources(d), d)
     prompts = 0
     while True:
         text = s.wait_prompt()
@@ -337,17 +352,19 @@ def test_pause(bp, work, src):
 
 
 def main():
-    global VERBOSE, FLAVOR, RUNNER, CODECS
+    global VERBOSE, FLAVOR, RUNNER, CODECS, FILES
     ap = argparse.ArgumentParser()
     ap.add_argument("--boltpack",
                     default=os.path.join(ROOT, "build", "linux", "boltpack"))
     ap.add_argument("--flavor", choices=("linux", "dos"), default="linux")
     ap.add_argument("--runner", default="")
     ap.add_argument("--codecs", default="-2,-F,-1,-0")
+    ap.add_argument("--files", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
     RUNNER = a.runner.split()
     CODECS = tuple(a.codecs.split(","))
+    FILES = a.files
     VERBOSE = a.verbose
     FLAVOR = a.flavor
     bp = os.path.abspath(a.boltpack)

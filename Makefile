@@ -1577,6 +1577,7 @@ ql-host-test:
 	$(MAKE) CC=$(CC) all linuxmini
 	python3 test/check_ql_profile.py $(QL_HOST_BIN) build/linux/boltpack \
 	    build/linux32mini/bpmini $(QL_HOST_DIR)/create_collision_archive
+	python3 test/check_volumes.py --flavor dos --codecs=-2,-F,-0 --files --boltpack $(QL_HOST_BIN)
 
 # Run the native QDOS binary in sQLux and transfer files to/from Linux.
 # Set QL_SQLUX and QL_ROM to the emulator and its Minerva ROM paths.
