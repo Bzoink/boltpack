@@ -1095,7 +1095,7 @@ macosx-host-test: modern
 # docs/specification-1.0.md section 2.3.1.2 for what they do and do not prove.
 # Linux extended attributes, POSIX ACLs, hard links and the warnings for items
 # that cannot be archived; and the Windows CLI not following links (under Wine).
-.PHONY: linux-native-attrs-test win-links-test
+.PHONY: linux-native-attrs-test win-links-test win-volume-test
 linux-native-attrs-test: all linuxmini
 	python3 test/check_linux_native_attrs.py --cc "$(CC)" \
 	    --linux-cli build/linux/boltpack
@@ -1103,6 +1103,11 @@ linux-native-attrs-test: all linuxmini
 win-links-test: win64-exe all
 	python3 test/check_win_links.py --wine "$(or $(WINE),wine)" \
 	    --linux-cli build/linux/boltpack
+
+# Volume sets (-v, --pause) of the Windows CLI, run under Wine.
+win-volume-test: win64-exe
+	python3 test/check_volumes.py --flavor dos \
+	    --boltpack build/win64/boltpack.exe --runner "$(or $(WINE),wine)"
 
 .PHONY: native-attrs-test macosx-xattr-test macos-source-kit-test
 native-attrs-test:

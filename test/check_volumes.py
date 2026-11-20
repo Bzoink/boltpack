@@ -3,11 +3,12 @@
 
 Usage:
     python3 test/check_volumes.py [--boltpack PATH] [--flavor linux|dos]
-                                  [--verbose]
+                                  [--runner COMMAND] [--verbose]
 
 --flavor dos runs the same checks against the DOS CLI (for example the host
 build from `make dos-host-test`), which has no -2 option (BoltLZ is its
-default) and stores no symbolic links.
+default) and stores no symbolic links.  --runner prefixes every command (for
+example `wine` to test the Windows CLI).
 
 Covers creating volume sets with -v, reading them from any volume, naming,
 volume sizes, stale-volume clean-up, missing/foreign/truncated volumes,
@@ -29,6 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAILS = []
 VERBOSE = False
 FLAVOR = "linux"
+RUNNER = []
 
 
 def check(cond, what):
@@ -41,7 +43,7 @@ def check(cond, what):
 
 
 def run(bp, args, cwd, stdin=None):
-    p = subprocess.run([bp] + args, cwd=cwd, input=stdin,
+    p = subprocess.run(RUNNER + [bp] + args, cwd=cwd, input=stdin,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=600)
     return p.returncode, p.stdout.decode("utf-8", "replace"), \
@@ -214,7 +216,7 @@ class Session:
     """Drive one boltpack run that prompts for media on stderr."""
 
     def __init__(self, bp, args, cwd):
-        self.p = subprocess.Popen([bp] + args, cwd=cwd, stdin=subprocess.PIPE,
+        self.p = subprocess.Popen(RUNNER + [bp] + args, cwd=cwd, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
         self.err = b""
@@ -328,13 +330,15 @@ def test_pause(bp, work, src):
 
 
 def main():
-    global VERBOSE, FLAVOR
+    global VERBOSE, FLAVOR, RUNNER
     ap = argparse.ArgumentParser()
     ap.add_argument("--boltpack",
                     default=os.path.join(ROOT, "build", "linux", "boltpack"))
     ap.add_argument("--flavor", choices=("linux", "dos"), default="linux")
+    ap.add_argument("--runner", default="")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
+    RUNNER = a.runner.split()
     VERBOSE = a.verbose
     FLAVOR = a.flavor
     bp = os.path.abspath(a.boltpack)
