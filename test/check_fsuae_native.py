@@ -68,7 +68,7 @@ def write_failure_record(error):
     }
     source_paths = (
         Path(__file__).resolve(), EXPECTED_PATH,
-        ROOT / "src/core/archiver7.c", ROOT / "src/core/compress.c",
+        ROOT / "src/core/archiver.c", ROOT / "src/core/compress.c",
         ROOT / "src/core/boltlite.c", ROOT / "src/core/fluff.c",
         ROOT / "src/core/bp_codepage.c", ROOT / "src/core/boltlz.c",
         ROOT / "src/frontend/amiga/main.c",
@@ -265,7 +265,7 @@ def main():
         run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
              "-I" + str(ROOT / "src/core"),
              str(ROOT / "test/amiga/conflicting_metadata_fixture.c"),
-             str(ROOT / "src/core/archiver7.c"),
+             str(ROOT / "src/core/archiver.c"),
              str(ROOT / "src/core/compress.c"),
              str(ROOT / "src/core/boltlite.c"),
              str(ROOT / "src/core/fluff.c"),

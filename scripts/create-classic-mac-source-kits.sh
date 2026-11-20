@@ -56,7 +56,7 @@ This source kit is for native BoltPack builds on Classic Mac OS 9 PowerPC.
 
 ## Files To Add To The Project
 
-- src/core/archiver7.c
+- src/core/archiver.c
 - src/core/compress.c
 - src/core/boltlite.c
 - src/core/fluff.c
@@ -120,7 +120,7 @@ library paths to match your MPW installation.
 ```text
 NewFolder obj
 
-MrC -opt peep -i src:core -o obj:archiver7.o src:core:archiver7.c
+MrC -opt peep -i src:core -o obj:archiver.o src:core:archiver.c
 MrC -opt peep -i src:core -o obj:compress.o src:core:compress.c
 MrC -opt peep -i src:core -o obj:boltlite.o src:core:boltlite.c
 MrC -opt peep -i src:core -o obj:fluff.o src:core:fluff.c
@@ -129,7 +129,7 @@ MrC -opt peep -i src:core -o obj:boltlz.o src:core:boltlz.c
 MrC -opt peep -i src:core -o obj:main.o src:frontend:macos9:main.c
 Rez src:frontend:macos9:boltpack.r -o obj:boltpack.rsrc
 
-PPCLink -o BoltPack obj:archiver7.o obj:compress.o obj:boltlite.o obj:fluff.o \
+PPCLink -o BoltPack obj:archiver.o obj:compress.o obj:boltlite.o obj:fluff.o \
         obj:bp_codepage.o obj:boltlz.o obj:main.o \
         InterfaceLib AppearanceLib NavigationLib MathLib <MPW PPC C runtime>
 ```

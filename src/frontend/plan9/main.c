@@ -11,7 +11,7 @@
  *
  * Build on a Plan 9 / 9front system:
  *   8c -FTVw -I /sys/include -I <src/core> \
- *       src/core/archiver7.c src/core/compress.c             \
+ *       src/core/archiver.c src/core/compress.c             \
  *       src/core/bp_codepage.c                               \
  *       src/frontend/plan9/main.c                            \
  *       src/core/boltlz.c                           \

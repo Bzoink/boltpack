@@ -97,7 +97,7 @@ def write_run_record():
         ROOT / "src/frontend/x68k/main.c",
         ROOT / "test/x68k_host/dos_stub.c",
         ROOT / "test/x68k_host/create_collision_archive.c",
-        ROOT / "src/core/archiver7.c",
+        ROOT / "src/core/archiver.c",
         ROOT / "src/core/compress.c",
         ROOT / "src/core/boltlite.c",
         ROOT / "src/core/boltlz.c",

@@ -165,7 +165,7 @@ python3 test/check_boltpack.py --verbose     # integration tests, verbose
 | ------------------------------------------------------ | --------------------------------------------------------- |
 | [docs/architecture.md](docs/architecture.md)           | Layer boundaries, core interfaces, and error codes        |
 | [docs/specification-2.0.md](docs/specification-2.0.md) | Archive format 7 (volume sets): every CLI                |
-| [docs/specification-1.0.md](docs/specification-1.0.md) | Archive format 6: other frontends                         |
+| [docs/specification-1.0.md](docs/specification-1.0.md) | Archive format 6 (retired, for reference)                 |
 | [docs/format.md](docs/format.md)                       | Concise `.bolt` / `.blt` archive format overview          |
 | [docs/algorithms.md](docs/algorithms.md)               | BoltLite, BoltLZ, and Fluff implementation details            |
 | [docs/portability.md](docs/portability.md)             | Supported platforms, C89 constraints, and toolchain notes |

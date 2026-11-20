@@ -1,14 +1,14 @@
 /*
- * archiver7.c -- archive format 7 (volume sets) read/write for BoltPack
+ * archiver.c -- archive format 7 (volume sets) read/write for BoltPack
  *
  * Implements docs/specification-2.0.md.  Every archive is a set of one or
  * more volume files; a single-file archive is a set of one volume.  The
  * writer never revisits bytes it has written, so a set can be written
  * directly onto removable media one volume after another.
  *
- * This file provides the archiver.h API for frontends that have moved to
- * format 7 (currently the Linux CLI family).  Frontends that have not moved
- * yet still build archiver.c, which reads and writes format 6 only.
+ * This file provides the archiver.h API used by every full CLI and GUI.
+ * (Format 6, the layout used before volume sets, is no longer written or
+ * read; the 16-bit and small targets use mini/archiver.c.)
  *
  * ANSI C (C89/C90) only.
  *

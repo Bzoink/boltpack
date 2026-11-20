@@ -105,13 +105,14 @@ typedef struct {
 
 /* --- Format constants --------------------------------------------------- */
 
-/* This build writes and reads archive format 6 only. Every other version
- * is rejected before table or block data is interpreted. */
+/* Archives are written and read as format 7 (BP_FORMAT7_VERSION below);
+ * any other version is rejected before table or block data is interpreted.
+ * BP_FORMAT_VERSION is the number of the retired format 6, which a few unit
+ * tests still use as a "wrong version" value. */
 #define BP_FORMAT_VERSION      6
 
-/* Archive format 7 (specification 2.0): volume sets.  Implemented by
- * archiver7.c, which builds select instead of archiver.c while the
- * frontends move over one by one. */
+/* Archive format 7 (specification 2.0): volume sets, implemented by
+ * archiver.c and mini/archiver.c. */
 #define BP_FORMAT7_VERSION     7
 #define BP_VOLUME_MAX_COUNT    1000U  /* volumes 0..999 */
 #define BP_VOLUME_LAST_REQUEST 0xFFFFU /* source request: "the last volume" */

@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ["archiver7", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"]
+CORE = ["archiver", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"]
 
 failures = []
 passes = 0

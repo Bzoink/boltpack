@@ -97,7 +97,7 @@ def main():
         # helper that writes archives with a chosen container payload
         objs = []
         # the Linux CLI writes archive format 7, so the fixtures must too
-        for name in ("archiver7", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"):
+        for name in ("archiver", "compress", "boltlite", "fluff", "bp_codepage", "boltlz"):
             o = work / (name + ".o")
             subprocess.run([args.cc, "-O2", "-Isrc/core", "-c", "-o", o,
                             ROOT / "src/core" / (name + ".c")], cwd=ROOT, check=True)

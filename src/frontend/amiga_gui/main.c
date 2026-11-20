@@ -2882,7 +2882,7 @@ int main(void)
     log_message("BoltPack Amiga GUI startup begin");
 
     /* set IDs of new archives need something that differs between runs;
-     * the core cannot use time() under libnix (see archiver7.c) */
+     * the core cannot use time() under libnix (see archiver.c) */
     DateStamp(&startup_time);
     bp_archive_add_entropy((bp_uint32)startup_time.ds_Days);
     bp_archive_add_entropy((bp_uint32)startup_time.ds_Minute * 3000UL +

@@ -127,7 +127,7 @@ build_cli() {
         -arch "$arch_flag" \
         -DBP_CREATOR_CPU=$creator_cpu \
         -Isrc/core  \
-        src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         src/frontend/macosx/main.c \
@@ -175,7 +175,7 @@ build_gui() {
         -DBOLTPACK_FAST_FLUFF \
         -DBP_CREATOR_CPU=$creator_cpu \
         -Isrc/core  -Isrc/frontend/gui_common \
-        src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         "$fast_fluff_obj" \
@@ -234,7 +234,7 @@ build_legacy_gui() {
         -DBOLTPACK_FAST_FLUFF \
         -DBP_CREATOR_CPU=$creator_cpu \
         -Isrc/core  -Isrc/frontend/gui_common \
-        src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+        src/core/archiver.c src/core/compress.c src/core/boltlite.c \
         src/core/fluff.c src/core/bp_codepage.c \
         src/core/boltlz.c \
         "$fast_fluff_obj" \

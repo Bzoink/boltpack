@@ -45,7 +45,7 @@
  * Cross-compilation from Linux:
  *   arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -O2 \
  *       -I src/core                       \
- *       src/core/compress.c src/core/archiver7.c              \
+ *       src/core/compress.c src/core/archiver.c              \
  *       src/core/bp_codepage.c                               \
  *       src/frontend/riscos/main.c                           \
  *       src/core/boltlz.c                           \

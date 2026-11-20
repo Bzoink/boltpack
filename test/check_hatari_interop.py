@@ -239,7 +239,7 @@ def main():
         locale_name = "unknown"
     source_paths = (
         ROOT / "Makefile", Path(__file__).resolve(), EXPECTED_PATH,
-        ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver7.c",
+        ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver.c",
         ROOT / "src/core/compress.c", ROOT / "src/core/bp_codepage.c",
     )
     record = {

@@ -112,7 +112,7 @@ typedef struct {
     bp_uint8       *seq_out_buf;         /* cached sequential compress output buffer */
     bp_uint32       seq_buf_block_size;  /* block_size when seq bufs were allocated */
     void           *seq_boltlz_work;     /* cached encoder workspace; released with archive */
-    void           *v7;                  /* format 7 writer state (archiver7.c) */
+    void           *v7;                  /* format 7 writer state (archiver.c) */
 } bp_archive_t;
 
 /* --- Archive creation --------------------------------------------------- */
@@ -358,7 +358,7 @@ void bp_set_fast_fluff(bp_archive_t *ar, int nthreads);
  * and before adding entries. The archive method must be BP_METHOD_BOLTLZ. */
 void bp_set_fast_boltlz(bp_archive_t *ar, int nthreads);
 
-/* --- Volume sets (archive format 7, archiver7.c only) --------------------
+/* --- Volume sets (archive format 7) --------------------
  *
  * A format 7 archive is a set of one or more volume files.  The functions
  * above that take a single bp_io_t treat it as a one-volume set (and report

@@ -151,7 +151,7 @@ def main():
         run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
              "-Isrc/core",
              str(ROOT / "test/atari/wrong_type_metadata_fixture.c"),
-             str(ROOT / "src/core/archiver7.c"),
+             str(ROOT / "src/core/archiver.c"),
              str(ROOT / "src/core/compress.c"),
              str(ROOT / "src/core/boltlite.c"),
              str(ROOT / "src/core/fluff.c"),
@@ -163,7 +163,7 @@ def main():
         run([args.host_cc, "-std=c89", "-Wall", "-Wextra", "-Wno-unused-function",
              "-Isrc/core",
              str(ROOT / "test/atari/conflicting_metadata_fixture.c"),
-             str(ROOT / "src/core/archiver7.c"),
+             str(ROOT / "src/core/archiver.c"),
              str(ROOT / "src/core/compress.c"),
              str(ROOT / "src/core/boltlite.c"),
              str(ROOT / "src/core/fluff.c"),
@@ -481,7 +481,7 @@ def main():
     source_paths = (
         ROOT / "Makefile", Path(__file__).resolve(), EXPECTED_PATH,
         UNICODE_EXPECTED_PATH,
-        ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver7.c",
+        ROOT / "src/frontend/atari/main.c", ROOT / "src/core/archiver.c",
         ROOT / "src/core/compress.c", ROOT / "src/core/bp_codepage.c",
         ROOT / "test/atari/guest_runner.c",
     )

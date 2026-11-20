@@ -53,15 +53,14 @@ remain unqualified.
 
 ## Core evidence
 
-- The full core `archiver.c` emits and accepts format 6 only and is kept for
-  its unit tests; no shipped program uses it. The format 7 core `archiver7.c`,
-  used by every GUI (for single-volume archives; a volume set is refused with
+- The full core `archiver.c` emits and accepts format 7 only. It is used by
+  every GUI (for single-volume archives; a volume set is refused with
   a message pointing to the CLI) and by every full CLI
   (Linux and the POSIX CLIs built from it, DOS, Windows, macOS, Haiku, OS/2,
   Plan 9, AmigaOS, Atari, X68000, QL and RISC OS), and the mini core, used by
   the DOS16, Win16, OS/2-16, CP/M-86 and Linux mini CLIs, emit and accept
-  format 7 only, single- and multi-volume; archives do not cross between the
-  format 6 and format 7 groups. All of those CLIs except OS/2-16 and
+  format 7 only, single- and multi-volume (format 6, written by older
+  releases, is no longer read). All of those CLIs except OS/2-16 and
   CP/M-86 write and read volume sets with `-v` and `--pause`. DOS16 is
   checked with `make dos16-dosboxx-volume-test` (a three-volume set on a FAT12
   floppy image with `--pause`, read from any volume, replaced by a smaller

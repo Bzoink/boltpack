@@ -51,10 +51,12 @@
   to 2 GiB.
 - Archive format 7 ([specification 2.0](docs/specification-2.0.md)) replaces
   format 6 in these CLIs, for single-volume archives too. They read and write
-  format 7 only; the other frontends still read and write format 6 only, so
-  archives cannot be exchanged between the two groups until those frontends
-  are moved over. The format 6 core (`archiver.c`) remains for them; the new
-  core is `src/core/archiver7.c`.
+  format 7 only. Every CLI and GUI now uses the format 7 core,
+  `src/core/archiver.c`; the format 6 core was removed (archives from older
+  releases need an older release to extract). The Windows, macOS, Haiku,
+  OS/2, Plan 9, Amiga, Atari, X68000, QL, RISC OS, Win16 and Linux mini CLIs
+  also take `-v SIZE` and `--pause`; the GUIs read one volume at a time and
+  tell the user to use the CLI for a set.
 
 - Amiga CLI and GUI: when `BP_TZ_OFFSET` is not set, the time zone now comes
   from the Locale preferences (AmigaOS 2.1 and later), so file times are

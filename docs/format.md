@@ -1,7 +1,7 @@
 # BoltPack archive format
 
 **Archive format 7** ([specification 2.0](specification-2.0.md)) is written
-and read by every CLI: the full CLIs (`src/core/archiver7.c`) and the mini
+and read by every CLI: the full CLIs (`src/core/archiver.c`) and the mini
 frontends (16-bit DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini,
 `src/core/mini/archiver.c`, Stored and BoltLite writing, BoltLZ reading,
 blocks up to 32 KiB, volumes up to 2 GiB). The GUIs (Linux and Windows FLTK, Win32 and .NET, Haiku, Amiga, Atari, macOS,
@@ -21,11 +21,13 @@ Every archive is a set of one or more volume files:
 - Volume names: `backup.000`, `backup.001`, ..., last `backup.bolt`. A
   single-volume archive is just `backup.bolt`.
 
-The other frontends still use **archive format 6**, summarised below and
-defined by [specification 1.0](specification-1.0.md). The two formats share
-the codecs (methods 0-3) and block layout but are not interchangeable.
+Releases before the volume-set format wrote **archive format 6**, summarised
+below and defined by [specification 1.0](specification-1.0.md). No current
+program writes or reads it; extract such archives with an older release. The
+two formats share the codecs (methods 0-3) and block layout but are not
+interchangeable.
 
-## Format 6
+## Format 6 (retired)
 
 **Archive format:** 6, little-endian. Writers emit version 6 and readers
 reject every other version. The [normative specification](specification-1.0.md)

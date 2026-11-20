@@ -111,7 +111,7 @@ Or directly:
 ```sh
 gcc -ansi -pedantic -Wall -Wextra -O2 \
      \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c \
     src/frontend/linux/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -585,7 +585,7 @@ Cross-compile from Linux:
 ```sh
 i586-pc-msdosdjgpp-gcc -ansi -pedantic -Wall -O2 \
      \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c \
     src/frontend/dos/main.c src/core/boltlz.c \
     -o boltpack.exe
 ```
@@ -702,7 +702,7 @@ Or directly:
 ```sh
 m68k-amigaos-gcc -noixemul -ansi -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/amiga/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -896,7 +896,7 @@ Or directly:
 ```sh
 m68k-atari-mint-gcc -ansi -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/atari/main.c src/core/boltlz.c \
   -o build/atari/boltpack.tos
 ```
@@ -1116,7 +1116,7 @@ headers, and fixed-width type definitions are byte-for-byte synchronized.
 
 | File | Role |
 | --- | --- |
-| `src/core/archiver7.c` | Archive format 7 read/write (the Classic Mac GUI reads and writes single-volume sets) |
+| `src/core/archiver.c` | Archive format 7 read/write (the Classic Mac GUI reads and writes single-volume sets) |
 | `src/core/compress.c` | boltlz compression wrapper |
 | `src/core/boltlite.c` | BoltLite codec |
 | `src/core/fluff.c` | fluff codec |
@@ -1441,7 +1441,7 @@ Or directly (ARM64):
 ```sh
 arm64-apple-macosx11-clang -ansi -pedantic -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/macosx/main.c src/core/boltlz.c \
     -framework CoreFoundation \
     -o boltpack
@@ -1814,7 +1814,7 @@ Or directly (cross-compilation from Linux):
 ```sh
 x86_64-unknown-haiku-gcc -ansi -pedantic -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/compress.c src/core/archiver7.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
+    src/core/compress.c src/core/archiver.c src/core/boltlite.c src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/haiku/main.c src/core/boltlz.c \
     -o boltpack
 ```
@@ -1950,7 +1950,7 @@ Or directly:
 arm-unknown-riscos-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
     -DBP_CREATOR_OS=BP_OS_RISCOS -DBP_CREATOR_CPU=BP_CPU_ARM32 \
     -I src/core  \
-    src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/fluff.c src/core/bp_codepage.c \
     src/frontend/riscos/main.c src/core/boltlz.c \
     -o boltpack,ff8
@@ -2112,7 +2112,7 @@ Or directly (cross-compilation with `os2-gcc`):
 ```sh
 os2-gcc -ansi -Wall -Wextra -O2 \
     -I src/core  \
-    src/core/archiver7.c src/core/compress.c src/core/bp_codepage.c \
+    src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
     src/frontend/os2/main.c src/core/boltlz.c \
     -o build/os2/boltpack.exe
 ```
@@ -2215,7 +2215,7 @@ Plan 9 uses a native build system; cross-compilation from Linux is not supported
 ```text
 6c -pFVw -D__PLAN9__ -DPLAN9_CPU_X86_64 \
     -I /amd64/include -I /sys/include -I src/core \
-    src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/fluff.c src/core/bp_codepage.c src/core/boltlz.c \
     src/frontend/plan9/main.c
 6l -o boltpack *.6
@@ -2226,7 +2226,7 @@ conditional compilation. `-D__PLAN9__` selects the native Plan 9 libc path;
 the native architecture include directory must precede the APE include path.
 Use `8c` / `8l` with `-DPLAN9_CPU_X86 -I /386/include` for i386, or `5c` / `5l`
 with `-DPLAN9_CPU_ARM32` and the matching ARM include directory. Plan 9's native
-compiler accepts bare `-DNAME` defines rather than `-DNAME=value`; `archiver7.c`
+compiler accepts bare `-DNAME` defines rather than `-DNAME=value`; `archiver.c`
 detects Plan 9 through `__PLAN9__` and uses the architecture marker to record
 the CPU identity. The installed binary conventionally goes in
 `/$cputype/boltpack`.
@@ -2328,7 +2328,7 @@ mkdir -p build/ql
 cd src/frontend/ql
 qcc -O \
   -I../../core  \
-  ../../core/archiver7.c \
+  ../../core/archiver.c \
   ../../core/compress.c \
   ../../core/boltlite.c \
   ../../core/fluff.c \
@@ -2491,7 +2491,7 @@ does not execute 68020 instructions. Directly:
 ```sh
 m68k-xelf-gcc -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 \
     -I src/core  \
-    src/core/archiver7.c src/core/compress.c src/core/boltlite.c \
+    src/core/archiver.c src/core/compress.c src/core/boltlite.c \
     src/core/bp_codepage.c \
     src/frontend/x68k/main.c src/core/boltlz.c \
     -o build/x68k/boltpack.x
@@ -2657,7 +2657,7 @@ systems: see [hardware-testing.md](hardware-testing.md).
 
 ## Volume sets on the other CLIs
 
-Every CLI reads and writes archive format 7 (`src/core/archiver7.c`, or the
+Every CLI reads and writes archive format 7 (`src/core/archiver.c`, or the
 mini core for the 16-bit and Linux mini builds). Besides the Linux family, the
 32-bit and 16-bit DOS CLIs described above, these CLIs also take `-v SIZE` and
 `--pause`, and `l`, `t`, `i` and `x` accept any volume of a set. They share
@@ -2697,7 +2697,7 @@ environments of their existing tests.
 
 On AmigaOS 2.04 the format 7 core must not call `time()`: libnix links its
 time-zone and locale startup code, which opens `locale.library` and stops the
-program. `archiver7.c` skips it for libnix and the Amiga CLI mixes the
+program. `archiver.c` skips it for libnix and the Amiga CLI mixes the
 `DateStamp` into the set IDs with `bp_archive_add_entropy()`.
 
 ## z/OS (USS) Frontend
@@ -2721,7 +2721,7 @@ This is a thin wrapper around `src/frontend/linux/main.c`. z/OS 3.1 with the Jun
 ```sh
 xlc -ansi -O2 \
     -I src/core  \
-    src/core/archiver7.c src/core/compress.c src/core/bp_codepage.c \
+    src/core/archiver.c src/core/compress.c src/core/bp_codepage.c \
     src/frontend/zos/main.c src/core/boltlz.c \
     -o boltpack
 ```

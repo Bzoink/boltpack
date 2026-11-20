@@ -19,7 +19,7 @@
  * Cross-compilation from Linux (bebbo's m68k-amigaos-gcc):
  *   m68k-amigaos-gcc -noixemul -ansi -Wall -O2        \
  *       -I src/core                 \
- *       src/core/compress.c src/core/archiver7.c        \
+ *       src/core/compress.c src/core/archiver.c        \
  *       src/core/bp_codepage.c                         \
  *       src/frontend/amiga/main.c                      \
  *       src/core/boltlz.c                     \
@@ -3076,7 +3076,7 @@ int main(int argc, char **argv)
 
     {
         /* set IDs of new archives need something that differs between runs;
-         * the core cannot use time() here (see archiver7.c) */
+         * the core cannot use time() here (see archiver.c) */
         struct DateStamp now;
         DateStamp(&now);
         bp_archive_add_entropy((bp_uint32)now.ds_Days);

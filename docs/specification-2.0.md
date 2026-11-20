@@ -1,8 +1,8 @@
 # BoltPack Specification v2.0
 
 **Format Version:** 7 (only)
-**Software Version:** next release (Linux CLI family, 32-bit DOS CLI, mini CLIs)
-**Status:** Draft; implemented by `src/core/archiver7.c`
+**Software Version:** next release (every CLI and GUI)
+**Status:** Draft; implemented by `src/core/archiver.c`
 **Last updated:** 2026-11-20
 
 > **Archive format 7.** Every archive is a *volume set*: one or more volume
@@ -1754,7 +1754,7 @@ again.
 
 ### 11.1 Archive Library
 
-`src/core/archiver7.c` implements format 7 behind the `archiver.h` API, which
+`src/core/archiver.c` implements format 7 behind the `archiver.h` API, which
 adds volume sinks (`bp_archive_create_volumes`) and sources
 (`bp_archive_list_volumes`, `bp_archive_extract_volumes`,
 `bp_archive_test_volumes`, `bp_archive_info_volumes`); the functions that take
@@ -1775,8 +1775,8 @@ archive it also walks every entry's framing. The 16-bit DOS, Win16, OS/2
 16-bit, CP/M-86 and Linux mini CLIs use it.
 
 Every GUI also uses this core, for single-volume archives: they report a
-volume set as needing the command-line tool. `archiver.c` (format 6) is kept
-only for its unit tests.
+volume set as needing the command-line tool. The earlier format 6 core was
+removed; releases before this one still read and write format 6.
 
 The library is self-contained (includes BoltLite, BoltLZ, and Fluff codecs)
 and compiles with strict ANSI C89.
