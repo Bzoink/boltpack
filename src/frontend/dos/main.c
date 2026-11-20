@@ -1236,18 +1236,52 @@ static int dos_archive_stat(const char *path, int *exists,
     return BP_ERR_IO;
 }
 
+/* DJGPP has no inode numbers. It uses the file's starting cluster when DOS
+   reports one, and otherwise invents a number from 2^28 + 1 upward that
+   depends on the name it was given, the time stamp and the size, so stat()
+   and fstat() of one file can disagree (seen on DOSBox-X, where every file
+   gets an invented number, and with long file names, where fstat() of a file
+   being written reports size 0).  An invented number identifies nothing;
+   compare inodes only when both are real. */
+static int dos_same_inode(const struct stat *a, const struct stat *b)
+{
+#ifdef __DJGPP__
+    if ((unsigned long)a->st_ino > 0x10000000UL ||
+        (unsigned long)b->st_ino > 0x10000000UL)
+        return 1;
+#endif
+    return a->st_ino == b->st_ino;
+}
+
 static int dos_archive_same_stat(const struct stat *a, const struct stat *b)
 {
-    return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+    return a->st_dev == b->st_dev && dos_same_inode(a, b) &&
            S_ISREG(a->st_mode) && S_ISREG(b->st_mode) &&
            a->st_nlink == b->st_nlink &&
            a->st_size == b->st_size && a->st_mtime == b->st_mtime &&
            a->st_ctime == b->st_ctime;
 }
 
+/* An archive opened by name against the earlier lstat() of that name.  Like
+   dos_archive_same_stat but without st_ctime: with long file names DJGPP
+   reports the creation time for a path but not for an open handle, where it
+   falls back to the DOS epoch. */
+static int dos_archive_same_open_stat(const struct stat *opened,
+                                      const struct stat *named)
+{
+    return opened->st_dev == named->st_dev && dos_same_inode(opened, named) &&
+           S_ISREG(opened->st_mode) && S_ISREG(named->st_mode) &&
+           opened->st_nlink == named->st_nlink &&
+           opened->st_size == named->st_size &&
+           opened->st_mtime == named->st_mtime;
+}
+
 /* The staged extraction object must still be reachable at its original path
-   after the output handle closes. Compare identity and length only: DOS FAT
-   wrappers can report mode and timestamps differently across open/path stats. */
+   after the output handle closes. Both sides come from lstat() of the stage
+   path (the first right after close), because DJGPP can report a different
+   identity for an open handle than for the path (see dos_same_inode). Compare
+   identity and length only: DOS FAT wrappers can report mode and timestamps
+   differently. */
 static int dos_stage_same_object(const struct stat *opened,
                                  const struct stat *named)
 {
@@ -1547,11 +1581,9 @@ static bp_io_t *extract_open(const bp_entry_t *entry, void *user_data)
 
     output = (dos_stage_output_t *)malloc(sizeof(*output));
     if (output == NULL) {
-        struct stat opened_stage;
-        int have_snapshot = fstat(fd, &opened_stage) == 0;
+        /* the stage was just created with O_EXCL and is still empty */
         close(fd);
-        if (have_snapshot)
-            dos_remove_stage_if_same(ctx->stage_path, &opened_stage);
+        remove(ctx->stage_path);
         ctx->skip_errors++;
         return NULL;
     }
@@ -1615,14 +1647,18 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
 
     output = (dos_stage_output_t *)out->handle;
 
-    ctx->stage_open_stat_valid =
-        fstat(output->fd, &ctx->stage_open_stat) == 0;
-    if (close(output->fd) != 0) {
-        if (ctx->stage_open_stat_valid)
-            dos_remove_stage_if_same(ctx->stage_path, &ctx->stage_open_stat);
-        free(out);
-        ctx->skip_errors++;
-        return BP_ERR_IO;
+    {
+        int close_rc = close(output->fd);
+        ctx->stage_open_stat_valid =
+            lstat(ctx->stage_path, &ctx->stage_open_stat) == 0 &&
+            S_ISREG(ctx->stage_open_stat.st_mode);
+        if (close_rc != 0) {
+            if (ctx->stage_open_stat_valid)
+                dos_remove_stage_if_same(ctx->stage_path, &ctx->stage_open_stat);
+            free(out);
+            ctx->skip_errors++;
+            return BP_ERR_IO;
+        }
     }
     if (status != BP_OK) {
         if (ctx->stage_open_stat_valid)
@@ -1638,7 +1674,10 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
         struct stat named_stage;
         if (!ctx->stage_open_stat_valid ||
             lstat(ctx->stage_path, &named_stage) != 0 ||
-            !dos_stage_same_object(&ctx->stage_open_stat, &named_stage)) {
+            !dos_stage_same_object(&ctx->stage_open_stat, &named_stage) ||
+            entry->original_size.hi != 0 ||
+            (unsigned long)named_stage.st_size !=
+                (unsigned long)entry->original_size.lo) {
 #ifdef BP_TEST_DOS_PARENT_SUBSTITUTION
             dos_test_write_marker("RACEREF.TXT",
                                   "staged path identity changed; publication refused\r\n");
@@ -2356,7 +2395,7 @@ static int cmd_delete(int argc, char **argv)
         return 1;
     }
     if (fstat(fileno(src_fp), &opened_stat) != 0 ||
-        !dos_archive_same_stat(&opened_stat, &original_stat)) {
+        !dos_archive_same_open_stat(&opened_stat, &original_stat)) {
         fprintf(stderr, "boltpack: archive changed while opening: %s\n",
                 archive_name);
         fclose(src_fp);
@@ -2457,7 +2496,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         return 1;
     }
     if (fstat(fileno(source_fp), &opened_stat) != 0 ||
-        !dos_archive_same_stat(&opened_stat, &original_stat)) {
+        !dos_archive_same_open_stat(&opened_stat, &original_stat)) {
         fprintf(stderr, "boltpack: archive changed while opening: %s\n",
                 archive_name);
         fclose(source_fp);

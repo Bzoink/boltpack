@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- DOS CLI: with long file names (LFN) enabled, extraction no longer fails with
+  "staged output path changed" and no longer leaves `BPxxxxxx.TMP` files
+  behind, and add/delete no longer report "archive changed while opening".
+  DJGPP invents inode numbers when DOS gives no starting cluster, and an open
+  handle and its path can then report different inodes and creation times.
+  The checks now compare the stage path with itself, verify its size, and
+  ignore invented inode numbers and the creation time where a handle is
+  compared with a path.
 - DOS CLI: extraction on a DOS without long file names no longer refuses
   lower-case 8.3 names. The DOS CLI stores names in lower case there (as
   DJGPP reports them), so it could not extract its own archives; `-o` with a

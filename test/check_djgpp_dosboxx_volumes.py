@@ -44,7 +44,7 @@ def mdir(image):
                   for line in out.splitlines() if line.strip())
 
 
-def dosbox(args, cdir, image, commands, log, limit=420):
+def dosbox(args, cdir, image, commands, log, limit=420, lfn=False):
     """Run commands in one DOSBox-X session.  The emulated floppy is slow
     (about 50 s per 1.4 MB), and long sessions have been seen to stall after
     the last command, so sessions are kept short, DOSBox-X ends each one
@@ -55,7 +55,7 @@ def dosbox(args, cdir, image, commands, log, limit=420):
     if marker.exists():
         marker.unlink()
     cmd = [args.dosbox_x, "-nopromptfolder", "-nogui", "-fastlaunch",
-           "-time-limit", str(limit),
+           "-time-limit", str(limit), "-set", "dos lfn=" + ("true" if lfn else "false"),
            "-c", "mount c " + str(cdir),
            "-c", "imgmount a " + str(image) + " -t floppy", "-c", "c:"]
     for c in commands:
@@ -179,6 +179,28 @@ def main():
           "the replacement tests clean")
     check(not (c / "OUT2").exists(),
           "a missing volume stops extraction before anything is written")
+    # With long file names DJGPP reports different identities for a handle
+    # and a path (invented inode numbers, the creation time); extraction must
+    # still publish its staged files and add/delete must accept the archive.
+    shutil.copyfile(c / "LX.BLT", c / "LFNSET.BLT")
+    for name in sorted(c.glob("LX.0*")):
+        shutil.copyfile(name, c / ("LFNSET" + name.suffix))
+    (c / "EXTRA.TXT").write_bytes(b"added under LFN\r\n")
+    dosbox(args, c, floppy, [
+        "BP.EXE x -o LFNOUT LFNSET.000 < NUL > X4.TXT",
+        "BP.EXE c ONE.BLT DOCS\\SMALL.TXT > C4.TXT",
+        "BP.EXE a ONE.BLT EXTRA.TXT > A4.TXT",
+        "BP.EXE d ONE.BLT EXTRA.TXT > D4.TXT",
+        "BP.EXE t ONE.BLT > T4.TXT",
+    ], out / "dosbox-lfn.log", lfn=True)
+    check(same_tree(c / "DOCS", c / "LFNOUT" / "DOCS") and
+          not list((c / "LFNOUT").rglob("BP*.TMP")),
+          "with long file names, extraction publishes every file and leaves no stage")
+    check("1 file added" in (c / "A4.TXT").read_text(errors="replace") and
+          "deleted" in (c / "D4.TXT").read_text(errors="replace") and
+          "files OK" in (c / "T4.TXT").read_text(errors="replace"),
+          "with long file names, add and delete accept the archive")
+
     (out / "result.txt").write_text("FAIL\n" if FAILS else "PASS\n")
     print(("%d check(s) failed" % len(FAILS)) if FAILS else
           "DJGPP volume checks passed; evidence: " + str(out))
