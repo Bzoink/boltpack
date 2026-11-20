@@ -20,11 +20,14 @@
 #define OEXCL 0x1000
 #define DMDIR 0x80000000u
 
+/* name points at namebuf for a Dir from dirstat, as in Plan 9 where it points
+ * into the same allocation; a caller may point it at its own string. */
 typedef struct Dir {
-    char name[256];
+    char *name;
     u32int mode;
     vlong length;
     vlong mtime;
+    char namebuf[256];
 } Dir;
 
 int create(const char *path, int mode, unsigned int perm);
@@ -38,6 +41,11 @@ int print(const char *fmt, ...);
 int fprint(int fd, const char *fmt, ...);
 int snprint(char *buf, size_t size, const char *fmt, ...);
 int sprint(char *buf, const char *fmt, ...);
+int vsnprint(char *buf, int size, const char *fmt, va_list ap);
+int fd2path(int fd, char *buf, int nbuf);
+/* Plan 9's getwd takes a size; glibc's differs, so the shim has its own */
+#define getwd bp_shim_getwd
+char *bp_shim_getwd(char *buf, int nbuf);
 void exits(const char *status);
 
 #endif

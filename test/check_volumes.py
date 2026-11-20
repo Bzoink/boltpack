@@ -21,6 +21,7 @@ import argparse
 import filecmp
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -132,7 +133,7 @@ def test_basic(bp, work, src):
         rc, out, err = run(bp, ["t", names[1]], d)
         check(rc == 0, "%s: test via %s" % (size, names[1]))
         rc, out, err = run(bp, ["i", "backup.bolt"], d)
-        check(rc == 0 and "Volumes:        %d" % len(names) in out and
+        check(rc == 0 and re.search(r"Volumes:\s+%d\b" % len(names), out) and
               "(all volumes)" in out, "%s: info shows the volumes" % size)
         rc, out, err = run(bp, ["x", "-q", "-o", "out", names[0]], d)
         check(rc == 0 and same_tree(os.path.join(d, "src"),

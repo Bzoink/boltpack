@@ -35,8 +35,9 @@
  *                                             temporary file for cleanup
  *   int  vol_hook_verbose(void)               1 to report finished volumes
  * and may define BP_VOL_DIR_SEPS (path separators, default "/"),
- * BP_VOL_PATH_MAX (default 4096) and BP_VOL_PROG (the program name in
- * messages, default "boltpack") first.  ANSI C (C89) plus stdio.
+ * BP_VOL_PATH_MAX (default 4096), BP_VOL_PROG (the program name in
+ * messages, default "boltpack") and BP_VOL_ERRTEXT() (the last system
+ * error as text, default strerror(errno)) first.  ANSI C (C89) plus stdio.
  *
  * The callbacks keep their message buffers in static storage, not on the
  * stack: the core calls them from deep inside an add, and 16-bit frontends
@@ -117,11 +118,17 @@ typedef struct {
 
 static int vol_is_digit(char c) { return c >= '0' && c <= '9'; }
 
-/* strerror(errno), cut to a length the message buffers allow for */
+/* BP_VOL_ERRTEXT(): the text of the last system error (strerror(errno)
+ * unless the includer defines it), cut to a length the message buffers
+ * allow for */
+#ifndef BP_VOL_ERRTEXT
+#define BP_VOL_ERRTEXT() strerror(errno)
+#endif
+
 static const char *vol_errtext(void)
 {
     static char text[96];
-    const char *e = strerror(errno);
+    const char *e = BP_VOL_ERRTEXT();
     strncpy(text, e != NULL ? e : "error", sizeof(text) - 1);
     text[sizeof(text) - 1] = '\0';
     return text;

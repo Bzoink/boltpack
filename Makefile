@@ -1722,6 +1722,7 @@ plan9-host-test:
 	python3 test/check_plan9_profile.py $(PLAN9_HOST_BIN) build/linux/boltpack \
 	    build/linux32mini/bpmini $(PLAN9_HOST_DIR)/create_collision_archive \
 	    test/reference/interoperability/plan9-host.json $(PLAN9_META_CHECK)
+	python3 test/check_volumes.py --flavor dos --boltpack $(PLAN9_HOST_BIN)
 
 .PHONY: haiku-host-stage-test
 haiku-host-stage-test: modern
