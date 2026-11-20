@@ -877,6 +877,7 @@ static const char *bp_strerror(int code)
 }
 
 #include "../common/volume_size.h"
+#include "../common/volume_one.h"
 #include "win_volumes.h"
 
 /* ---- speed formatting -------------------------------------------------- */
@@ -4369,20 +4370,6 @@ static int extract_done(const bp_entry_t *entry, bp_io_t *out, int status,
  * frontend's own extract callbacks.  Declared in bp_net.h; called by the
  * shared network glue in bp_net_cli.h.  Path names have already been
  * safety-checked by the caller. */
-static bp_io_t *win_one_open(void *user, bp_uint16 number, int reason)
-{
-    bp_io_t *io = (bp_io_t *)user;
-    (void)number;
-    if (reason != BP_OK || io->seek(io->handle, 0, SEEK_SET) != 0) return NULL;
-    return io;
-}
-
-static void win_one_close(void *user, bp_io_t *io)
-{
-    (void)user;
-    (void)io;
-}
-
 int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
 {
     extract_ctx_t ctx;
@@ -4392,9 +4379,7 @@ int bp_frontend_extract_io(bp_io_t *aio, const char *out_dir, int force)
     ctx.out_dir = out_dir;
     ctx.force = force;
     ctx.dry_run = 0;
-    one.open = win_one_open;
-    one.close = win_one_close;
-    one.user = aio;
+    bp_volume_source_one(&one, aio);
     {
         int rc = win_preflight_archive_paths(&one, &ctx);
         if (rc == BP_OK && aio->seek(aio->handle, 0, SEEK_SET) != 0)

@@ -7,7 +7,8 @@
  * place; the user is asked for media when standard input is a terminal.
  *
  * Included by src/frontend/linux/main.c after its FILE * stream adapters
- * (bp_io_from_file), g_verbosity and g_tmp_archive.
+ * (bp_io_from_file), g_verbosity and g_tmp_archive.  A frontend without a
+ * signal handler that removes g_tmp_archive defines BP_VOL_NO_NOTE first.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
@@ -68,11 +69,15 @@ static int vol_hook_exists(const char *path)
 
 static void vol_hook_note_tmp(const char *tmp)
 {
+#ifdef BP_VOL_NO_NOTE
+    (void)tmp;   /* this frontend has no signal-time cleanup */
+#else
     /* the signal handler removes g_tmp_archive */
     size_t n = strlen(tmp);
     if (n >= sizeof(g_tmp_archive)) n = sizeof(g_tmp_archive) - 1;
     memcpy(g_tmp_archive, tmp, n);
     g_tmp_archive[n] = '\0';
+#endif
 }
 
 static int vol_hook_verbose(void)

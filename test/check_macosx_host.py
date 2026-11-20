@@ -354,6 +354,10 @@ def main():
              "--platform", "macos", "--binary", str(binary),
              "--linux-cli", str(linux)], root)
 
+        # Volume sets: -v, --pause, reading from any volume.
+        run([sys.executable, str(ROOT / "test/check_volumes.py"),
+             "--boltpack", str(binary)], root)
+
         # Profile create, append, test, and delete all operate on staged files.
         (root / "first.txt").write_bytes(
             manifest["profile"]["first.txt"]["content"].encode("utf-8"))
