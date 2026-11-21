@@ -82,7 +82,7 @@ static void round_trips(void)
                 memcmp(reference, src, (size_t)n) != 0) good = 0;
 #if BOLTLZ_HASH_BITS == 13 && BOLTLZ_LAZY_LIMIT == 32 && \
     BOLTLZ_SECOND_LIMIT == 262144UL && !BOLTLZ_DUAL_HASH && \
-    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH
+    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH && !BOLTLZ_M68K
             reference_length = boltlz_loop_reference_compress_bound(n);
             if (boltlz_loop_reference_compress(src, n, reference_encoded, &reference_length,
                                                 work, level) != BP_OK ||
@@ -108,7 +108,7 @@ static void round_trips(void)
     UNIT_CHECK(capacity_good, "exact and one-byte-short encoder capacities");
 #if BOLTLZ_HASH_BITS == 13 && BOLTLZ_LAZY_LIMIT == 32 && \
     BOLTLZ_SECOND_LIMIT == 262144UL && !BOLTLZ_DUAL_HASH && \
-    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH
+    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH && !BOLTLZ_M68K
     UNIT_CHECK(identical, "speed-only encoder changes preserve frozen baseline bytes");
 #else
     (void)identical;
@@ -523,7 +523,7 @@ static void table_and_capacity_boundaries(void)
                     length > capacity || encoded[capacity] != 0xa5) good = 0;
 #if BOLTLZ_HASH_BITS == 13 && BOLTLZ_LAZY_LIMIT == 32 && \
     BOLTLZ_SECOND_LIMIT == 262144UL && !BOLTLZ_DUAL_HASH && \
-    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH
+    !BOLTLZ_EXACT_COST && BOLTLZ_BACKWARD_MATCH && !BOLTLZ_M68K
                 if (length != original || memcmp(encoded, frozen, (size_t)length) != 0) good = 0;
 #endif
             }

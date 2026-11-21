@@ -1526,6 +1526,67 @@ mips64el:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MIPS64EL_BUILDDIR)/boltpack
 
+# Other Linux CPUs, statically linked so they run on any libc.
+# SPARC64 Linux (SPARC V9, big-endian)
+SPARC64_CC      = sparc64-linux-gnu-gcc
+SPARC64_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+SPARC64_BUILDDIR = build/linux-sparc64
+
+.PHONY: sparc64
+sparc64:
+	mkdir -p $(SPARC64_BUILDDIR)
+	$(SPARC64_CC) $(SPARC64_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_SPARC64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(SPARC64_BUILDDIR)/boltpack
+
+# Motorola 68k Linux (68020 and later, big-endian)
+M68K_CC      = m68k-linux-gnu-gcc
+M68K_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+M68K_BUILDDIR = build/linux-m68k
+
+.PHONY: m68k
+m68k:
+	mkdir -p $(M68K_BUILDDIR)
+	$(M68K_CC) $(M68K_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_M68K \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(M68K_BUILDDIR)/boltpack
+
+# DEC Alpha Linux (EV56 and later, little-endian)
+ALPHA_CC      = alpha-linux-gnu-gcc
+ALPHA_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+ALPHA_BUILDDIR = build/linux-alpha
+
+.PHONY: alpha
+alpha:
+	mkdir -p $(ALPHA_BUILDDIR)
+	$(ALPHA_CC) $(ALPHA_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_ALPHA \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(ALPHA_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto

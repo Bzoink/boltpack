@@ -134,6 +134,33 @@ PLATFORMS = {
         ),
         "family": "Linux",
     },
+    "linux-sparc64": {
+        "name": "Linux (SPARC64)",
+        "os": "Linux (sparc64)",
+        "arch": "SPARC V9 64-bit, big-endian",
+        "description": (
+            "Statically linked 64-bit SPARC Linux: Sun UltraSPARC and Fujitsu SPARC64 systems."
+        ),
+        "family": "Linux",
+    },
+    "linux-m68k": {
+        "name": "Linux (Motorola 68k)",
+        "os": "Linux (m68k)",
+        "arch": "Motorola 68020 and later, big-endian",
+        "description": (
+            "Statically linked Linux for 68k machines with an MMU (68020 or later, for example Amiga, Atari TT/Falcon and Mac with Linux/m68k)."
+        ),
+        "family": "Linux",
+    },
+    "linux-alpha": {
+        "name": "Linux (DEC Alpha)",
+        "os": "Linux (alpha)",
+        "arch": "Alpha EV56 and later, little-endian",
+        "description": (
+            "Statically linked DEC Alpha Linux (EV56 or later)."
+        ),
+        "family": "Linux",
+    },
     "linux-armel": {
         "name": "Linux (ARMv5, soft-float)",
         "os": "Linux (armel)",

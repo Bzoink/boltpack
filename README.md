@@ -44,6 +44,9 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Linux MIPS32 (mips)           | [boltpack-1.12-linux-mips-MIPS32.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips-MIPS32.tar.gz) |
 | Linux MIPS32 LE (mipsel)      | [boltpack-1.12-linux-mipsel-MIPS32el.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mipsel-MIPS32el.tar.gz) |
 | Linux MIPS64 (mips64)         | [boltpack-1.12-linux-mips64-MIPS64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips64-MIPS64.tar.gz) |
+| Linux SPARC64                 | [boltpack-1.12-linux-sparc64-SPARC64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-sparc64-SPARC64.tar.gz) |
+| Linux m68k (68020+)           | [boltpack-1.12-linux-m68k-M68K.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-m68k-M68K.tar.gz) |
+| Linux Alpha                   | [boltpack-1.12-linux-alpha-Alpha.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-alpha-Alpha.tar.gz) |
 | Linux RISC-V 64               | [boltpack-1.12-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-riscv-riscv64.tar.gz)           |
 | Linux PowerPC 64 (ppc64le)    | [boltpack-1.12-linux-ppc64le-PowerPC.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-ppc64le-PowerPC.tar.gz) |
 | Linux IBM Z (s390x)           | [boltpack-1.12-linux-s390x-IBM-Z.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-s390x-IBM-Z.tar.gz) |

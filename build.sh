@@ -615,6 +615,18 @@ do_mips64el() {
     build_make_target mips64el mips64el-linux-gnuabi64-gcc build/linux-mips64el/boltpack
 }
 
+do_sparc64() {
+    build_make_target sparc64 sparc64-linux-gnu-gcc build/linux-sparc64/boltpack
+}
+
+do_m68k() {
+    build_make_target m68k m68k-linux-gnu-gcc build/linux-m68k/boltpack
+}
+
+do_alpha() {
+    build_make_target alpha alpha-linux-gnu-gcc build/linux-alpha/boltpack
+}
+
 do_armel() {
     build_make_target armel arm-linux-gnueabi-gcc build/linux-armel/boltpack
 }
@@ -863,6 +875,9 @@ do_all() {
     do_mipsel      || failed=1
     do_mips64      || failed=1
     do_mips64el    || failed=1
+    do_sparc64     || failed=1
+    do_m68k        || failed=1
+    do_alpha       || failed=1
     do_ppc64le     || failed=1
     do_s390x       || failed=1
     do_musl        || failed=1
@@ -1189,6 +1204,9 @@ Targets:
   mipsel         Cross-compile for MIPS32 little-endian Linux (static)
   mips64         Cross-compile for MIPS64 big-endian Linux (static)
   mips64el       Cross-compile for MIPS64 little-endian Linux (static)
+  sparc64        Cross-compile for SPARC64 Linux (static)
+  m68k           Cross-compile for Motorola 68k Linux (68020+, static)
+  alpha          Cross-compile for DEC Alpha Linux (static)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
@@ -1294,6 +1312,9 @@ case "$1" in
     mipsel)       do_mipsel ;;
     mips64)       do_mips64 ;;
     mips64el)     do_mips64el ;;
+    sparc64)  do_sparc64 ;;
+    m68k)     do_m68k ;;
+    alpha)    do_alpha ;;
     ppc64le)      do_ppc64le ;;
     s390x)        do_s390x ;;
     musl)         do_musl ;;

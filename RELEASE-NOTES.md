@@ -136,6 +136,16 @@
   build in a `C_BUILD` folder as a fallback; archives are identical with all
   of them. Built with `make atari-optimized`, `amiga-optimized`,
   `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- New statically linked Linux packages for SPARC64, Motorola 68k (68020 or
+  later with an MMU) and DEC Alpha (EV56 or later) (`make sparc64`, `m68k`,
+  `alpha`): `boltpack-VERSION-linux-sparc64-SPARC64`, `-m68k-M68K` and
+  `-alpha-Alpha.tar.gz`. Tested under qemu-user: BoltLite and Fluff archives
+  have exactly the same size as x86, BoltLZ is 85 bytes different on SPARC64
+  (big-endian, like s390x and MIPS), identical on Alpha and 0.16% larger on
+  m68k (the 68k encoder path, as on Atari and Amiga), archives are exchanged
+  both ways, and the unit suites pass. The BoltLZ unit test now skips its
+  frozen-baseline byte comparison on 68k builds, which use that different
+  encoder. Not run on real hardware.
 - New statically linked Linux packages for MIPS (`make mips`, `mipsel`,
   `mips64`; `mips64el` has a target but no package yet): MIPS32 big-endian and
   little-endian and MIPS64 big-endian, `boltpack-VERSION-linux-mips-MIPS32`,
