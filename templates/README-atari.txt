@@ -34,6 +34,14 @@ Double-click BOLTPACK.PRG.
   Compression > Light        Tick for faster boltlz: about 1.6 times as fast
                              to compress, archives about 7% larger; no
                              effect on the other methods or on extraction
+  Compression > Disks (^D)   Step through single file, 360K, 720K, 800K and
+                             1.44M. With a size chosen, Create New writes
+                             the archive as volumes that fit that disk:
+                             ARCHIVE.000, ARCHIVE.001, ... and ARCHIVE.BLT
+                             last. You are asked for an empty disk before
+                             every volume after the first. To read a set,
+                             open ARCHIVE.BLT from the last disk; Extract
+                             and Validate ask for the other disks.
 
 New archives are written to a temporary file (BPxxxxxx) next to the archive
 and renamed only when complete, so an existing archive is never damaged by a

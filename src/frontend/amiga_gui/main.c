@@ -56,6 +56,7 @@
 #include <libraries/asl.h>
 #include <workbench/workbench.h>
 #include <workbench/startup.h>
+#include <dos/dosextens.h>
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -110,6 +111,8 @@
 #define MN_METHOD_FLUFF   13
 #define MN_INTERCHANGE_PROFILE 14
 #define MN_LIGHT              15
+#define MN_DISK_FIRST         20    /* 20 = single file, 21.. = disk sizes */
+#define MN_DISK_LAST          24
 
 /* Gadget IDs */
 #define GID_LISTVIEW   1
@@ -144,7 +147,7 @@ static struct MsgPort *app_port;
 static struct AppWindow *app_win;
 
 /* Archive state */
-static FILE *archive_fp;
+static int archive_is_open;   /* an archive is listed in the window */
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
 static bp_uint32 archive_sidecars; /* META/RSRC entries in archive_info */
@@ -186,7 +189,8 @@ typedef struct {
 static amiga_progress_ui_t *active_progress;
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 static int current_interchange_profile;
-static int current_light;   /* BoltLZ Fast; see bp_68k_levels.h */
+static int current_light;     /* BoltLZ Fast; see bp_68k_levels.h */
+static int current_disk;      /* 0 = one file, else index into amiga_disks[] */
 static char status_lines[STATUS_LINE_COUNT][160];
 static int gather_count;
 static char **gather_files;
@@ -323,8 +327,100 @@ static const char *bp_strerror(int code)
     case BP_ERR_ABORTED:           return "operation aborted";
     case BP_ERR_NOT_FOUND:         return "entry not found";
     case BP_ERR_INVALID_ARG:       return "invalid argument";
-    case BP_ERR_VOLUME:      return "this archive is split over several volumes; use the command-line tool to read it";
+    case BP_ERR_VOLUME:      return "a volume of the set is missing or belongs to another archive";
     default:                       return "unknown error";
+    }
+}
+
+/* ---- Volume sets (archive format 7) ------------------------------------ */
+
+#define BP_VOL_OWN_PROMPT 1
+
+static void show_requester(const char *title, const char *msg);
+static const char *gui_vol_prompt_text(int writing, const char *what,
+                                       const char *name, const char *problem);
+
+static void bp_io_from_file(bp_io_t *io, FILE *fp)
+{
+    *io = make_io(fp);
+}
+
+static int vol_hook_interactive(void) { return 1; }
+static int vol_hook_verbose(void) { return 0; }
+
+/* Ask for a disk: OK (1) or Cancel (0). */
+static int vol_hook_prompt(int writing, const char *what, const char *name,
+                           const char *problem)
+{
+    struct EasyStruct es;
+    ULONG args[1];
+
+    args[0] = (ULONG)gui_vol_prompt_text(writing, what, name, problem);
+    es.es_StructSize   = sizeof(es);
+    es.es_Flags        = 0;
+    es.es_Title        = (UBYTE *)"BoltPack: change disk";
+    es.es_TextFormat   = (UBYTE *)"%s";
+    es.es_GadgetFormat = (UBYTE *)"OK|Cancel";
+    return EasyRequestArgs(win, &es, NULL, args) ? 1 : 0;
+}
+
+#include "../amiga/amiga_volumes.h"
+#include "../common/gui_volumes.h"
+
+/* Disk sizes in the Disks menu: usable bytes on a freshly formatted disk
+ * (measured: an OFS 880K disk takes 840,000 bytes of file but not 850,000;
+ * a 720K FAT disk has 713,728 bytes free in the worst case). */
+static const gui_disk_size_t amiga_disks[] = {
+    { "Single file",           0UL },
+    { "880K Amiga",       840000UL },
+    { "1.76M Amiga HD",  1680000UL },
+    { "720K PC (CrossDOS)", 700000UL },
+    { "1.44M PC (CrossDOS)", 1440000UL }
+};
+#define AMIGA_DISK_COUNT ((int)(sizeof(amiga_disks) / sizeof(amiga_disks[0])))
+
+/* A path that starts with a volume name ("Empty:file") asks DOS for that
+ * volume by name: after a disk change the system requester demands the old
+ * disk back.  Name the drive ("DF0:") instead, whatever disk is in it.  Only
+ * volume names are rewritten: an assign such as "T:" can point into a
+ * subdirectory, which the drive name would lose.  Leaves the path alone if
+ * the prefix is not a mounted volume or its drive cannot be found. */
+static void amiga_resolve_volume_path(char *path, size_t capacity)
+{
+    char prefix[BP_MAX_PATH];
+    char device[64];
+    const char *colon = strchr(path, ':');
+    struct DosList *dl;
+    struct DosList *vol;
+    size_t n;
+
+    if (colon == NULL || colon == path) return;
+    n = (size_t)(colon - path);
+    if (n + 1 > sizeof(prefix)) return;
+    memcpy(prefix, path, n);
+    prefix[n] = '\0';
+    device[0] = '\0';
+    dl = LockDosList(LDF_DEVICES | LDF_VOLUMES | LDF_READ);
+    vol = FindDosEntry(dl, (STRPTR)prefix, LDF_VOLUMES);
+    if (vol != NULL && vol->dol_Task != NULL) {
+        struct DosList *dev = dl;
+        while ((dev = NextDosEntry(dev, LDF_DEVICES)) != NULL) {
+            if (dev->dol_Task == vol->dol_Task && dev->dol_Name != 0) {
+                const UBYTE *bstr = (const UBYTE *)BADDR(dev->dol_Name);
+                size_t len = bstr[0];
+                if (len > 0 && len < sizeof(device)) {
+                    memcpy(device, bstr + 1, len);
+                    device[len] = '\0';
+                    break;
+                }
+            }
+        }
+    }
+    UnLockDosList(LDF_DEVICES | LDF_VOLUMES | LDF_READ);
+    if (device[0] != '\0' && strlen(device) + 1 + strlen(colon + 1) < capacity) {
+        char resolved[BP_MAX_PATH];
+        sprintf(resolved, "%s:%s", device, colon + 1);
+        strcpy(path, resolved);
     }
 }
 
@@ -1186,6 +1282,16 @@ static void sync_compression_menu_checks(void)
     if (light && current_light)
         light->Flags |= CHECKED;
 
+    {
+        int d;
+        for (d = 0; d < AMIGA_DISK_COUNT; d++) {
+            struct MenuItem *mi = find_menu_item_by_id(MN_DISK_FIRST + d);
+            if (mi == NULL) continue;
+            if (d == current_disk) mi->Flags |= CHECKED;
+            else mi->Flags &= (UWORD)~CHECKED;
+        }
+    }
+
     if (win && menu_strip) {
         ClearMenuStrip(win);
         SetMenuStrip(win, menu_strip);
@@ -1240,6 +1346,15 @@ static void toggle_light_compression(void)
     refresh_idle_status();
 }
 
+static void select_disk_size(int index)
+{
+    if (index < 0 || index >= AMIGA_DISK_COUNT) index = 0;
+    current_disk = index;
+    log_message("Disk size selected: %s", amiga_disks[current_disk].label);
+    sync_compression_menu_checks();
+    refresh_idle_status();
+}
+
 static void toggle_interchange_profile(void)
 {
     current_interchange_profile = !current_interchange_profile;
@@ -1283,8 +1398,12 @@ static void refresh_idle_status(void)
     format_size_compact((double)amiga_largest_free_block(), free_buf);
     sprintf(line1, "Compression: %s   Largest free: %s",
             current_method_label(), free_buf);
+    if (current_disk > 0 && strlen(line1) + 40 < sizeof(line1)) {
+        strcat(line1, "   Disks: ");
+        strcat(line1, amiga_disks[current_disk].label);
+    }
 
-    if (archive_fp) {
+    if (archive_is_open) {
         file_count = archive_info.entry_count - archive_info.dir_count -
                      archive_sidecars;
         orig = u64_to_dbl(archive_info.total_original);
@@ -1346,6 +1465,14 @@ static struct NewMenu new_menus[] = {
     { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("Light (faster boltlz)"), NULL, CHECKIT, 0, (APTR)MN_LIGHT },
 
+    { NM_TITLE, USTR("Disks"),          NULL, 0, 0, NULL },
+    { NM_ITEM,  USTR("Single file"),    NULL, CHECKIT | CHECKED, 0, (APTR)(MN_DISK_FIRST + 0) },
+    { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
+    { NM_ITEM,  USTR("880K Amiga"),     NULL, CHECKIT, 0, (APTR)(MN_DISK_FIRST + 1) },
+    { NM_ITEM,  USTR("1.76M Amiga HD"), NULL, CHECKIT, 0, (APTR)(MN_DISK_FIRST + 2) },
+    { NM_ITEM,  USTR("720K PC"),        NULL, CHECKIT, 0, (APTR)(MN_DISK_FIRST + 3) },
+    { NM_ITEM,  USTR("1.44M PC"),       NULL, CHECKIT, 0, (APTR)(MN_DISK_FIRST + 4) },
+
     { NM_TITLE, USTR("Help"),           NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("About BoltPack"), NULL, 0, 0, (APTR)MN_ABOUT },
     { NM_ITEM,  USTR("Documentation"),  NULL, 0, 0, (APTR)MN_DOC },
@@ -1378,12 +1505,25 @@ static void clear_entry_list(void)
 /*  Archive operations                                                    */
 /* ====================================================================== */
 
+static void gui_vol_failure_clear(void)
+{
+    gui_vol.aborted = 0;
+    gui_vol.problem[0] = '\0';
+}
+
+/* Tell the user why a read of the open archive failed; nothing when they
+ * cancelled a disk prompt themselves. */
+static void show_volume_failure(int rc, const char *fallback)
+{
+    const char *why = gui_vol_failure(rc);
+    if (why == NULL) return;
+    show_requester("Error", gui_vol.problem[0] != '\0' ? why : fallback);
+}
+
 static void close_archive(void)
 {
-    if (archive_fp) {
-        fclose(archive_fp);
-        archive_fp = NULL;
-    }
+    gui_vol_failure_clear();
+    archive_is_open = 0;
     archive_path[0] = '\0';
     memset(&archive_info, 0, sizeof(archive_info));
     archive_sidecars = 0;
@@ -1436,7 +1576,6 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 static void do_open(const char *path)
 {
-    bp_io_t io;
     bp_archive_info_t info;
     bp_uint32 sidecars;
     int rc;
@@ -1452,23 +1591,25 @@ static void do_open(const char *path)
         return;
     }
 
-    archive_fp = fopen(path, "rb");
-    if (!archive_fp) {
-        show_requester("Error", "Cannot open file");
+    if (path == NULL || strlen(path) >= sizeof(archive_path) ||
+        gui_vol_begin_read(path) != 0) {
+        show_requester("Error", "Invalid or too long archive name");
         refresh_window_title();
         refresh_idle_status();
         return;
     }
-    strncpy(archive_path, path, sizeof(archive_path) - 1);
-    archive_path[sizeof(archive_path) - 1] = '\0';
+    strcpy(archive_path, path);
 
-    io = make_io(archive_fp);
+    /* Opening reads only the last volume: never ask for another disk, which
+     * would turn a damaged single archive into a disk prompt. */
+    gui_vol.interactive = 0;
     memset(&info, 0, sizeof(info));
-    rc = bp_archive_info_ex(&io, &info, &sidecars);
+    rc = bp_archive_info_volumes(&gui_vol_src, &info, &sidecars);
+    vol_source_done(&gui_vol);
     if (rc != BP_OK) {
         log_message("bp_archive_info failed for '%s': rc=%d (%s)",
                     path ? path : "(null)", rc, bp_strerror(rc));
-        show_requester("Error", "Not a valid BoltPack archive");
+        show_volume_failure(rc, "Not a valid BoltPack archive");
         close_archive();
         refresh_window_title();
         refresh_idle_status();
@@ -1476,14 +1617,27 @@ static void do_open(const char *path)
     }
     archive_info = info;
     archive_sidecars = sidecars;
+    archive_is_open = 1;
 
-    fseek(archive_fp, 0L, SEEK_SET);
-    io = make_io(archive_fp);
-    rc = bp_archive_list(&io, list_cb, NULL);
+    /* A set is read off several disks: name the drive, not the disk. */
+    if (info.volume_count > 1) {
+        amiga_resolve_volume_path(archive_path, sizeof(archive_path));
+        if (gui_vol_begin_read(archive_path) != 0) {
+            show_requester("Error", "Invalid or too long archive name");
+            close_archive();
+            refresh_window_title();
+            refresh_idle_status();
+            return;
+        }
+        gui_vol.interactive = 0;
+    }
+
+    rc = bp_archive_list_volumes(&gui_vol_src, list_cb, NULL);
+    vol_source_done(&gui_vol);
     if (rc != BP_OK) {
         log_message("bp_archive_list failed for '%s': rc=%d (%s)",
                     path ? path : "(null)", rc, bp_strerror(rc));
-        show_requester("Error", "Error reading archive");
+        show_volume_failure(rc, "Error reading archive");
         close_archive();
         refresh_window_title();
         refresh_idle_status();
@@ -1539,12 +1693,11 @@ static void amiga_validate_cb(const bp_entry_t *entry, int result, void *ud)
 
 static void do_validate(void)
 {
-    bp_io_t io;
     struct amiga_test_ctx ctx;
     char msg[128];
     int rc;
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_requester("BoltPack", "No archive is open");
         return;
     }
@@ -1552,16 +1705,25 @@ static void do_validate(void)
     log_message("Validate archive requested: %s",
                 archive_path[0] ? archive_path : "(none)");
 
-    fseek(archive_fp, 0L, SEEK_SET);
-    io = make_io(archive_fp);
+    if (gui_vol_begin_read(archive_path) != 0) {
+        show_requester("Error", "Invalid or too long archive name");
+        return;
+    }
     ctx.ok_count   = 0;
     ctx.fail_count = 0;
 
     set_status_lines("Validating archive", "Checking data and checksums", "");
-    rc = bp_archive_test(&io, amiga_validate_cb, &ctx);
-    (void)rc;
+    rc = bp_archive_test_volumes(&gui_vol_src, amiga_validate_cb, &ctx,
+                                 NULL, NULL);
+    vol_source_done(&gui_vol);
     log_message("Validate complete: ok=%d fail=%d rc=%d",
                 ctx.ok_count, ctx.fail_count, rc);
+    if (rc != BP_OK && ctx.fail_count == 0 &&
+        (gui_vol.aborted || gui_vol.problem[0] != '\0')) {
+        show_volume_failure(rc, "Error reading archive");
+        refresh_idle_status();
+        return;
+    }
 
     if (ctx.fail_count == 0)
         sprintf(msg, "All %d file%s OK",
@@ -1582,7 +1744,7 @@ static void do_info(void)
     char orig_buf[32];
     char comp_buf[32];
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_requester("BoltPack", "No archive is open");
         return;
     }
@@ -1604,6 +1766,9 @@ static void do_info(void)
         (unsigned long)archive_info.dir_count,
         format_methods(archive_info.method_counts),
         orig_buf, comp_buf, pct);
+    if (archive_info.volume_count > 1)
+        sprintf(msg + strlen(msg), "\nVolumes: %lu",
+                (unsigned long)archive_info.volume_count);
 
     show_requester("Archive Information", msg);
 }
@@ -1951,13 +2116,12 @@ static void do_extract(void)
     struct FileRequester *freq;
     struct amiga_extract_ctx ctx;
     gui_name_index_t *name_index;
-    bp_io_t io;
     int rc;
     unsigned long total_files;
     char init_dir[BP_MAX_PATH];
     struct stat dest_stat;
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_requester("BoltPack", "No archive is open");
         return;
     }
@@ -2004,26 +2168,25 @@ static void do_extract(void)
             return;
         }
         name_index->dest = ctx.dest;
-        if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+        if (gui_vol_begin_read(archive_path) != 0) {
             free(name_index);
-            show_requester("Error", "Cannot seek in archive");
+            show_requester("Error", "Invalid or too long archive name");
             return;
         }
-        io = make_io(archive_fp);
-        rc = bp_archive_list(&io, gui_preflight_name, name_index);
+        rc = bp_archive_list_volumes(&gui_vol_src, gui_preflight_name,
+                                     name_index);
+        vol_source_done(&gui_vol);
         if (rc != BP_OK) {
-            show_requester("Error", name_index->error ? name_index->error :
-                           "Cannot validate archive names");
+            if (name_index->error)
+                show_requester("Error", name_index->error);
+            else
+                show_volume_failure(rc, "Cannot validate archive names");
             gui_name_index_clear(name_index);
             free(name_index);
             return;
         }
         gui_name_index_clear(name_index);
         free(name_index);
-        if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
-            show_requester("Error", "Cannot rewind archive after name checks");
-            return;
-        }
 
         total_files = (unsigned long)(archive_info.entry_count -
                                       archive_sidecars);
@@ -2035,11 +2198,11 @@ static void do_extract(void)
         log_memory_snapshot("before extract");
         SetPointer(win, NULL, 0, 0, 0, 0); /* busy pointer */
 
-        io = make_io(archive_fp);
-
-        rc = bp_archive_extract_all_ex(&io,
+        gui_vol_failure_clear();
+        rc = bp_archive_extract_volumes(&gui_vol_src,
             extract_open_cb, extract_done_cb,
             extract_progress_cb, (void *)&ctx);
+        vol_source_done(&gui_vol);
         gui_finalize_dirs(&ctx);
         if (ctx.invalid_entry && (rc == BP_OK || rc == BP_ERR_PARTIAL))
             rc = BP_ERR_CORRUPT;
@@ -2055,7 +2218,7 @@ static void do_extract(void)
             show_requester("Partial extraction",
                            "Some entries or attributes were not restored");
         else if (rc != BP_OK && rc != BP_ERR_ABORTED)
-            show_requester("Error", bp_strerror(rc));
+            show_volume_failure(rc, bp_strerror(rc));
         refresh_window_title();
     }
 }
@@ -2196,6 +2359,7 @@ static void do_create_from_paths(const char **paths, int path_count)
     int metadata_unread;
     int closed_current_archive;
     int have_base;
+    int volume_mode;
     int rc, i;
     char previous_archive_path[BP_MAX_PATH];
 
@@ -2366,37 +2530,60 @@ static void do_create_from_paths(const char **paths, int path_count)
     FreeAslRequest(freq);
     log_message("Create output path selected: %s", out_path);
 
+    volume_mode = current_disk > 0;
     memset(&archive_stage, 0, sizeof(archive_stage));
     archive_stage.fd = -1;
     closed_current_archive = 0;
     previous_archive_path[0] = '\0';
-    strcpy(archive_stage.target, out_path);
-    if (lstat(out_path, &out_st) == 0) {
-        if (!S_ISREG(out_st.st_mode) || S_ISLNK(out_st.st_mode)) {
+    outfp = NULL;
+    if (volume_mode) {
+        /* A set goes straight to its volume files; each one is written
+         * under a temporary name and renamed when complete. */
+        amiga_resolve_volume_path(out_path, sizeof(out_path));
+        if (gui_vol_begin_write(out_path) != 0) {
+            show_requester("Error",
+                "This name cannot be used for a set of disks.\n"
+                "Use a name such as archive.bolt, not a numbered\n"
+                "extension such as .000");
+            free_gather_files();
+            return;
+        }
+        if (lstat(out_path, &out_st) == 0 &&
+            (!S_ISREG(out_st.st_mode) || S_ISLNK(out_st.st_mode))) {
             show_requester("Error", "Destination is not a regular file");
             free_gather_files();
             return;
         }
-        archive_stage.target_existed = 1;
-        archive_stage.target_snapshot = out_st;
-    } else if (errno != ENOENT) {
-        show_requester("Error", "Cannot inspect destination");
-        free_gather_files();
-        return;
-    }
-    if (gui_make_temp_name(out_path, "BPXXXXXX", archive_stage.temporary,
-                           sizeof(archive_stage.temporary)) != 0 ||
-        (archive_stage.fd = mkstemp(archive_stage.temporary)) < 0) {
-        show_requester("Error", "Cannot create archive staging file");
-        free_gather_files();
-        return;
-    }
-    outfp = fdopen(archive_stage.fd, "w+b");
-    if (!outfp) {
-        gui_discard_stage(&archive_stage);
-        show_requester("Error", "Cannot open archive staging file");
-        free_gather_files();
-        return;
+    } else {
+        strcpy(archive_stage.target, out_path);
+        if (lstat(out_path, &out_st) == 0) {
+            if (!S_ISREG(out_st.st_mode) || S_ISLNK(out_st.st_mode)) {
+                show_requester("Error", "Destination is not a regular file");
+                free_gather_files();
+                return;
+            }
+            archive_stage.target_existed = 1;
+            archive_stage.target_snapshot = out_st;
+        } else if (errno != ENOENT) {
+            show_requester("Error", "Cannot inspect destination");
+            free_gather_files();
+            return;
+        }
+        if (gui_make_temp_name(out_path, "BPXXXXXX", archive_stage.temporary,
+                               sizeof(archive_stage.temporary)) != 0 ||
+            (archive_stage.fd = mkstemp(archive_stage.temporary)) < 0) {
+            show_requester("Error", "Cannot create archive staging file");
+            free_gather_files();
+            return;
+        }
+        outfp = fdopen(archive_stage.fd, "w+b");
+        if (!outfp) {
+            gui_discard_stage(&archive_stage);
+            show_requester("Error", "Cannot open archive staging file");
+            free_gather_files();
+            return;
+        }
+
     }
 
     show_create_queue(base_dir);
@@ -2406,19 +2593,40 @@ static void do_create_from_paths(const char **paths, int path_count)
     log_memory_snapshot("before create");
     SetPointer(win, NULL, 0, 0, 0, 0);
 
-    outio = make_io(outfp);
     memset(&ar, 0, sizeof(ar));
-    rc = current_interchange_profile
-        ? bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1)
-        : bp_archive_create(&ar, &outio, 0, current_method);
+    if (volume_mode) {
+        bp_volume_sink_t sink;
+        vol_sink_init(&gui_vol, &sink);
+        rc = bp_archive_create_volumes(&ar, &sink,
+                bp_u64_from_u32(amiga_disks[current_disk].bytes),
+                current_interchange_profile ? BP_BLOCK_16K : 0,
+                current_interchange_profile ? BP_METHOD_BOLTLITE
+                                            : current_method);
+        if (rc == BP_OK && current_interchange_profile) {
+            rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+            if (rc != BP_OK) bp_archive_close(&ar);
+            else if (current_method == BP_METHOD_STORED)
+                ar.method = BP_METHOD_STORED;
+        }
+    } else {
+        outio = make_io(outfp);
+        rc = current_interchange_profile
+            ? bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1)
+            : bp_archive_create(&ar, &outio, 0, current_method);
+    }
     log_message("archive create('%s') rc=%d (%s) method=%s profile=%d",
                 out_path, rc, bp_strerror(rc), current_method_label(),
                 current_interchange_profile);
     if (rc != BP_OK) {
-        (void)fclose(outfp);
-        archive_stage.fd = -1;
-        gui_discard_stage(&archive_stage);
-        show_requester("Error", "Create failed");
+        if (!volume_mode) {
+            (void)fclose(outfp);
+            archive_stage.fd = -1;
+            gui_discard_stage(&archive_stage);
+        } else if (!gui_vol.aborted) {
+            show_requester("Error", gui_vol.problem[0] != '\0'
+                           ? gui_vol.problem : "Create failed");
+        }
+        if (!volume_mode) show_requester("Error", "Create failed");
         ClearPointer(win);
         stop_progress_ui(&progress);
         free_gather_files();
@@ -2555,39 +2763,44 @@ static void do_create_from_paths(const char **paths, int path_count)
                     out_path, rc, bp_strerror(rc));
     }
     bp_archive_close(&ar);
-    if (fflush(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
-    if (fclose(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
-    archive_stage.fd = -1;
-    if (rc == BP_OK) {
-        if (archive_stage.target_existed) {
-            if (chmod(archive_stage.temporary,
-                      archive_stage.target_snapshot.st_mode & 0777) != 0)
+    if (volume_mode) {
+        if (rc != BP_OK) vol_remove_written(&gui_vol);
+        else vol_remove_stale(&gui_vol, gui_vol.written);
+    } else {
+        if (fflush(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        if (fclose(outfp) != 0 && rc == BP_OK) rc = BP_ERR_IO;
+        archive_stage.fd = -1;
+        if (rc == BP_OK) {
+            if (archive_stage.target_existed) {
+                if (chmod(archive_stage.temporary,
+                          archive_stage.target_snapshot.st_mode & 0777) != 0)
+                    rc = BP_ERR_IO;
+                /* Native protection/comment metadata on the old archive is not
+                 * carried by chmod; report that limitation after replacement. */
+                preservation_partial = 1;
+            } else if (gui_set_default_mode(archive_stage.temporary) != 0) {
                 rc = BP_ERR_IO;
-            /* Native protection/comment metadata on the old archive is not
-             * carried by chmod; report that limitation after replacement. */
-            preservation_partial = 1;
-        } else if (gui_set_default_mode(archive_stage.temporary) != 0) {
-            rc = BP_ERR_IO;
+            }
         }
-    }
-    if (rc == BP_OK && archive_fp && archive_stage.target_existed) {
-        struct stat opened_archive_st;
-        if (fstat(fileno(archive_fp), &opened_archive_st) == 0 &&
-            gui_same_file(&archive_stage.target_snapshot, &opened_archive_st)) {
-            strncpy(previous_archive_path, archive_path,
-                    sizeof(previous_archive_path) - 1);
-            previous_archive_path[sizeof(previous_archive_path) - 1] = '\0';
-            log_message("Closing currently open archive before replacement: %s",
-                        previous_archive_path);
-            close_archive();
-            closed_current_archive = 1;
+        if (rc == BP_OK && archive_is_open && archive_stage.target_existed) {
+            struct stat opened_archive_st;
+            if (stat(archive_path, &opened_archive_st) == 0 &&
+                gui_same_file(&archive_stage.target_snapshot, &opened_archive_st)) {
+                strncpy(previous_archive_path, archive_path,
+                        sizeof(previous_archive_path) - 1);
+                previous_archive_path[sizeof(previous_archive_path) - 1] = '\0';
+                log_message("Closing currently open archive before replacement: %s",
+                            previous_archive_path);
+                close_archive();
+                closed_current_archive = 1;
+            }
         }
-    }
-    if (rc == BP_OK) {
-        rc = gui_commit_stage(&archive_stage);
-        if (rc == BP_ERR_PARTIAL && archive_stage.temporary[0] == '\0') {
-            preservation_partial = 1;
-            rc = BP_OK;
+        if (rc == BP_OK) {
+            rc = gui_commit_stage(&archive_stage);
+            if (rc == BP_ERR_PARTIAL && archive_stage.temporary[0] == '\0') {
+                preservation_partial = 1;
+                rc = BP_OK;
+            }
         }
     }
     gui_discard_stage(&archive_stage);
@@ -2627,6 +2840,15 @@ static void do_create_from_paths(const char **paths, int path_count)
             strcat(msg, "\n- The replaced archive's protection bits or"
                         "\n  comment, or staging cleanup, were not kept");
         show_requester("Partial preservation", msg);
+    }
+
+    if (volume_mode && gui_vol.written > 1) {
+        char msg[160];
+        sprintf(msg, "Archive written as %u volumes of at most %lu bytes.\n"
+                "Keep the disks in order: the last one holds the\n"
+                "archive name.", gui_vol.written,
+                (unsigned long)amiga_disks[current_disk].bytes);
+        show_requester("Archive created", msg);
     }
 
     /* Open the newly created archive */
@@ -2822,6 +3044,14 @@ static void event_loop(void)
                                         toggle_light_compression();
                                         break;
                                     case MN_QUIT:    running = FALSE;    break;
+                                    case MN_DISK_FIRST:
+                                    case MN_DISK_FIRST + 1:
+                                    case MN_DISK_FIRST + 2:
+                                    case MN_DISK_FIRST + 3:
+                                    case MN_DISK_LAST:
+                                        select_disk_size((int)(ULONG)ud -
+                                                         MN_DISK_FIRST);
+                                        break;
                                     case MN_ABOUT:   show_about_dialog(); break;
                                     case MN_DOC:
                                         show_requester("Documentation",
@@ -2830,6 +3060,8 @@ static void event_loop(void)
                                             "boltlz or Fluff for new archives, or select\n"
                                             "Interchange Profile 1 for mini-reader limits.\n"
                                             "Light makes boltlz compress faster, a bit larger.\n"
+                                            "Disks splits new archives over several disks;\n"
+                                            "open the last disk's archive to read a set.\n"
                                             "Drop .bolt/.blt files to open them.\n"
                                             "Drop other files or drawers to archive them.");
                                         break;

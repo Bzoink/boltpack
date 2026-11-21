@@ -18,7 +18,9 @@
 #ifndef BP_AMIGA_VOLUMES_H
 #define BP_AMIGA_VOLUMES_H
 
+#ifndef BP_VOL_OWN_PROMPT
 #define BP_VOL_OWN_GETLINE
+#endif
 #define BP_VOL_DIR_SEPS "/:"
 #define BP_VOL_PATH_MAX BP_MAX_PATH
 
@@ -79,6 +81,7 @@ static int vol_hook_sync(FILE *fp)
     return fflush(fp);
 }
 
+#ifndef BP_VOL_OWN_PROMPT
 static int vol_hook_getline(char *buf, int size)
 {
     int n = 0;
@@ -95,16 +98,19 @@ static int vol_hook_interactive(void)
 {
     return IsInteractive(Input()) ? 1 : 0;
 }
+#endif /* !BP_VOL_OWN_PROMPT */
 
 static void vol_hook_note_tmp(const char *tmp)
 {
     (void)tmp;   /* Amiga: no signal-time cleanup */
 }
 
+#ifndef BP_VOL_OWN_PROMPT
 static int vol_hook_verbose(void)
 {
     return g_verbosity < VERB_SILENT;
 }
+#endif
 
 #include "../common/volume_size.h"
 #include "../common/volume_files.h"

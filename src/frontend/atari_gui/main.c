@@ -128,8 +128,9 @@ extern FILE *fdopen(int fd, const char *mode);
 #define MN_METHOD_FLUFF    (MENU_COMP_BOX + 6)
 #define MN_LIGHT           (MENU_COMP_BOX + 7)
 #define MN_INTERCHANGE_PROFILE (MENU_COMP_BOX + 8)
+#define MN_DISK            (MENU_COMP_BOX + 9)
 
-#define MENU_HELP_BOX (MENU_COMP_BOX + 9)
+#define MENU_HELP_BOX (MENU_COMP_BOX + 10)
 #define MN_HELP_ABOUT (MENU_HELP_BOX + 1)
 #define MN_DOC        (MENU_HELP_BOX + 2)
 
@@ -166,13 +167,14 @@ static int entry_count;
 static int entries_capacity;
 static int scroll_pos;
 
-static FILE *archive_fp;
+static int archive_is_open;   /* an archive is listed in the window */
 static char archive_path[BP_MAX_PATH];
 static bp_archive_info_t archive_info;
 static bp_uint32 archive_sidecars; /* META/RSRC entries in archive_info */
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 static int current_interchange_profile;
 static int current_light;   /* BoltLZ Fast; see bp_68k_levels.h */
+static int current_disk;    /* 0 = one file, else index into atari_disks[] */
 
 typedef struct {
     const char   *verb;
@@ -538,9 +540,10 @@ static void show_fluff_memory_alert(long avail)
  * brackets would end the alert string and become parentheses. */
 #define ALERT_LINE_MAX 30
 #define ALERT_LINES_MAX 5
-static void show_alert(const char *msg)
+static int show_alert_choice(const char *msg, const char *buttons,
+                             int default_button)
 {
-    char buf[ALERT_LINES_MAX * (ALERT_LINE_MAX + 1) + 16];
+    char buf[ALERT_LINES_MAX * (ALERT_LINE_MAX + 1) + 48];
     char *out;
     const char *p = msg;
     int lines = 0;
@@ -567,9 +570,95 @@ static void show_alert(const char *msg)
         while (*p == ' ') p++;
         if (*p == '|') p++;
     }
-    strcpy(out, "][ OK ]");
-    form_alert(1, buf);
+    *out++ = ']';
+    *out++ = '[';
+    strcpy(out, buttons);
+    out += strlen(out);
+    *out++ = ']';
+    *out = '\0';
+    return (int)form_alert(default_button, buf);
 }
+
+static void show_alert(const char *msg)
+{
+    (void)show_alert_choice(msg, " OK ", 1);
+}
+
+/* ---- Volume sets (archive format 7) ------------------------------------ */
+
+#define BP_VOL_OWN_PROMPT 1
+
+#ifndef FA_RDONLY
+#  define FA_RDONLY 0x01
+#endif
+
+/* The volume hooks of the CLI, over this program's TOS helpers. */
+static int atari_gui_sibling_name(const char *target, const char *base,
+                                  char *out, size_t capacity);
+static int atari_gui_rename_noreplace(const char *from, const char *to);
+static int atari_gui_get_attr(const char *path, unsigned char *attr);
+#define atari_make_temp_template(target, out, size) \
+    atari_gui_sibling_name((target), "BPXXXXXX", (out), (size))
+#define atari_rename_noreplace atari_gui_rename_noreplace
+#define atari_get_attrib atari_gui_get_attr
+
+static const char *gui_vol_prompt_text(int writing, const char *what,
+                                       const char *name, const char *problem);
+
+static void bp_io_from_file(bp_io_t *io, FILE *fp)
+{
+    *io = make_io(fp);
+}
+
+/* Short reasons for a GEM alert (gui_vol_failure() falls back on them). */
+static const char *bp_strerror(int code)
+{
+    switch (code) {
+    case BP_ERR_IO:        return "I/O error";
+    case BP_ERR_NOMEM:     return "Out of memory";
+    case BP_ERR_MAGIC:     return "Not a BoltPack archive";
+    case BP_ERR_VERSION:   return "Unsupported archive version";
+    case BP_ERR_CHECKSUM:  return "Checksum mismatch";
+    case BP_ERR_CORRUPT:   return "Archive is damaged";
+    case BP_ERR_TRUNCATED: return "Archive is truncated";
+    case BP_ERR_VOLUME:    return "A volume is missing or wrong";
+    default:               return "Error reading archive";
+    }
+}
+
+static int vol_hook_interactive(void) { return 1; }
+static int vol_hook_verbose(void) { return 0; }
+
+/* Ask for a disk: OK (1) or Cancel (0). */
+static int vol_hook_prompt(int writing, const char *what, const char *name,
+                           const char *problem)
+{
+    static char text[BP_MAX_PATH + 300];   /* not on the small GEM stack */
+    char *c;
+
+    strncpy(text, gui_vol_prompt_text(writing, what, name, problem),
+            sizeof(text) - 1);
+    text[sizeof(text) - 1] = '\0';
+    for (c = text; *c; c++)
+        if (*c == '\n') *c = '|';
+    return show_alert_choice(text, " OK |Cancel", 1) == 1;
+}
+
+#include "../atari/atari_volumes.h"
+#include "../common/gui_volumes.h"
+
+/* Disk sizes the Compression menu steps through: usable bytes on a freshly
+ * TOS-formatted disk, under the nominal capacity (a 360K single-sided disk
+ * has 358,400 bytes of 1 KB clusters, a 720K disk 728,064). */
+static const gui_disk_size_t atari_disks[] = {
+    { "single file",         0UL },
+    { "360K",           350000UL },
+    { "720K",           720000UL },
+    { "800K",           790000UL },
+    { "1.44M",         1440000UL }
+};
+#define ATARI_DISK_COUNT ((int)(sizeof(atari_disks) / sizeof(atari_disks[0])))
+static char disk_menu_label[32] = "  Disks: single file  ^D";
 
 static void show_recovery_alert(const char *path)
 {
@@ -686,6 +775,7 @@ static void sync_compression_menu_checks(void)
     menu_objs[MN_METHOD_FLUFF].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_INTERCHANGE_PROFILE].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_LIGHT].ob_state &= (short)~OS_CHECKED;
+    sprintf(disk_menu_label, "  Disks: %-13s^D", atari_disks[current_disk].label);
     if (current_light)
         menu_objs[MN_LIGHT].ob_state |= OS_CHECKED;
     if (current_interchange_profile)
@@ -724,6 +814,13 @@ static int select_compression_method(bp_uint8 method)
     current_interchange_profile = 0;
     sync_compression_menu_checks();
     return 1;
+}
+
+/* Step through the disk sizes: one file, then each size in turn. */
+static void cycle_disk_size(void)
+{
+    current_disk = (current_disk + 1) % ATARI_DISK_COUNT;
+    sync_compression_menu_checks();
 }
 
 static void toggle_light_compression(void)
@@ -1144,11 +1241,11 @@ static void build_menu(void)
     menu_objs[MENU_COMP_BOX].ob_type   = G_BOX;
     menu_objs[MENU_COMP_BOX].ob_next   = MENU_HELP_BOX;
     menu_objs[MENU_COMP_BOX].ob_head   = MN_CREATE;
-    menu_objs[MENU_COMP_BOX].ob_tail   = MN_INTERCHANGE_PROFILE;
+    menu_objs[MENU_COMP_BOX].ob_tail   = MN_DISK;
     menu_objs[MENU_COMP_BOX].ob_x      = (short)(MENU_COMPRESS_X * font_w);
     menu_objs[MENU_COMP_BOX].ob_y      = 0;
     menu_objs[MENU_COMP_BOX].ob_width  = (short)(26 * font_w);
-    menu_objs[MENU_COMP_BOX].ob_height = (short)(8 * (font_h + 2));
+    menu_objs[MENU_COMP_BOX].ob_height = (short)(9 * (font_h + 2));
     menu_objs[MENU_COMP_BOX].ob_spec.index = 0x00FF1100L;
 
     {
@@ -1160,13 +1257,14 @@ static void build_menu(void)
             "  boltlz          ",
             "  fluff            ",
             "  Light (faster boltlz)",
-            "  Interchange Profile 1"
+            "  Interchange Profile 1",
+            disk_menu_label
         };
         int idx;
-        for (idx = 0; idx < 8; idx++) {
+        for (idx = 0; idx < 9; idx++) {
             int obj = MN_CREATE + idx;
             menu_objs[obj].ob_type = G_STRING;
-            menu_objs[obj].ob_next = (obj < MN_INTERCHANGE_PROFILE) ? obj + 1 : MENU_COMP_BOX;
+            menu_objs[obj].ob_next = (obj < MN_DISK) ? obj + 1 : MENU_COMP_BOX;
             menu_objs[obj].ob_spec.free_string = items[idx];
             menu_objs[obj].ob_x      = 0;
             menu_objs[obj].ob_y      = (short)(idx * (font_h + 2));
@@ -1313,12 +1411,30 @@ static void redraw_window(short rx, short ry, short rw, short rh)
 /*  Archive operations                                                    */
 /* ====================================================================== */
 
+static void gui_vol_failure_clear(void)
+{
+    gui_vol.aborted = 0;
+    gui_vol.problem[0] = '\0';
+}
+
+/* Tell the user why a read of the archive failed; nothing when they
+ * cancelled a disk prompt themselves. */
+static void show_volume_failure(int rc, const char *fallback)
+{
+    char msg[160];
+    if (gui_vol_failure(rc) == NULL) return;
+    if (gui_vol.problem[0] != '\0' && gui_vol.why[0] != '\0') {
+        sprintf(msg, "A volume %.120s", gui_vol.why);
+        show_alert(msg);
+    } else {
+        show_alert(fallback);
+    }
+}
+
 static void close_archive(void)
 {
-    if (archive_fp) {
-        fclose(archive_fp);
-        archive_fp = NULL;
-    }
+    archive_is_open = 0;
+    gui_vol_failure_clear();
     free_entries();
     archive_path[0] = '\0';
     memset(&archive_info, 0, sizeof(archive_info));
@@ -1381,31 +1497,33 @@ static int list_cb(const bp_entry_t *entry, void *user_data)
 
 static void do_open(const char *path)
 {
-    bp_io_t io;
     bp_archive_info_t info;
     bp_uint32 sidecars;
     int rc;
 
     close_archive();
 
-    archive_fp = fopen(path, "rb");
-    if (!archive_fp) {
-        show_alert("Cannot open file");
+    if (path == NULL || strlen(path) >= sizeof(archive_path) ||
+        gui_vol_begin_read(path) != 0) {
+        show_alert("Invalid or too long|archive name");
         return;
     }
-    strncpy(archive_path, path, sizeof(archive_path) - 1);
-    archive_path[sizeof(archive_path) - 1] = '\0';
+    strcpy(archive_path, path);
 
-    io = make_io(archive_fp);
+    /* Opening reads only the last volume: never ask for another disk, which
+     * would turn a damaged single archive into a disk prompt. */
+    gui_vol.interactive = 0;
     memset(&info, 0, sizeof(info));
-    rc = bp_archive_info_ex(&io, &info, &sidecars);
+    rc = bp_archive_info_volumes(&gui_vol_src, &info, &sidecars);
+    vol_source_done(&gui_vol);
     if (rc != BP_OK) {
-        show_alert("Not a valid BoltPack|archive");
+        show_volume_failure(rc, "Not a valid BoltPack|archive");
         close_archive();
         return;
     }
     archive_info = info;
     archive_sidecars = sidecars;
+    archive_is_open = 1;
 
     if (!alloc_entries((int)info.entry_count)) {
         show_alert("Out of memory");
@@ -1413,11 +1531,10 @@ static void do_open(const char *path)
         return;
     }
 
-    fseek(archive_fp, 0L, SEEK_SET);
-    io = make_io(archive_fp);
-    rc = bp_archive_list(&io, list_cb, NULL);
+    rc = bp_archive_list_volumes(&gui_vol_src, list_cb, NULL);
+    vol_source_done(&gui_vol);
     if (rc != BP_OK) {
-        show_alert("Error reading archive");
+        show_volume_failure(rc, "Error reading archive");
         close_archive();
         return;
     }
@@ -3010,14 +3127,13 @@ static void do_extract(void)
     char fname[128];
     char selected[BP_MAX_PATH];
     short button;
-    bp_io_t io;
     extract_ctx_t ctx;
     atari_gui_name_index_t *index;
     struct stat dest_stat;
     const char *preflight_error;
     int rc;
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_alert("No archive is open");
         return;
     }
@@ -3070,19 +3186,21 @@ static void do_extract(void)
         return;
     }
     index->dest_dir = ctx.dest_dir;
-    if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
+    if (gui_vol_begin_read(archive_path) != 0) {
         free(index);
-        show_alert("Cannot seek in archive");
+        show_alert("Invalid or too long|archive name");
         return;
     }
-    io = make_io(archive_fp);
-    rc = bp_archive_list(&io, atari_gui_preflight_name, index);
+    rc = bp_archive_list_volumes(&gui_vol_src, atari_gui_preflight_name, index);
+    vol_source_done(&gui_vol);
     preflight_error = index->error;
     atari_gui_name_index_clear(index);
     free(index);
     if (rc != BP_OK) {
-        show_alert(preflight_error != NULL ? preflight_error :
-                   "Cannot validate archive names");
+        if (preflight_error != NULL)
+            show_alert(preflight_error);
+        else
+            show_volume_failure(rc, "Cannot validate archive names");
         return;
     }
     rc = atari_gui_recover_pending_transaction(ctx.dest_dir, &ctx);
@@ -3093,11 +3211,7 @@ static void do_extract(void)
             show_alert("Cannot safely recover the previous extraction");
         return;
     }
-    if (fseek(archive_fp, 0L, SEEK_SET) != 0) {
-        show_alert("Cannot rewind archive after name checks");
-        return;
-    }
-
+    gui_vol_failure_clear();
     start_progress_ui(&ctx.progress, "Extracting archive", NULL,
                       u64_to_dbl(archive_info.total_original),
                       (unsigned long)(archive_info.entry_count -
@@ -3105,9 +3219,9 @@ static void do_extract(void)
                       1);
     ctx.progress.count_subjects = 1;
     graf_mouse(BUSYBEE, NULL);
-    io = make_io(archive_fp);
-    rc = bp_archive_extract_all_ex(&io, extract_open_cb, extract_done_cb,
-                                   extract_progress_cb, &ctx);
+    rc = bp_archive_extract_volumes(&gui_vol_src, extract_open_cb,
+                                    extract_done_cb, extract_progress_cb, &ctx);
+    vol_source_done(&gui_vol);
     finish_directory_restores(&ctx);
     if (ctx.invalid_entry && (rc == BP_OK || rc == BP_ERR_PARTIAL))
         rc = BP_ERR_CORRUPT;
@@ -3125,9 +3239,12 @@ static void do_extract(void)
         show_alert("Extraction cancelled; completed files remain");
     else if (ctx.recovery_path[0] == '\0' && rc == BP_ERR_PARTIAL)
         show_alert("Partial extraction: some data or attributes were not restored");
+    else if (ctx.recovery_path[0] == '\0' && gui_vol.aborted)
+        show_alert("Extraction cancelled; completed files remain");
     else if (ctx.recovery_path[0] == '\0' &&
              rc != BP_OK && rc != BP_ERR_ABORTED)
-        show_alert("Extraction failed; incomplete files were not published");
+        show_volume_failure(rc,
+                            "Extraction failed; incomplete files were not published");
 }
 
 /* ---- Validate and archive information ---- */
@@ -3146,26 +3263,33 @@ static void atari_validate_cb(const bp_entry_t *entry, int result, void *ud)
 
 static void do_validate(void)
 {
-    bp_io_t io;
     struct atari_test_ctx ctx;
     char msg[256];
     int rc;
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_alert("No archive is open");
         return;
     }
 
-    fseek(archive_fp, 0L, SEEK_SET);
-    io = make_io(archive_fp);
+    if (gui_vol_begin_read(archive_path) != 0) {
+        show_alert("Invalid or too long|archive name");
+        return;
+    }
     ctx.ok_count   = 0;
     ctx.fail_count = 0;
 
     graf_mouse(BUSYBEE, NULL);
-    rc = bp_archive_test(&io, atari_validate_cb, &ctx);
+    rc = bp_archive_test_volumes(&gui_vol_src, atari_validate_cb, &ctx,
+                                 NULL, NULL);
+    vol_source_done(&gui_vol);
     graf_mouse(ARROW, NULL);
 
-    (void)rc;
+    if (rc != BP_OK && ctx.fail_count == 0 &&
+        (gui_vol.aborted || gui_vol.problem[0] != '\0')) {
+        show_volume_failure(rc, "Error reading archive");
+        return;
+    }
     if (ctx.fail_count == 0)
         sprintf(msg, "[1][Validate OK|%d file%s|all passed][OK]",
                 ctx.ok_count, ctx.ok_count == 1 ? "" : "s");
@@ -3180,11 +3304,12 @@ static void do_info(void)
     char orig_str[32];
     char comp_str[32];
     char msg[256];
+    char title[40];
     double orig, comp;
     int pct;
     bp_uint32 file_count;
 
-    if (!archive_fp) {
+    if (!archive_is_open) {
         show_alert("No archive is open");
         return;
     }
@@ -3199,8 +3324,14 @@ static void do_info(void)
     format_size_compact_u64(archive_info.total_compressed,
                             comp_str, sizeof(comp_str));
 
-    sprintf(msg, "[1][Archive info|Entries: %lu files  %lu dirs|"
+    if (archive_info.volume_count > 1)
+        sprintf(title, "Archive info, %lu disks",
+                (unsigned long)archive_info.volume_count);
+    else
+        strcpy(title, "Archive info");
+    sprintf(msg, "[1][%s|Entries: %lu files  %lu dirs|"
                  "Method: %s|Original: %s|Packed: %s (%d%%)][OK]",
+            title,
             (unsigned long)file_count,
             (unsigned long)archive_info.dir_count,
             format_methods(archive_info.method_counts),
@@ -3386,6 +3517,7 @@ static void do_create_from_paths(char **paths, int path_count)
     int preservation_partial;
     int archive_published;
     int base_initialized;
+    int volume_mode;
     const char *create_error;
     int rc, i;
 
@@ -3489,11 +3621,31 @@ static void do_create_from_paths(char **paths, int path_count)
         strcpy(out_path + base_len, out_fname);
     }
 
-    rc = open_archive_stage(out_path, &archive_stage, &outfp);
-    if (rc != BP_OK) {
-        show_alert("Cannot create file");
-        free_gather_files();
-        return;
+    volume_mode = current_disk > 0;
+    outfp = NULL;
+    memset(&archive_stage, 0, sizeof(archive_stage));
+    archive_stage.fd = -1;
+    if (volume_mode) {
+        /* A set goes straight to its volume files, each written under a
+         * temporary name and renamed when complete. */
+        struct stat out_st;
+        if (gui_vol_begin_write(out_path) != 0) {
+            show_alert("A set of disks needs a name|like ARCHIVE.BLT, not a|numbered extension (.000)");
+            free_gather_files();
+            return;
+        }
+        if (lstat(out_path, &out_st) == 0 && !S_ISREG(out_st.st_mode)) {
+            show_alert("Destination is not a|regular file");
+            free_gather_files();
+            return;
+        }
+    } else {
+        rc = open_archive_stage(out_path, &archive_stage, &outfp);
+        if (rc != BP_OK) {
+            show_alert("Cannot create file");
+            free_gather_files();
+            return;
+        }
     }
 
     start_progress_ui(&progress, "Creating archive",
@@ -3505,24 +3657,43 @@ static void do_create_from_paths(char **paths, int path_count)
 
     graf_mouse(BUSYBEE, NULL);
 
-    outio = make_io(outfp);
     memset(&ar, 0, sizeof(ar));
-    if (current_interchange_profile)
-        rc = bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1);
-    else
-        rc = bp_archive_create(&ar, &outio, 0, current_method);
+    if (volume_mode) {
+        bp_volume_sink_t sink;
+        vol_sink_init(&gui_vol, &sink);
+        rc = bp_archive_create_volumes(&ar, &sink,
+                bp_u64_from_u32(atari_disks[current_disk].bytes),
+                current_interchange_profile ? BP_BLOCK_16K : 0,
+                current_interchange_profile ? BP_METHOD_BOLTLITE
+                                            : current_method);
+        if (rc == BP_OK && current_interchange_profile) {
+            rc = bp_archive_use_profile(&ar, BP_PROFILE_INTERCHANGE_1);
+            if (rc != BP_OK) bp_archive_close(&ar);
+            else if (current_method == BP_METHOD_STORED)
+                ar.method = BP_METHOD_STORED;
+        }
+    } else {
+        outio = make_io(outfp);
+        if (current_interchange_profile)
+            rc = bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1);
+        else
+            rc = bp_archive_create(&ar, &outio, 0, current_method);
+    }
     if (rc != BP_OK) {
-        bp_archive_close(&ar);
-        (void)fflush(outfp);
-        snapshot_staged_output(&archive_stage);
-        (void)fclose(outfp);
-        outfp = NULL;
-        archive_stage.fd = -1;
-        snapshot_closed_stage(&archive_stage);
-        discard_staged_output(&archive_stage);
+        if (!volume_mode) {
+            bp_archive_close(&ar);
+            (void)fflush(outfp);
+            snapshot_staged_output(&archive_stage);
+            (void)fclose(outfp);
+            outfp = NULL;
+            archive_stage.fd = -1;
+            snapshot_closed_stage(&archive_stage);
+            discard_staged_output(&archive_stage);
+        }
         graf_mouse(ARROW, NULL);
         stop_progress_ui(&progress);
         free_gather_files();
+        if (volume_mode && gui_vol.aborted) return;
         show_alert("Create failed");
         return;
     }
@@ -3658,7 +3829,10 @@ static void do_create_from_paths(char **paths, int path_count)
     if (rc == BP_OK)
         rc = bp_archive_finalize(&ar);
     bp_archive_close(&ar);
-    if (rc == BP_OK) {
+    if (volume_mode) {
+        if (rc != BP_OK) vol_remove_written(&gui_vol);
+        else vol_remove_stale(&gui_vol, gui_vol.written);
+    } else if (rc == BP_OK) {
         rc = finish_archive_stage(&outfp, &archive_stage);
         archive_published = archive_stage.committed;
     } else {
@@ -3677,6 +3851,19 @@ static void do_create_from_paths(char **paths, int path_count)
     stop_progress_ui(&progress);
     free_gather_files();
 
+    if (rc != BP_OK && volume_mode) {
+        if (!gui_vol.aborted) {
+            if (create_error != NULL)
+                show_alert(create_error);
+            else if (gui_vol.problem[0] != '\0' && gui_vol.why[0] != '\0') {
+                char msg[160];
+                sprintf(msg, "Cannot write the set: a volume %.100s", gui_vol.why);
+                show_alert(msg);
+            } else
+                show_alert("Create failed; the set was not completed");
+        }
+        return;
+    }
     if (rc != BP_OK) {
         if (archive_stage.recovery_path[0] != '\0') {
             show_recovery_alert(archive_stage.recovery_path);
@@ -3701,6 +3888,13 @@ static void do_create_from_paths(char **paths, int path_count)
 
     if (preservation_partial)
         show_alert("Archive created, but some source attributes or times were not saved");
+
+    if (volume_mode && gui_vol.written > 1) {
+        char msg[120];
+        sprintf(msg, "Written as %u disks. Keep|them in order: the last one|holds the archive name.",
+                gui_vol.written);
+        show_alert(msg);
+    }
 
     do_open(out_path);
 }
@@ -3828,6 +4022,9 @@ static void handle_menu(short title, short item)
             case MN_LIGHT:
                 toggle_light_compression();
                 break;
+            case MN_DISK:
+                cycle_disk_size();
+                break;
             case MN_INTERCHANGE_PROFILE:
                 toggle_interchange_profile();
                 break;
@@ -3927,6 +4124,7 @@ static void event_loop(void)
                         redraw_window(win_x, win_y, win_w, win_h);
                         break;
                     case 0x31: do_create();      break; /* Ctrl+N */
+                    case 0x20: cycle_disk_size(); break; /* Ctrl+D */
                     case 0x10: return;                  /* Ctrl+Q */
                 }
             }

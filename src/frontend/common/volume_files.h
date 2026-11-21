@@ -20,6 +20,16 @@
  *   int  vol_hook_getline(char *buf, int size)   read an answer; 0 at EOF
  * With stdio streams, vol_hook_getline reads standard input with fgets unless
  * the includer defines BP_VOL_OWN_GETLINE and supplies its own.
+ * A GUI defines BP_VOL_OWN_PROMPT instead and supplies
+ *   int  vol_hook_prompt(int writing, const char *what, const char *name,
+ *                        const char *problem)
+ *       ask for media with OK and Cancel; 1 = OK (try again), 0 = cancel.
+ *       what is "volume 3" or "the last volume", name the file wanted,
+ *       problem the reason alone, to follow the name ("is truncated or
+ *               damaged"), or "" when nothing is wrong: a disk change
+ * in place of vol_hook_getline.  A GUI also sets bp_vol_files_t.interactive
+ * (reading) or .pause (writing) itself and reports failures with
+ * bp_vol_files_t.problem and .aborted, never with stderr.
  * The includer provides, before including this header:
  *   bp_io_from_file(bp_io_t *, FILE *)        its stdio stream adapter
  *                                             (with stdio streams)
@@ -97,7 +107,7 @@ static void vol_hook_io(bp_io_t *io, bp_vol_stream_t s)
     bp_io_from_file(io, s);
 }
 
-#ifndef BP_VOL_OWN_GETLINE
+#if !defined(BP_VOL_OWN_GETLINE) && !defined(BP_VOL_OWN_PROMPT)
 static int vol_hook_getline(char *buf, int size)
 {
     return fgets(buf, size, stdin) != NULL;
@@ -115,8 +125,10 @@ typedef struct {
     int       last_given;                   /* last_name came from the user */
     int       interactive;                  /* may ask for media */
     int       pause;                        /* writing: ask before each volume */
+    int       no_first_prompt;              /* ... except before volume 1 */
     int       aborted;                      /* the user typed q */
     char      problem[BP_VOL_PATH_MAX + 400];
+    char      why[120];                     /* the reason alone, for a GUI */
     /* the one open stream */
     bp_vol_stream_t fp;
     bp_io_t   io;
@@ -223,9 +235,23 @@ static void vol_last_name(const bp_vol_files_t *v, char *out, size_t size)
 }
 
 /* Ask the user to change media.  Returns 1 to retry, 0 to give up. */
-static int vol_prompt(bp_vol_files_t *v, const char *message)
+#ifdef BP_VOL_OWN_PROMPT
+static int vol_prompt(bp_vol_files_t *v, const char *message, int writing,
+                      const char *what, const char *name, const char *problem)
+{
+    (void)message;
+    if (!vol_hook_prompt(writing, what, name, problem)) {
+        v->aborted = 1;
+        return 0;
+    }
+    return 1;
+}
+#else
+static int vol_prompt(bp_vol_files_t *v, const char *message, int writing,
+                      const char *what, const char *name, const char *problem)
 {
     char line[64];
+    (void)writing; (void)what; (void)name; (void)problem;
     fprintf(stderr, "%s\nPress Enter when ready, or type q to quit: ", message);
     fflush(stderr);
     if (!vol_hook_getline(line, (int)sizeof(line)) ||
@@ -236,6 +262,7 @@ static int vol_prompt(bp_vol_files_t *v, const char *message)
     }
     return 1;
 }
+#endif
 
 static void vol_close_fp(bp_vol_files_t *v)
 {
@@ -275,6 +302,7 @@ static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
         sprintf(what, "volume %u", (unsigned)number + 1U);
     }
     if (reason != BP_OK) {
+        strcpy(v->why, vol_reason_text(reason));
         if (named_last)
             sprintf(v->problem, "%.*s %s", BP_VOL_NAME_PREC, name,
                     vol_reason_text(reason));
@@ -288,12 +316,13 @@ static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
             return NULL;
         sprintf(msg, BP_VOL_PROG ": %.*s.\nInsert or locate %s, %.*s.",
                 BP_VOL_TEXT_PREC, v->problem, what, BP_VOL_NAME_PREC, name);
-        if (!vol_prompt(v, msg)) return NULL;
+        if (!vol_prompt(v, msg, 0, what, name, v->why)) return NULL;
         if (number == BP_VOLUME_LAST_REQUEST) vol_last_name(v, name, sizeof(name));
     }
     for (;;) {
         v->fp = vol_hook_open_read(name);
         if (v->fp != BP_VOL_NO_STREAM) break;
+        sprintf(v->why, "cannot be opened: %.80s", vol_errtext());
         if (named_last)
             sprintf(v->problem, "cannot open %.*s: %s", BP_VOL_NAME_PREC, name,
                     vol_errtext());
@@ -303,7 +332,7 @@ static bp_io_t *vol_src_open(void *user, bp_uint16 number, int reason)
         if (!v->interactive) return NULL;
         sprintf(msg, BP_VOL_PROG ": %.*s.\nInsert or locate %s, %.*s.",
                 BP_VOL_TEXT_PREC, v->problem, what, BP_VOL_NAME_PREC, name);
-        if (!vol_prompt(v, msg)) return NULL;
+        if (!vol_prompt(v, msg, 0, what, name, v->why)) return NULL;
         if (number == BP_VOLUME_LAST_REQUEST) vol_last_name(v, name, sizeof(name));
     }
     v->problem[0] = '\0';
@@ -374,21 +403,24 @@ static bp_io_t *vol_sink_create(void *user, bp_uint16 number)
     bp_vol_files_t *v = (bp_vol_files_t *)user;
     static char name[BP_VOL_PATH_MAX + 8];
     static char msg[2 * BP_VOL_PATH_MAX + 512];
+    char what[32];
 
     vol_numbered_name(v, number, name, sizeof(name));
-    if (v->pause) {
+    sprintf(what, "volume %u", (unsigned)number + 1U);
+    if (v->pause && !(number == 0 && v->no_first_prompt)) {
         sprintf(msg, BP_VOL_PROG ": insert the disk for volume %u (%.*s).",
                 (unsigned)number + 1U, BP_VOL_NAME_PREC, name);
-        if (!vol_prompt(v, msg)) return NULL;
+        if (!vol_prompt(v, msg, 1, what, name, "")) return NULL;
     }
     for (;;) {
         v->fp = vol_hook_create(name, v->tmp_name, sizeof(v->tmp_name));
         if (v->fp != BP_VOL_NO_STREAM) break;
+        sprintf(v->why, "cannot be created: %.80s", vol_errtext());
         sprintf(v->problem, "cannot create volume %u beside %.*s: %s",
                 (unsigned)number + 1U, BP_VOL_NAME_PREC, name, vol_errtext());
         if (!v->pause) return NULL;
         sprintf(msg, BP_VOL_PROG ": %.*s.", BP_VOL_TEXT_PREC, v->problem);
-        if (!vol_prompt(v, msg)) return NULL;
+        if (!vol_prompt(v, msg, 1, what, name, v->why)) return NULL;
     }
     vol_hook_note_tmp(v->tmp_name);
     vol_hook_io(&v->io, v->fp);

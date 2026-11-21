@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Amiga and Atari ST GUIs write and read archive sets on several disks. The
+  Amiga has a Disks menu (880K Amiga, 1.76M Amiga HD, 720K PC, 1.44M PC); the
+  Atari ST steps through 360K, 720K, 800K and 1.44M with Compression > Disks
+  or Ctrl+D. With a size chosen, Create New writes the archive as volumes of at
+  most that many bytes (usable bytes on a freshly formatted disk: an Amiga OFS
+  880K disk holds 840,000 bytes of file but not 850,000), asks for an empty
+  disk before every volume after the first, and names them as the CLIs do
+  (`ARCHIVE.000`, `ARCHIVE.001`, ... and `ARCHIVE.BLT`, the last one). Open,
+  Validate and Extract ask for the disk of any volume they need, so a set made
+  by a GUI or any CLI opens from its last disk. The GUIs now read every archive
+  through the volume source and keep no file open between operations, so a disk
+  can be swapped at any time. On the Amiga a path such as `Empty:archive.bolt`
+  is turned into the drive (`DF0:`) before a set is read or written, so the
+  system does not ask for the old disk by name. Checked in Hatari (a set of
+  three 350,000-byte volumes made by the GUI restores with the Linux CLI, and
+  a set made by the Linux CLI extracts in the GUI) with every volume on one
+  hard drive: no diskette was swapped in an emulator. The disk prompts (create,
+  extract, a wrong disk, Cancel, opening from the last disk) run in a host test
+  (`make gui-volume-test`). The Amiga GUI is built but not driven in an
+  emulator; only its drive lookup was run in FS-UAE.
 - Amiga and Atari ST GUIs: a "Light (faster boltlz)" item in the Compression
   menu selects BoltLZ Fast (level 1): in the Amiga CLI on an emulated A500+ the
   Calgary corpus compresses 1.58 times as fast (14.2 against 9.0 KB/s) for

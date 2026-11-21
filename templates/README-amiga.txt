@@ -36,6 +36,13 @@ In the GUI, Compression > Light (faster boltlz) makes boltlz about 1.6 times
 as fast to compress for archives about 7% larger. It does not change
 extraction speed or the other methods.
 
+The GUI's Disks menu splits new archives over several disks: 880K Amiga
+(840,000 bytes per disk), 1.76M Amiga HD, 720K PC and 1.44M PC (CrossDOS).
+The volumes are named archive.000, archive.001, ... and archive.bolt last.
+You are asked for an empty, formatted disk before every volume after the
+first. To read a set, open archive.bolt from the last disk; Extract and
+Validate ask for the other disks. Choose Single file to switch splitting off.
+
 AMIGA NOTES
 -----------
 

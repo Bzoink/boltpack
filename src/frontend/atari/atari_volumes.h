@@ -62,10 +62,12 @@ static int vol_hook_sync(FILE *fp)
     return fflush(fp);
 }
 
+#ifndef BP_VOL_OWN_PROMPT
 static int vol_hook_interactive(void)
 {
     return isatty(0);
 }
+#endif
 
 static int vol_hook_exists(const char *path)
 {
@@ -78,10 +80,12 @@ static void vol_hook_note_tmp(const char *tmp)
     (void)tmp;   /* Atari: no signal-time cleanup */
 }
 
+#ifndef BP_VOL_OWN_PROMPT
 static int vol_hook_verbose(void)
 {
     return g_verbosity < VERB_SILENT;
 }
+#endif
 
 #include "../common/volume_size.h"
 #include "../common/volume_files.h"

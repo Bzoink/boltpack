@@ -827,7 +827,7 @@ HATARI_TOS ?=
 EMUTOS_ROM ?=
 FREEMINT_ROOT ?= build/freemint-probe/diskroot
 
-.PHONY: atari atari-cli atari-cli-source-race-test atari-cli-parent-race-test atari-gui-create-test atari-gui-create-fat12-test atari-gui-unicode-refusal-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
+.PHONY: atari atari-cli atari-gui-volume-test atari-cli-source-race-test atari-cli-parent-race-test atari-gui-create-test atari-gui-create-fat12-test atari-gui-unicode-refusal-test atari-gui-menu-pointer-test atari-gui-cancel-test atari-gui-active-cancel-test atari-gui-interruption-test atari-gui-stage-substitution-test atari-gui-parent-substitution-test atari-gui-publish-rollback-test atari-gui-recovery-path-test atari-gui-interrupt-after-backup-test atari-gui-stage-recovery-test atari-gui-journal-path-test atari-gui-freemint-cleanup-test atari-gui-media-error-test atari-gui-time-range-test atari-path-test atari-hatari-fat-test atari-amiga-interoperability-test
 atari: atari-cli atari-gui
 
 atari-path-test:
@@ -2520,7 +2520,7 @@ os2-publish-host-test:
 volume-test: modern
 	python3 test/check_volumes.py --boltpack build/linux/boltpack
 
-test: modern unit-test volume-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test boltlz-m68k-c68-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
+test: modern unit-test gui-volume-test volume-test dos-djgpp linux-cli-extract-failure-test posix-dirfd-host-test posix-path-extract-host-test atari-path-test ql-path-test ql-time-host-test amiga-meta-host-test amiga-time-host-test amiga-gui-dirs-host-test amiga-gui-stage-host-test amiga-gui-gather-host-test amiga-gui-source-name-host-test amiga-gui-name-index-host-test os2-publish-host-test macos9-core-sync-test boltlz-m68k-c68-sync-test riscos-path-test riscos-stage-host-test riscos-profile-host-test haiku-host-stage-test haiku-gui-extract-host-test native-attrs-test macosx-xattr-test macos-source-kit-test linux-native-attrs-test win-links-test
 	@echo "=== check_boltpack ==="
 	python3 test/check_boltpack.py
 	@echo "=== source identity and mutation ==="
@@ -3561,6 +3561,12 @@ atari-gui-create-test: modern linuxmini atari-gui
 	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg \
 	    --linux-cli $(TARGET) --mini-cli build/linux32mini/bpmini
 
+atari-gui-volume-test: modern atari-gui
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
+	python3 test/check_hatari_gui_volumes.py --tos "$(HATARI_TOS)" \
+	    --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg --linux-cli $(TARGET)
+
 atari-gui-create-fat12-test: modern linuxmini atari-gui
 	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image" >&2; exit 1; }
 	python3 test/check_hatari_gui_create.py --fat12 --tos "$(HATARI_TOS)" \
@@ -3960,6 +3966,22 @@ $(UNIT_BUILD_DIR)/test_archive7: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
 $(UNIT_BUILD_DIR)/test_archive7_asan: $(ARCHIVE7_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
     $(UNIT_TEST_DIR)/test_runner.h | $(UNIT_BUILD_DIR)
 	$(CC) $(UNIT_ASAN_FLAGS) $(DEBUG_LDFLAGS) -o $@ $(ARCHIVE7_TEST_SRCS)
+
+# --- test_gui_volumes: the Amiga/Atari GUI disk prompts, on POSIX hooks ---
+GUI_VOLUMES_TEST_SRCS = $(UNIT_TEST_DIR)/test_gui_volumes.c $(COREDIR)/archiver.c \
+    $(COREDIR)/compress.c $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+    $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+
+$(UNIT_BUILD_DIR)/test_gui_volumes: $(GUI_VOLUMES_TEST_SRCS) $(ARCHIVE_TEST_HEADERS) \
+    $(UNIT_TEST_DIR)/test_runner.h src/frontend/common/gui_volumes.h \
+    src/frontend/common/volume_files.h src/frontend/posix/volume_files.h | $(UNIT_BUILD_DIR)
+	$(CC) -std=gnu99 -Wall -Wextra -Wno-unused-function -O2 $(BP_VER_DEFS) \
+	    -DBP_ENABLE_ADLER32 -I$(COREDIR) -I$(UNIT_TEST_DIR) -o $@ \
+	    $(GUI_VOLUMES_TEST_SRCS)
+
+.PHONY: gui-volume-test
+gui-volume-test: $(UNIT_BUILD_DIR)/test_gui_volumes
+	$(UNIT_BUILD_DIR)/test_gui_volumes
 
 # --- test_mini7: mini core (archive format 7) against archiver.c ---
 MINI7_TEST_SRCS = $(UNIT_TEST_DIR)/test_mini7.c $(COREDIR)/archiver.c \
