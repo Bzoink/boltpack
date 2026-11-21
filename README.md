@@ -44,10 +44,13 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Linux MIPS32 (mips)           | [boltpack-1.12-linux-mips-MIPS32.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips-MIPS32.tar.gz) |
 | Linux MIPS32 LE (mipsel)      | [boltpack-1.12-linux-mipsel-MIPS32el.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mipsel-MIPS32el.tar.gz) |
 | Linux MIPS64 (mips64)         | [boltpack-1.12-linux-mips64-MIPS64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips64-MIPS64.tar.gz) |
+| Linux MIPS64 LE (mips64el)    | [boltpack-1.12-linux-mips64el-MIPS64el.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips64el-MIPS64el.tar.gz) |
 | Linux SPARC64                 | [boltpack-1.12-linux-sparc64-SPARC64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-sparc64-SPARC64.tar.gz) |
 | Linux m68k (68020+, assembly) | [boltpack-1.12-linux-m68k-M68K.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-m68k-M68K.tar.gz) |
 | Linux PowerPC 32-bit (ppc)    | [boltpack-1.12-linux-ppc-PPC.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-ppc-PPC.tar.gz) |
 | Linux Alpha                   | [boltpack-1.12-linux-alpha-Alpha.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-alpha-Alpha.tar.gz) |
+| Linux PA-RISC (hppa)          | [boltpack-1.12-linux-hppa-PA-RISC.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-hppa-PA-RISC.tar.gz) |
+| Linux SuperH SH-4 (sh4)       | [boltpack-1.12-linux-sh4-SH4.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-sh4-SH4.tar.gz) |
 | FreeBSD x86-64                | [boltpack-1.12-freebsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-freebsd-x86-64.tar.gz) |
 | NetBSD x86-64                 | [boltpack-1.12-netbsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-netbsd-x86-64.tar.gz) |
 | Linux RISC-V 64               | [boltpack-1.12-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-riscv-riscv64.tar.gz)           |

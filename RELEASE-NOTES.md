@@ -150,9 +150,14 @@
   big-endian systems. Tested under qemu-ppc like the other CPUs: BoltLite and
   Fluff archives have exactly the same size as x86, BoltLZ is 85 bytes
   different (big-endian), archives are exchanged both ways and the unit
-  suites pass. Not run on real hardware. `make hppa`, `make sh4` and `make
-  mips64el` exist for PA-RISC, SuperH SH-4 and little-endian MIPS64 but have
-  no packages yet (their compilers were not installed when 1.12 was built).
+  suites pass. Not run on real hardware.
+- New statically linked Linux packages for PA-RISC (`make hppa`,
+  `boltpack-VERSION-linux-hppa-PA-RISC.tar.gz`), SuperH SH-4 (`make sh4`,
+  `-linux-sh4-SH4`) and little-endian MIPS64 (`make mips64el`,
+  `-linux-mips64el-MIPS64el`), tested under qemu-user: BoltLite and Fluff
+  archives have exactly the same size as x86, BoltLZ is identical on SH-4 and
+  MIPS64el and 85 bytes different on big-endian PA-RISC, archives are exchanged
+  both ways and the unit suites pass. Not run on real hardware.
 - New statically linked Linux packages for SPARC64, Motorola 68k (68020 or
   later with an MMU) and DEC Alpha (EV56 or later) (`make sparc64`, `m68k`,
   `alpha`): `boltpack-VERSION-linux-sparc64-SPARC64`, `-m68k-M68K` and
