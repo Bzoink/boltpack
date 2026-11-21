@@ -91,6 +91,8 @@ declare -A PLATFORM_FORMAT=(
     [linux-arm32]="tar.gz"
     [linux-arm64]="tar.gz"
     [linux-ppc]="tar.gz"
+    [linux-hppa]="tar.gz"
+    [linux-sh4]="tar.gz"
     [linux-x86]="tar.gz"
     [musl]="tar.gz"
     [riscv]="tar.gz"
@@ -153,6 +155,8 @@ declare -A PLATFORM_ENCODING=(
     [linux-arm32]="UTF-8"
     [linux-arm64]="UTF-8"
     [linux-ppc]="UTF-8"
+    [linux-hppa]="UTF-8"
+    [linux-sh4]="UTF-8"
     [linux-x86]="UTF-8"
     [musl]="UTF-8"
     [riscv]="UTF-8"
@@ -228,6 +232,8 @@ declare -A PLATFORM_TEMPLATE=(
     [linux-arm32]="README-linux.txt"
     [linux-arm64]="README-linux.txt"
     [linux-ppc]="README-linux.txt"
+    [linux-hppa]="README-linux.txt"
+    [linux-sh4]="README-linux.txt"
     [linux-x86]="README-linux.txt"
     [musl]="README-linux.txt"
     [riscv]="README-linux.txt"
@@ -313,6 +319,8 @@ get_cpu_from_platform() {
         linux-arm32)                           echo "arm" ;;
         linux-arm64|aros|amigaos4|riscos)      echo "ARM" ;;
         linux-ppc|aix|hpux)                    echo "PPC" ;;
+        linux-hppa)                            echo "PA-RISC" ;;
+        linux-sh4)                             echo "SH4" ;;
         linux-x86|linux32mini|dos|dos16|win16|os2-16|cpm86|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
         linux-armel)                           echo "ARMv5" ;;

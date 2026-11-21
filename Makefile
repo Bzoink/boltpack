@@ -1634,6 +1634,66 @@ alpha:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(ALPHA_BUILDDIR)/boltpack
 
+# PowerPC 32-bit Linux (big-endian), statically linked
+PPC_CC      = powerpc-linux-gnu-gcc
+PPC_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+PPC_BUILDDIR = build/linux-ppc
+
+.PHONY: ppc
+ppc:
+	mkdir -p $(PPC_BUILDDIR)
+	$(PPC_CC) $(PPC_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_PPC32 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(PPC_BUILDDIR)/boltpack
+
+# PA-RISC 32-bit Linux (big-endian), statically linked
+HPPA_CC      = hppa-linux-gnu-gcc
+HPPA_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+HPPA_BUILDDIR = build/linux-hppa
+
+.PHONY: hppa
+hppa:
+	mkdir -p $(HPPA_BUILDDIR)
+	$(HPPA_CC) $(HPPA_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_PARISC \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(HPPA_BUILDDIR)/boltpack
+
+# SuperH SH-4 Linux (little-endian), statically linked
+SH4_CC      = sh4-linux-gnu-gcc
+SH4_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+SH4_BUILDDIR = build/linux-sh4
+
+.PHONY: sh4
+sh4:
+	mkdir -p $(SH4_BUILDDIR)
+	$(SH4_CC) $(SH4_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_SH \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(SH4_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto

@@ -631,6 +631,18 @@ do_win_arm64() {
     build_make_target win-arm64 "${WINARM64_CC:-aarch64-w64-mingw32-clang}" build/win-arm64/boltpack.exe
 }
 
+do_ppc() {
+    build_make_target ppc powerpc-linux-gnu-gcc build/linux-ppc/boltpack
+}
+
+do_hppa() {
+    build_make_target hppa hppa-linux-gnu-gcc build/linux-hppa/boltpack
+}
+
+do_sh4() {
+    build_make_target sh4 sh4-linux-gnu-gcc build/linux-sh4/boltpack
+}
+
 do_armel() {
     build_make_target armel arm-linux-gnueabi-gcc build/linux-armel/boltpack
 }
@@ -883,6 +895,9 @@ do_all() {
     do_sparc64     || failed=1
     do_m68k        || failed=1
     do_alpha       || failed=1
+    do_ppc         || failed=1
+    do_hppa        || failed=1
+    do_sh4         || failed=1
     do_ppc64le     || failed=1
     do_s390x       || failed=1
     do_musl        || failed=1
@@ -1172,6 +1187,9 @@ Targets:
   sparc64        Cross-compile for SPARC64 Linux (static)
   m68k           Cross-compile for Motorola 68k Linux (68020+, static; C and assembly builds)
   alpha          Cross-compile for DEC Alpha Linux (static)
+  ppc            Cross-compile for PowerPC 32-bit Linux (static)
+  hppa           Cross-compile for PA-RISC Linux (static)
+  sh4            Cross-compile for SuperH SH-4 Linux (static)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
@@ -1279,6 +1297,9 @@ case "$1" in
     sparc64)  do_sparc64 ;;
     m68k)     do_m68k ;;
     alpha)    do_alpha ;;
+    ppc)      do_ppc ;;
+    hppa)     do_hppa ;;
+    sh4)      do_sh4 ;;
     ppc64le)      do_ppc64le ;;
     s390x)        do_s390x ;;
     musl)         do_musl ;;
