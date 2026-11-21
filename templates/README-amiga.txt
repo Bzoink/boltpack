@@ -28,9 +28,13 @@ List:
 COMPRESSION
 -----------
 
--F          Use Fluff (best for big screens)
+-F          Use Fluff (best ratio, about 1 KB/s on a 68000; level 3)
             boltlz is the default method
 -0          No compression
+
+In the GUI, Compression > Light (faster boltlz) makes boltlz about 1.6 times
+as fast to compress for archives about 7% larger. It does not change
+extraction speed or the other methods.
 
 AMIGA NOTES
 -----------

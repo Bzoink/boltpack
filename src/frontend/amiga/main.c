@@ -39,6 +39,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "../common/bp_68k_levels.h"
 #include "amiga_meta.h"
 
 #ifndef BP_CREATOR_OS
@@ -2255,6 +2256,7 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
         vol_report(&vf, rc, bp_strerror);
         return 1;
     }
+    ar.method_level = bp_68k_method_level(ar.method, 0);
     start = clock();
     for (i = 1; i < argc; i++) {
         rc = add_path(&ar, argv[i], clean_path(argv[i]));
@@ -2342,6 +2344,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     }
     if (interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
+    ar.method_level = bp_68k_method_level(ar.method, 0);
 
     start = clock();
 
@@ -3023,6 +3026,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
             return 1;
         }
     }
+    ar.method_level = bp_68k_method_level(ar.method, 0);
 
     for (i = 1; i < argc; i++) {
         const char *path    = argv[i];

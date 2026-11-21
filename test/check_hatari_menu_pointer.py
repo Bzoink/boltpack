@@ -132,6 +132,7 @@ def main():
                                               "compression-boltlite",
                                               "compression-boltlz",
                                               "compression-fluff",
+                                              "compression-light",
                                               "compression-profile"),
                         default="archive-open",
                         help="production menu action to exercise")
@@ -243,7 +244,9 @@ def main():
                                         "BoltLZ method check"),
                 "compression-fluff": (500, 500, 128, "Compression > Fluff",
                                        "Fluff method check"),
-                "compression-profile": (500, 500, 146,
+                "compression-light": (500, 500, 146, "Compression > Light",
+                                      "Light compression check"),
+                "compression-profile": (500, 500, 172,
                                         "Compression > Interchange Profile 1",
                                         "Interchange Profile 1 check"),
             }[args.action]
@@ -324,6 +327,7 @@ def main():
                  "compression-boltlite": 9000,
                  "compression-boltlz": 9000,
                  "compression-fluff": 9000,
+                 "compression-light": 9000,
                  "compression-profile": 9000}.get(args.action, 20000)
     if args.action not in ("archive-close", "archive-quit") and nonwhite[-1] < threshold:
         raise RuntimeError(action_name + " dialog marker absent from screenshots; evidence: " + str(out))
@@ -335,8 +339,13 @@ def main():
     check_region = None
     check_pixels = None
     if args.action.startswith("compression-"):
-        check_top = item_y + (52 if args.action == "compression-profile" else 49)
-        check_bottom = item_y + (64 if args.action == "compression-profile" else 59)
+        # Rows are about 20 px apart on screen, so the offsets from the click
+        # row to the checkmark shrink for the last item (its click row is 172
+        # to land inside the eighth row).
+        top, bottom = {"compression-light": (52, 64),
+                       "compression-profile": (46, 58)}.get(args.action, (49, 59))
+        check_top = item_y + top
+        check_bottom = item_y + bottom
         check_region = (403, check_top, 415, check_bottom)
         check_pixels = png_black_count(screenshots[-1], check_region)
         if check_pixels < 20:

@@ -41,6 +41,7 @@
 #include "../../core/compress.h"
 #include "../../core/fluff.h"
 #include "../../core/bp_codepage.h"
+#include "../common/bp_68k_levels.h"
 #include "atari_path.h"
 
 /* TOS system calls: Fattrib(), Malloc() */
@@ -2018,6 +2019,7 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
         vol_report(&vf, rc, bp_strerror);
         return 1;
     }
+    ar.method_level = bp_68k_method_level(ar.method, 0);
     start = clock();
     for (i = 1; i < argc; i++) {
         char arcbuf[BP_MAX_PATH];
@@ -2135,6 +2137,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     archive_open = 1;
     if (interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
+    ar.method_level = bp_68k_method_level(ar.method, 0);
 
     start = clock();
 
@@ -2643,6 +2646,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
+    ar.method_level = bp_68k_method_level(ar.method, 0);
 
     for (i = 1; i < argc; i++) {
         const char *path     = argv[i];

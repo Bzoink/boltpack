@@ -32,6 +32,7 @@
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
+#include "../common/bp_68k_levels.h"
 #include "amiga_source_name.h"
 #include "amiga_gui_dirs.h"
 #include "../amiga/amiga_source_stat.h"
@@ -108,6 +109,7 @@
 #define MN_METHOD_BOLTLZ   12
 #define MN_METHOD_FLUFF   13
 #define MN_INTERCHANGE_PROFILE 14
+#define MN_LIGHT              15
 
 /* Gadget IDs */
 #define GID_LISTVIEW   1
@@ -184,6 +186,7 @@ typedef struct {
 static amiga_progress_ui_t *active_progress;
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 static int current_interchange_profile;
+static int current_light;   /* BoltLZ Fast; see bp_68k_levels.h */
 static char status_lines[STATUS_LINE_COUNT][160];
 static int gather_count;
 static char **gather_files;
@@ -504,6 +507,13 @@ static const char *method_name(int m)
         case 3: return "fluff";
     }
     return "?";
+}
+
+static const char *current_method_label(void)
+{
+    if (current_light && current_method == BP_METHOD_BOLTLZ)
+        return "boltlz (light)";
+    return method_name(current_method);
 }
 
 static const char *format_methods(const bp_uint32 *counts)
@@ -1139,13 +1149,16 @@ static void sync_compression_menu_checks(void)
     struct MenuItem *boltlz;
     struct MenuItem *fluff;
     struct MenuItem *interchange;
+    struct MenuItem *light;
 
     stored = find_menu_item_by_id(MN_METHOD_STORED);
     BoltLite   = find_menu_item_by_id(MN_METHOD_BOLTLITE);
     boltlz  = find_menu_item_by_id(MN_METHOD_BOLTLZ);
     fluff  = find_menu_item_by_id(MN_METHOD_FLUFF);
     interchange = find_menu_item_by_id(MN_INTERCHANGE_PROFILE);
+    light = find_menu_item_by_id(MN_LIGHT);
 
+    if (light) light->Flags &= (UWORD)~CHECKED;
     if (stored) stored->Flags &= (UWORD)~CHECKED;
     if (BoltLite)   BoltLite->Flags   &= (UWORD)~CHECKED;
     if (boltlz)  boltlz->Flags  &= (UWORD)~CHECKED;
@@ -1170,6 +1183,8 @@ static void sync_compression_menu_checks(void)
     }
     if (interchange && current_interchange_profile)
         interchange->Flags |= CHECKED;
+    if (light && current_light)
+        light->Flags |= CHECKED;
 
     if (win && menu_strip) {
         ClearMenuStrip(win);
@@ -1211,7 +1226,16 @@ static void select_compression_method(bp_uint8 method)
 
     current_method = method;
     current_interchange_profile = 0;
-    log_message("Compression method selected: %s", method_name(current_method));
+    log_message("Compression method selected: %s", current_method_label());
+    sync_compression_menu_checks();
+    refresh_idle_status();
+}
+
+static void toggle_light_compression(void)
+{
+    current_light = !current_light;
+    log_message("Light compression %s (BoltLZ Fast)",
+                current_light ? "enabled" : "disabled");
     sync_compression_menu_checks();
     refresh_idle_status();
 }
@@ -1258,7 +1282,7 @@ static void refresh_idle_status(void)
 
     format_size_compact((double)amiga_largest_free_block(), free_buf);
     sprintf(line1, "Compression: %s   Largest free: %s",
-            method_name(current_method), free_buf);
+            current_method_label(), free_buf);
 
     if (archive_fp) {
         file_count = archive_info.entry_count - archive_info.dir_count -
@@ -1319,6 +1343,8 @@ static struct NewMenu new_menus[] = {
     { NM_ITEM,  USTR("BoltLite"),          NULL, CHECKIT, 0, (APTR)MN_METHOD_BOLTLITE },
     { NM_ITEM,  USTR("boltlz"),       NULL, CHECKIT | CHECKED, 0, (APTR)MN_METHOD_BOLTLZ },
     { NM_ITEM,  USTR("Fluff"),         NULL, CHECKIT, 0, (APTR)MN_METHOD_FLUFF },
+    { NM_ITEM,  NM_BARLABEL,      NULL, 0, 0, NULL },
+    { NM_ITEM,  USTR("Light (faster boltlz)"), NULL, CHECKIT, 0, (APTR)MN_LIGHT },
 
     { NM_TITLE, USTR("Help"),           NULL, 0, 0, NULL },
     { NM_ITEM,  USTR("About BoltPack"), NULL, 0, 0, (APTR)MN_ABOUT },
@@ -2375,7 +2401,7 @@ static void do_create_from_paths(const char **paths, int path_count)
 
     show_create_queue(base_dir);
     start_progress_ui(&progress, "Creating archive",
-                      method_name(current_method), total_bytes,
+                      current_method_label(), total_bytes,
                       (unsigned long)gather_count);
     log_memory_snapshot("before create");
     SetPointer(win, NULL, 0, 0, 0, 0);
@@ -2386,7 +2412,7 @@ static void do_create_from_paths(const char **paths, int path_count)
         ? bp_archive_create_profile(&ar, &outio, BP_PROFILE_INTERCHANGE_1)
         : bp_archive_create(&ar, &outio, 0, current_method);
     log_message("archive create('%s') rc=%d (%s) method=%s profile=%d",
-                out_path, rc, bp_strerror(rc), method_name(current_method),
+                out_path, rc, bp_strerror(rc), current_method_label(),
                 current_interchange_profile);
     if (rc != BP_OK) {
         (void)fclose(outfp);
@@ -2398,6 +2424,7 @@ static void do_create_from_paths(const char **paths, int path_count)
         free_gather_files();
         return;
     }
+    ar.method_level = bp_68k_method_level(ar.method, current_light);
     preservation_partial = 0;
     time_unknown = 0;
     metadata_unread = 0;
@@ -2791,6 +2818,9 @@ static void event_loop(void)
                                     case MN_INTERCHANGE_PROFILE:
                                         toggle_interchange_profile();
                                         break;
+                                    case MN_LIGHT:
+                                        toggle_light_compression();
+                                        break;
                                     case MN_QUIT:    running = FALSE;    break;
                                     case MN_ABOUT:   show_about_dialog(); break;
                                     case MN_DOC:
@@ -2799,6 +2829,7 @@ static void event_loop(void)
                                             "Use Compression to choose Stored, BoltLite,\n"
                                             "boltlz or Fluff for new archives, or select\n"
                                             "Interchange Profile 1 for mini-reader limits.\n"
+                                            "Light makes boltlz compress faster, a bit larger.\n"
                                             "Drop .bolt/.blt files to open them.\n"
                                             "Drop other files or drawers to archive them.");
                                         break;

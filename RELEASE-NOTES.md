@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Amiga and Atari ST GUIs: a "Light (faster boltlz)" item in the Compression
+  menu selects BoltLZ Fast (level 1): in the Amiga CLI on an emulated A500+ the
+  Calgary corpus compresses 1.58 times as fast (14.2 against 9.0 KB/s) for
+  output 7.1% larger (52.6% against 49.2%); extraction is unchanged. The core
+  already had the level (`bp_archive_t.method_level`); the 68k frontends never
+  set it. Archives are ordinary BoltLZ streams, readable by any BoltPack.
+- Amiga and Atari ST (GUIs and CLIs): Fluff now runs at level 3 instead of the
+  codec's default 8 (`src/frontend/common/bp_68k_levels.h`). Measured in FS-UAE
+  on five Calgary files, Fluff on a 68000 runs at 1.1 to 1.4 KB/s at every
+  level, so the high levels buy nothing: level 3 is 19% faster than 8 for
+  output 1% larger (27.3% against 27.0%); level 1 is no faster and 8% larger,
+  so Fluff has no "light" setting. Checked: the Amiga default now gives the
+  size of an x86 level 3 archive plus the Amiga metadata entry.
 - 68k builds with the assembly (Atari, Amiga, Classic Mac 68k, X68000 and the
   Linux m68k program) use a hand-written CRC-32 (`src/core/crc32_m68k.S`),
   switched on together with `BOLTLZ_M68K_ASM=1`. It reads four bytes per round

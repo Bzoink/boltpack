@@ -31,6 +31,7 @@
 #include "../../core/fluff.h"
 #include "../../core/boltlite.h"
 #include "../../core/bp_codepage.h"
+#include "../common/bp_68k_levels.h"
 #include "../atari/atari_path.h"
 
 #include <gem.h>            /* AES + VDI (gemlib) */
@@ -125,9 +126,10 @@ extern FILE *fdopen(int fd, const char *mode);
 #define MN_METHOD_BOLTLITE     (MENU_COMP_BOX + 4)
 #define MN_METHOD_BOLTLZ    (MENU_COMP_BOX + 5)
 #define MN_METHOD_FLUFF    (MENU_COMP_BOX + 6)
-#define MN_INTERCHANGE_PROFILE (MENU_COMP_BOX + 7)
+#define MN_LIGHT           (MENU_COMP_BOX + 7)
+#define MN_INTERCHANGE_PROFILE (MENU_COMP_BOX + 8)
 
-#define MENU_HELP_BOX (MENU_COMP_BOX + 8)
+#define MENU_HELP_BOX (MENU_COMP_BOX + 9)
 #define MN_HELP_ABOUT (MENU_HELP_BOX + 1)
 #define MN_DOC        (MENU_HELP_BOX + 2)
 
@@ -170,6 +172,7 @@ static bp_archive_info_t archive_info;
 static bp_uint32 archive_sidecars; /* META/RSRC entries in archive_info */
 static bp_uint8 current_method = BP_METHOD_BOLTLZ;
 static int current_interchange_profile;
+static int current_light;   /* BoltLZ Fast; see bp_68k_levels.h */
 
 typedef struct {
     const char   *verb;
@@ -682,6 +685,9 @@ static void sync_compression_menu_checks(void)
     menu_objs[MN_METHOD_BOLTLZ].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_METHOD_FLUFF].ob_state &= (short)~OS_CHECKED;
     menu_objs[MN_INTERCHANGE_PROFILE].ob_state &= (short)~OS_CHECKED;
+    menu_objs[MN_LIGHT].ob_state &= (short)~OS_CHECKED;
+    if (current_light)
+        menu_objs[MN_LIGHT].ob_state |= OS_CHECKED;
     if (current_interchange_profile)
         menu_objs[MN_INTERCHANGE_PROFILE].ob_state |= OS_CHECKED;
 
@@ -718,6 +724,12 @@ static int select_compression_method(bp_uint8 method)
     current_interchange_profile = 0;
     sync_compression_menu_checks();
     return 1;
+}
+
+static void toggle_light_compression(void)
+{
+    current_light = !current_light;
+    sync_compression_menu_checks();
 }
 
 static void toggle_interchange_profile(void)
@@ -1136,7 +1148,7 @@ static void build_menu(void)
     menu_objs[MENU_COMP_BOX].ob_x      = (short)(MENU_COMPRESS_X * font_w);
     menu_objs[MENU_COMP_BOX].ob_y      = 0;
     menu_objs[MENU_COMP_BOX].ob_width  = (short)(26 * font_w);
-    menu_objs[MENU_COMP_BOX].ob_height = (short)(7 * (font_h + 2));
+    menu_objs[MENU_COMP_BOX].ob_height = (short)(8 * (font_h + 2));
     menu_objs[MENU_COMP_BOX].ob_spec.index = 0x00FF1100L;
 
     {
@@ -1147,10 +1159,11 @@ static void build_menu(void)
             "  BoltLite             ",
             "  boltlz          ",
             "  fluff            ",
+            "  Light (faster boltlz)",
             "  Interchange Profile 1"
         };
         int idx;
-        for (idx = 0; idx < 7; idx++) {
+        for (idx = 0; idx < 8; idx++) {
             int obj = MN_CREATE + idx;
             menu_objs[obj].ob_type = G_STRING;
             menu_objs[obj].ob_next = (obj < MN_INTERCHANGE_PROFILE) ? obj + 1 : MENU_COMP_BOX;
@@ -3484,7 +3497,9 @@ static void do_create_from_paths(char **paths, int path_count)
     }
 
     start_progress_ui(&progress, "Creating archive",
-                      current_interchange_profile ? "Interchange 1" : method_name(current_method),
+                      current_interchange_profile ? "Interchange 1"
+                          : (current_light && current_method == BP_METHOD_BOLTLZ)
+                                ? "boltlz (light)" : method_name(current_method),
                       total_bytes, (unsigned long)gather_count, 0);
     progress.count_subjects = 1;
 
@@ -3511,6 +3526,7 @@ static void do_create_from_paths(char **paths, int path_count)
         show_alert("Create failed");
         return;
     }
+    ar.method_level = bp_68k_method_level(ar.method, current_light);
     ar.progress_fn = update_progress_ui;
     ar.progress_data = &progress;
     preservation_partial = gather_skipped_sources != 0;
@@ -3808,6 +3824,9 @@ static void handle_menu(short title, short item)
                 break;
             case MN_METHOD_FLUFF:
                 select_compression_method(BP_METHOD_FLUFF);
+                break;
+            case MN_LIGHT:
+                toggle_light_compression();
                 break;
             case MN_INTERCHANGE_PROFILE:
                 toggle_interchange_profile();

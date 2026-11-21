@@ -31,6 +31,9 @@ Double-click BOLTPACK.PRG.
   Archive > Information      Method, block size and number of files
   Compression > Create New   Choose files or a folder for a new archive;
                              the method ticked in the same menu is used
+  Compression > Light        Tick for faster boltlz: about 1.6 times as fast
+                             to compress, archives about 7% larger; no
+                             effect on the other methods or on extraction
 
 New archives are written to a temporary file (BPxxxxxx) next to the archive
 and renamed only when complete, so an existing archive is never damaged by a
@@ -65,7 +68,9 @@ Options:
 
 Approximate speed on an 8 MHz 68000 with mixed files: boltlz compresses
 about 12 KB/s and decompresses about 130 KB/s; BoltLite and Fluff compress
-about 1 KB/s. Use boltlz on an ST unless size matters most.
+about 1 KB/s. Use boltlz on an ST unless size matters most. Fluff runs at
+level 3: on a 68000 it is about as slow at every level, and level 3 gives
+nearly the best ratio (1% larger than level 8) for about 19% less time.
 
 ASSEMBLY BUILD
 --------------
