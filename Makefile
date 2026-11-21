@@ -1444,6 +1444,88 @@ armel:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(ARMEL_BUILDDIR)/boltpack
 
+# MIPS Linux, statically linked so it runs on glibc, musl (OpenWrt) and uClibc
+# systems alike. 32-bit builds need MIPS32r2 or later, 64-bit builds MIPS64r2.
+# MIPS 32-bit big-endian
+MIPS_CC      = mips-linux-gnu-gcc
+MIPS_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+MIPS_BUILDDIR = build/linux-mips
+
+.PHONY: mips
+mips:
+	mkdir -p $(MIPS_BUILDDIR)
+	$(MIPS_CC) $(MIPS_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_MIPS32 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(MIPS_BUILDDIR)/boltpack
+
+# MIPS 32-bit little-endian
+MIPSEL_CC      = mipsel-linux-gnu-gcc
+MIPSEL_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+MIPSEL_BUILDDIR = build/linux-mipsel
+
+.PHONY: mipsel
+mipsel:
+	mkdir -p $(MIPSEL_BUILDDIR)
+	$(MIPSEL_CC) $(MIPSEL_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_MIPS32 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(MIPSEL_BUILDDIR)/boltpack
+
+# MIPS 64-bit big-endian (n64)
+MIPS64_CC      = mips64-linux-gnuabi64-gcc
+MIPS64_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+MIPS64_BUILDDIR = build/linux-mips64
+
+.PHONY: mips64
+mips64:
+	mkdir -p $(MIPS64_BUILDDIR)
+	$(MIPS64_CC) $(MIPS64_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_MIPS64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(MIPS64_BUILDDIR)/boltpack
+
+# MIPS 64-bit little-endian (n64)
+MIPS64EL_CC      = mips64el-linux-gnuabi64-gcc
+MIPS64EL_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+MIPS64EL_BUILDDIR = build/linux-mips64el
+
+.PHONY: mips64el
+mips64el:
+	mkdir -p $(MIPS64EL_BUILDDIR)
+	$(MIPS64EL_CC) $(MIPS64EL_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_MIPS64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(MIPS64EL_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto

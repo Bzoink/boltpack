@@ -95,6 +95,10 @@ declare -A PLATFORM_FORMAT=(
     [musl]="tar.gz"
     [riscv]="tar.gz"
     [linux-armel]="tar.gz"
+    [linux-mips]="tar.gz"
+    [linux-mipsel]="tar.gz"
+    [linux-mips64]="tar.gz"
+    [linux-mips64el]="tar.gz"
     [linux-ppc64le]="tar.gz"
     [linux-s390x]="tar.gz"
     [wasm]="zip"
@@ -149,6 +153,10 @@ declare -A PLATFORM_ENCODING=(
     [musl]="UTF-8"
     [riscv]="UTF-8"
     [linux-armel]="UTF-8"
+    [linux-mips]="UTF-8"
+    [linux-mipsel]="UTF-8"
+    [linux-mips64]="UTF-8"
+    [linux-mips64el]="UTF-8"
     [linux-ppc64le]="UTF-8"
     [linux-s390x]="UTF-8"
     [wasm]="UTF-8"
@@ -216,6 +224,10 @@ declare -A PLATFORM_TEMPLATE=(
     [musl]="README-linux.txt"
     [riscv]="README-linux.txt"
     [linux-armel]="README-linux.txt"
+    [linux-mips]="README-linux.txt"
+    [linux-mipsel]="README-linux.txt"
+    [linux-mips64]="README-linux.txt"
+    [linux-mips64el]="README-linux.txt"
     [linux-ppc64le]="README-linux.txt"
     [linux-s390x]="README-linux.txt"
     [wasm]="README-generic.txt"
@@ -292,6 +304,10 @@ get_cpu_from_platform() {
         linux-x86|linux32mini|dos|dos16|win16|os2-16|cpm86|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
         linux-armel)                           echo "ARMv5" ;;
+        linux-mips)                            echo "MIPS32" ;;
+        linux-mipsel)                          echo "MIPS32el" ;;
+        linux-mips64)                          echo "MIPS64" ;;
+        linux-mips64el)                        echo "MIPS64el" ;;
         linux-ppc64le)                         echo "PowerPC" ;;
         linux-s390x)                           echo "IBM-Z" ;;
         wasm)                                  echo "wasm32" ;;

@@ -98,6 +98,42 @@ PLATFORMS = {
         ),
         "family": "Linux",
     },
+    "linux-mips": {
+        "name": "Linux (MIPS32, big-endian)",
+        "os": "Linux (mips)",
+        "arch": "MIPS 32-bit big-endian",
+        "description": (
+            "Statically linked MIPS32 Linux (MIPS32r2 or later, big-endian): routers, set-top boxes and embedded devices. Runs on glibc, musl (OpenWrt) and uClibc systems alike."
+        ),
+        "family": "Linux",
+    },
+    "linux-mipsel": {
+        "name": "Linux (MIPS32, little-endian)",
+        "os": "Linux (mipsel)",
+        "arch": "MIPS 32-bit little-endian",
+        "description": (
+            "Statically linked MIPS32 Linux (MIPS32r2 or later, little-endian): the common router layout, for example OpenWrt mipsel_24kc. Runs on glibc, musl and uClibc systems alike."
+        ),
+        "family": "Linux",
+    },
+    "linux-mips64": {
+        "name": "Linux (MIPS64, big-endian)",
+        "os": "Linux (mips64)",
+        "arch": "MIPS 64-bit big-endian",
+        "description": (
+            "Statically linked MIPS64 Linux (MIPS64r2 or later, big-endian, n64 ABI): network equipment and servers."
+        ),
+        "family": "Linux",
+    },
+    "linux-mips64el": {
+        "name": "Linux (MIPS64, little-endian)",
+        "os": "Linux (mips64el)",
+        "arch": "MIPS 64-bit little-endian",
+        "description": (
+            "Statically linked MIPS64 Linux (MIPS64r2 or later, little-endian, n64 ABI), for example Loongson and Octeon systems."
+        ),
+        "family": "Linux",
+    },
     "linux-armel": {
         "name": "Linux (ARMv5, soft-float)",
         "os": "Linux (armel)",

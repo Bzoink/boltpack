@@ -599,6 +599,22 @@ do_riscv() {
     build_make_target riscv riscv64-linux-gnu-gcc build/riscv/boltpack
 }
 
+do_mips() {
+    build_make_target mips mips-linux-gnu-gcc build/linux-mips/boltpack
+}
+
+do_mipsel() {
+    build_make_target mipsel mipsel-linux-gnu-gcc build/linux-mipsel/boltpack
+}
+
+do_mips64() {
+    build_make_target mips64 mips64-linux-gnuabi64-gcc build/linux-mips64/boltpack
+}
+
+do_mips64el() {
+    build_make_target mips64el mips64el-linux-gnuabi64-gcc build/linux-mips64el/boltpack
+}
+
 do_armel() {
     build_make_target armel arm-linux-gnueabi-gcc build/linux-armel/boltpack
 }
@@ -843,6 +859,10 @@ do_all() {
     do_arm64       || failed=1
     do_riscv       || failed=1
     do_armel       || failed=1
+    do_mips        || failed=1
+    do_mipsel      || failed=1
+    do_mips64      || failed=1
+    do_mips64el    || failed=1
     do_ppc64le     || failed=1
     do_s390x       || failed=1
     do_musl        || failed=1
@@ -1165,6 +1185,10 @@ Targets:
   arm64|aarch64  Cross-compile for ARM 64-bit Linux (RPi 3/4/5)
   riscv          Cross-compile for RISC-V 64 Linux
   armel          Cross-compile for ARMv5 soft-float Linux (static; also runs on ARMv6)
+  mips           Cross-compile for MIPS32 big-endian Linux (static)
+  mipsel         Cross-compile for MIPS32 little-endian Linux (static)
+  mips64         Cross-compile for MIPS64 big-endian Linux (static)
+  mips64el       Cross-compile for MIPS64 little-endian Linux (static)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
@@ -1266,6 +1290,10 @@ case "$1" in
     arm64|aarch64) do_arm64 ;;
     riscv)        do_riscv ;;
     armel)        do_armel ;;
+    mips)         do_mips ;;
+    mipsel)       do_mipsel ;;
+    mips64)       do_mips64 ;;
+    mips64el)     do_mips64el ;;
     ppc64le)      do_ppc64le ;;
     s390x)        do_s390x ;;
     musl)         do_musl ;;

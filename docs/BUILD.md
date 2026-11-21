@@ -67,7 +67,8 @@ Platform-specific targets and native build instructions are listed in
 ### Other CPUs under qemu-user
 
 Debian 13 packages cross compilers as `gcc-<arch>-linux-gnu` (`sudo apt install
-gcc-powerpc64le-linux-gnu gcc-s390x-linux-gnu gcc-arm-linux-gnueabi`) and `qemu-user` runs the
+gcc-powerpc64le-linux-gnu gcc-s390x-linux-gnu gcc-arm-linux-gnueabi
+gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64`) and `qemu-user` runs the
 results, for example `QEMU_LD_PREFIX=/usr/s390x-linux-gnu qemu-s390x
 build/linux-s390x/boltpack`. `make ppc64le` and `make s390x` build the CLI;
 the unit tests compile with the same compilers (`test_fluff.c` includes

@@ -136,6 +136,16 @@
   build in a `C_BUILD` folder as a fallback; archives are identical with all
   of them. Built with `make atari-optimized`, `amiga-optimized`,
   `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- New statically linked Linux packages for MIPS (`make mips`, `mipsel`,
+  `mips64`; `mips64el` has a target but no package yet): MIPS32 big-endian and
+  little-endian and MIPS64 big-endian, `boltpack-VERSION-linux-mips-MIPS32`,
+  `-mipsel-MIPS32el` and `-mips64-MIPS64.tar.gz`. They need MIPS32r2 or later
+  (MIPS64r2 for the 64-bit one) and, being static, run on glibc, musl (OpenWrt)
+  and uClibc systems. Tested under qemu-user: BoltLite and Fluff archives have
+  exactly the same size as x86, BoltLZ on the big-endian builds is 85 bytes
+  different from x86 (1,054,170 against 1,054,255; the little-endian build
+  matches), archives are exchanged both ways, the unit suites pass and the
+  level 9 stream matches x86. Not run on real hardware.
 - New statically linked Linux package for ARMv5 and later with software
   floating point (armel, `boltpack-VERSION-linux-armel-ARMv5.tar.gz`, `make
   armel`). The existing ARM 32-bit package targets ARMv7 and does not run on
