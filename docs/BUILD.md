@@ -64,6 +64,18 @@ Platform-specific targets and native build instructions are listed in
 [`frontends.md`](frontends.md) and [`portability.md`](portability.md). No
 `build/Makefile.*` files are shipped for Plan 9, z/OS, or OpenVMS.
 
+### Other CPUs under qemu-user
+
+Debian 13 packages cross compilers as `gcc-<arch>-linux-gnu` (`sudo apt install
+gcc-powerpc64le-linux-gnu gcc-s390x-linux-gnu`) and `qemu-user` runs the
+results, for example `QEMU_LD_PREFIX=/usr/s390x-linux-gnu qemu-s390x
+build/linux-s390x/boltpack`. `make ppc64le` and `make s390x` build the CLI;
+the unit tests compile with the same compilers (`test_fluff.c` includes
+`fluff.c`, so do not link it twice). qemu-s390x 10.0 reports file times
+without nanoseconds from `fstat`, so `boltpack c` there stops with "source
+changed during archive creation"; build a copy of `src/frontend/linux/main.c`
+without `BP_STAT_HAS_NSEC` to test creation, extraction needs nothing.
+
 ### Total Commander WCX Unicode runtime check
 
 With the Win64 MinGW cross compiler and Wine installed, load the WCX DLL through

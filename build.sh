@@ -599,6 +599,14 @@ do_riscv() {
     build_make_target riscv riscv64-linux-gnu-gcc build/riscv/boltpack
 }
 
+do_ppc64le() {
+    build_make_target ppc64le powerpc64le-linux-gnu-gcc build/linux-ppc64le/boltpack
+}
+
+do_s390x() {
+    build_make_target s390x s390x-linux-gnu-gcc build/linux-s390x/boltpack
+}
+
 do_musl() {
     build_make_target musl musl-gcc build/musl/boltpack
 }
@@ -830,6 +838,8 @@ do_all() {
     do_arm32       || failed=1
     do_arm64       || failed=1
     do_riscv       || failed=1
+    do_ppc64le     || failed=1
+    do_s390x       || failed=1
     do_musl        || failed=1
     do_hurd        || failed=1
     do_dos_djgpp   || failed=1
@@ -1149,6 +1159,8 @@ Targets:
   arm32|arm      Cross-compile for ARM 32-bit Linux (RPi etc.)
   arm64|aarch64  Cross-compile for ARM 64-bit Linux (RPi 3/4/5)
   riscv          Cross-compile for RISC-V 64 Linux
+  ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
+  s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
 
   dos            Cross-compile for DOS (DJGPP; optional DJGPP_BIN selects its bin directory)
@@ -1247,6 +1259,8 @@ case "$1" in
     arm32|arm)    do_arm32 ;;
     arm64|aarch64) do_arm64 ;;
     riscv)        do_riscv ;;
+    ppc64le)      do_ppc64le ;;
+    s390x)        do_s390x ;;
     musl)         do_musl ;;
     hurd)         do_hurd ;;
     e2k)          do_e2k ;;

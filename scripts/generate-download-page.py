@@ -98,6 +98,25 @@ PLATFORMS = {
         ),
         "family": "Linux",
     },
+    "linux-ppc64le": {
+        "name": "Linux (PowerPC 64, little-endian)",
+        "os": "Linux (ppc64le)",
+        "arch": "PowerPC 64-bit little-endian",
+        "description": (
+            "Linux on POWER8 and later (ppc64le): IBM Power Systems, Raptor "
+            "Talos workstations and servers."
+        ),
+        "family": "Linux",
+    },
+    "linux-s390x": {
+        "name": "Linux (IBM Z)",
+        "os": "Linux (s390x)",
+        "arch": "IBM Z (s390x), big-endian",
+        "description": (
+            "Linux on IBM Z and LinuxONE mainframes (s390x)."
+        ),
+        "family": "Linux",
+    },
     "riscv": {
         "name": "Linux (RISC-V 64)",
         "os": "Linux (riscv64)",

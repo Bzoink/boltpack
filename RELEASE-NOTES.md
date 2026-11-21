@@ -136,6 +136,21 @@
   build in a `C_BUILD` folder as a fallback; archives are identical with all
   of them. Built with `make atari-optimized`, `amiga-optimized`,
   `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- New Linux packages for 64-bit little-endian PowerPC (ppc64le, POWER8 and
+  later, `boltpack-VERSION-linux-ppc64le-PowerPC.tar.gz`) and IBM Z (s390x,
+  big-endian, `boltpack-VERSION-linux-s390x-IBM-Z.tar.gz`), built with
+  `make ppc64le` and `make s390x` (or `./build.sh ppc64le`, `./build.sh
+  s390x`) and including the level 9 optimal parser. Tested under qemu-user:
+  BoltLite and Fluff (levels 3, 8 and 9) give archives of exactly the same
+  size as x86, BoltLZ on s390x gives valid archives a few bytes different
+  from x86 (1,054,170 against 1,054,255 bytes on a 1.6 MB sample), archives
+  are exchanged both ways with the x86 build, the unit suites pass (Fluff,
+  BoltLZ, archive, compress, code page) and the level 9 stream matches the
+  x86 one bit for bit on both CPUs. Not run on real hardware. s390x is the
+  first big-endian 64-bit target tested; qemu-s390x's `fstat` omits the
+  nanoseconds that `lstat` reports, so the create-time "source changed" check
+  needs a build without nanosecond comparison to run there (a real kernel is
+  consistent).
 - The 16-bit DOS, Windows 3.x and OS/2 1.x packages likewise ship the build
   with the 8086 assembly BoltLite decoder as `bpmini.exe`, which extracts and
   tests faster, with the plain C build in `C_BUILD`

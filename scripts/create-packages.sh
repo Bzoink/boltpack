@@ -94,6 +94,8 @@ declare -A PLATFORM_FORMAT=(
     [linux-x86]="tar.gz"
     [musl]="tar.gz"
     [riscv]="tar.gz"
+    [linux-ppc64le]="tar.gz"
+    [linux-s390x]="tar.gz"
     [wasm]="zip"
     [macosx]="tar.gz"
     [haiku]="tar.gz"
@@ -145,6 +147,8 @@ declare -A PLATFORM_ENCODING=(
     [linux-x86]="UTF-8"
     [musl]="UTF-8"
     [riscv]="UTF-8"
+    [linux-ppc64le]="UTF-8"
+    [linux-s390x]="UTF-8"
     [wasm]="UTF-8"
     [macosx]="UTF-8"
     [haiku]="UTF-8"
@@ -209,6 +213,8 @@ declare -A PLATFORM_TEMPLATE=(
     [linux-x86]="README-linux.txt"
     [musl]="README-linux.txt"
     [riscv]="README-linux.txt"
+    [linux-ppc64le]="README-linux.txt"
+    [linux-s390x]="README-linux.txt"
     [wasm]="README-generic.txt"
     [macosx]="README-generic.txt"
     [haiku]="README-generic.txt"
@@ -282,6 +288,8 @@ get_cpu_from_platform() {
         linux-ppc|aix|hpux)                    echo "PPC" ;;
         linux-x86|linux32mini|dos|dos16|win16|os2-16|cpm86|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
+        linux-ppc64le)                         echo "PowerPC" ;;
+        linux-s390x)                           echo "IBM-Z" ;;
         wasm)                                  echo "wasm32" ;;
         linux|linux-static|linux-gui|musl|haiku|freebsd|netbsd|openbsd|macosx|solaris|illumos|hurd|zos|win64|win64-fltk-gui|irix|tru64|qnx|plan9|nextstep|zos)  echo "x86-64" ;;
         *)                                     echo "unknown" ;;

@@ -1382,6 +1382,46 @@ riscv:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(RISCV_BUILDDIR)/boltpack
 
+# PowerPC 64-bit little-endian Linux (POWER8 and later)
+PPC64LE_CC      = powerpc64le-linux-gnu-gcc
+PPC64LE_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+PPC64LE_BUILDDIR = build/linux-ppc64le
+
+.PHONY: ppc64le
+ppc64le:
+	mkdir -p $(PPC64LE_BUILDDIR)
+	$(PPC64LE_CC) $(PPC64LE_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_PPC64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(PPC64LE_BUILDDIR)/boltpack
+
+# IBM Z (s390x) Linux, big-endian
+S390X_CC      = s390x-linux-gnu-gcc
+S390X_CFLAGS  = -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+S390X_BUILDDIR = build/linux-s390x
+
+.PHONY: s390x
+s390x:
+	mkdir -p $(S390X_BUILDDIR)
+	$(S390X_CC) $(S390X_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_ZARCH \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(S390X_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto
