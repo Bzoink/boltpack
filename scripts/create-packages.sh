@@ -127,6 +127,7 @@ declare -A PLATFORM_FORMAT=(
     [win32]="zip"
     [win32-fltk-gui]="zip"
     [win64]="zip"
+    [win-arm64]="zip"
     [win64-fltk-gui]="zip"
     [linux-gui]="tar.gz"
     [os2]="zip"
@@ -188,6 +189,7 @@ declare -A PLATFORM_ENCODING=(
     [win32]="UTF-8"
     [win32-fltk-gui]="UTF-8"
     [win64]="UTF-8"
+    [win-arm64]="UTF-8"
     [win64-fltk-gui]="UTF-8"
     [linux-gui]="UTF-8"
     [os2]="UTF-8"
@@ -210,7 +212,7 @@ declare -A PLATFORM_ENCODING=(
 # Text files use CRLF line endings on these systems.
 declare -A PLATFORM_CRLF=(
     [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [os2]=1 [cpm86]=1
-    [win32]=1 [win32-fltk-gui]=1 [win64]=1 [win64-fltk-gui]=1
+    [win32]=1 [win32-fltk-gui]=1 [win64]=1 [win64-fltk-gui]=1 [win-arm64]=1
     [atari]=1 [x68k]=1
 )
 
@@ -262,6 +264,7 @@ declare -A PLATFORM_TEMPLATE=(
     [win32]="README-windows.txt"
     [win32-fltk-gui]="README-windows.txt"
     [win64]="README-windows.txt"
+    [win-arm64]="README-windows.txt"
     [win64-fltk-gui]="README-windows.txt"
     [linux-gui]="README-linux.txt"
     [os2]="README-windows.txt"
@@ -313,6 +316,7 @@ get_cpu_from_platform() {
         linux-x86|linux32mini|dos|dos16|win16|os2-16|cpm86|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
         linux-armel)                           echo "ARMv5" ;;
+        win-arm64)                             echo "ARM64" ;;
         linux-mips)                            echo "MIPS32" ;;
         linux-mipsel)                          echo "MIPS32el" ;;
         linux-mips64)                          echo "MIPS64" ;;

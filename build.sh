@@ -506,7 +506,7 @@ do_morphos() {
 
 do_freebsd() {
     local crt
-    crt=$(clang -target x86_64-unknown-freebsd14 -print-file-name=crtbegin.o 2>/dev/null)
+    crt=$(clang -target x86_64-unknown-freebsd14 ${FREEBSD_SYSROOT:+--sysroot=$FREEBSD_SYSROOT} -print-file-name=crtbegin.o 2>/dev/null)
     if [ "$crt" = "crtbegin.o" ]; then
         echo "  SKIP  freebsd (no FreeBSD sysroot found)"
         return 0
@@ -516,7 +516,7 @@ do_freebsd() {
 
 do_netbsd() {
     local crt
-    crt=$(clang -target x86_64--netbsd -print-file-name=crt0.o 2>/dev/null)
+    crt=$(clang -target x86_64--netbsd ${NETBSD_SYSROOT:+--sysroot=$NETBSD_SYSROOT} -print-file-name=crt0.o 2>/dev/null)
     if [ "$crt" = "crt0.o" ]; then
         echo "  SKIP  netbsd (no NetBSD sysroot found)"
         return 0
@@ -625,6 +625,14 @@ do_m68k() {
 
 do_alpha() {
     build_make_target alpha alpha-linux-gnu-gcc build/linux-alpha/boltpack
+}
+
+do_win_arm64() {
+    if [ -n "$LLVM_MINGW_ROOT" ]; then
+        PATH="$LLVM_MINGW_ROOT/bin:$PATH"
+        export PATH
+    fi
+    build_make_target win-arm64 "${WINARM64_CC:-aarch64-w64-mingw32-clang}" build/win-arm64/boltpack.exe
 }
 
 do_armel() {
@@ -871,6 +879,7 @@ do_all() {
     do_arm64       || failed=1
     do_riscv       || failed=1
     do_armel       || failed=1
+    do_win_arm64   || failed=1
     do_mips        || failed=1
     do_mipsel      || failed=1
     do_mips64      || failed=1
@@ -1200,6 +1209,7 @@ Targets:
   arm64|aarch64  Cross-compile for ARM 64-bit Linux (RPi 3/4/5)
   riscv          Cross-compile for RISC-V 64 Linux
   armel          Cross-compile for ARMv5 soft-float Linux (static; also runs on ARMv6)
+  win-arm64      Windows on ARM64 CLI (llvm-mingw; set LLVM_MINGW_ROOT or PATH)
   mips           Cross-compile for MIPS32 big-endian Linux (static)
   mipsel         Cross-compile for MIPS32 little-endian Linux (static)
   mips64         Cross-compile for MIPS64 big-endian Linux (static)
@@ -1308,6 +1318,7 @@ case "$1" in
     arm64|aarch64) do_arm64 ;;
     riscv)        do_riscv ;;
     armel)        do_armel ;;
+    win-arm64)    do_win_arm64 ;;
     mips)         do_mips ;;
     mipsel)       do_mipsel ;;
     mips64)       do_mips64 ;;

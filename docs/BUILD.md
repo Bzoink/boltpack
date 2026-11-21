@@ -64,6 +64,16 @@ Platform-specific targets and native build instructions are listed in
 [`frontends.md`](frontends.md) and [`portability.md`](portability.md). No
 `build/Makefile.*` files are shipped for Plan 9, z/OS, or OpenVMS.
 
+### Cross-building for Windows ARM64, FreeBSD and NetBSD
+
+Windows on ARM64: download an llvm-mingw release (the x86-64 Linux host build)
+and run `PATH=<llvm-mingw>/bin:$PATH make win-arm64` or `LLVM_MINGW_ROOT=...
+./build.sh win-arm64`. FreeBSD and NetBSD need a sysroot: extract `./lib`,
+`./usr/lib`, `./usr/include` and `./usr/libdata` from FreeBSD's `base.txz`
+(for example 14.5-RELEASE) or from NetBSD's `base.tar.xz` and `comp.tar.xz`,
+then `make freebsd FREEBSD_SYSROOT=<dir>` or `make netbsd NETBSD_SYSROOT=<dir>`
+(clang and `lld` are used). None of these results can be run on Linux.
+
 ### Other CPUs under qemu-user
 
 Debian 13 packages cross compilers as `gcc-<arch>-linux-gnu` (`sudo apt install

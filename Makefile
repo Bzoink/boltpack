@@ -1318,9 +1318,26 @@ morphos:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(MORPHOS_BUILDDIR)/boltpack
 
+# Windows on ARM64 command-line program, cross-compiled with llvm-mingw (clang).
+# Put llvm-mingw's bin directory on PATH or override WINARM64_CC / WINARM64_RC.
+WINARM64_CC       ?= aarch64-w64-mingw32-clang
+WINARM64_RC       ?= aarch64-w64-mingw32-windres
+WINARM64_BUILDDIR = build/win-arm64
+
+.PHONY: win-arm64
+win-arm64:
+	mkdir -p $(WINARM64_BUILDDIR)
+	$(WINARM64_RC) $(WIN_RC) -o $(WINARM64_BUILDDIR)/boltpack-res.o
+	$(WINARM64_CC) $(WIN_FLAGS) $(WIN_NET_CPPFLAGS) -DFLUFF_OPTIMAL \
+	    $(WIN_SRCS) $(WINARM64_BUILDDIR)/boltpack-res.o \
+	    $(WIN_NET_LIBS) -lshell32 -static \
+	    -o $(WINARM64_BUILDDIR)/boltpack.exe
+	@echo "  OK    $(WINARM64_BUILDDIR)/boltpack.exe"
+
 # FreeBSD
 FREEBSD_CC      = clang
-FREEBSD_CFLAGS  = -target x86_64-unknown-freebsd14 -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Wno-c2y-extensions
+FREEBSD_SYSROOT ?=
+FREEBSD_CFLAGS  = -target x86_64-unknown-freebsd14 $(if $(FREEBSD_SYSROOT),--sysroot=$(FREEBSD_SYSROOT) -fuse-ld=lld) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Wno-c2y-extensions
 FREEBSD_BUILDDIR = build/freebsd
 
 .PHONY: freebsd
@@ -1341,7 +1358,8 @@ freebsd:
 
 # NetBSD
 NETBSD_CC      = clang
-NETBSD_CFLAGS  = -target x86_64--netbsd -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Wno-c2y-extensions
+NETBSD_SYSROOT ?=
+NETBSD_CFLAGS  = -target x86_64--netbsd $(if $(NETBSD_SYSROOT),--sysroot=$(NETBSD_SYSROOT) -fuse-ld=lld) -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -Wno-c2y-extensions
 NETBSD_BUILDDIR = build/netbsd
 
 .PHONY: netbsd

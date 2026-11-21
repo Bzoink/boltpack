@@ -18,6 +18,12 @@
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 200112L
 #define _DEFAULT_SOURCE     /* getifaddrs / struct ifaddrs (glibc, BSD, macOS) */
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+#define __BSD_VISIBLE 1     /* IFF_BROADCAST is hidden by the POSIX macros above */
+#endif
+#if defined(__NetBSD__)
+#define _NETBSD_SOURCE 1    /* likewise */
+#endif
 
 #include "bp_net.h"
 

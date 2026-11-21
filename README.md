@@ -47,11 +47,14 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Linux SPARC64                 | [boltpack-1.12-linux-sparc64-SPARC64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-sparc64-SPARC64.tar.gz) |
 | Linux m68k (68020+)           | [boltpack-1.12-linux-m68k-M68K.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-m68k-M68K.tar.gz) |
 | Linux Alpha                   | [boltpack-1.12-linux-alpha-Alpha.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-alpha-Alpha.tar.gz) |
+| FreeBSD x86-64                | [boltpack-1.12-freebsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-freebsd-x86-64.tar.gz) |
+| NetBSD x86-64                 | [boltpack-1.12-netbsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-netbsd-x86-64.tar.gz) |
 | Linux RISC-V 64               | [boltpack-1.12-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-riscv-riscv64.tar.gz)           |
 | Linux PowerPC 64 (ppc64le)    | [boltpack-1.12-linux-ppc64le-PowerPC.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-ppc64le-PowerPC.tar.gz) |
 | Linux IBM Z (s390x)           | [boltpack-1.12-linux-s390x-IBM-Z.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-s390x-IBM-Z.tar.gz) |
 | Windows 64-bit installer      | [boltpack-1.12-win64-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win64-setup.exe)                     |
 | Windows 64-bit CLI            | [boltpack-1.12-win64-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win64-x86-64.zip)                   |
+| Windows ARM64 CLI             | [boltpack-1.12-win-arm64-ARM64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win-arm64-ARM64.zip) |
 | Windows 64-bit GUI (FLTK)     | [boltpack-1.12-win64-fltk-gui-x86-64.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win64-fltk-gui-x86-64.zip) |
 | Windows 32-bit installer      | [boltpack-1.12-win32-setup.exe](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win32-setup.exe)                     |
 | Windows 32-bit CLI            | [boltpack-1.12-win32-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win32-x86.zip)                         |

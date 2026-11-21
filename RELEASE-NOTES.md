@@ -136,6 +136,15 @@
   build in a `C_BUILD` folder as a fallback; archives are identical with all
   of them. Built with `make atari-optimized`, `amiga-optimized`,
   `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- New packages for Windows on ARM64 (`boltpack-VERSION-win-arm64-ARM64.zip`,
+  the command-line program built with llvm-mingw by `make win-arm64`),
+  FreeBSD (built against the FreeBSD 14.5 userland) and NetBSD (built against
+  NetBSD 11.1), cross-compiled with clang and the systems' own sysroots
+  (`make freebsd FREEBSD_SYSROOT=...`, `make netbsd NETBSD_SYSROOT=...`).
+  These three are built and linked but have not been run: there is no ARM64
+  Windows, FreeBSD or NetBSD machine or emulator here. The FreeBSD and NetBSD
+  builds needed a fix in `bp_net.c`, whose POSIX feature macros hid
+  `IFF_BROADCAST`; the BSD targets had never been built before.
 - New statically linked Linux packages for SPARC64, Motorola 68k (68020 or
   later with an MMU) and DEC Alpha (EV56 or later) (`make sparc64`, `m68k`,
   `alpha`): `boltpack-VERSION-linux-sparc64-SPARC64`, `-m68k-M68K` and

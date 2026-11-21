@@ -161,6 +161,16 @@ PLATFORMS = {
         ),
         "family": "Linux",
     },
+    "win-arm64": {
+        "name": "Windows on ARM64 (CLI)",
+        "os": "Windows 10 and 11 (ARM64)",
+        "arch": "ARM64",
+        "description": (
+            "Native command-line program for Windows on ARM (Snapdragon X "
+            "and other ARM64 PCs), built with llvm-mingw. Statically linked."
+        ),
+        "family": "Windows",
+    },
     "linux-armel": {
         "name": "Linux (ARMv5, soft-float)",
         "os": "Linux (armel)",
