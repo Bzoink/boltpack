@@ -1498,6 +1498,7 @@ Decoders MAY display `creator_os` for diagnostics. Extraction behavior is platfo
 | `0x14`        | z/Architecture           |
 | `0x15`        | SPARC64                  |
 | `0x16`        | Itanium (IA-64)          |
+| `0x17`        | LoongArch (64-bit)       |
 | `0x80`–`0xFF` | Reserved for private use |
 
 ---

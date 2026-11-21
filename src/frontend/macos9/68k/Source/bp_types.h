@@ -239,6 +239,7 @@ typedef struct {
 #define BP_CPU_ZARCH       0x14  /* z/Architecture */
 #define BP_CPU_SPARC64     0x15
 #define BP_CPU_IA64        0x16  /* Itanium */
+#define BP_CPU_LOONGARCH64 0x17  /* LoongArch (64-bit) */
 
 /* Block header sizes (bytes preceding each compressed block) */
 #define BP_BLOCK_HDR_V2   8   /* v2: comp_size(4) + orig_size(4) */

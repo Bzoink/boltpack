@@ -81,7 +81,7 @@ gcc-powerpc64le-linux-gnu gcc-s390x-linux-gnu gcc-arm-linux-gnueabi
 gcc-mips-linux-gnu gcc-mipsel-linux-gnu gcc-mips64-linux-gnuabi64
 gcc-sparc64-linux-gnu gcc-m68k-linux-gnu gcc-alpha-linux-gnu
 gcc-powerpc-linux-gnu gcc-hppa-linux-gnu gcc-sh4-linux-gnu gcc-mips64el-linux-gnuabi64
-gcc-powerpc64-linux-gnu`) and `qemu-user` runs the
+gcc-powerpc64-linux-gnu gcc-loongarch64-linux-gnu`) and `qemu-user` runs the
 results, for example `QEMU_LD_PREFIX=/usr/s390x-linux-gnu qemu-s390x
 build/linux-s390x/boltpack`. `make ppc64le` and `make s390x` build the CLI;
 the unit tests compile with the same compilers (`test_fluff.c` includes

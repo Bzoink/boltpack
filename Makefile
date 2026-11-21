@@ -1714,6 +1714,26 @@ ppc64:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(PPC64_BUILDDIR)/boltpack
 
+# LoongArch 64-bit Linux (little-endian), statically linked
+LOONGARCH64_CC      = loongarch64-linux-gnu-gcc
+LOONGARCH64_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+LOONGARCH64_BUILDDIR = build/linux-loongarch64
+
+.PHONY: loongarch64
+loongarch64:
+	mkdir -p $(LOONGARCH64_BUILDDIR)
+	$(LOONGARCH64_CC) $(LOONGARCH64_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_LOONGARCH64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(LOONGARCH64_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto

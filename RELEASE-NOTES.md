@@ -151,6 +151,14 @@
   Fluff archives have exactly the same size as x86, BoltLZ is 85 bytes
   different (big-endian), archives are exchanged both ways and the unit
   suites pass. Not run on real hardware.
+- New statically linked Linux package for LoongArch 64-bit
+  (`boltpack-VERSION-linux-loongarch64-LoongArch64.tar.gz`, `make loongarch64`).
+  The archive format's creator CPU codes (specification 2.0, section 6.2) gain
+  `0x17` for LoongArch (64-bit); the Linux CLI names it "LoongArch 64" and
+  older releases show "Unknown" for it but read the archives normally. Tested
+  under qemu-loongarch64: every codec gives archives of exactly the same size
+  as x86 (BoltLZ included), archives are exchanged both ways and the unit
+  suites pass. Not run on real hardware.
 - New statically linked Linux package for 64-bit big-endian PowerPC (ppc64,
   ELFv1: POWER and G5-class systems; `boltpack-VERSION-linux-ppc64-PPC64.tar.gz`,
   `make ppc64`). Tested under qemu-ppc64: BoltLite and Fluff archives have

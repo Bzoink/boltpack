@@ -3873,6 +3873,7 @@ static const char *cpu_name(bp_uint8 cpu)
     case BP_CPU_ZARCH:    return "z/Architecture";
     case BP_CPU_SPARC64:  return "SPARC64";
     case BP_CPU_IA64:     return "Itanium";
+    case BP_CPU_LOONGARCH64: return "LoongArch 64";
     default:              return "Unknown";
     }
 }

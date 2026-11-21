@@ -689,6 +689,10 @@ static void v7_detect_creator(bp_archive_t *ar)
     ar->creator_cpu = BP_CPU_ZARCH;
 #elif defined(__ia64__)
     ar->creator_cpu = BP_CPU_IA64;
+#elif defined(__loongarch64) || \
+      (defined(__loongarch__) && defined(__loongarch_grlen) && \
+       __loongarch_grlen == 64)
+    ar->creator_cpu = BP_CPU_LOONGARCH64;
 #endif
 #endif
 }
