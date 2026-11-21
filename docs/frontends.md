@@ -433,9 +433,8 @@ make win32-fltk-installer   # Also emits build/win32/boltpack-<version>-totalcmd
 make win64-fltk-installer   # Also emits build/win64/boltpack-<version>-totalcmd-plugin-win64.zip
 ```
 
-Release packaging also copies these installable plugin ZIPs into `dist/`, and
-the generated download page lists them as separate Total Commander plugin
-downloads.
+Release packaging also copies these installable plugin ZIPs into `dist/` as
+separate Total Commander plugin downloads.
 
 ### Installation
 

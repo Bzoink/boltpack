@@ -10,9 +10,7 @@ All primary build and packaging scripts have been enhanced with automatic depend
 
 - `make` — GNU Make (used to compile binaries for all platforms)
 
-**Optional Commands:**
-
-- `python3` — Python 3.x (needed for `./build.sh download-page` to generate the HTML download index)
+**Optional Commands:** none
 
 **Behavior:**
 
@@ -38,18 +36,6 @@ All primary build and packaging scripts have been enhanced with automatic depend
 - On missing required commands: Exits with code 1 and shows error list
 - On missing optional commands: Continues with warning message (reduced functionality)
 - Checks run before any packaging
-
-### 3. `scripts/generate-download-page.py` — Download Page Generator
-
-**Required:**
-
-- Python 3.6+ (uses only standard library: `os`, `sys`, `argparse`, `datetime`, `html`)
-
-**Behavior:**
-
-- On success: Prints `All necessary commands are installed` and continues
-- On Python < 3.6: Exits with error and version details
-- Check runs before any page generation
 
 ## Example Outputs
 
@@ -145,7 +131,6 @@ To verify dependency checks are working, run scripts with invalid arguments:
 # These will print dependency check results before error messages
 bash build.sh invalid-target
 bash scripts/create-packages.sh invalid-platform
-python3 scripts/generate-download-page.py --invalid-option
 ```
 
-All three should print dependency confirmation at the beginning of their output.
+Both should print dependency confirmation at the beginning of their output.

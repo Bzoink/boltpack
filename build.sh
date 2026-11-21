@@ -18,11 +18,6 @@ check_dependencies() {
         missing+=("make:GNU Make - used to compile binaries")
     fi
 
-    # Optional but needed for full workflow
-    if ! command -v python3 >/dev/null 2>&1; then
-        optional+=("python3:Python 3.x - needed for ./build.sh download-page (webpage generation)")
-    fi
-
     # Report results
     if [ ${#missing[@]} -gt 0 ]; then
         echo "================================"
@@ -1094,43 +1089,11 @@ do_packages() {
     return $status
 }
 
-do_download_page() {
-    echo "Generating download webpage..."
-    echo ""
-
-    # Check if dist directory exists with packages
-    if [ ! -d dist ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
-        echo "  WARN  No packages found in dist/"
-        echo "        Run ./build.sh packages first"
-        return 1
-    fi
-
-    echo "  RUN   scripts/generate-download-page.py"
-    if [ -n "$VERBOSE" ]; then
-        python3 scripts/generate-download-page.py 2>&1 | sed 's/^/        /'
-    else
-        python3 scripts/generate-download-page.py >/dev/null 2>&1
-    fi
-
-    if [ $? -eq 0 ]; then
-        if [ -f dist/index.html ]; then
-            echo "  OK    dist/index.html"
-        else
-            echo "  WARN  generate-download-page.py ran but no index.html created"
-            return 1
-        fi
-    else
-        echo "  FAIL  Download page generation failed"
-        return 1
-    fi
-}
-
 do_all_with_packages() {
     echo "========================================================================"
     echo "Full build and packaging workflow:"
     echo "  1. Build aggregate Linux-hosted targets"
     echo "  2. Create distribution packages"
-    echo "  3. Generate download webpage"
     echo "========================================================================"
     echo ""
 
@@ -1147,14 +1110,6 @@ do_all_with_packages() {
     fi
     echo ""
 
-    # Step 3: Generate download page
-    do_download_page
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "Download page generation failed."
-        return 1
-    fi
-
     echo ""
     echo "========================================================================"
     echo "Build and packaging complete!"
@@ -1162,7 +1117,6 @@ do_all_with_packages() {
     echo "Outputs:"
     echo "  Binaries:   build/<platform>/boltpack*"
     echo "  Packages:   dist/*.tar.gz, dist/*.zip, etc."
-    echo "  Webpage:    dist/index.html"
     echo "======================================================================="
 }
 
@@ -1266,7 +1220,7 @@ Targets:
 
 Workflow Commands:
   all-with-packages
-                 Full workflow: build all + create packages + generate webpage
+                 Full workflow: build all + create packages
                  (clears dist/ and staging/ first)
     binary-packages
                                  Create distribution packages from compiled binaries only
@@ -1275,7 +1229,6 @@ Workflow Commands:
     source-kits     Alias for compile-packages
     packages        Create both binary packages and compile packages
                                  (binary packages are skipped if no compiled binaries exist)
-  download-page  Generate HTML download webpage (requires packages in dist/)
 
 Maintenance:
   clean          Remove all build outputs (build/, staging/, dist/, compilation/)
@@ -1284,7 +1237,6 @@ Maintenance:
 Output goes to:
   Binaries:  build/<target>/boltpack[.exe/.js/...]
     Packages:  dist/*.tar.gz, dist/*.zip, etc.
-  Webpage:   dist/index.html
 
 Missing cross-compilers are silently skipped.
 
@@ -1370,7 +1322,6 @@ case "$1" in
     binary-packages) do_binary_packages ;;
     compile-packages|source-kits) do_compile_packages ;;
     packages)     do_packages ;;
-    download-page) do_download_page ;;
     clean)        do_clean ;;
     help|--help|-h) do_help ;;
     *)

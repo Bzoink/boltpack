@@ -83,15 +83,6 @@ else
     exit 1
 fi
 
-# Generate download page
-print_step "Generating download page"
-if python3 scripts/generate-download-page.py; then
-    print_success "Download page generated (dist/index.html)"
-else
-    echo "✗ Download page generation failed"
-    exit 1
-fi
-
 # Upload to release (if token is set)
 if [[ -z "$SKIP_UPLOAD" ]]; then
     print_step "Uploading to GitHub release"

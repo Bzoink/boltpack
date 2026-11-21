@@ -25,13 +25,11 @@ write access. Avoid saving tokens in shell startup files.
    ./scripts/release.sh create
    ```
 
-3. Build the desired Makefile targets, create packages, and generate the download
-   page:
+3. Build the desired Makefile targets and create packages:
 
    ```sh
    make modern arm64 win32 win64
    bash scripts/create-packages.sh
-   python3 scripts/generate-download-page.py
    ```
 
    Add or omit targets according to available toolchains. Atari and Amiga
@@ -59,7 +57,7 @@ write access. Avoid saving tokens in shell startup files.
    ```
 
 `./scripts/build-and-release.sh <targets...>` combines building, packaging,
-download-page generation, and upload when `GITHUB_TOKEN` is set. Without that
+and upload when `GITHUB_TOKEN` is set. Without that
 environment variable it still builds and packages, then skips upload; unlike
 `release.sh`, the combined helper does not use an authenticated `gh` session.
 
@@ -73,5 +71,4 @@ environment variable it still builds and packages, then skips upload; unlike
 
 The helper stores a draft's numeric ID in `.release-id` so upload and publish
 work before a git tag exists. It removes that file after publishing. The upload
-step includes the generated checksum file and supported package formats; the
-helper does not upload the generated HTML download page at `dist/index.html`.
+step includes the generated checksum file and supported package formats.

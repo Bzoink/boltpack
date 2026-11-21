@@ -206,9 +206,7 @@
   used (`-marm -mcpu=arm610 -mlibscl`); both builds now share them.
 - Classic Mac 68k has three packages: `boltpack-VERSION-mac68k.hqx` is the
   68000 assembly build for any 68k Mac, `mac68k-68020.hqx` the build for 68020
-  and later, and `mac68k-c.hqx` the plain C build. The download page now lists
-  the Mac 68k packages, which it previously skipped (`.hqx` and the `mac68k`
-  name were not recognized).
+  and later, and `mac68k-c.hqx` the plain C build.
 - Sinclair QL: the c68 compiler's `MC68000` macro now selects the 68000
   BoltLZ code, which the QL build had missed. At original QL speed (sQLux
   68008 timing) BoltLZ compression is 2.2x faster (0.56 to 1.25 KB/s on mixed
