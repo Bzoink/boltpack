@@ -1,7 +1,7 @@
 # BoltPack Compression Algorithms
 
 **Status:** Stable
-**Scope:** Current codec implementations shipped in BoltPack v1.11
+**Scope:** Current codec implementations shipped in BoltPack v1.12
 
 This document describes the algorithms that are actually implemented in the
 current codebase. It intentionally covers only the kept codecs and their
@@ -176,7 +176,7 @@ The current implementation combines:
    fast candidate-list matcher.
 1. A three-entry repeat-distance ring.
 1. A rep-aware greedy parser with lazy lookahead (the fast parser of levels
-   1 and 2 is described below).
+   1 and 2 and the optimal parser of level 9 are described below).
 1. FSE/tANS entropy coding (current normal blocks use stream version `0x09`;
    grouped reset blocks use `0x89`).
 
@@ -401,6 +401,13 @@ modern x86-64 Linux system:
 | Silesia | 29.45% | 15.2 MB/s | 466.9 MB/s |
 | Curated | 28.35% | 15.7 MB/s | 438.3 MB/s |
 
+On the whole Silesia corpus (211,938,580 bytes) with the CLI, 256 KB blocks
+and one thread, the default level 8 produces 62,463,043 bytes (29.47%, about
+8 MB/s) and level 9 with the optimal parser 59,990,583 bytes (28.31%, about
+3 MB/s); before the optimal parser level 9 produced 62,350,401 bytes (29.42%,
+about 6 MB/s). With the automatic threads on a 12-thread machine the compress
+times were 7.2 s (level 8) and 14.2 s (level 9).
+
 These numbers describe the current reference implementation. They are useful
 for orientation, not as a wire-format guarantee. Fast-fluff modern builds trade
 a small amount of ratio for much higher compression throughput, but they still
@@ -464,7 +471,7 @@ There is no dedicated Fluff libFuzzer target; the generic `make fuzz` recipe
 references an absent script. The working BoltLZ fuzzer does not exercise
 Fluff.
 
-This reference tracks the codecs shipped in BoltPack 1.11. Historical experiment
+This reference tracks the codecs shipped in BoltPack 1.12. Historical experiment
 reports remain separate from the implementation description.
 
 ## 9. References

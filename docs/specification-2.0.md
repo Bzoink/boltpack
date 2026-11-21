@@ -1,9 +1,9 @@
 # BoltPack Specification v2.0
 
 **Format Version:** 7 (only)
-**Software Version:** next release (every CLI and GUI)
+**Software Version:** 1.12 (every CLI and GUI)
 **Status:** Draft; implemented by `src/core/archiver.c`
-**Last updated:** 2026-11-20
+**Last updated:** 2026-11-21
 
 > **Archive format 7.** Every archive is a *volume set*: one or more volume
 > files that each carry a header naming the set and their place in it. A

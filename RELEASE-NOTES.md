@@ -1,6 +1,10 @@
 # Release Notes
 
-## Unreleased
+## 1.12 — Archive format 7, volume sets and optimal Fluff level 9
+
+- Bolt Mini is bumped to version 1.4: its core reads and writes archive
+  format 7 (see below), so mini archives no longer exchange with format 6
+  frontends.
 
 - Fluff levels 1 and 2 use a new fast parser. Level 1 encodes about twice as
   fast as before (54 MB/s against 27 MB/s on a five-file Silesia sample) and

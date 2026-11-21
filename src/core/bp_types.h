@@ -94,9 +94,9 @@ typedef struct {
 #endif
 #ifndef BP_VERSION_MINOR
 # ifdef BP_MINI
-#  define BP_VERSION_MINOR 3
+#  define BP_VERSION_MINOR 4
 # else
-#  define BP_VERSION_MINOR 11
+#  define BP_VERSION_MINOR 12
 # endif
 #endif
 
