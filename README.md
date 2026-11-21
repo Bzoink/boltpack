@@ -40,6 +40,7 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Linux x86 32-bit              | [boltpack-1.12-linux-x86-x86.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-x86-x86.tar.gz)           |
 | Linux ARM64                   | [boltpack-1.12-linux-arm64-ARM.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-arm64-ARM.tar.gz)       |
 | Linux ARM32                   | [boltpack-1.12-linux-arm32-arm.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-arm32-arm.tar.gz)       |
+| Linux ARMv5/ARMv6 (armel)     | [boltpack-1.12-linux-armel-ARMv5.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-armel-ARMv5.tar.gz) |
 | Linux RISC-V 64               | [boltpack-1.12-riscv-riscv64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-riscv-riscv64.tar.gz)           |
 | Linux PowerPC 64 (ppc64le)    | [boltpack-1.12-linux-ppc64le-PowerPC.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-ppc64le-PowerPC.tar.gz) |
 | Linux IBM Z (s390x)           | [boltpack-1.12-linux-s390x-IBM-Z.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-s390x-IBM-Z.tar.gz) |

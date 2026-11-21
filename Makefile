@@ -1422,6 +1422,28 @@ s390x:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(S390X_BUILDDIR)/boltpack
 
+# ARM Linux, ARMv5TE soft-float (armel), linked statically. Runs on ARMv5 and
+# later (including the ARMv6 Raspberry Pi 1/Zero), and on both soft-float and
+# hard-float userlands, because it needs no shared C library.
+ARMEL_CC      = arm-linux-gnueabi-gcc
+ARMEL_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+ARMEL_BUILDDIR = build/linux-armel
+
+.PHONY: armel
+armel:
+	mkdir -p $(ARMEL_BUILDDIR)
+	$(ARMEL_CC) $(ARMEL_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_ARM32 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(ARMEL_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto

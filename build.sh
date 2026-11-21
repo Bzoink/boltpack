@@ -599,6 +599,10 @@ do_riscv() {
     build_make_target riscv riscv64-linux-gnu-gcc build/riscv/boltpack
 }
 
+do_armel() {
+    build_make_target armel arm-linux-gnueabi-gcc build/linux-armel/boltpack
+}
+
 do_ppc64le() {
     build_make_target ppc64le powerpc64le-linux-gnu-gcc build/linux-ppc64le/boltpack
 }
@@ -838,6 +842,7 @@ do_all() {
     do_arm32       || failed=1
     do_arm64       || failed=1
     do_riscv       || failed=1
+    do_armel       || failed=1
     do_ppc64le     || failed=1
     do_s390x       || failed=1
     do_musl        || failed=1
@@ -1159,6 +1164,7 @@ Targets:
   arm32|arm      Cross-compile for ARM 32-bit Linux (RPi etc.)
   arm64|aarch64  Cross-compile for ARM 64-bit Linux (RPi 3/4/5)
   riscv          Cross-compile for RISC-V 64 Linux
+  armel          Cross-compile for ARMv5 soft-float Linux (static; also runs on ARMv6)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
@@ -1259,6 +1265,7 @@ case "$1" in
     arm32|arm)    do_arm32 ;;
     arm64|aarch64) do_arm64 ;;
     riscv)        do_riscv ;;
+    armel)        do_armel ;;
     ppc64le)      do_ppc64le ;;
     s390x)        do_s390x ;;
     musl)         do_musl ;;

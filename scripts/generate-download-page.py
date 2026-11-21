@@ -98,6 +98,18 @@ PLATFORMS = {
         ),
         "family": "Linux",
     },
+    "linux-armel": {
+        "name": "Linux (ARMv5, soft-float)",
+        "os": "Linux (armel)",
+        "arch": "ARM 32-bit, ARMv5TE and later",
+        "description": (
+            "Statically linked 32-bit ARM Linux for ARMv5 and later with "
+            "software floating point: Raspberry Pi 1 and Zero (ARMv6), older "
+            "NAS boxes and routers. Runs on soft-float and hard-float "
+            "systems alike."
+        ),
+        "family": "Linux",
+    },
     "linux-ppc64le": {
         "name": "Linux (PowerPC 64, little-endian)",
         "os": "Linux (ppc64le)",

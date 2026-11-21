@@ -136,6 +136,14 @@
   build in a `C_BUILD` folder as a fallback; archives are identical with all
   of them. Built with `make atari-optimized`, `amiga-optimized`,
   `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- New statically linked Linux package for ARMv5 and later with software
+  floating point (armel, `boltpack-VERSION-linux-armel-ARMv5.tar.gz`, `make
+  armel`). The existing ARM 32-bit package targets ARMv7 and does not run on
+  the Raspberry Pi 1 and Zero (ARMv6) or on older ARMv5 NAS boxes and
+  routers; this one does, on soft-float and hard-float systems alike. Tested
+  under qemu-arm on emulated ARMv5 and ARMv6 CPUs: every codec gives archives
+  of exactly the same size as x86, archives are exchanged both ways, the unit
+  suites pass and the level 9 stream matches x86. Not run on real hardware.
 - New Linux packages for 64-bit little-endian PowerPC (ppc64le, POWER8 and
   later, `boltpack-VERSION-linux-ppc64le-PowerPC.tar.gz`) and IBM Z (s390x,
   big-endian, `boltpack-VERSION-linux-s390x-IBM-Z.tar.gz`), built with
