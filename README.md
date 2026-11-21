@@ -108,8 +108,10 @@ expert tuning switches.
 Target profiles can select different defaults. Use `-2` to select BoltLZ.
 
 BoltLZ defaults to Balanced; `-l 1` selects Fast and `-l 2` selects Balanced.
-Fluff supports levels 1–9. When `-F` is used without `-b`, block size is set to
-256 KB automatically.
+Fluff supports levels 1–9 (the default is 8; `--best` is 9). When `-F` is used
+without `-b`, block size is set to 256 KB automatically. Level 9 in builds with
+the fast-Fluff encoder uses an optimal parser that compresses about 4% smaller
+and takes about twice as long; archives remain readable by every build.
 
 On OpenMP-enabled Linux and Windows CLI builds, BoltLZ and Fluff
 automatically use multiple processors for sufficiently large workloads. Use

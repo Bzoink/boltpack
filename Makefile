@@ -3497,12 +3497,12 @@ unit-test-asan: $(UNIT_BUILD_DIR)/test_checksum_asan \
 $(UNIT_BUILD_DIR)/test_fluff: $(UNIT_TEST_DIR)/test_fluff.c \
     $(COREDIR)/fluff.c $(COREDIR)/fluff.h $(UNIT_TEST_DIR)/test_runner.h \
     test/reference/fluff_legacy_fixtures.h | $(UNIT_BUILD_DIR)
-	$(CC) $(UNIT_CFLAGS) -O3 $(FLUFF_NATIVE_FLAGS) -o $@ $(UNIT_TEST_DIR)/test_fluff.c
+	$(CC) $(UNIT_CFLAGS) -O3 $(FLUFF_NATIVE_FLAGS) -DFLUFF_OPTIMAL -o $@ $(UNIT_TEST_DIR)/test_fluff.c
 
 $(UNIT_BUILD_DIR)/test_fluff_asan: $(UNIT_TEST_DIR)/test_fluff.c \
     $(COREDIR)/fluff.c $(COREDIR)/fluff.h $(UNIT_TEST_DIR)/test_runner.h \
     test/reference/fluff_legacy_fixtures.h | $(UNIT_BUILD_DIR)
-	$(CC) $(UNIT_ASAN_FLAGS) -o $@ $(UNIT_TEST_DIR)/test_fluff.c
+	$(CC) $(UNIT_ASAN_FLAGS) -DFLUFF_OPTIMAL -o $@ $(UNIT_TEST_DIR)/test_fluff.c
 
 # --- test_checksum ---
 $(UNIT_BUILD_DIR)/test_checksum: \

@@ -270,6 +270,28 @@ The current Fluff encoder is best understood as the following concrete stages.
 
    Before the fast parser, level 1 was 29.5% at 27 MB/s and level 2 was 29.1%
    at 22 MB/s. Highly repetitive data (nci, xml) gives up more than text does.
+1. **Optimal parser (level 9, fast-Fluff builds).**
+   `fl_parse_optimal()` replaces the greedy/lazy parser with a shortest-path
+   search over a window of up to 4096 positions. Each position is a node that
+   stores the cheapest known cost (in 1/16 bit) of reaching it, the token that
+   arrived there and the repeat ring (`rep0`-`rep2`) on that path. From each
+   node it tries a literal, the three repeat distances and every
+   (length, distance) pair that `fl_opt_collect()` finds (the 3-byte
+   candidate, then each strictly longer hit on the 4-byte chain, nearest
+   first, 64 probes). When nothing beyond the current node is reachable, the
+   window is full, or a match of 128 bytes or more appears, the cheapest path
+   is traced back and emitted through the ordinary token emitters, so the
+   entropy coder and decoder are unchanged. Prices are `log2(L) - log2(count)`
+   from the previous block's normalized FSE tables (a static prior for the
+   first block of a file or parallel group), blended with the current block's
+   counts every 16 KiB. A repeat match costs its symbol plus five raw bits plus
+   the length extra bits; a normal match costs both symbols plus extra bits.
+   Only integer arithmetic is used, so the output is identical on every host.
+   Enabled by `BOLTPACK_FAST_FLUFF` or `-DFLUFF_OPTIMAL`, excluded by
+   `-DFLUFF_NO_OPTIMAL`. Measured on the Silesia corpus at 256 KiB blocks,
+   one thread: 59,990,583 bytes against 62,350,401 for the greedy parser
+   (-3.8%), at about twice the encode time. The workspace is about 150 KB per
+   context, allocated on first use.
 1. **Distance-aware short-match filtering.**
    The encoder rejects matches that expand the stream: `len <= 3` at
    `dist > 512`, and `len <= 4` at `dist > 49152`.

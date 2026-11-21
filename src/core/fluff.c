@@ -1334,6 +1334,15 @@ typedef struct {
     fl_u32  pos;           /* absolute write position */
 } fl_match_t;
 
+/* Optimal-parser workspace (experimental; see fl_parse_optimal). */
+typedef struct {
+    fl_u32 price;      /* cost in 1/16 bit to reach this position */
+    fl_u32 prev;       /* node index where the arriving token started */
+    fl_u32 dist;       /* distance of the arriving match (0 for literal) */
+    fl_u32 rep[3];     /* repeat ring after arriving here on the best path */
+    fl_u8  type;       /* 0 literal, 1 match, 2-4 repeat slot 0-2 */
+} fl_opt_node_t;
+
 struct fluff_ctx_s {
     /*
      * Match-finder tables (compress-only, ~1.75 MB total).  Lazily allocated
@@ -1348,6 +1357,10 @@ struct fluff_ctx_s {
     fl_u32 file_pos;                      /* cumulative file byte position  */
     fl_u32 max_chain;                     /* hash chain search depth        */
     fl_u32 parse_mode;                    /* 0 chain parser, 1-2 fast parser */
+    fl_u32 opt_chain;                     /* optimal parser probes; 0 = off  */
+    fl_u32 opt_have_prior;                /* fse_*_norm holds a prior block  */
+    fl_opt_node_t *opt_nodes;             /* optimal-parser DP nodes         */
+    fl_u32 *opt_path;                     /* optimal-parser backtrack stack  */
     /* Statistics (per-file) */
     fl_u32 total_literals;                /* count of literal symbols       */
     fl_u32 total_matches;                 /* count of match symbols         */
@@ -1416,12 +1429,33 @@ static const fl_u32 s_mode_table[9] = {1, 2, 0, 0, 0, 0, 0, 0, 0};
 static fl_u32 s_default_chain = FLUFF_MAX_CHAIN;
 static fl_u32 s_default_mode = 0;
 
+/*
+ * Price-based optimal parser (fl_parse_optimal) for level 9.  Enabled
+ * in modern builds (BOLTPACK_FAST_FLUFF) or explicitly with -DFLUFF_OPTIMAL,
+ * and excluded with -DFLUFF_NO_OPTIMAL.  Builds without it fall back to the
+ * chain parser at those levels.  The stream format is identical, so every
+ * decoder reads either encoder's output.  The table gives hash-chain probes
+ * per position; 0 selects the greedy/lazy parser of s_mode_table.
+ */
+#if defined(FLUFF_NO_OPTIMAL)
+#undef FLUFF_OPTIMAL
+#elif defined(BOLTPACK_FAST_FLUFF) && !defined(FLUFF_OPTIMAL)
+#define FLUFF_OPTIMAL 1
+#endif
+#ifdef FLUFF_OPTIMAL
+static const fl_u32 s_opt_chain_table[9] = {0, 0, 0, 0, 0, 0, 0, 0, 64};
+#else
+static const fl_u32 s_opt_chain_table[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+#endif
+static fl_u32 s_default_opt_chain = 0;
+
 void fluff_set_level(int level)
 {
     if (level < 1) level = 1;
     if (level > 9) level = 9;
     s_default_chain = s_chain_table[level - 1];
     s_default_mode = s_mode_table[level - 1];
+    s_default_opt_chain = s_opt_chain_table[level - 1];
 }
 
 fluff_ctx_t *fluff_ctx_alloc(void)
@@ -1434,6 +1468,10 @@ fluff_ctx_t *fluff_ctx_alloc(void)
         ctx->hash3             = NULL;
         ctx->scratch_tokens    = NULL;
         ctx->scratch_src_cap   = 0;
+        ctx->opt_nodes         = NULL;
+        ctx->opt_path          = NULL;
+        ctx->opt_chain         = 0;
+        ctx->opt_have_prior    = 0;
     }
     return (fluff_ctx_t *)ctx;
 }
@@ -1445,6 +1483,8 @@ void fluff_ctx_free(fluff_ctx_t *ctx)
         free(ctx->hash_chain);
         free(ctx->hash3);
         free(ctx->scratch_tokens);
+        free(ctx->opt_nodes);
+        free(ctx->opt_path);
     }
     free(ctx);
 }
@@ -1512,6 +1552,8 @@ void fluff_ctx_reset(fluff_ctx_t *ctx)
     ctx->file_pos = 0;
     ctx->max_chain = s_default_chain;
     ctx->parse_mode = s_default_mode;
+    ctx->opt_chain = s_default_opt_chain;
+    ctx->opt_have_prior = 0;
     ctx->total_literals = 0;
     ctx->total_matches = 0;
     ctx->total_match_bytes = 0;
@@ -1569,6 +1611,8 @@ void fluff_ctx_reset_level(fluff_ctx_t *ctx, int level)
     ctx->file_pos = 0;
     ctx->max_chain = chain;
     ctx->parse_mode = s_mode_table[level - 1];
+    ctx->opt_chain = s_opt_chain_table[level - 1];
+    ctx->opt_have_prior = 0;
     ctx->total_literals = 0;
     ctx->total_matches = 0;
     ctx->total_match_bytes = 0;
@@ -3127,6 +3171,352 @@ static int fl_parse_fast(fluff_ctx_t *ctx, const fl_u8 *src, fl_u32 src_len,
     return BP_OK;
 }
 
+#ifdef FLUFF_OPTIMAL
+/* ─── Optimal parser (level 9) ──────────────────────────────────────────── */
+
+/*
+ * Shortest-path parse over a sliding window of positions, in the style of an
+ * LZMA-class encoder.  Every position in the window is a node holding the
+ * cheapest known cost (1/16 bit) of reaching it, the token that arrived there
+ * and the repeat-distance ring on that path.  Transitions from a node are a
+ * literal, the three repeat distances and every (length, distance) pair the
+ * hash chain offers.  When no node beyond the current one is reachable, the
+ * window is full, or a match of at least FL_OPT_NICE bytes appears, the
+ * cheapest path is traced back and emitted through the ordinary token
+ * emitters, so the entropy coder and the decoder are unchanged.
+ *
+ * Prices come from the previous block's normalized FSE tables (a static
+ * prior for the first block of a file).
+ */
+#ifndef FL_OPT_NICE
+#define FL_OPT_NICE  128U   /* take a match this long without searching on */
+#endif
+#ifndef FL_OPT_REFRESH
+#define FL_OPT_REFRESH 16384U /* re-price from this block's counts; 0 = never */
+#endif
+#define FL_OPT_WINDOW 4096U
+#define FL_OPT_NODES  (FL_OPT_WINDOW + FLUFF_MAX_MATCH + 2U)
+#define FL_OPT_INF    0x7FFFFFFFU
+#define FL_BIT        16U   /* price units per bit */
+
+/* log2(x) * 16 for x >= 1, integer arithmetic only. */
+static fl_u32 fl_log2_q4(fl_u32 x)
+{
+    fl_u32 p = fl_highbit32(x);
+    fl_u32 m, frac, k;
+
+    m = (p >= 15U) ? (x >> (p - 15U)) : (x << (15U - p));
+    frac = 0;
+    for (k = 0; k < 4U; k++) {
+        m = (m * m) >> 15;
+        frac <<= 1;
+        if (m >= 0x10000U) {
+            frac |= 1U;
+            m >>= 1;
+        }
+    }
+    return p * 16U + frac;
+}
+
+static void fl_opt_prices(const fluff_ctx_t *ctx, const fl_u32 *ll_freq,
+                          const fl_u32 *d_freq, fl_u32 *ll_cost,
+                          fl_u32 *d_cost)
+{
+    fl_u32 s, n;
+
+    if (ll_freq != NULL) {
+        /* Blend the prior (weight L tokens) with this block's counts. */
+        fl_u32 tot, lt, dt;
+        tot = 0;
+        for (s = 0; s < FLUFF_NUM_LITLEN; s++) tot += ll_freq[s];
+        lt = tot + (ctx->opt_have_prior ? FSE_LL_L : FLUFF_NUM_LITLEN);
+        for (s = 0; s < FLUFF_NUM_LITLEN; s++) {
+            n = ll_freq[s] + (ctx->opt_have_prior ? ctx->fse_ll_norm[s] : 1U);
+            ll_cost[s] = n ? fl_log2_q4(lt) - fl_log2_q4(n) : 12U * FL_BIT;
+        }
+        tot = 0;
+        for (s = 0; s < FLUFF_NUM_DIST; s++) tot += d_freq[s];
+        dt = tot + (ctx->opt_have_prior ? FSE_D_L : FLUFF_NUM_DIST);
+        for (s = 0; s < FLUFF_NUM_DIST; s++) {
+            n = d_freq[s] + (ctx->opt_have_prior ? ctx->fse_d_norm[s] : 1U);
+            d_cost[s] = n ? fl_log2_q4(dt) - fl_log2_q4(n) : 9U * FL_BIT;
+        }
+    } else if (ctx->opt_have_prior) {
+        for (s = 0; s < FLUFF_NUM_LITLEN; s++) {
+            n = ctx->fse_ll_norm[s];
+            ll_cost[s] = n ? FSE_LL_BITS * FL_BIT - fl_log2_q4(n)
+                           : 12U * FL_BIT;
+        }
+        for (s = 0; s < FLUFF_NUM_DIST; s++) {
+            n = ctx->fse_d_norm[s];
+            d_cost[s] = n ? FSE_D_BITS * FL_BIT - fl_log2_q4(n)
+                          : 9U * FL_BIT;
+        }
+    } else {
+        for (s = 0; s < 256U; s++) ll_cost[s] = 8U * FL_BIT;
+        ll_cost[FLUFF_END_OF_BLOCK] = 12U * FL_BIT;
+        for (s = 257U; s < FLUFF_NUM_LITLEN; s++) ll_cost[s] = 6U * FL_BIT;
+        for (s = 0; s < FLUFF_NUM_DIST; s++) d_cost[s] = 5U * FL_BIT;
+    }
+}
+
+/*
+ * Collect ascending (length, distance) pairs at cur_abs: the dense 3-byte
+ * candidate first, then every strictly longer hit on the 4-byte chain (which
+ * is walked nearest-first, so each length keeps its smallest distance).
+ */
+static fl_u32 fl_opt_collect(fluff_ctx_t *ctx, const fl_u8 *src,
+                             fl_u32 abs, fl_u32 file_pos, fl_u32 rem,
+                             fl_u32 *lens, fl_u32 *dists)
+{
+    const fl_u8 *cur_p;
+    fl_u32 max_match, max_dist, best, n, probe, depth, d3, len3;
+
+    if (rem < 4U) return 0;
+    cur_p = src + (abs - file_pos);
+    max_match = FL_MIN(FLUFF_MAX_MATCH, rem);
+    max_dist = FL_MIN(abs, FLUFF_WINDOW_SIZE - 1U);
+    n = 0;
+    best = FLUFF_MIN_MATCH - 1U;
+
+    len3 = fl_find_subhash_match_hyb(ctx, src, cur_p, abs, file_pos, rem,
+                                     max_dist, &d3);
+    if (len3 >= FLUFF_MIN_MATCH) {
+        lens[0] = len3;
+        dists[0] = d3;
+        n = 1;
+        best = len3;
+    }
+    if (best >= max_match || best >= FL_OPT_NICE) return n;
+
+    probe = ctx->hash_table[fl_hash4_hyb(src, abs, file_pos)];
+    depth = ctx->opt_chain;
+    while (probe != 0 && depth > 0) {
+        fl_u32 dist, len;
+
+        depth--;
+        if (probe >= abs) {
+            probe = ctx->hash_chain[probe & FLUFF_WINDOW_MASK];
+            continue;
+        }
+        dist = abs - probe;
+        if (dist > max_dist) break;
+        if (cur_p[best] != fl_byte_at(ctx, src, probe + best, file_pos)) {
+            probe = ctx->hash_chain[probe & FLUFF_WINDOW_MASK];
+            continue;
+        }
+        if (probe >= file_pos) {
+            len = fl_match_len_direct(cur_p, src + (probe - file_pos),
+                                      max_match);
+        } else {
+            for (len = 0; len < max_match; len++) {
+                if (cur_p[len] !=
+                    fl_byte_at(ctx, src, probe + len, file_pos)) break;
+            }
+        }
+        if (len > best) {
+            lens[n] = len;
+            dists[n] = dist;
+            n++;
+            best = len;
+            if (len >= max_match || len >= FL_OPT_NICE) break;
+        }
+        probe = ctx->hash_chain[probe & FLUFF_WINDOW_MASK];
+    }
+    return n;
+}
+
+static void fl_opt_set(fl_opt_node_t *n, const fl_opt_node_t *from,
+                       fl_u32 price, fl_u32 prev, fl_u32 dist, fl_u8 type)
+{
+    n->price = price;
+    n->prev = prev;
+    n->dist = dist;
+    n->type = type;
+    n->rep[0] = from->rep[0];
+    n->rep[1] = from->rep[1];
+    n->rep[2] = from->rep[2];
+    if (type != 0) fl_update_rep_ring(&n->rep[0], &n->rep[1], &n->rep[2], dist);
+}
+
+static int fl_parse_optimal(fluff_ctx_t *ctx, const fl_u8 *src,
+                            fl_u32 src_len, fl_u32 file_pos,
+                            fl_u8 *tokens, fl_u32 token_cap,
+                            fl_u32 *out_num_tokens,
+                            fl_u32 *ll_freq, fl_u32 *d_freq)
+{
+    fl_opt_node_t *opt = ctx->opt_nodes;
+    fl_u32 *path = ctx->opt_path;
+    fl_u32 ll_cost[FLUFF_NUM_LITLEN];
+    fl_u32 d_cost[FLUFF_NUM_DIST];
+    fl_u32 lenc[FLUFF_MAX_MATCH - FLUFF_MIN_MATCH + 1U]; /* sym + extra */
+    fl_u32 lebc[FLUFF_MAX_MATCH - FLUFF_MIN_MATCH + 1U]; /* extra only  */
+    fl_u32 mlens[FLUFF_MAX_MATCH + 1U];
+    fl_u32 mdists[FLUFF_MAX_MATCH + 1U];
+    fl_u32 i, rep0, rep1, rep2, next_insert_abs, num_tokens, l;
+    fl_u32 next_refresh;
+    int rc;
+
+    fl_opt_prices(ctx, NULL, NULL, ll_cost, d_cost);
+    for (l = FLUFF_MIN_MATCH; l <= FLUFF_MAX_MATCH; l++) {
+        fl_u32 ev, eb, sym;
+        sym = fl_len_to_sym(l, &ev, &eb);
+        lenc[l - FLUFF_MIN_MATCH] = ll_cost[sym] + eb * FL_BIT;
+        lebc[l - FLUFF_MIN_MATCH] = eb * FL_BIT;
+    }
+    next_refresh = FL_OPT_REFRESH;
+
+    i = 0;
+    rep0 = rep1 = rep2 = 0;
+    next_insert_abs = file_pos;
+    num_tokens = 0;
+
+    while (i < src_len) {
+        fl_u32 cur, last, n, j;
+        fl_u32 forced_len = 0, forced_dist = 0;
+        fl_u8  forced_type = 0;
+
+        if (FL_OPT_REFRESH != 0 && i >= next_refresh) {
+            fl_opt_prices(ctx, ll_freq, d_freq, ll_cost, d_cost);
+            for (l = FLUFF_MIN_MATCH; l <= FLUFF_MAX_MATCH; l++) {
+                fl_u32 ev, eb, sym;
+                sym = fl_len_to_sym(l, &ev, &eb);
+                lenc[l - FLUFF_MIN_MATCH] = ll_cost[sym] + eb * FL_BIT;
+            }
+            next_refresh = i + FL_OPT_REFRESH;
+        }
+        opt[0].price = 0;
+        opt[0].prev = 0;
+        opt[0].dist = 0;
+        opt[0].type = 0;
+        opt[0].rep[0] = rep0;
+        opt[0].rep[1] = rep1;
+        opt[0].rep[2] = rep2;
+        last = 0;
+        cur = 0;
+
+        for (;;) {
+            const fl_opt_node_t *node;
+            fl_u32 abs, rem, nm, k, r, rl[3], longest;
+
+            if (cur > 0 && (cur >= last || cur >= FL_OPT_WINDOW)) break;
+            abs = file_pos + i + cur;
+            rem = src_len - i - cur;
+            node = &opt[cur];
+
+            nm = fl_opt_collect(ctx, src, abs, file_pos, rem, mlens, mdists);
+            fl_insert_range_hyb(ctx, src, file_pos, src_len, abs, abs + 1U,
+                                &next_insert_abs);
+
+            longest = 0;
+            for (r = 0; r < 3U; r++) {
+                rl[r] = 0;
+                if (node->rep[r] != 0 && rem >= FLUFF_MIN_MATCH) {
+                    rl[r] = fl_match_at_distance(ctx, src, abs, file_pos, rem,
+                                                 node->rep[r], NULL);
+                    if (rl[r] > longest) longest = rl[r];
+                }
+            }
+            if (nm > 0 && mlens[nm - 1U] > longest) longest = mlens[nm - 1U];
+
+            if (longest > 0 && (longest >= FL_OPT_NICE || longest >= rem)) {
+                /* Take the long match now; prefer a repeat slot. */
+                for (r = 0; r < 3U; r++) {
+                    if (rl[r] == longest) {
+                        forced_len = longest;
+                        forced_dist = node->rep[r];
+                        forced_type = (fl_u8)(2U + r);
+                        break;
+                    }
+                }
+                if (forced_len == 0) {
+                    forced_len = mlens[nm - 1U];
+                    forced_dist = mdists[nm - 1U];
+                    forced_type = 1;
+                }
+                break;
+            }
+
+            /* literal */
+            if (last < cur + 1U) {
+                last = cur + 1U;
+                opt[last].price = FL_OPT_INF;
+            }
+            {
+                fl_u32 p = node->price + ll_cost[src[i + cur]];
+                if (p < opt[cur + 1U].price) {
+                    fl_opt_set(&opt[cur + 1U], node, p, cur, 0, 0);
+                }
+            }
+
+            /* repeat distances */
+            for (r = 0; r < 3U; r++) {
+                fl_u32 base;
+                if (rl[r] < FLUFF_MIN_MATCH) continue;
+                while (last < cur + rl[r]) opt[++last].price = FL_OPT_INF;
+                base = node->price + ll_cost[FLUFF_REP_MATCH + r] + 5U * FL_BIT;
+                for (l = FLUFF_MIN_MATCH; l <= rl[r]; l++) {
+                    fl_u32 p = base + lebc[l - FLUFF_MIN_MATCH];
+                    if (p < opt[cur + l].price) {
+                        fl_opt_set(&opt[cur + l], node, p, cur,
+                                   node->rep[r], (fl_u8)(2U + r));
+                    }
+                }
+            }
+
+            /* new matches */
+            l = FLUFF_MIN_MATCH;
+            for (k = 0; k < nm; k++) {
+                fl_u32 dev, deb, dsym, dc;
+                dsym = fl_dist_to_sym(mdists[k], &dev, &deb);
+                dc = node->price + d_cost[dsym] + deb * FL_BIT;
+                while (last < cur + mlens[k]) opt[++last].price = FL_OPT_INF;
+                for (; l <= mlens[k]; l++) {
+                    fl_u32 p = dc + lenc[l - FLUFF_MIN_MATCH];
+                    if (p < opt[cur + l].price) {
+                        fl_opt_set(&opt[cur + l], node, p, cur, mdists[k], 1);
+                    }
+                }
+            }
+            cur++;
+        }
+
+        /* Trace the cheapest path to node cur and emit it. */
+        n = 0;
+        for (j = cur; j > 0; j = opt[j].prev) path[n++] = j;
+        while (n > 0) {
+            fl_u32 end = path[--n];
+            const fl_opt_node_t *nd = &opt[end];
+            if (nd->type == 0) {
+                rc = fl_emit_literal_token(ctx, tokens, token_cap, &num_tokens,
+                                           ll_freq, src[i + nd->prev], 1);
+            } else {
+                rc = fl_emit_match_token(ctx, tokens, token_cap, &num_tokens,
+                                         ll_freq, d_freq, end - nd->prev,
+                                         nd->dist, nd->type, 1);
+                fl_update_rep_ring(&rep0, &rep1, &rep2, nd->dist);
+            }
+            if (rc != BP_OK) return rc;
+        }
+        i += cur;
+        if (forced_len > 0) {
+            rc = fl_emit_match_token(ctx, tokens, token_cap, &num_tokens,
+                                     ll_freq, d_freq, forced_len, forced_dist,
+                                     forced_type, 1);
+            if (rc != BP_OK) return rc;
+            fl_update_rep_ring(&rep0, &rep1, &rep2, forced_dist);
+            fl_insert_range_hyb(ctx, src, file_pos, src_len, file_pos + i + 1U,
+                                file_pos + i + forced_len, &next_insert_abs);
+            i += forced_len;
+        }
+    }
+
+    *out_num_tokens = num_tokens;
+    return BP_OK;
+}
+
+#endif /* FLUFF_OPTIMAL */
+
 /*
  * Compress one block with a persistent context. The v0x09 compact header
  * stores lit/len and distance count tables, two uint16 ANS states, and two
@@ -3190,6 +3580,25 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     memset(ll_freq, 0, sizeof(ll_freq));
     memset(d_freq,  0, sizeof(d_freq));
     ll_freq[FLUFF_END_OF_BLOCK] = 1;  /* EOB always present */
+#ifdef FLUFF_OPTIMAL
+    if (ctx->opt_chain != 0U) {
+        if (ctx->opt_nodes == NULL) {
+            ctx->opt_nodes = (fl_opt_node_t *)malloc(
+                FL_OPT_NODES * sizeof(fl_opt_node_t));
+            ctx->opt_path = (fl_u32 *)malloc(FL_OPT_NODES * sizeof(fl_u32));
+            if (ctx->opt_nodes == NULL || ctx->opt_path == NULL) {
+                free(ctx->opt_nodes);
+                free(ctx->opt_path);
+                ctx->opt_nodes = NULL;
+                ctx->opt_path = NULL;
+                return BP_ERR_NOMEM;
+            }
+        }
+        parse_rc = fl_parse_optimal(ctx, src, src_len, file_pos,
+                                    tokens, token_cap, &num_tokens,
+                                    ll_freq, d_freq);
+    } else
+#endif
     if (ctx->parse_mode != 0U) {
         parse_rc = fl_parse_fast(ctx, src, src_len, file_pos,
                                  tokens, token_cap, &num_tokens,
@@ -3221,6 +3630,7 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     if (norm_rc != 0) {
         return BP_ERR_COMPRESS;
     }
+    ctx->opt_have_prior = 1;
 
     /* --- Pass 2b: build encode slots + per-symbol encode params --- */
     if (fse_build_ctab(ll_norm, FLUFF_NUM_LITLEN, ll_slots, ll_senc, FSE_LL_BITS) != 0 ||

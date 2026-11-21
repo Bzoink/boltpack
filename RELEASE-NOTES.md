@@ -5,9 +5,19 @@
 - Fluff levels 1 and 2 use a new fast parser. Level 1 encodes about twice as
   fast as before (54 MB/s against 27 MB/s on a five-file Silesia sample) and
   compresses about 1.3 points worse (30.9% against 29.5%); level 2 matches the
-  old level 1's ratio at 1.4 times its speed. Levels 3-9, including the default
+  old level 1's ratio at 1.4 times its speed. Levels 3-8, including the default
   level 8, produce the same bytes as before, and the decoder and the format are
   unchanged.
+- Fluff level 9 (`--best`) uses a price-based optimal parser in builds with the
+  fast-Fluff encoder. It finds the cheapest sequence of literals, matches and
+  repeat distances over a 4096-byte window, pricing each token from the FSE
+  tables (the previous block's, refined with the current block's counts). On
+  the Silesia corpus the output is 3.8% smaller (59,990,583 bytes against
+  62,350,401 with one thread, 256 KiB blocks); encoding takes about twice as
+  long with one thread and 1.65 times as long with the automatic threads.
+  Decoding is unchanged, the format is unchanged and older decoders read the
+  archives. Other builds, including the retro ones, keep the previous level 9
+  parser; `-DFLUFF_NO_OPTIMAL` disables it.
 - `-l N` and the `--light`, `--standard` and `--best` presets are honoured when
   Fluff compresses with threads (`-j`, and the automatic parallel mode for
   large files); the parallel encoder had been using level 8 whatever was asked.

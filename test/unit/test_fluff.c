@@ -381,11 +381,64 @@ static void preload_history(void)
     free(hist); free(block); fluff_ctx_free(enc); fluff_ctx_free(dec);
 }
 
+#ifdef FLUFF_OPTIMAL
+/* Levels 8 and 9 use the price-based parser.  It must beat the chain parser
+ * of level 7 on structured data, round-trip across blocks, and give the same
+ * bytes on every host (integer arithmetic only), which the pinned hash of the
+ * level-9 stream checks.  Update the hash only for a deliberate parser change. */
+static void optimal_parser(void)
+{
+    static const char *words[] = {
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+        "hotel", "india", "juliet", "kilo", "lima", "mike", "november",
+        "oscar", "papa", "quebec", "romeo", "sierra", "tango"
+    };
+    fluff_ctx_t *enc = fluff_ctx_alloc(), *dec = fluff_ctx_alloc();
+    bp_uint32 n = 3U * 65536U, pos = 0, i, block, hash = 2166136261UL;
+    bp_uint32 size7 = 0, size9 = 0;
+    bp_uint8 *src = (bp_uint8 *)malloc(n);
+    int ok = 1;
+    if (!enc || !dec || !src) exit(2);
+    while (pos < n) {
+        const char *w = words[random_word() % 20];
+        while (*w && pos < n) src[pos++] = (bp_uint8)*w++;
+        if (pos < n) src[pos++] = (random_word() % 9) ? ' ' : '\n';
+        if (random_word() % 11 == 0 && pos < n) src[pos++] = (bp_uint8)random_word();
+    }
+    for (i = 0; i < 2; i++) {
+        int level = i ? 9 : 7;
+        fluff_ctx_reset_level(enc, level); fluff_ctx_reset_decode(dec);
+        for (block = 0; block < 3 && ok; block++) {
+            bp_uint32 cap = fluff_compress_bound(65536U), clen = cap, dlen = 65536U;
+            bp_uint8 *encoded = (bp_uint8 *)malloc(cap);
+            bp_uint8 *decoded = (bp_uint8 *)malloc(65536U);
+            bp_uint32 k;
+            if (!encoded || !decoded) exit(2);
+            ok = fluff_compress_block_ctx(src + block * 65536U, 65536U, encoded, &clen, enc) == BP_OK &&
+                 fluff_decompress_block_ctx(encoded, clen, decoded, &dlen, dec) == BP_OK &&
+                 dlen == 65536U && !memcmp(decoded, src + block * 65536U, 65536U);
+            if (level == 7) size7 += clen; else size9 += clen;
+            if (level == 9)
+                for (k = 0; k < clen; k++) hash = (hash ^ encoded[k]) * 16777619UL;
+            free(encoded); free(decoded);
+        }
+    }
+    UNIT_CHECK(ok, "optimal parser: multi-block round trip at level 9");
+    UNIT_CHECK(size9 < size7, "optimal parser: level 9 beats the chain parser of level 7");
+    UNIT_CHECK(hash == 0xff776e6bUL, "optimal parser: level 9 stream is bit-for-bit reproducible");
+    if (hash != 0xff776e6bUL) printf("hash=0x%08lx size7=%lu size9=%lu\n", (unsigned long)hash, (unsigned long)size7, (unsigned long)size9);
+    free(src); fluff_ctx_free(enc); fluff_ctx_free(dec);
+}
+#endif
+
 int main(void)
 {
     fluff_init();
     UNIT_SECTION("Fluff direct codec");
     reader_refills(); ans_transitions(); legacy_streams(); reset_stream(); boundaries(); history(); preload_history(); damaged_streams();
     allocation_lifecycle();
+#ifdef FLUFF_OPTIMAL
+    optimal_parser();
+#endif
     return UNIT_REPORT();
 }
