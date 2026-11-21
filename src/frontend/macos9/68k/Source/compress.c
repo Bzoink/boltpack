@@ -108,7 +108,16 @@ bp_uint32 bp_checksum(bp_uint32 adler, const bp_uint8 *data, bp_uint32 len)
  * table is built lazily on first use so we keep a single ~1 KB static cost
  * and no start-up work when CRC is never selected.
  */
+#ifdef BP_CRC32_M68K_ASM
+/* T0 (the standard table) followed by the byte-swapped slicing-by-4 tables
+ * S0..S3 that crc32_m68k.S reads: 5 * 256 longs. */
+static bp_uint32 crc32_table[5 * 256];
+bp_uint32 bp_crc32_m68k(bp_uint32 c, const bp_uint8 *data, bp_uint32 len,
+                        const bp_uint32 *tables);
+#define BP_CRC32_M68K_MIN 16UL  /* shorter buffers: the call costs more */
+#else
 static bp_uint32 crc32_table[256];
+#endif
 static int crc32_table_ready = 0;
 
 static void crc32_build_table(void)
@@ -125,6 +134,18 @@ static void crc32_build_table(void)
         }
         crc32_table[i] = c & 0xFFFFFFFFUL;
     }
+#ifdef BP_CRC32_M68K_ASM
+    /* Tk[i] = (Tk-1[i] >> 8) ^ T0[Tk-1[i] & 0xFF]; Sk is Tk byte-swapped. */
+    for (i = 0; i < 256; i++) {
+        c = crc32_table[i];
+        for (j = 0; j < 4; j++) {
+            crc32_table[256U * (j + 1U) + i] =
+                ((c & 0xFFUL) << 24) | ((c & 0xFF00UL) << 8) |
+                ((c >> 8) & 0xFF00UL) | (c >> 24);
+            c = (c >> 8) ^ crc32_table[c & 0xFFU];
+        }
+    }
+#endif
     crc32_table_ready = 1;
 }
 
@@ -140,6 +161,11 @@ bp_uint32 bp_crc32(bp_uint32 crc, const bp_uint8 *data, bp_uint32 len)
         crc32_build_table();
     }
     c = crc ^ 0xFFFFFFFFUL;
+#ifdef BP_CRC32_M68K_ASM
+    if (len >= BP_CRC32_M68K_MIN) {
+        return bp_crc32_m68k(c, data, len, crc32_table) ^ 0xFFFFFFFFUL;
+    }
+#endif
     for (i = 0; i < len; i++) {
         c = crc32_table[(c ^ data[i]) & 0xFFU] ^ (c >> 8);
     }

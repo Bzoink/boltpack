@@ -92,8 +92,10 @@ without `BP_STAT_HAS_NSEC` to test creation, extraction needs nothing.
 
 `make m68k` builds the C version for Linux on 68020 and later, and `make
 m68k-optimized` the same program with the BoltLZ assembly in
-`src/core/boltlz_m68k.S`; `make m68k-qemu-asm-test` compares the two under
-qemu-m68k. The release package ships the assembly build.
+`src/core/boltlz_m68k.S` and the CRC-32 assembly in `src/core/crc32_m68k.S`;
+`make m68k-qemu-asm-test` compares the two under qemu-m68k, and `make
+crc32-m68k-qemu-test` checks the CRC-32 routine alone for the 68000 and the
+68020 variants. The release package ships the assembly build.
 
 ### Total Commander WCX Unicode runtime check
 

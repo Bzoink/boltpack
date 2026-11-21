@@ -1,5 +1,32 @@
 # Release Notes
 
+## Unreleased
+
+- 68k builds with the assembly (Atari, Amiga, Classic Mac 68k, X68000 and the
+  Linux m68k program) use a hand-written CRC-32 (`src/core/crc32_m68k.S`),
+  switched on together with `BOLTLZ_M68K_ASM=1`. It reads four bytes per round
+  through byte-swapped slicing tables (5 KB, built on first use) instead of one
+  byte through a 1 KB table, so it needs no 22-cycle shift by eight, and has a
+  68000 variant (aligned reads) and a 68020-and-later variant (scaled index
+  addressing), chosen by the CPU flag like the BoltLZ assembly. Checksums and
+  archives are unchanged. On an emulated 68000 it runs at about 64 cycles per
+  byte instead of 135 (2 MB in 18.9 s instead of 39.9 s), and 2.2 times as fast
+  on a 68020. The block and entry checksums are most of the time the Amiga CLI
+  spends outside the codec: in FS-UAE (A500+, 68000, 4 MB Fast RAM, assembly
+  build) compression of the Calgary corpus files is 12 to 27% faster and
+  extraction 43 to 60% faster (`book1`: 119.6 s to 106.9 s to compress, 38.9 s
+  to 26.2 s to extract). `make crc32-m68k-qemu-test` checks both variants
+  against a bitwise CRC under qemu-user (every length to 700 at 8 alignments,
+  chained calls, over 65536 loop rounds); the Amiga CLI, the Hatari FAT12
+  transfer test on TOS 1.62 and `make m68k-qemu-asm-test` pass with it. The
+  Sinclair QL build keeps the C loop (its c68 toolchain cannot assemble it).
+  Measured in emulators only.
+- The READMEs and notes above said the assembly makes BoltLZ compression and
+  decompression "about twice as fast". That holds for the codec on the Atari;
+  measured end to end in the Amiga CLI (before the CRC change) it was about
+  1.5 times for compression and 1.2 times for extraction, because the
+  checksums and file I/O are not part of the codec.
+
 ## 1.12 — Archive format 7, volume sets and optimal Fluff level 9
 
 - Bolt Mini is bumped to version 1.4: its core reads and writes archive

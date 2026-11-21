@@ -761,10 +761,12 @@ wasm:
 BOLTLZ_M68K_ASM ?= 0
 M68K_CPU ?=
 ifeq ($(BOLTLZ_M68K_ASM),1)
-M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1 $(if $(M68K_CPU),-m$(M68K_CPU))
-M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S
-# The Mac 68k flags force-include a C header, so assemble it on its own.
-MACOS68K_ASM_OBJ = $(MACOS68K_BUILDDIR)/boltlz_m68k.o
+# The same switch adds crc32_m68k.S, a CRC-32 loop that is about twice as fast
+# as the C one (and gives the same checksums). The QL build keeps the C loop.
+M68K_ASM_FLAGS = -DBOLTLZ_M68K_ASM=1 -DBP_CRC32_M68K_ASM=1 $(if $(M68K_CPU),-m$(M68K_CPU))
+M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S $(COREDIR)/crc32_m68k.S
+# The Mac 68k flags force-include a C header, so assemble each file on its own.
+MACOS68K_ASM_OBJ = $(MACOS68K_BUILDDIR)/boltlz_m68k.o $(MACOS68K_BUILDDIR)/crc32_m68k.o
 endif
 
 # Assembly-optimized executables for the release packages, one
@@ -981,7 +983,7 @@ macos9-68k: macos9-core-sync-test
 	    exit 0; \
 	fi
 	rm -f '$(MACOS68K_BUILDDIR)/.link-smoke' '$(MACOS68K_BUILDDIR)/.link-smoke.gdb'
-	$(if $(MACOS68K_ASM_OBJ),$(MACOS68K_ENV) $(MACOS68K_CC) $(if $(M68K_CPU),-m$(M68K_CPU)) -c $(M68K_ASM_SRCS) -o $(MACOS68K_ASM_OBJ))
+	$(if $(MACOS68K_ASM_OBJ),$(foreach s,boltlz_m68k crc32_m68k,$(MACOS68K_ENV) $(MACOS68K_CC) $(if $(M68K_CPU),-m$(M68K_CPU)) -c $(COREDIR)/$(s).S -o $(MACOS68K_BUILDDIR)/$(s).o &&) true)
 	$(MACOS68K_ENV) $(MACOS68K_CC) $(MACOS68K_CFLAGS) $(M68K_ASM_FLAGS) \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
@@ -1590,11 +1592,11 @@ m68k:
 # release package ships this build and keeps the plain C build in C_BUILD.
 M68K_OPT_BUILDDIR = build/linux-m68k-optimized
 
-.PHONY: m68k-optimized m68k-qemu-asm-test
+.PHONY: m68k-optimized m68k-qemu-asm-test crc32-m68k-qemu-test
 m68k-optimized:
 	mkdir -p $(M68K_OPT_BUILDDIR)
 	$(M68K_CC) $(M68K_CFLAGS) -m68020-60 -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_M68K \
-	    -DBOLTLZ_M68K_ASM=1 \
+	    -DBOLTLZ_M68K_ASM=1 -DBP_CRC32_M68K_ASM=1 \
 	    -I$(COREDIR) -I$(BOLTLZDIR) \
 	    $(COREDIR)/archiver.c \
 	    $(COREDIR)/compress.c \
@@ -1604,8 +1606,22 @@ m68k-optimized:
 	    src/frontend/linux/main.c \
 	    src/frontend/linux/bp_net.c \
 	    $(BOLTLZDIR)/boltlz.c \
-	    $(BOLTLZDIR)/boltlz_m68k.S \
+	    $(BOLTLZDIR)/boltlz_m68k.S $(COREDIR)/crc32_m68k.S \
 	    -o $(M68K_OPT_BUILDDIR)/boltpack
+
+# CRC-32 assembly (src/core/crc32_m68k.S) against a bitwise CRC under qemu-user,
+# for the 68000 and the 68020-and-later variants: every length 0..700 at 8
+# alignments, chained calls and a buffer of over 65536 loop rounds.
+crc32-m68k-qemu-test:
+	mkdir -p build/crc32-m68k-test
+	for cpu in 68000 68020-60; do \
+	    $(M68K_CC) -static -ansi -pedantic -O2 -DBP_CRC32_M68K_ASM -m$$cpu \
+	        -I$(COREDIR) -Itest/unit test/unit/test_crc32_m68k.c \
+	        $(COREDIR)/compress.c $(COREDIR)/crc32_m68k.S $(COREDIR)/boltlz.c \
+	        $(COREDIR)/boltlite.c $(COREDIR)/fluff.c \
+	        -o build/crc32-m68k-test/test-$$cpu && \
+	    $(or $(M68K_QEMU),qemu-m68k) build/crc32-m68k-test/test-$$cpu || exit 1; \
+	done
 
 # Compare the assembly and C Linux m68k builds under qemu-user and exchange
 # archives with the host build.

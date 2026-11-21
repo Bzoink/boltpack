@@ -73,11 +73,17 @@ Measured in Hatari on 384 KiB of mixed Silesia data (emulated time):
 Data made of very long matches gains less (about 1.2x decoding), because
 copying dominates there and the C code already copies with long moves.
 
-Release packages ship the C build and, in an optimized folder, assembly
-builds for the 68000 and for 68020 to 68060 (`make atari-optimized`,
-`make amiga-optimized`). Classic Mac 68k ships them as separate packages
-(`mac68k-optimized-68000.hqx`, `mac68k-optimized-68020.hqx`; `make
-macos9-68k-optimized`). The Sinclair QL and the Sharp X68000 ship one 68000
+Release packages ship the assembly builds as the programs, with the plain C
+build in a `C_BUILD` folder, and for the Atari, Amiga and Classic Mac 68k a
+second assembly build for 68020 to 68060 (`make atari-optimized`, `make
+amiga-optimized`, `make macos9-68k-optimized`).
+
+`BOLTLZ_M68K_ASM=1` also adds [crc32_m68k.S](../src/core/crc32_m68k.S) and
+`-DBP_CRC32_M68K_ASM=1`: a CRC-32 that reads four bytes per round through
+byte-swapped slicing-by-4 tables, 64 cycles per byte on a 68000 against 135
+for the C loop, with the same results. In the Amiga CLI most of the time
+outside the codec is this checksum (the block CRC and the entry CRC), so it
+helps extraction more than compression. The Sinclair QL and the Sharp X68000 ship one 68000
 build in `Optimized/68000` (`make ql-optimized`, `make x68k-optimized`).
 
 The QL's c68 toolchain cannot assemble GNU syntax, and the code has no
