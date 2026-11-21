@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fluff levels 1 and 2 use a new fast parser. Level 1 encodes about twice as
+  fast as before (54 MB/s against 27 MB/s on a five-file Silesia sample) and
+  compresses about 1.3 points worse (30.9% against 29.5%); level 2 matches the
+  old level 1's ratio at 1.4 times its speed. Levels 3-9, including the default
+  level 8, produce the same bytes as before, and the decoder and the format are
+  unchanged.
+- `-l N` and the `--light`, `--standard` and `--best` presets are honoured when
+  Fluff compresses with threads (`-j`, and the automatic parallel mode for
+  large files); the parallel encoder had been using level 8 whatever was asked.
+
 - The mini core (`src/core/mini/archiver.c`) reads and writes archive format
   7, so the 16-bit DOS, Win16, OS/2 16-bit, CP/M-86 and Linux mini CLIs
   exchange archives with the Linux and DOS CLIs again, and no longer with

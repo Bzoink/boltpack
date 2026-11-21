@@ -3,7 +3,8 @@
  *
  * Self-contained LZ77 + FSE/tANS compressor/decompressor.
  * Uses a 256 KB window, matches up to 258 bytes, and a three-distance
- * repeat ring. Compression levels control hash-chain search depth.
+ * repeat ring. Levels 3-9 control hash-chain search depth; levels 1 and 2
+ * use a fast parser that probes a few candidates instead (fl_parse_fast).
  *
  * The stream format is NOT compatible with DEFLATE/zlib/gzip.
  *
@@ -1346,6 +1347,7 @@ struct fluff_ctx_s {
     fl_u8  window[FLUFF_WINDOW_SIZE];     /* ring buffer (compress + decode)   */
     fl_u32 file_pos;                      /* cumulative file byte position  */
     fl_u32 max_chain;                     /* hash chain search depth        */
+    fl_u32 parse_mode;                    /* 0 chain parser, 1-2 fast parser */
     /* Statistics (per-file) */
     fl_u32 total_literals;                /* count of literal symbols       */
     fl_u32 total_matches;                 /* count of match symbols         */
@@ -1403,17 +1405,23 @@ typedef struct {
     fl_u8  did_search;
 } fl_search_stats_t;
 
-/* Chain depths for BoltPack levels 1-9. */
+/* Chain depths for BoltPack levels 3-9; levels 1 and 2 use the fast parser
+ * (fl_parse_fast) and do not walk a chain. */
 static const fl_u32 s_chain_table[9] = {8, 16, 32, 64, 96, 128, 192, 256, 512};
 
-/* Module-level default chain depth, applied by fluff_ctx_reset(). */
+/* Parser per level: 0 = hash chains, 1 = fast, 2 = fast with look-ahead. */
+static const fl_u32 s_mode_table[9] = {1, 2, 0, 0, 0, 0, 0, 0, 0};
+
+/* Module-level default chain depth and parser, applied by fluff_ctx_reset(). */
 static fl_u32 s_default_chain = FLUFF_MAX_CHAIN;
+static fl_u32 s_default_mode = 0;
 
 void fluff_set_level(int level)
 {
     if (level < 1) level = 1;
     if (level > 9) level = 9;
     s_default_chain = s_chain_table[level - 1];
+    s_default_mode = s_mode_table[level - 1];
 }
 
 fluff_ctx_t *fluff_ctx_alloc(void)
@@ -1503,6 +1511,7 @@ void fluff_ctx_reset(fluff_ctx_t *ctx)
     }
     ctx->file_pos = 0;
     ctx->max_chain = s_default_chain;
+    ctx->parse_mode = s_default_mode;
     ctx->total_literals = 0;
     ctx->total_matches = 0;
     ctx->total_match_bytes = 0;
@@ -1559,6 +1568,7 @@ void fluff_ctx_reset_level(fluff_ctx_t *ctx, int level)
     }
     ctx->file_pos = 0;
     ctx->max_chain = chain;
+    ctx->parse_mode = s_mode_table[level - 1];
     ctx->total_literals = 0;
     ctx->total_matches = 0;
     ctx->total_match_bytes = 0;
@@ -1681,6 +1691,9 @@ static void fl_insert_window_hyb(fluff_ctx_t *ctx, fl_u32 abs_pos)
  * the modern parallel encoder to make independently-compressed groups behave
  * like the sequential stream without emitting a reset marker.
  */
+static void fl_fast_insert_window(fluff_ctx_t *ctx, fl_u32 abs_pos,
+                                  fl_u32 end_abs);
+
 int fluff_ctx_preload(fluff_ctx_t *ctx,
                       const bp_uint8 *history1, bp_uint32 history1_len,
                       const bp_uint8 *history2, bp_uint32 history2_len,
@@ -1750,7 +1763,11 @@ int fluff_ctx_preload(fluff_ctx_t *ctx,
 
     insert_abs = hist_abs;
     while (insert_abs + 3U < file_pos) {
-        fl_insert_window_hyb(ctx, insert_abs);
+        if (ctx->parse_mode != 0U) {
+            fl_fast_insert_window(ctx, insert_abs, file_pos);
+        } else {
+            fl_insert_window_hyb(ctx, insert_abs);
+        }
         insert_abs++;
     }
 
@@ -2813,6 +2830,303 @@ static int fl_parse_greedy(fluff_ctx_t *ctx, const fl_u8 *src,
     return BP_OK;
 }
 
+/* ─── Fast parser (levels 1 and 2) ──────────────────────────────────────── */
+
+/*
+ * Levels 1 and 2 trade ratio for speed.  Instead of walking a hash chain with
+ * a 3-byte fallback, they probe a short fixed list of candidates:
+ *
+ *   - a 4-byte hash bucket (one entry at level 1, two at level 2), kept in
+ *     hash_table (and the first half of hash_chain for the second entry);
+ *   - an 8-byte hash, kept in the second half of hash_chain, which finds long
+ *     matches that a crowded 4-byte bucket has already pushed out;
+ *   - the three repeat distances.
+ *
+ * A miss advances faster the longer it goes on (incompressible data is
+ * skipped quickly), pending literals are flushed when a match is found, and a
+ * match is extended backwards over them.  Level 2 also looks one position
+ * ahead.  The tokens are the same as the chain parser's, so the entropy
+ * coder and the decoder are unchanged.
+ *
+ * Every candidate is verified against the data, so stale entries (after a
+ * context reset or a preload) cost a probe at worst.  The hashes load bytes
+ * explicitly little-endian, so the output does not depend on the host.
+ */
+
+#define FL_FAST_SKIP_SHIFT   5   /* step = 1 + (misses >> this)             */
+#define FL_FAST_TAIL         8   /* last bytes of a block are literals      */
+#define FL_FAST_LAZY_MAX     24  /* look ahead only below this match length */
+
+/* The two tables share hash_chain: [0, HASH_SIZE) second 4-byte entries,
+ * [HASH_SIZE, 2 * HASH_SIZE) the 8-byte hash. */
+typedef char fl_fast_tables_fit[(2U * FLUFF_HASH_SIZE <= FLUFF_WINDOW_SIZE) ? 1 : -1];
+
+static fl_u32 fl_ld32le(const fl_u8 *p)
+{
+    return (fl_u32)p[0] | ((fl_u32)p[1] << 8) |
+           ((fl_u32)p[2] << 16) | ((fl_u32)p[3] << 24);
+}
+
+static fl_u32 fl_fast_hash4(fl_u32 v)
+{
+    v ^= v >> 16;
+    v *= 0x45d9f3bU;
+    return (v >> (32 - FLUFF_HASH_BITS)) & FLUFF_HASH_MASK;
+}
+
+static fl_u32 fl_fast_hash8(const fl_u8 *p)
+{
+    fl_u32 h;
+    h  = fl_ld32le(p) * 0x9e3779b1U;
+    h ^= fl_ld32le(p + 4) * 0x85ebca77U;
+    h ^= h >> 15;
+    h *= 0x2c1b3c6dU;
+    return (h >> (32 - FLUFF_HASH_BITS)) & FLUFF_HASH_MASK;
+}
+
+/* Insert the position abs whose first bytes are at p (8 valid if can8). */
+static void fl_fast_insert(fluff_ctx_t *ctx, const fl_u8 *p, fl_u32 abs,
+                           int can8)
+{
+    fl_u32 h = fl_fast_hash4(fl_ld32le(p));
+
+    if (ctx->parse_mode == 2U) {
+        ctx->hash_chain[h] = ctx->hash_table[h];
+    }
+    ctx->hash_table[h] = abs;
+    if (can8) {
+        ctx->hash_chain[FLUFF_HASH_SIZE + fl_fast_hash8(p)] = abs;
+    }
+}
+
+/* Insert a position of the preloaded history (read from the ring). */
+static void fl_fast_insert_window(fluff_ctx_t *ctx, fl_u32 abs_pos,
+                                  fl_u32 end_abs)
+{
+    fl_u8 b[8];
+    fl_u32 k;
+    int can8 = (abs_pos + 8U <= end_abs);
+
+    for (k = 0; k < 8U; k++) {
+        b[k] = (can8 || k < 4U)
+             ? ctx->window[(abs_pos + k) & FLUFF_WINDOW_MASK] : 0;
+    }
+    fl_fast_insert(ctx, b, abs_pos, can8);
+}
+
+/* Four bytes at an absolute position: the current block or the history ring. */
+static fl_u32 fl_fast_load_abs(const fluff_ctx_t *ctx, const fl_u8 *cur_src,
+                               fl_u32 pos, fl_u32 file_pos)
+{
+    fl_u8 b[4];
+    fl_u32 k;
+
+    if (pos >= file_pos) {
+        return fl_ld32le(cur_src + (pos - file_pos));
+    }
+    for (k = 0; k < 4U; k++) {
+        b[k] = fl_byte_at(ctx, cur_src, pos + k, file_pos);
+    }
+    return fl_ld32le(b);
+}
+
+/*
+ * Length of the common prefix of cur_p and the data at absolute position
+ * probe (the history ring first, then the current block), up to max.
+ */
+static fl_u32 fl_fast_match_len(const fluff_ctx_t *ctx, const fl_u8 *cur_src,
+                                const fl_u8 *cur_p, fl_u32 probe,
+                                fl_u32 file_pos, fl_u32 max)
+{
+    fl_u32 len = 0;
+
+    if (probe >= file_pos) {
+        return fl_match_len_direct(cur_p, cur_src + (probe - file_pos), max);
+    }
+    while (len < max && probe + len < file_pos) {
+        fl_u32 ring = (probe + len) & FLUFF_WINDOW_MASK;
+        fl_u32 seg  = FLUFF_WINDOW_SIZE - ring;
+        fl_u32 hist = file_pos - (probe + len);
+        fl_u32 want = max - len;
+        fl_u32 got;
+
+        if (seg > hist) seg = hist;
+        if (seg > want) seg = want;
+        got = fl_match_len_direct(cur_p + len, ctx->window + ring, seg);
+        len += got;
+        if (got < seg) return len;
+    }
+    if (len < max) {
+        len += fl_match_len_direct(cur_p + len, cur_src, max - len);
+    }
+    return len;
+}
+
+/*
+ * Best match at src[i] from the repeat distances and the hash candidates;
+ * nothing is inserted.  Returns the length (0 if none), with the distance and
+ * token type (1 new distance, 2-4 repeat slot).
+ */
+static fl_u32 fl_fast_best(fluff_ctx_t *ctx, const fl_u8 *src, fl_u32 src_len,
+                           fl_u32 file_pos, fl_u32 i,
+                           fl_u32 rep0, fl_u32 rep1, fl_u32 rep2,
+                           fl_u32 *out_dist, fl_u8 *out_type)
+{
+    fl_u32 abs = file_pos + i;
+    const fl_u8 *p = src + i;
+    fl_u32 rem = src_len - i;
+    fl_u32 maxm = rem < FLUFF_MAX_MATCH ? rem : FLUFF_MAX_MATCH;
+    fl_u32 minl = ctx->parse_mode == 2U ? 4U : 5U;
+    fl_u32 max_dist = FLUFF_WINDOW_SIZE - 1U;
+    fl_u32 v = fl_ld32le(p);
+    fl_u32 h = fl_fast_hash4(v);
+    fl_u32 reps[3];
+    fl_u32 cands[3];
+    fl_u32 mlen = 0;
+    fl_u32 mdist = 0;
+    fl_u8 mtype = 1;
+    int nc = 0;
+    int k;
+
+    reps[0] = rep0; reps[1] = rep1; reps[2] = rep2;
+    for (k = 0; k < 3; k++) {
+        fl_u32 rd = reps[k];
+
+        if (rd != 0 && rd < abs && rd <= max_dist &&
+            fl_fast_load_abs(ctx, src, abs - rd, file_pos) == v) {
+            fl_u32 l = fl_fast_match_len(ctx, src, p, abs - rd, file_pos,
+                                         maxm);
+            if (l > mlen) {
+                mlen = l; mdist = rd; mtype = (fl_u8)(2 + k);
+            }
+        }
+    }
+
+    if (rem >= 8U && ctx->hash_chain[FLUFF_HASH_SIZE + fl_fast_hash8(p)] != 0) {
+        cands[nc++] = ctx->hash_chain[FLUFF_HASH_SIZE + fl_fast_hash8(p)];
+    }
+    if (ctx->hash_table[h] != 0) cands[nc++] = ctx->hash_table[h];
+    if (ctx->parse_mode == 2U && ctx->hash_chain[h] != 0) {
+        cands[nc++] = ctx->hash_chain[h];
+    }
+    for (k = 0; k < nc; k++) {
+        fl_u32 cd = cands[k];
+
+        if (cd < abs && abs - cd <= max_dist &&
+            fl_fast_load_abs(ctx, src, cd, file_pos) == v) {
+            fl_u32 l = fl_fast_match_len(ctx, src, p, cd, file_pos, maxm);
+
+            /* a repeat wins a tie: it costs fewer bits */
+            if (l > mlen + (mtype >= 2 ? 1U : 0U)) {
+                mlen = l; mdist = abs - cd; mtype = 1;
+            }
+        }
+    }
+
+    if (mlen < minl) return 0;
+    if (mtype == 1) {
+        if (mlen <= 4 && mdist > FLUFF_MIN_DIST_LEN5) return 0;
+        if (mdist == rep0) mtype = 2;
+        else if (mdist == rep1) mtype = 3;
+        else if (mdist == rep2) mtype = 4;
+    }
+    *out_dist = mdist;
+    *out_type = mtype;
+    return mlen;
+}
+
+static int fl_fast_flush_literals(fl_u8 *tokens, fl_u32 token_cap,
+                                  fl_u32 *num_tokens, fl_u32 *ll_freq,
+                                  const fl_u8 *lits, fl_u32 n)
+{
+    fl_u32 k;
+
+    if (*num_tokens + 2U * n > token_cap) return BP_ERR_OVERFLOW;
+    for (k = 0; k < n; k++) {
+        tokens[*num_tokens]      = lits[k];
+        tokens[*num_tokens + 1U] = 0;
+        *num_tokens += 2U;
+        ll_freq[lits[k]]++;
+    }
+    return BP_OK;
+}
+
+static int fl_parse_fast(fluff_ctx_t *ctx, const fl_u8 *src, fl_u32 src_len,
+                         fl_u32 file_pos, fl_u8 *tokens, fl_u32 token_cap,
+                         fl_u32 *out_num_tokens, fl_u32 *ll_freq,
+                         fl_u32 *d_freq)
+{
+    fl_u32 i = 0;
+    fl_u32 anchor = 0;
+    fl_u32 miss = 0;
+    fl_u32 num_tokens = 0;
+    fl_u32 rep0 = 0, rep1 = 0, rep2 = 0;
+    fl_u32 limit = src_len >= FL_FAST_TAIL ? src_len - FL_FAST_TAIL : 0;
+    int rc;
+
+    while (i < limit) {
+        fl_u32 mlen, mdist = 0, end, q;
+        fl_u8 mtype = 1;
+
+        mlen = fl_fast_best(ctx, src, src_len, file_pos, i,
+                            rep0, rep1, rep2, &mdist, &mtype);
+        fl_fast_insert(ctx, src + i, file_pos + i, src_len - i >= 8U);
+        if (mlen == 0) {
+            miss++;
+            i += 1U + (miss >> FL_FAST_SKIP_SHIFT);
+            continue;
+        }
+
+        if (ctx->parse_mode == 2U && mlen < FL_FAST_LAZY_MAX &&
+            i + 1U < limit) {
+            fl_u32 ldist = 0, llen;
+            fl_u8 ltype = 1;
+
+            llen = fl_fast_best(ctx, src, src_len, file_pos, i + 1U,
+                                rep0, rep1, rep2, &ldist, &ltype);
+            if (llen != 0 &&
+                fl_match_savings_est(llen, ldist, ltype) >
+                fl_match_savings_est(mlen, mdist, mtype) + 8U) {
+                i++;            /* take a literal; the loop reconsiders i+1 */
+                miss = 0;
+                continue;
+            }
+        }
+
+        /* extend backwards over the pending literals (new distances only) */
+        if (mtype == 1) {
+            fl_u32 abs = file_pos + i;
+
+            while (i > anchor && abs - mdist > 0 && mlen < FLUFF_MAX_MATCH &&
+                   fl_byte_at(ctx, src, abs - mdist - 1U, file_pos) ==
+                   src[i - 1U]) {
+                i--; abs--; mlen++;
+            }
+        }
+        rc = fl_fast_flush_literals(tokens, token_cap, &num_tokens, ll_freq,
+                                    src + anchor, i - anchor);
+        if (rc != BP_OK) return rc;
+        rc = fl_emit_match_token(ctx, tokens, token_cap, &num_tokens, ll_freq,
+                                 d_freq, mlen, mdist, mtype, 1);
+        if (rc != BP_OK) return rc;
+        fl_update_rep_ring(&rep0, &rep1, &rep2, mdist);
+
+        end = i + mlen;
+        for (q = i + 1U; q < end && q + 4U <= src_len; q++) {
+            fl_fast_insert(ctx, src + q, file_pos + q, src_len - q >= 8U);
+        }
+        i = end;
+        anchor = i;
+        miss = 0;
+    }
+
+    rc = fl_fast_flush_literals(tokens, token_cap, &num_tokens, ll_freq,
+                                src + anchor, src_len - anchor);
+    if (rc != BP_OK) return rc;
+    *out_num_tokens = num_tokens;
+    return BP_OK;
+}
+
 /*
  * Compress one block with a persistent context. The v0x09 compact header
  * stores lit/len and distance count tables, two uint16 ANS states, and two
@@ -2876,9 +3190,15 @@ int fluff_compress_block_ctx(const bp_uint8 *src, bp_uint32 src_len,
     memset(ll_freq, 0, sizeof(ll_freq));
     memset(d_freq,  0, sizeof(d_freq));
     ll_freq[FLUFF_END_OF_BLOCK] = 1;  /* EOB always present */
-    parse_rc = fl_parse_greedy(ctx, src, src_len, file_pos,
-                               tokens, token_cap, &num_tokens,
-                               ll_freq, d_freq);
+    if (ctx->parse_mode != 0U) {
+        parse_rc = fl_parse_fast(ctx, src, src_len, file_pos,
+                                 tokens, token_cap, &num_tokens,
+                                 ll_freq, d_freq);
+    } else {
+        parse_rc = fl_parse_greedy(ctx, src, src_len, file_pos,
+                                   tokens, token_cap, &num_tokens,
+                                   ll_freq, d_freq);
+    }
     if (parse_rc != BP_OK) { return parse_rc; }
 
     /* FSE working tables: embedded in the context (no per-block malloc). */

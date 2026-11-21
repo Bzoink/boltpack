@@ -337,11 +337,55 @@ static void allocation_lifecycle(void)
     UNIT_CHECK(ok, "allocator ownership, failure cleanup, failed growth and scratch reuse");
 }
 
+/* A context preloaded with history (as the parallel encoder does for each
+ * group) must find matches in it, at every level including the fast parsers
+ * of levels 1 and 2, and the decoder must accept the result. */
+static void preload_history(void)
+{
+    fluff_ctx_t *enc = fluff_ctx_alloc(), *dec = fluff_ctx_alloc();
+    bp_uint32 n = 65536, i, round;
+    bp_uint8 *hist = (bp_uint8 *)malloc(n);
+    bp_uint8 *block = (bp_uint8 *)malloc(n);
+    int level, ok = 1, used_history = 1;
+    if (!enc || !dec || !hist || !block) exit(2);
+    for (i = 0; i < n; i++) hist[i] = (bp_uint8)random_word();
+    for (level = 1; level <= 9 && ok; level++) {
+        for (round = 0; round < 3 && ok; round++) {
+            /* the next block repeats pieces of the history, a few bytes
+             * changed, so it only compresses well if the history is known */
+            bp_uint32 clen = fluff_compress_bound(n), dlen = n;
+            bp_uint8 *encoded = (bp_uint8 *)malloc(clen);
+            if (!encoded) exit(2);
+            for (i = 0; i < n; i++) block[i] = hist[(i + 9000U * (round + 1U)) % n];
+            for (i = 0; i < n; i += 997) block[i] ^= 0x5a;
+            fluff_set_level(level);
+            ok = fluff_ctx_preload(enc, hist, n / 2, hist + n / 2, n - n / 2, n) == BP_OK &&
+                 fluff_compress_block_ctx(block, n, encoded, &clen, enc) == BP_OK;
+            if (ok && clen > n / 3) used_history = 0;
+            fluff_ctx_reset_decode(dec);
+            fluff_ctx_feed_raw(dec, hist, n);
+            if (ok) {
+                bp_uint8 *decoded = (bp_uint8 *)malloc(n);
+                if (!decoded) exit(2);
+                ok = fluff_decompress_block_ctx(encoded, clen, decoded, &dlen, dec) == BP_OK &&
+                     dlen == n && !memcmp(decoded, block, n);
+                free(decoded);
+            }
+            free(encoded);
+            if (!ok) printf("preload level=%d round=%lu\n", level, (unsigned long)round);
+        }
+    }
+    fluff_set_level(8);
+    UNIT_CHECK(ok, "preloaded history: every level round-trips against a decoder with the same history");
+    UNIT_CHECK(used_history, "preloaded history: every level finds matches in the history");
+    free(hist); free(block); fluff_ctx_free(enc); fluff_ctx_free(dec);
+}
+
 int main(void)
 {
     fluff_init();
     UNIT_SECTION("Fluff direct codec");
-    reader_refills(); ans_transitions(); legacy_streams(); reset_stream(); boundaries(); history(); damaged_streams();
+    reader_refills(); ans_transitions(); legacy_streams(); reset_stream(); boundaries(); history(); preload_history(); damaged_streams();
     allocation_lifecycle();
     return UNIT_REPORT();
 }

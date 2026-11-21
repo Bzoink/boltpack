@@ -38,9 +38,10 @@ int fluff_init(void);
 
 /*
  * Set the default compression level for all subsequent fluff_ctx_reset()
- * calls.  Level 1 is fastest (chain depth 8); level 8 is the historical
- * default (chain depth 256 = FLUFF_MAX_CHAIN); level 9 is slowest/best
- * (chain depth 512).  Invalid values are clamped to [1, 9].
+ * calls.  Levels 1 and 2 use a fast parser (level 2 also looks one position
+ * ahead); levels 3-9 search hash chains of depth 32 to 512, level 8 being
+ * the historical default (depth 256 = FLUFF_MAX_CHAIN) and level 9 the
+ * slowest/best.  Invalid values are clamped to [1, 9].
  */
 void fluff_set_level(int level);
 

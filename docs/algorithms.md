@@ -172,9 +172,11 @@ Fluff is BoltPack's ratio-oriented codec. The current implementation is in
 The current implementation combines:
 
 1. A 256 KB LZ77 window.
-1. A hybrid hash-chain match finder.
+1. A hybrid hash-chain match finder (levels 3-9) or, at levels 1 and 2, a
+   fast candidate-list matcher.
 1. A three-entry repeat-distance ring.
-1. A rep-aware greedy parser with lazy lookahead.
+1. A rep-aware greedy parser with lazy lookahead (the fast parser of levels
+   1 and 2 is described below).
 1. FSE/tANS entropy coding (current normal blocks use stream version `0x09`;
    grouped reset blocks use `0x89`).
 
@@ -214,7 +216,7 @@ and [state-transition equations](specification-1.0.md#346b-versions-0x09-and-0x8
 | Maximum match | 258 | DEFLATE-style upper bound |
 | Main hash table | 131072 | 17-bit 4-byte hash |
 | Sub-hash table | 65536 | 3-byte recent-position table |
-| Default chain depth | 256 | Tuned by compression level |
+| Default chain depth | 256 | Tuned by compression level (levels 3-9: 32, 64, 96, 128, 192, 256, 512) |
 | Good-match early stop | 64 | Stop deeper chain search at large matches |
 | Lit/len alphabet | 289 | Literals, EOB, match lengths, rep-match symbols |
 | Distance alphabet | 48 | Format-defined distance categories |
@@ -245,6 +247,29 @@ The current Fluff encoder is best understood as the following concrete stages.
    3-byte sub-hash table. The sub-hash does not replace the main chain; it
    seeds the rejection threshold so the chain search starts from a stronger
    minimum match length.
+1. **Fast parser (levels 1 and 2).**
+   `fl_parse_fast()` replaces the chain search with a short candidate list: a
+   4-byte hash bucket (one entry at level 1, two at level 2), a second hash
+   over 8 bytes that finds long matches a crowded bucket has pushed out, and
+   the three repeat distances. Misses advance faster the longer they run, so
+   incompressible data is skipped quickly; pending literals are flushed when a
+   match is found and the match is extended backwards over them. Level 2 looks
+   one position ahead and takes the later match when its estimated savings are
+   more than 8 bits better. The minimum match is 5 at level 1 and 4 at level 2.
+   The tokens are the chain parser's, so the entropy coder and the decoder are
+   unchanged, and the output is the same on every host (the hashes load bytes
+   explicitly little-endian). Measured on five Silesia files (dickens, samba,
+   xml, osdb, ooffice; 61 MB, one thread, 256 KiB blocks):
+
+   | Level | Size | Encode speed |
+   | ---: | ---: | ---: |
+   | 1 | 30.9% | 54 MB/s |
+   | 2 | 29.6% | 37 MB/s |
+   | 3 | 28.7% | 17 MB/s |
+   | 8 | 28.3% | 8.6 MB/s |
+
+   Before the fast parser, level 1 was 29.5% at 27 MB/s and level 2 was 29.1%
+   at 22 MB/s. Highly repetitive data (nci, xml) gives up more than text does.
 1. **Distance-aware short-match filtering.**
    The encoder rejects matches that expand the stream: `len <= 3` at
    `dist > 512`, and `len <= 4` at `dist > 49152`.

@@ -18,6 +18,7 @@ Licensed under the BSD 2-Clause License
 import argparse
 import hashlib
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -873,12 +874,65 @@ def test_fluff_levels() -> None:
         if r1.returncode == 0 and r9.returncode == 0:
             size1 = os.path.getsize(arc1)
             size9 = os.path.getsize(arc9)
-            check(size9 <= size1,
-                  f"fluff level 9 ({size9}) <= level 1 ({size1})")
+            # (this input is a short period repeated, which every level
+            # codes in a few hundred bytes; the next block orders the levels
+            # on data where they differ)
+            check(size9 <= size1 + size1 // 100 + 16,
+                  f"fluff level 9 ({size9}) <= level 1 ({size1}) within 1%")
 
         # integrity of both
         r = run_bp("t", "level9.bolt", cwd=tmp)
         check(r.returncode == 0, "fluff level 9: test integrity exit 0")
+
+    # Levels 1 and 2 use the fast parser, 3-9 the hash-chain parser.  Every
+    # level must round-trip, larger levels must not compress worse, and the
+    # level must reach the threaded encoder too (it once ignored -l).
+    with tempfile.TemporaryDirectory(prefix="bp_fluff_lv_") as tmp:
+        src = os.path.join(tmp, "src")
+        os.makedirs(src)
+        # Zipf-weighted pseudo-prose: compresses to roughly a third, and the
+        # levels give clearly different sizes (unlike a short repeated text)
+        rng = random.Random(71)
+        words = ["".join(rng.choice("abcdefghijklmnopqrstuvwxyz")
+                         for _ in range(rng.randint(2, 9)))
+                 for _ in range(4000)]
+        weights = [1.0 / (rank + 1) for rank in range(len(words))]
+        prose = " ".join(rng.choices(words, weights, k=620000))
+        make_file(os.path.join(src, "data.txt"), 0, "literal",
+                  content=prose.encode("ascii")[:3 * 1024 * 1024])
+        digests = file_tree_digests(src)
+        sizes = {}
+        for mode, flags in (("single", ["--single-thread"]),
+                            ("threaded", ["-j", "2"])):
+            for level in (1, 2, 3, 8):
+                name = f"lv{level}-{mode}.bolt"
+                out = os.path.join(tmp, f"out-{level}-{mode}")
+                r = run_bp("c", "-F", "-l", str(level), *flags, name, "src",
+                           cwd=tmp)
+                check(r.returncode == 0,
+                      f"fluff level {level} ({mode}): create exit 0")
+                r = run_bp("t", name, cwd=tmp)
+                check(r.returncode == 0,
+                      f"fluff level {level} ({mode}): test exit 0")
+                os.makedirs(out)
+                r = run_bp("x", "-o", out, name, cwd=tmp)
+                check(r.returncode == 0,
+                      f"fluff level {level} ({mode}): extract exit 0")
+                roundtrip_check(f"fluff level {level} ({mode})", src,
+                                os.path.join(tmp, name),
+                                os.path.join(out, "src"), digests)
+                sizes[(mode, level)] = os.path.getsize(os.path.join(tmp, name))
+        for mode in ("single", "threaded"):
+            s1, s2, s3, s8 = (sizes[(mode, lv)] for lv in (1, 2, 3, 8))
+            # Levels 2 and 3 use different parsers and can swap places on
+            # synthetic text, so only the orderings that hold anywhere:
+            check(s2 <= s1 and s8 <= s3 and s8 <= s1,
+                  f"fluff levels ({mode}): 2 <= 1 and 8 <= 3, 1 "
+                  f"(sizes {s1}, {s2}, {s3}, {s8})")
+        check(sizes[("threaded", 1)] > sizes[("threaded", 8)],
+              "fluff -l reaches the threaded encoder "
+              f"(level 1 {sizes[('threaded', 1)]} > level 8 "
+              f"{sizes[('threaded', 8)]})")
 
 
 def test_fast_fluff_threaded_roundtrip() -> None:

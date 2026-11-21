@@ -22,6 +22,9 @@
 #include "fluff.h"
 #include "compress.h"
 #include "boltlite.h"
+
+/* Fluff level used when the archive has none (the CLI's --standard). */
+#define BP_FLUFF_DEFAULT_LEVEL 8
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -877,10 +880,9 @@ static int compress_piece(bp_archive_t *ar, bp_uint8 method,
         rc = bp_compress_block_work(src, len, w->split_out, &dl,
                                     w->split_lz_work, ar->method_level);
     } else if (method == BP_METHOD_FLUFF) {
-        if (ar->method_level > 0)
-            fluff_ctx_reset_level(w->split_fctx, (int)ar->method_level);
-        else
-            fluff_ctx_reset(w->split_fctx);
+        fluff_ctx_reset_level(w->split_fctx,
+                              ar->method_level > 0 ? (int)ar->method_level
+                                                   : BP_FLUFF_DEFAULT_LEVEL);
         rc = fluff_compress_block_ctx(src, len, w->split_out, &dl,
                                       w->split_fctx);
     } else {
@@ -1181,8 +1183,9 @@ static int seq_setup(bp_archive_t *ar, bp_uint8 method,
             }
         }
         *fctx = (fluff_ctx_t *)ar->seq_fluff_ctx;
-        if (ar->method_level > 0) fluff_ctx_reset_level(*fctx, (int)ar->method_level);
-        else fluff_ctx_reset(*fctx);
+        fluff_ctx_reset_level(*fctx, ar->method_level > 0
+                                         ? (int)ar->method_level
+                                         : BP_FLUFF_DEFAULT_LEVEL);
     }
     return BP_OK;
 }
@@ -1255,6 +1258,10 @@ static int write_entry_blocks(bp_archive_t *ar, eout_t *o, const char *name,
         if (rc != BP_OK) return rc;
         if (ar->fast_fluff_ctx == NULL) goto sequential;
         ffctx = (fluff_fast_ctx_t *)ar->fast_fluff_ctx;
+        /* The parallel encoder resets its contexts from the module default,
+         * so the archive's level has to be made the default first. */
+        fluff_set_level(ar->method_level > 0 ? (int)ar->method_level
+                                             : BP_FLUFF_DEFAULT_LEVEL);
         fast_hist_cap = ar->fast_fluff_hist_size;
         fast_hist_len = 0;
         fast_stream_pos = 0;

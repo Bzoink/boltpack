@@ -260,7 +260,7 @@ The CLI frontend implements the `bp_io_t` callbacks using standard C file functi
 - **`-F`** (`c`, `a`): Use Fluff compression. When no `-b` is given, block size is automatically set to 256 KB to match Fluff's window size.
 - **`-1`** (`c`, `a`): Use BoltLite compression.
 - **`-2`** (`c`, `a`): Use boltlz compression. `-l 1` selects level 1; `-l 2` selects level 2; omitting `-l` selects Balanced.
-- **`-l N` / `--level N`** (`c`, `a`): Select an exact codec level: BoltLZ 1–2 or Fluff 1–9. Fluff defaults to 8.
+- **`-l N` / `--level N`** (`c`, `a`): Select an exact codec level: BoltLZ 1–2 or Fluff 1–9. Fluff defaults to 8; Fluff levels 1 and 2 use a fast parser (about twice the speed of level 3 or better, a few percent larger), levels 3-9 search hash chains.
 - **`--light`, `--standard`, `--best`** (`c`, `a`): Select quality presets. They map to BoltLZ 1/2/2 and Fluff 1/8/9 respectively. Standard matches each codec's normal default.
 - **`-q`** (all): Quiet — show only progress.
 - **`-qq`** (all): Silent — suppress all output.
