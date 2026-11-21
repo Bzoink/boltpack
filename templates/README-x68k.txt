@@ -8,8 +8,8 @@ Amiga, DOS and the other BoltPack systems, and the other way round.
 FILES
 -----
 
-  boltpack.x         Command-line program (BoltLZ compression)
-  Optimized\68000\   Faster version of boltpack.x (see below)
+  boltpack.x         Command-line program (68000 assembly for BoltLZ)
+  C_BUILD\           Plain C build of boltpack.x (see below)
   README.txt         This file
   RELEASE-NOTES.txt  Release notes
   LICENSE            License terms
@@ -43,15 +43,17 @@ UTC, for example for Japan:
 
 Without it, file times are recorded as unknown.
 
-OPTIMIZED VERSION
------------------
+ASSEMBLY BUILD
+--------------
 
-boltpack.x is the standard build. Optimized\68000\boltpack.x is the same
-program with hand-written 68000 assembly for BoltLZ, and runs on every
-X68000 model including the X68030. To use it, copy it over the standard
-boltpack.x. Archives are exactly the same as with the standard build. On
-other 68000 machines the assembly makes BoltLZ compression and
-decompression each about twice as fast; X68000 speed has not been measured.
+boltpack.x contains hand-written 68000 assembly for BoltLZ, the default
+compression method, and runs on every X68000 model including the X68030. On
+other 68000 machines the assembly makes BoltLZ compression and decompression
+each about twice as fast as the plain C build; X68000 speed has not been
+measured. Other compression methods run at the same speed as in the C build.
+
+C_BUILD\boltpack.x is the plain C build, without assembly. Use it if you
+suspect the assembly code; archives are exactly the same.
 
 X68000 NOTES
 ------------

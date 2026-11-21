@@ -127,27 +127,39 @@
   decompression 2.0x (64 to 131 KB/s on mixed data); on a 32 MHz 68030 1.7x
   and 1.8x, and 2.0x and 2.1x with a `-m68020` build.
   `make atari-hatari-boltlz-asm-test` compares it with the C code in Hatari.
-  Off by default.
-- The Atari and Amiga packages keep the C build in the root and add an
-  optimized folder (`OPTIMIZE` on the Atari, as TOS names are 8.3, and
-  `Optimized` on the Amiga) with the assembly builds of both programs for
-  each CPU: `68000` for any machine and `68020` for 68020 to 68060. Users copy
-  the one for their CPU over the standard program; archives are identical.
-  The READMEs explain the choice. Built with `make atari-optimized` and
-  `make amiga-optimized`.
-- Classic Mac 68k gets two more packages next to the C build
-  (`boltpack-VERSION-mac68k.hqx`): `mac68k-optimized-68000.hqx` for any 68k
-  Mac and `mac68k-optimized-68020.hqx` for 68020 and later, built with
-  `make macos9-68k-optimized`. The download page now lists the Mac 68k
-  packages, which it previously skipped (`.hqx` and the `mac68k` name were
-  not recognized).
+  Off by default in `make`; the release packages ship it (see below).
+- The assembly builds are the default in the Atari, Amiga, Sinclair QL, Sharp
+  X68000 and Classic Mac 68k packages. The programs in the package root are
+  the 68000 assembly builds, which run on every CPU of the family. The Atari
+  and Amiga packages add a `68020` folder with both programs built for 68020
+  to 68060 (they do not start on a 68000), and every package keeps the plain C
+  build in a `C_BUILD` folder as a fallback; archives are identical with all
+  of them. Built with `make atari-optimized`, `amiga-optimized`,
+  `macos9-68k-optimized`, `ql-optimized` and `x68k-optimized`.
+- The 16-bit DOS, Windows 3.x and OS/2 1.x packages likewise ship the build
+  with the 8086 assembly BoltLite decoder as `bpmini.exe`, which extracts and
+  tests faster, with the plain C build in `C_BUILD`
+  (`make dos16-optimized win16-optimized os2-16-optimized`); archives are
+  identical. The new RISC OS package (`boltpack-VERSION-riscos-ARM.zip`) does
+  the same with the ARM assembly BoltLZ match scan (`make riscos-optimized`),
+  about three times faster at compression in the RPCEmu emulator. It was
+  tested there (RISC OS 5.30: create, test and extract with both builds,
+  archives exchanged with the Linux CLI) but not on real hardware.
+- RISC OS: the plain C build (`make riscos`) crashed on start with
+  "undefined instruction" because it lacked the ARM flags the optimized build
+  used (`-marm -mcpu=arm610 -mlibscl`); both builds now share them.
+- Classic Mac 68k has three packages: `boltpack-VERSION-mac68k.hqx` is the
+  68000 assembly build for any 68k Mac, `mac68k-68020.hqx` the build for 68020
+  and later, and `mac68k-c.hqx` the plain C build. The download page now lists
+  the Mac 68k packages, which it previously skipped (`.hqx` and the `mac68k`
+  name were not recognized).
 - Sinclair QL: the c68 compiler's `MC68000` macro now selects the 68000
   BoltLZ code, which the QL build had missed. At original QL speed (sQLux
   68008 timing) BoltLZ compression is 2.2x faster (0.56 to 1.25 KB/s on mixed
   data); decompression is unchanged, as c68 keeps the default decoder.
-- Sinclair QL: an assembly-optimized build in the package's `Optimized/68000`
-  folder (`optimized_68000_boltpack` in the UQLX container), built with
-  `make ql-optimized`. c68's assembler cannot read GNU syntax, so
+- Sinclair QL: the package's `boltpack` is an assembly-optimized build (the
+  plain C build is `C_BUILD/boltpack`, `c_build_boltpack` in the UQLX
+  container), built with `make ql-optimized`. c68's assembler cannot read GNU syntax, so
   `src/core/boltlz_m68k_c68.s` carries the same position-independent machine
   code as data words; `scripts/gen_boltlz_m68k_c68.py` regenerates it and
   `make boltlz-m68k-c68-sync-test` checks it. At original QL speed BoltLZ
@@ -165,8 +177,9 @@
   (`scripts/patches/run68x-cmpa-w.patch`), which had made correct compiled
   code appear to fail. Not yet run on a real X68000.
 - Sharp X68000: the package has an X68000 README, ASCII text with CRLF line
-  endings, and an assembly-optimized build in `Optimized/68000` (`make
-  x68k-optimized`), whose output in run68 is identical to the Atari builds.
+  endings. Its `boltpack.x` is the assembly-optimized build (`make
+  x68k-optimized`; the C build is in `C_BUILD`), whose output in run68 is
+  identical to the Atari builds.
   `make x68k-run68-boltlz-asm-test` compares it with the C build.
 
 ## 1.11 — Native metadata preservation and usable application transfers

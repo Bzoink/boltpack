@@ -550,8 +550,12 @@ make win16
 make os2-16
 ```
 
-The opt-in builds use 8086 assembly for BoltLite, the default mini codec,
-and produce the same BoltLite bitstream as the C builds.
+The `-optimized` builds use 8086 assembly for BoltLite, the default mini
+codec, and produce the same BoltLite bitstream as the C builds. Release
+packages for DOS, Windows 3.x and OS/2 1.x ship them as `bpmini.exe`, with the
+C build in a `C_BUILD` folder; `scripts/create-packages.sh` needs both builds.
+The same applies to the 68k builds (`atari-optimized`, `amiga-optimized`,
+`macos9-68k-optimized`, `ql-optimized`, `x68k-optimized`) and `riscos-optimized`.
 
 | Build command | Executable |
 | --- | --- |

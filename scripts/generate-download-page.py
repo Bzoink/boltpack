@@ -198,8 +198,10 @@ PLATFORMS = {
         "arch": "Motorola 68k",
         "description": (
             "Classic Mac OS 68k application (BinHex) built with the Retro68 "
-            "cross-compiler. Runs on Mac Plus, SE, Classic, LC, II, Quadra and "
-            "Centris. Requires System 7 or later."
+            "cross-compiler, with hand-written 68000 assembly for BoltLZ. Runs "
+            "on Mac Plus, SE, Classic, LC, II, Quadra and Centris. Requires "
+            "System 7 or later. The 68020 package needs a 68020 or later; the "
+            "C package is the plain build without assembly."
         ),
         "family": "macOS",
     },
@@ -642,8 +644,8 @@ EXTENSIONS = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.Z", ".zip", ".lha", ".tar"
 # Known variant suffixes that can trail the cpu field
 VARIANT_LABELS = {
     "uqlx": "UQLX container for emulator",
-    "optimized-68000": "assembly-optimized, any 68k CPU",
-    "optimized-68020": "assembly-optimized, 68020 to 68060 only",
+    "68020": "assembly build for 68020 to 68060 only",
+    "c": "plain C build, without assembly (fallback)",
 }
 
 

@@ -9,8 +9,8 @@ This package contains the Sinclair QL / SMSQ-E command line build.
 FILES
 -----
 
-boltpack           Main executable
-Optimized/68000/   Faster boltpack (see OPTIMIZED VERSION)
+boltpack           Main executable (68000 assembly for BoltLZ)
+C_BUILD/           Plain C build of boltpack (see ASSEMBLY BUILD)
 README.txt         This file
 LICENSE            License information
 RELEASE-NOTES.txt  Release notes
@@ -65,17 +65,18 @@ OPTIONS
 -q        Quiet output
 -qq       Silent output
 
-OPTIMIZED VERSION
------------------
+ASSEMBLY BUILD
+--------------
 
-boltpack is the standard build. Optimized/68000/boltpack is the same program
-with hand-written 68000 assembly for BoltLZ, the default compression method.
-It runs on every QL and QL-compatible (68008, Gold Card, Super Gold Card,
-Q68, QPC2). To use it, copy it over the standard boltpack. Archives are
-exactly the same as with the standard build. Measured in an emulator at
-original QL speed on mixed files: BoltLZ compression about 7 KB/s instead of
-about 1.3 KB/s, decompression about 49 KB/s instead of about 14 KB/s. Other
-compression methods run at the standard speed.
+boltpack contains hand-written 68000 assembly for BoltLZ, the default
+compression method. It runs on every QL and QL-compatible (68008, Gold Card,
+Super Gold Card, Q68, QPC2). Measured in an emulator at original QL speed on
+mixed files: BoltLZ compression about 7 KB/s instead of about 1.3 KB/s,
+decompression about 49 KB/s instead of about 14 KB/s with the plain C build.
+Other compression methods run at the same speed as in the C build.
+
+C_BUILD/boltpack is the plain C build, without assembly. Use it if you
+suspect the assembly code; archives are exactly the same.
 
 QL NOTES
 --------

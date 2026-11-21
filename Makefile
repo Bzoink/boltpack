@@ -756,8 +756,8 @@ wasm:
 #   make atari amiga BOLTLZ_M68K_ASM=1
 # Results are identical to the C code. M68K_CPU (for example 68020-60) sets
 # the target CPU; on a 68020 or later the assembly also uses unaligned long
-# access. Release packages ship the C build and, in an Optimized folder,
-# the builds from atari-optimized and amiga-optimized below.
+# access. Release packages ship the assembly builds from atari-optimized and
+# amiga-optimized below as the programs, with this C build in a C_BUILD folder.
 BOLTLZ_M68K_ASM ?= 0
 M68K_CPU ?=
 ifeq ($(BOLTLZ_M68K_ASM),1)
@@ -767,7 +767,7 @@ M68K_ASM_SRCS  = $(COREDIR)/boltlz_m68k.S
 MACOS68K_ASM_OBJ = $(MACOS68K_BUILDDIR)/boltlz_m68k.o
 endif
 
-# Assembly-optimized executables for the packages' Optimized folders, one
+# Assembly-optimized executables for the release packages, one
 # directory per CPU: 68000 (any 68k) and 68020 (68020 to 68060). The Classic
 # Mac 68k builds become separate packages.
 .PHONY: atari-optimized amiga-optimized macos9-68k-optimized
@@ -1146,8 +1146,12 @@ RISCOS_BUILDDIR = build/riscos
 RISCOS_ARM_FLAGS = -marm -mcpu=arm610 -mlibscl
 BOLTLZ_ARM_ASM ?= 0
 
+# Both builds target the ARM6/StrongARM-safe instruction set and the
+# SharedCLibrary; without these flags GCC emits instructions that raise
+# "undefined instruction" on RISC OS machines before ARMv5.
+RISCOS_BOLTLZ_FLAGS = $(RISCOS_ARM_FLAGS)
 ifeq ($(BOLTLZ_ARM_ASM),1)
-RISCOS_BOLTLZ_FLAGS = $(RISCOS_ARM_FLAGS) -DBOLTLZ_ARM_ASM=1
+RISCOS_BOLTLZ_FLAGS += -DBOLTLZ_ARM_ASM=1
 RISCOS_BOLTLZ_SRC = $(BOLTLZDIR)/boltlz_arm.S
 endif
 
@@ -1499,7 +1503,7 @@ QL_CC_DIR=$(patsubst %/,%,$(dir $(QL_CC_EXEC)))
 .PHONY: ql ql-host-test ql-path-test ql-time-host-test ql-sqlux-qdirect-diagnostic
 .PHONY: ql-optimized boltlz-m68k-c68-sync-test
 
-# The assembly-optimized QL build for the package's Optimized folder. One
+# The assembly-optimized QL build, which the release package ships as boltpack. One
 # 68000 build serves every QL: the 68008 and 68000/68020 accelerators.
 ql-optimized: boltlz-m68k-c68-sync-test
 	$(MAKE) ql BOLTLZ_M68K_ASM=1 QL_BUILDDIR=build/ql-optimized/68000
@@ -1630,7 +1634,7 @@ X68K_BUILDDIR=build/x68k
 
 .PHONY: x68k x68k-host-test x68k-optimized
 
-# The assembly-optimized X68000 build for the package's Optimized folder.
+# The assembly-optimized X68000 build, which the release package ships as boltpack.x.
 # Nearly every X68000 model has a 68000 (the X68030 runs it too), so there
 # is only a 68000 build.
 x68k-optimized:

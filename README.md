@@ -27,6 +27,11 @@ to ease data transfer and archival between platforms.
 Pre-built binaries for the current release (**v1.12**) are below. Every release
 also ships `SHA256SUMS.txt` for verification.
 
+The Atari, Amiga, Classic Mac 68k, QL, X68000, RISC OS, DOS 16-bit, Windows 3.x
+and OS/2 1.x programs are the assembly-optimized builds; each package also
+holds the plain C build (a `C_BUILD` folder, or `mac68k-c.hqx` on the Mac) as a
+fallback, and the Atari, Amiga and Mac packages have a 68020 version.
+
 | Platform                      | Download                                                                                                                                   |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | Linux x86-64                  | [boltpack-1.12-linux-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-x86-64.tar.gz)             |
@@ -47,8 +52,12 @@ also ships `SHA256SUMS.txt` for verification.
 | Windows 3.x 16-bit (mini)     | [boltpack-1.12-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win16-x86.zip)                         |
 | MS-DOS 16-bit (mini)          | [boltpack-1.12-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-dos16-x86.zip)                         |
 | OS/2 1.x 16-bit (mini)        | [boltpack-1.12-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-os2-16-x86.zip)                       |
-| Amiga 68k (CLI + GUI)         | [boltpack-1.12-amiga-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-amiga-m68k.zip)                       |
+| Amiga 68k (CLI + GUI)         | [boltpack-1.12-amiga-m68k.lha](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-amiga-m68k.lha)                       |
 | Atari TOS + GEM GUI           | [boltpack-1.12-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-atari-m68k.zip)                       |
+| Classic Mac 68k               | [boltpack-1.12-mac68k.hqx](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-mac68k.hqx) |
+| Sinclair QL                   | [boltpack-1.12-ql-M68K.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-ql-M68K.zip) |
+| Sharp X68000                  | [boltpack-1.12-x68k-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-x68k-m68k.zip) |
+| RISC OS (ARM)                 | [boltpack-1.12-riscos-ARM.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-riscos-ARM.zip) |
 | WebAssembly                   | [boltpack-1.12-wasm-wasm32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-wasm-wasm32.zip)                     |
 
 Source kits for platforms that require a native build (macOS, Solaris, IRIX,

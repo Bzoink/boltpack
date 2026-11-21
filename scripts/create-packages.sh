@@ -312,30 +312,50 @@ convert_package_text() {
     return 0
 }
 
-# Copy the assembly-optimized executables (make <platform>-optimized) into
-# <stage>/<folder>/<cpu>/ for each CPU in the space-separated list. Only
-# executables go there: users copy the one for their CPU over the C build in
-# the package root.
-copy_optimized_builds() {
+# Programs with a hand-written assembly build (the 68k family: Atari, Amiga,
+# QL, X68000, Classic Mac; the 16-bit DOS, Windows 3.x and OS/2 1.x mini
+# programs; RISC OS) ship that build as the program itself, with the plain C
+# build kept in a C_BUILD folder as a fallback. The 68k family also gets a
+# 68020 folder for 68020 and later. Executables come from the matching
+# make <platform>-optimized (build/<platform>-optimized/[<cpu>/]) and from
+# make <platform> (build/<platform>/).
+
+# Replace the executables in <stage> (the plain C build, copied there first)
+# with the assembly build from <srcdir>, keeping the C ones in <stage>/C_BUILD.
+use_asm_default() {
+    local srcdir="$1"
+    local stagindir="$2"
+    shift 2
+    local exe src
+    for exe in "$@"; do
+        src="$srcdir/$exe"
+        if [ ! -f "$src" ]; then
+            log_error "Assembly build not found: $src (run the matching make <platform>-optimized)"
+            return 1
+        fi
+        mkdir -p "$stagindir/C_BUILD"
+        mv "$stagindir/$exe" "$stagindir/C_BUILD/$exe" || return 1
+        cp "$src" "$stagindir/$exe" || return 1
+        chmod +x "$stagindir/$exe" 2>/dev/null || true
+    done
+    return 0
+}
+
+# Copy the 68020-and-later assembly executables into <stage>/68020/.
+copy_68020_builds() {
     local platform="$1"
     local stagindir="$2"
-    local folder="$3"
-    local cpus="$4"
-    shift 4
-    local cpu exe src
-    for cpu in $cpus; do
-        src="$BUILDDIR/$platform-optimized/$cpu"
-        for exe in "$@"; do
-            if [ ! -f "$src/$exe" ]; then
-                log_error "Optimized build not found: $src/$exe (run: make $platform-optimized)"
-                return 1
-            fi
-        done
-        mkdir -p "$stagindir/$folder/$cpu"
-        for exe in "$@"; do
-            cp "$src/$exe" "$stagindir/$folder/$cpu/$exe"
-            chmod +x "$stagindir/$folder/$cpu/$exe" 2>/dev/null || true
-        done
+    shift 2
+    local exe src
+    for exe in "$@"; do
+        src="$BUILDDIR/$platform-optimized/68020/$exe"
+        if [ ! -f "$src" ]; then
+            log_error "Optimized build not found: $src (run: make $platform-optimized)"
+            return 1
+        fi
+        mkdir -p "$stagindir/68020"
+        cp "$src" "$stagindir/68020/$exe" || return 1
+        chmod +x "$stagindir/68020/$exe" 2>/dev/null || true
     done
     return 0
 }
@@ -712,9 +732,9 @@ create_ql_uqlx_package() {
         log_error "qcp failed while creating QL UQLX container package"
         return 1
     }
-    if [ -f "$stagindir/Optimized/68000/$binary_name" ]; then
-        qcp "$stagindir/Optimized/68000/$binary_name" \
-            "$store_dir/optimized_68000_$binary_name" || {
+    if [ -f "$stagindir/C_BUILD/$binary_name" ]; then
+        qcp "$stagindir/C_BUILD/$binary_name" \
+            "$store_dir/c_build_$binary_name" || {
             log_error "qcp failed while creating QL UQLX container package"
             return 1
         }
@@ -808,7 +828,8 @@ create_package() {
             log_error "Amiga Workbench icon generation failed"
             return 1
         fi
-        copy_optimized_builds amiga "$stagindir" Optimized "68000 68020" boltpack boltpack-gui || return 1
+        use_asm_default "$BUILDDIR/amiga-optimized/68000" "$stagindir" boltpack boltpack-gui || return 1
+        copy_68020_builds amiga "$stagindir" boltpack boltpack-gui || return 1
 
         binary_name="boltpack"
     elif [ "$platform" = "atari" ]; then
@@ -828,8 +849,8 @@ create_package() {
         cp "$atari_gui" "$stagindir/boltpack.prg"
         chmod +x "$stagindir/boltpack.tos" 2>/dev/null || true
         chmod +x "$stagindir/boltpack.prg" 2>/dev/null || true
-        # TOS names are 8.3, so the folder cannot be called Optimized.
-        copy_optimized_builds atari "$stagindir" OPTIMIZE "68000 68020" boltpack.tos boltpack.prg || return 1
+        use_asm_default "$BUILDDIR/atari-optimized/68000" "$stagindir" boltpack.tos boltpack.prg || return 1
+        copy_68020_builds atari "$stagindir" boltpack.tos boltpack.prg || return 1
         binary_name="boltpack.tos"
     else
         if [ ! -f "$binary" ]; then
@@ -849,23 +870,28 @@ create_package() {
         cp "$BUILDDIR/$platform/boltpack.wasm" "$stagindir/"
     fi
 
-    # X68000 assembly-optimized build (make x68k-optimized). Nearly every
-    # X68000 model has a 68000, so there is no 68020 variant.
+    # X68000: the assembly build is the program. Nearly every X68000 model
+    # has a 68000, so there is no 68020 variant.
     if [ "$platform" = "x68k" ]; then
-        copy_optimized_builds x68k "$stagindir" Optimized 68000 boltpack.x || return 1
+        use_asm_default "$BUILDDIR/x68k-optimized/68000" "$stagindir" boltpack.x || return 1
     fi
 
-    # The QL's assembly-optimized build (make ql-optimized); one 68000 build
-    # serves every QL, so there is only Optimized/68000.
+    # The QL: the assembly build is the program; one 68000 build serves every
+    # QL, so there is no 68020 variant.
     if [ "$platform" = "ql" ]; then
-        local ql_opt="$BUILDDIR/ql-optimized/68000/boltpack"
-        if [ ! -f "$ql_opt" ]; then
-            log_error "Optimized build not found: $ql_opt (run: make ql-optimized)"
-            return 1
-        fi
-        mkdir -p "$stagindir/Optimized/68000"
-        cp "$ql_opt" "$stagindir/Optimized/68000/boltpack"
+        use_asm_default "$BUILDDIR/ql-optimized/68000" "$stagindir" boltpack || return 1
     fi
+
+    # The 16-bit mini programs (8086 assembly BoltLite decoder) and RISC OS
+    # (ARM assembly BoltLZ match scan): the assembly build is the program.
+    case "$platform" in
+        dos16|win16|os2-16)
+            use_asm_default "$BUILDDIR/$platform-optimized" "$stagindir" bpmini.exe || return 1
+            ;;
+        riscos)
+            use_asm_default "$BUILDDIR/riscos-optimized" "$stagindir" "boltpack,ff8" || return 1
+            ;;
+    esac
 
     # For Windows platforms, copy all binaries (exe, wcx, config exe)
     if [ "$platform" = "win32" ] || [ "$platform" = "win64" ]; then
@@ -892,6 +918,11 @@ create_package() {
     {
         sed "s|{VERSION}|$VERSION|g; s|{BUILD_DATE}|$BUILD_DATE|g; s|{ARCH}|$cpu|g; s|{BINARY_SIZE}|~50 KB|g" "$template_file"
     } > "$stagindir/README.txt"
+    case "$platform" in
+        dos16|win16|os2-16)
+            sed "s|{VERSION}|$VERSION|g" "$TEMPLATESDIR/README-8086-asm.txt" >> "$stagindir/README.txt"
+            ;;
+    esac
     
     # Copy RELEASE-NOTES (8.3 systems cannot hold RELEASE-NOTES.txt)
     local notes_name="RELEASE-NOTES.txt"
@@ -969,7 +1000,7 @@ create_package() {
             ;;
         hqx)
             create_binhex \
-                "$BUILDDIR/macos9-68k/.rsrc/BoltPack" \
+                "$BUILDDIR/macos9-68k-optimized/68000/.rsrc/BoltPack" \
                 "$pkg_path" || return 1
             ;;
         bin)
@@ -1009,24 +1040,29 @@ create_package() {
     fi
 
     if [ "$platform" = "macos9-68k" ]; then
-        create_mac68k_optimized_packages || return 1
+        create_mac68k_extra_packages || return 1
     fi
     
     return 0
 }
 
-# The Classic Mac 68k application is one file, so its assembly-optimized
-# builds (make macos9-68k-optimized) are separate BinHex packages:
-# boltpack-VERSION-mac68k-optimized-68000.hqx and ...-68020.hqx.
-create_mac68k_optimized_packages() {
-    local cpu rsrc pkg_name pkg_path
-    for cpu in 68000 68020; do
-        rsrc="$BUILDDIR/macos9-68k-optimized/$cpu/.rsrc/BoltPack"
+# The Classic Mac 68k application is one file, so each build is its own BinHex
+# package: boltpack-VERSION-mac68k.hqx is the 68000 assembly build (any 68k
+# Mac), ...-mac68k-68020.hqx the 68020-and-later assembly build, and
+# ...-mac68k-c.hqx the plain C build as a fallback.
+create_mac68k_extra_packages() {
+    local name rsrc pkg_name pkg_path
+    for name in 68020 c; do
+        if [ "$name" = "c" ]; then
+            rsrc="$BUILDDIR/macos9-68k/.rsrc/BoltPack"
+        else
+            rsrc="$BUILDDIR/macos9-68k-optimized/$name/.rsrc/BoltPack"
+        fi
         if [ ! -f "$rsrc" ]; then
-            log_error "Optimized build not found: $rsrc (run: make macos9-68k-optimized)"
+            log_error "Build not found: $rsrc (run: make macos9-68k macos9-68k-optimized)"
             return 1
         fi
-        pkg_name="boltpack-$VERSION-mac68k-optimized-$cpu.hqx"
+        pkg_name="boltpack-$VERSION-mac68k-$name.hqx"
         pkg_path="$DISTDIR/$pkg_name"
         create_binhex "$rsrc" "$pkg_path" || return 1
         log_info "✓ Created: $pkg_name ($(du -h "$pkg_path" | cut -f1))"

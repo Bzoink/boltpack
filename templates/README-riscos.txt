@@ -97,6 +97,14 @@ Block sizes scale from 8 KB (memory-constrained systems) to 256 KB (modern).
 
 Suitable for RISC OS 3.1+ on machines with 2 MB+ RAM (boltlz) or 4 MB+ RAM (fluff).
 
+ASSEMBLY BUILD
+--------------
+
+The boltpack program in this package contains hand-written ARM assembly for
+the BoltLZ match scan, which speeds up BoltLZ compression. Archives are
+exactly the same as with the plain C build, which is in the C_BUILD directory.
+Use it if you suspect the assembly code.
+
 TROUBLESHOOTING
 ---------------
 
