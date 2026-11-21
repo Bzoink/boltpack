@@ -27,8 +27,8 @@ to ease data transfer and archival between platforms.
 Pre-built binaries for the current release (**v1.12**) are below. Every release
 also ships `SHA256SUMS.txt` for verification.
 
-The Atari, Amiga, Classic Mac 68k, QL, X68000, RISC OS, DOS 16-bit, Windows 3.x
-and OS/2 1.x programs are the assembly-optimized builds; each package also
+The Atari, Amiga, Classic Mac 68k, QL, X68000, RISC OS, DOS 16-bit, Windows 3.x,
+OS/2 1.x and CP/M-86 programs are the assembly-optimized builds; each package also
 holds the plain C build (a `C_BUILD` folder, or `mac68k-c.hqx` on the Mac) as a
 fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 
@@ -51,6 +51,7 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Total Commander plugin 32-bit | [boltpack-1.12-totalcmd-plugin-win32.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-totalcmd-plugin-win32.zip) |
 | Windows 3.x 16-bit (mini)     | [boltpack-1.12-win16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-win16-x86.zip)                         |
 | MS-DOS 16-bit (mini)          | [boltpack-1.12-dos16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-dos16-x86.zip)                         |
+| CP/M-86 (mini)                | [boltpack-1.12-cpm86-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-cpm86-x86.zip) |
 | OS/2 1.x 16-bit (mini)        | [boltpack-1.12-os2-16-x86.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-os2-16-x86.zip)                       |
 | Amiga 68k (CLI + GUI)         | [boltpack-1.12-amiga-m68k.lha](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-amiga-m68k.lha)                       |
 | Atari TOS + GEM GUI           | [boltpack-1.12-atari-m68k.zip](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-atari-m68k.zip)                       |

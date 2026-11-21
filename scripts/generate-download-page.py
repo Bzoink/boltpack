@@ -619,8 +619,10 @@ PLATFORMS = {
         "os": "CP/M-86",
         "arch": "8086",
         "description": (
-            "CP/M-86 on early 8086 hardware. "
-            "Built with Aztec C 86 or Turbo C."
+            "CP/M-86 on 8086-class machines (Bolt Mini: create, extract, "
+            "list and test; flat 8.3 names). Built with the CP/M-86 Open "
+            "Watcom fork; tested in the emu2-cpm86 emulator, not yet on "
+            "real hardware."
         ),
         "family": "Other",
     },

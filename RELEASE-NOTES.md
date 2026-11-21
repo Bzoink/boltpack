@@ -140,7 +140,11 @@
   with the 8086 assembly BoltLite decoder as `bpmini.exe`, which extracts and
   tests faster, with the plain C build in `C_BUILD`
   (`make dos16-optimized win16-optimized os2-16-optimized`); archives are
-  identical. The new RISC OS package (`boltpack-VERSION-riscos-ARM.zip`) does
+  identical. The new CP/M-86 package (`boltpack-VERSION-cpm86-x86.zip`) ships
+  `BPMINI.CMD` with the same 8086 decoder (plain C build in `C_BUILD`), built
+  with the CP/M-86 Open Watcom fork. `make cpm86-boltlite-asm-test` passes in
+  the emu2-cpm86 emulator (C and assembly archives match, and the Linux CLI
+  reads them), but it has not been run on real hardware. The new RISC OS package (`boltpack-VERSION-riscos-ARM.zip`) does
   the same with the ARM assembly BoltLZ match scan (`make riscos-optimized`),
   about three times faster at compression in the RPCEmu emulator. It was
   tested there (RISC OS 5.30: create, test and extract with both builds,

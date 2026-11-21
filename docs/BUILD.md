@@ -570,8 +570,20 @@ exercises the decoder entry point used by DOS16 and OS/2 1.x. The
 large-model test exercises the far-call entry point used by Win16.
 
 The CP/M-86 targets require the compact-model runtime from the CP/M-86 Open
-Watcom fork. Set `CPM86_WATCOM_ROOT` to the toolchain directory. `make cpm86`
-builds the C version. [CP/M-86 Open Watcom fork](https://github.com/ravn/open-watcom-v2-ccpm86)
+Watcom fork. Set `CPM86_WATCOM_ROOT` to the toolchain directory (default
+`/opt/watcom-cpm86`; it must hold `binl64/`, `h/` and `lib286/cpm86/`). `make
+cpm86` builds the C version.
+
+To build the toolchain on a Linux host, follow the fork's CI workflow
+(`.github/workflows/docker-cpm86.yml`): with `OWTOOLS=GCC OWDOCBUILD=0
+OWDISTRBUILD=0 OWDOSBOX=dosbox`, run `. ./cmnvars.sh; sh build.sh rel`, then
+build the CP/M-86 C library for each model with
+`contrib/ravn/watcom-cpm86-libc/build-lib.sh` (`MODEL=s m c l`, as in the
+workflow) and copy `lib286/cpm86/*.lib` and `cstart*.obj` to `rel/lib286/cpm86/`;
+`rel/` is then the toolchain directory. It needs about 3.5 GB and about 30
+minutes on 12 threads. Use commit `5b981ca4dc` (2026-09-08): the fork's master
+after its 2026-11-19 upstream merge did not build the linker and its CI failed.
+Build `emu2-cpm86` with `make` and pass it as `CPM86_EMULATOR`. [CP/M-86 Open Watcom fork](https://github.com/ravn/open-watcom-v2-ccpm86)
 
 `make cpm86-boltlite-asm-test` compares CP/M-86 archive creation and extraction
 under emu2-cpm86 and checks interoperability with the Linux CLI. Set

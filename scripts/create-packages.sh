@@ -111,6 +111,7 @@ declare -A PLATFORM_FORMAT=(
     [zos]="zip"
     [dos]="zip"
     [dos16]="zip"
+    [cpm86]="zip"
     [win16]="zip"
     [os2-16]="zip"
     [win32]="zip"
@@ -161,6 +162,7 @@ declare -A PLATFORM_ENCODING=(
     [zos]="UTF-8"
     [dos]="CP437"
     [dos16]="CP437"
+    [cpm86]="ASCII"
     [win16]="ISO-8859-1"
     [os2-16]="CP437"
     [win32]="UTF-8"
@@ -187,14 +189,14 @@ declare -A PLATFORM_ENCODING=(
 
 # Text files use CRLF line endings on these systems.
 declare -A PLATFORM_CRLF=(
-    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [os2]=1
+    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [os2]=1 [cpm86]=1
     [win32]=1 [win32-fltk-gui]=1 [win64]=1 [win64-fltk-gui]=1
     [atari]=1 [x68k]=1
 )
 
 # These systems only have 8.3 file names.
 declare -A PLATFORM_SHORT_NAMES=(
-    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [atari]=1
+    [dos]=1 [dos16]=1 [win16]=1 [os2-16]=1 [atari]=1 [cpm86]=1
 )
 
 declare -A PLATFORM_TEMPLATE=(
@@ -224,6 +226,7 @@ declare -A PLATFORM_TEMPLATE=(
     [zos]="README-generic.txt"
     [dos]="README-windows.txt"
     [dos16]="README-windows.txt"
+    [cpm86]="README-cpm86.txt"
     [win16]="README-windows.txt"
     [os2-16]="README-windows.txt"
     [win32]="README-windows.txt"
@@ -277,7 +280,7 @@ get_cpu_from_platform() {
         linux-arm32)                           echo "arm" ;;
         linux-arm64|aros|amigaos4|riscos)      echo "ARM" ;;
         linux-ppc|aix|hpux)                    echo "PPC" ;;
-        linux-x86|linux32mini|dos|dos16|win16|os2-16|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
+        linux-x86|linux32mini|dos|dos16|win16|os2-16|cpm86|win32|win32-fltk-gui|os2|sco)  echo "x86" ;;
         riscv)                                 echo "riscv64" ;;
         wasm)                                  echo "wasm32" ;;
         linux|linux-static|linux-gui|musl|haiku|freebsd|netbsd|openbsd|macosx|solaris|illumos|hurd|zos|win64|win64-fltk-gui|irix|tru64|qnx|plan9|nextstep|zos)  echo "x86-64" ;;
@@ -888,6 +891,9 @@ create_package() {
         dos16|win16|os2-16)
             use_asm_default "$BUILDDIR/$platform-optimized" "$stagindir" bpmini.exe || return 1
             ;;
+        cpm86)
+            use_asm_default "$BUILDDIR/cpm86-optimized" "$stagindir" BPMINI.CMD || return 1
+            ;;
         riscos)
             use_asm_default "$BUILDDIR/riscos-optimized" "$stagindir" "boltpack,ff8" || return 1
             ;;
@@ -920,7 +926,10 @@ create_package() {
     } > "$stagindir/README.txt"
     case "$platform" in
         dos16|win16|os2-16)
-            sed "s|{VERSION}|$VERSION|g" "$TEMPLATESDIR/README-8086-asm.txt" >> "$stagindir/README.txt"
+            sed "s|{VERSION}|$VERSION|g; s|{EXE}|bpmini.exe|g" "$TEMPLATESDIR/README-8086-asm.txt" >> "$stagindir/README.txt"
+            ;;
+        cpm86)
+            sed "s|{VERSION}|$VERSION|g; s|{EXE}|BPMINI.CMD|g" "$TEMPLATESDIR/README-8086-asm.txt" >> "$stagindir/README.txt"
             ;;
     esac
     
@@ -1156,7 +1165,7 @@ main() {
             # Prefer the program's exact name; build by-products (objects,
             # link maps, older packages, installers) must not be shipped.
             local d="$BUILDDIR/$platform"
-            for candidate in "$d/boltpack" "$d/boltpack.exe" "$d/boltpack-gui" \
+            for candidate in "$d/boltpack" "$d/boltpack.exe" "$d/BPMINI.CMD" "$d/boltpack-gui" \
                              "$d/boltpack-gui.exe" "$d/bpmini" "$d/bpmini.exe" \
                              "$d/boltpack.js" "$d"/boltpack* "$d"/bpmini*; do
                 case "$candidate" in
