@@ -150,7 +150,8 @@ toggle.
 
 ## Platform Support
 
-BoltPack targets over 40 platforms across 8 CPU families:
+BoltPack targets over 40 platforms across 12 CPU families (x86, ARM, PowerPC,
+68k, MIPS, RISC-V, s390x, SPARC, Alpha, PA-RISC, SuperH and LoongArch):
 
 **Linux** · **Windows** · **macOS** · **Classic Mac OS** · **AmigaOS** ·
 **Atari TOS/MiNT** · **MS-DOS** · **CP/M-86** · **OS/2** · **RISC OS** ·
