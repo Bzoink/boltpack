@@ -152,7 +152,11 @@
   have exactly the same size as x86, BoltLZ is 85 bytes different on SPARC64
   (big-endian, like s390x and MIPS), identical on Alpha and 0.16% larger on
   m68k (the 68k encoder path, as on Atari and Amiga), archives are exchanged
-  both ways, and the unit suites pass. The BoltLZ unit test now skips its
+  both ways, and the unit suites pass. The m68k package ships the 68020-60
+  assembly BoltLZ build as `boltpack` (plain C build in `C_BUILD`, built with
+  `make m68k-optimized`); under qemu-m68k it writes archives of exactly the
+  same size as the C build and exchanges them with it and with the host
+  (`make m68k-qemu-asm-test`). The BoltLZ unit test now skips its
   frozen-baseline byte comparison on 68k builds, which use that different
   encoder. Not run on real hardware.
 - New statically linked Linux packages for MIPS (`make mips`, `mipsel`,

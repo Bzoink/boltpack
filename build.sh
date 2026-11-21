@@ -615,7 +615,8 @@ do_sparc64() {
 }
 
 do_m68k() {
-    build_make_target m68k m68k-linux-gnu-gcc build/linux-m68k/boltpack
+    build_make_target m68k m68k-linux-gnu-gcc build/linux-m68k/boltpack || return 1
+    build_make_target m68k-optimized m68k-linux-gnu-gcc build/linux-m68k-optimized/boltpack
 }
 
 do_alpha() {
@@ -1169,7 +1170,7 @@ Targets:
   mips64         Cross-compile for MIPS64 big-endian Linux (static)
   mips64el       Cross-compile for MIPS64 little-endian Linux (static)
   sparc64        Cross-compile for SPARC64 Linux (static)
-  m68k           Cross-compile for Motorola 68k Linux (68020+, static)
+  m68k           Cross-compile for Motorola 68k Linux (68020+, static; C and assembly builds)
   alpha          Cross-compile for DEC Alpha Linux (static)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux

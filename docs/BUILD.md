@@ -88,6 +88,11 @@ without nanoseconds from `fstat`, so `boltpack c` there stops with "source
 changed during archive creation"; build a copy of `src/frontend/linux/main.c`
 without `BP_STAT_HAS_NSEC` to test creation, extraction needs nothing.
 
+`make m68k` builds the C version for Linux on 68020 and later, and `make
+m68k-optimized` the same program with the BoltLZ assembly in
+`src/core/boltlz_m68k.S`; `make m68k-qemu-asm-test` compares the two under
+qemu-m68k. The release package ships the assembly build.
+
 ### Total Commander WCX Unicode runtime check
 
 With the Win64 MinGW cross compiler and Wine installed, load the WCX DLL through

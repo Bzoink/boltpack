@@ -1585,6 +1585,35 @@ m68k:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(M68K_BUILDDIR)/boltpack
 
+# The same program with the hand-written 68000-family assembly for BoltLZ
+# (src/core/boltlz_m68k.S), built for 68020 to 68060, the CPUs Linux needs. The
+# release package ships this build and keeps the plain C build in C_BUILD.
+M68K_OPT_BUILDDIR = build/linux-m68k-optimized
+
+.PHONY: m68k-optimized m68k-qemu-asm-test
+m68k-optimized:
+	mkdir -p $(M68K_OPT_BUILDDIR)
+	$(M68K_CC) $(M68K_CFLAGS) -m68020-60 -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_M68K \
+	    -DBOLTLZ_M68K_ASM=1 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    $(BOLTLZDIR)/boltlz_m68k.S \
+	    -o $(M68K_OPT_BUILDDIR)/boltpack
+
+# Compare the assembly and C Linux m68k builds under qemu-user and exchange
+# archives with the host build.
+m68k-qemu-asm-test: modern m68k m68k-optimized
+	python3 test/check_m68k_linux_asm.py --qemu $(or $(M68K_QEMU),qemu-m68k) \
+	    --asm $(M68K_OPT_BUILDDIR)/boltpack --portable $(M68K_BUILDDIR)/boltpack \
+	    --boltpack $(TARGET)
+
 # DEC Alpha Linux (EV56 and later, little-endian)
 ALPHA_CC      = alpha-linux-gnu-gcc
 ALPHA_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2

@@ -938,6 +938,9 @@ create_package() {
         cpm86)
             use_asm_default "$BUILDDIR/cpm86-optimized" "$stagindir" BPMINI.CMD || return 1
             ;;
+        linux-m68k)
+            use_asm_default "$BUILDDIR/linux-m68k-optimized" "$stagindir" boltpack || return 1
+            ;;
         riscos)
             use_asm_default "$BUILDDIR/riscos-optimized" "$stagindir" "boltpack,ff8" || return 1
             ;;
@@ -974,6 +977,9 @@ create_package() {
             ;;
         cpm86)
             sed "s|{VERSION}|$VERSION|g; s|{EXE}|BPMINI.CMD|g" "$TEMPLATESDIR/README-8086-asm.txt" >> "$stagindir/README.txt"
+            ;;
+        linux-m68k)
+            sed "s|{VERSION}|$VERSION|g" "$TEMPLATESDIR/README-m68k-linux-asm.txt" >> "$stagindir/README.txt"
             ;;
     esac
     

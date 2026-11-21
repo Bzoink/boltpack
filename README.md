@@ -28,7 +28,7 @@ Pre-built binaries for the current release (**v1.12**) are below. Every release
 also ships `SHA256SUMS.txt` for verification.
 
 The Atari, Amiga, Classic Mac 68k, QL, X68000, RISC OS, DOS 16-bit, Windows 3.x,
-OS/2 1.x and CP/M-86 programs are the assembly-optimized builds; each package also
+OS/2 1.x, CP/M-86 and Linux m68k programs are the assembly-optimized builds; each package also
 holds the plain C build (a `C_BUILD` folder, or `mac68k-c.hqx` on the Mac) as a
 fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 
@@ -45,7 +45,7 @@ fallback, and the Atari, Amiga and Mac packages have a 68020 version.
 | Linux MIPS32 LE (mipsel)      | [boltpack-1.12-linux-mipsel-MIPS32el.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mipsel-MIPS32el.tar.gz) |
 | Linux MIPS64 (mips64)         | [boltpack-1.12-linux-mips64-MIPS64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-mips64-MIPS64.tar.gz) |
 | Linux SPARC64                 | [boltpack-1.12-linux-sparc64-SPARC64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-sparc64-SPARC64.tar.gz) |
-| Linux m68k (68020+)           | [boltpack-1.12-linux-m68k-M68K.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-m68k-M68K.tar.gz) |
+| Linux m68k (68020+, assembly) | [boltpack-1.12-linux-m68k-M68K.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-m68k-M68K.tar.gz) |
 | Linux Alpha                   | [boltpack-1.12-linux-alpha-Alpha.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-linux-alpha-Alpha.tar.gz) |
 | FreeBSD x86-64                | [boltpack-1.12-freebsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-freebsd-x86-64.tar.gz) |
 | NetBSD x86-64                 | [boltpack-1.12-netbsd-x86-64.tar.gz](https://github.com/Bzoink/boltpack/releases/download/v1.12/boltpack-1.12-netbsd-x86-64.tar.gz) |
