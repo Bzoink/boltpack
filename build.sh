@@ -647,6 +647,10 @@ do_armel() {
     build_make_target armel arm-linux-gnueabi-gcc build/linux-armel/boltpack
 }
 
+do_ppc64() {
+    build_make_target ppc64 powerpc64-linux-gnu-gcc build/linux-ppc64/boltpack
+}
+
 do_ppc64le() {
     build_make_target ppc64le powerpc64le-linux-gnu-gcc build/linux-ppc64le/boltpack
 }
@@ -898,6 +902,7 @@ do_all() {
     do_ppc         || failed=1
     do_hppa        || failed=1
     do_sh4         || failed=1
+    do_ppc64       || failed=1
     do_ppc64le     || failed=1
     do_s390x       || failed=1
     do_musl        || failed=1
@@ -1190,6 +1195,7 @@ Targets:
   ppc            Cross-compile for PowerPC 32-bit Linux (static)
   hppa           Cross-compile for PA-RISC Linux (static)
   sh4            Cross-compile for SuperH SH-4 Linux (static)
+  ppc64          Cross-compile for 64-bit big-endian PowerPC Linux (static)
   ppc64le        Cross-compile for 64-bit little-endian PowerPC Linux
   s390x          Cross-compile for IBM Z (s390x, big-endian) Linux
   e2k            Cross-compile for Elbrus (E2K) Linux
@@ -1300,6 +1306,7 @@ case "$1" in
     ppc)      do_ppc ;;
     hppa)     do_hppa ;;
     sh4)      do_sh4 ;;
+    ppc64)    do_ppc64 ;;
     ppc64le)      do_ppc64le ;;
     s390x)        do_s390x ;;
     musl)         do_musl ;;

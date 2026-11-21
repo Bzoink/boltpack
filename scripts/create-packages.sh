@@ -104,6 +104,7 @@ declare -A PLATFORM_FORMAT=(
     [linux-sparc64]="tar.gz"
     [linux-m68k]="tar.gz"
     [linux-alpha]="tar.gz"
+    [linux-ppc64]="tar.gz"
     [linux-ppc64le]="tar.gz"
     [linux-s390x]="tar.gz"
     [wasm]="zip"
@@ -168,6 +169,7 @@ declare -A PLATFORM_ENCODING=(
     [linux-sparc64]="UTF-8"
     [linux-m68k]="UTF-8"
     [linux-alpha]="UTF-8"
+    [linux-ppc64]="UTF-8"
     [linux-ppc64le]="UTF-8"
     [linux-s390x]="UTF-8"
     [wasm]="UTF-8"
@@ -245,6 +247,7 @@ declare -A PLATFORM_TEMPLATE=(
     [linux-sparc64]="README-linux.txt"
     [linux-m68k]="README-linux.txt"
     [linux-alpha]="README-linux.txt"
+    [linux-ppc64]="README-linux.txt"
     [linux-ppc64le]="README-linux.txt"
     [linux-s390x]="README-linux.txt"
     [wasm]="README-generic.txt"
@@ -332,6 +335,7 @@ get_cpu_from_platform() {
         linux-sparc64)                         echo "SPARC64" ;;
         linux-m68k)                            echo "M68K" ;;
         linux-alpha)                           echo "Alpha" ;;
+        linux-ppc64)                           echo "PPC64" ;;
         linux-ppc64le)                         echo "PowerPC" ;;
         linux-s390x)                           echo "IBM-Z" ;;
         wasm)                                  echo "wasm32" ;;

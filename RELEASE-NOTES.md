@@ -151,6 +151,12 @@
   Fluff archives have exactly the same size as x86, BoltLZ is 85 bytes
   different (big-endian), archives are exchanged both ways and the unit
   suites pass. Not run on real hardware.
+- New statically linked Linux package for 64-bit big-endian PowerPC (ppc64,
+  ELFv1: POWER and G5-class systems; `boltpack-VERSION-linux-ppc64-PPC64.tar.gz`,
+  `make ppc64`). Tested under qemu-ppc64: BoltLite and Fluff archives have
+  exactly the same size as x86, BoltLZ is 85 bytes different (big-endian),
+  archives are exchanged both ways and the unit suites pass. Not run on real
+  hardware.
 - New statically linked Linux packages for PA-RISC (`make hppa`,
   `boltpack-VERSION-linux-hppa-PA-RISC.tar.gz`), SuperH SH-4 (`make sh4`,
   `-linux-sh4-SH4`) and little-endian MIPS64 (`make mips64el`,

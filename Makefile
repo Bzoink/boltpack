@@ -1694,6 +1694,26 @@ sh4:
 	    $(BOLTLZDIR)/boltlz.c \
 	    -o $(SH4_BUILDDIR)/boltpack
 
+# PowerPC 64-bit big-endian Linux (ELFv1, POWER and G5), statically linked
+PPC64_CC      = powerpc64-linux-gnu-gcc
+PPC64_CFLAGS  = -static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2
+PPC64_BUILDDIR = build/linux-ppc64
+
+.PHONY: ppc64
+ppc64:
+	mkdir -p $(PPC64_BUILDDIR)
+	$(PPC64_CC) $(PPC64_CFLAGS) -DBOLTPACK_NET -DFLUFF_OPTIMAL -DBP_CREATOR_CPU=BP_CPU_PPC64 \
+	    -I$(COREDIR) -I$(BOLTLZDIR) \
+	    $(COREDIR)/archiver.c \
+	    $(COREDIR)/compress.c \
+	    $(COREDIR)/boltlite.c \
+	    $(COREDIR)/fluff.c \
+	    $(COREDIR)/bp_codepage.c \
+	    src/frontend/linux/main.c \
+	    src/frontend/linux/bp_net.c \
+	    $(BOLTLZDIR)/boltlz.c \
+	    -o $(PPC64_BUILDDIR)/boltpack
+
 # musl Linux
 MUSL_CC=musl-gcc
 MUSL_CFLAGS=-static -ansi -pedantic -Wall -Wextra -Wno-unused-function -O2 -fno-lto
