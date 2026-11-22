@@ -330,7 +330,6 @@ static int boltlite_decompress_capacity(const bp_uint8 *src, boltlite_index src_
     boltlite_index out;
     boltlite_index distance;
     boltlite_index length;
-    boltlite_index j;
     unsigned int packed;
     unsigned int flags;
     unsigned int count;
@@ -378,10 +377,21 @@ static int boltlite_decompress_capacity(const bp_uint8 *src, boltlite_index src_
             length = (packed & 7U) + 3U;
         }
         if (distance == 0 || distance > out || length > dst_capacity - out) return 0;
-        for (j = 0; j < length; j++) {
-            dst[out] = dst[out - distance];
-            out++;
+        if (distance == 1U) {
+            memset(dst + out, dst[out - 1U], (size_t)length);
+        } else if (distance >= length) {
+            memcpy(dst + out, dst + out - distance, (size_t)length);
+        } else {
+            const bp_uint8 *ref = dst + out - distance;
+            bp_uint8 *target = dst + out;
+            const bp_uint8 *end = target + length;
+
+            /* Overlapping matches can read bytes written by this copy. */
+            do {
+                *target++ = *ref++;
+            } while (target != end);
         }
+        out += length;
     }
     return in == src_len;
 }
