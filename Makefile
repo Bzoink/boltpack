@@ -3588,6 +3588,9 @@ atari-gui-menu-pointer-test: modern atari-gui
 	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action help-about \
 	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
 	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
+	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action monochrome-about \
+	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
+	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg
 	xvfb-run -a python3 test/check_hatari_menu_pointer.py --action help-documentation \
 	    --tos "$(HATARI_TOS)" --hatari "$(HATARI)" --hconsole "$(HCONSOLE)" \
 	    --gui-prg $(ATARI_GUI_BUILDDIR)/boltpack.prg

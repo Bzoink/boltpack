@@ -73,6 +73,7 @@ extern FILE *fdopen(int fd, const char *mode);
 #define BP_MAX_PATH   512
 #define MAX_ENTRIES   2048
 #define LINE_HEIGHT   16
+#define LIST_FIRST_ROW_Y  (LINE_HEIGHT + 6)
 #define PROGRESS_PANEL_H  ((LINE_HEIGHT * 4) + 12)
 #define PROGRESS_CANCEL_W 60
 #define PROGRESS_CANCEL_H 18
@@ -209,6 +210,7 @@ static int gather_capacity;
 static int gather_skipped_sources;
 
 static void redraw_window(short rx, short ry, short rw, short rh);
+static void refresh_scrollbar(void);
 
 /* ====================================================================== */
 /*  File I/O adapter                                                      */
@@ -886,6 +888,7 @@ static void start_progress_ui(atari_progress_ui_t *ctx, const char *verb,
     ctx->current_name[0] = '\0';
     active_progress = ctx;
 
+    refresh_scrollbar();
     redraw_window(win_x, win_y, win_w, win_h);
 }
 
@@ -968,6 +971,7 @@ static void stop_progress_ui(atari_progress_ui_t *ctx)
         active_progress = NULL;
 
     set_main_window_chrome();
+    refresh_scrollbar();
     redraw_window(win_x, win_y, win_w, win_h);
 }
 
@@ -976,6 +980,55 @@ static short progress_panel_height(void)
     if (active_progress && active_progress->active)
         return PROGRESS_PANEL_H;
     return 0;
+}
+
+static int visible_list_rows(short work_h)
+{
+    int rows = (work_h - progress_panel_height() - LIST_FIRST_ROW_Y) / LINE_HEIGHT;
+    return rows > 0 ? rows : 0;
+}
+
+static int current_page_rows(void)
+{
+    short x, y, w, h;
+    int rows;
+
+    if (!wind_get(win_handle, WF_WORKXYWH, &x, &y, &w, &h))
+        return 1;
+    rows = visible_list_rows(h);
+    return rows > 0 ? rows : 1;
+}
+
+static int last_scroll_row(int page_rows)
+{
+    return entry_count > page_rows ? entry_count - page_rows : 0;
+}
+
+static void set_scroll_row(int row, int page_rows)
+{
+    int last = last_scroll_row(page_rows);
+    short position = 0;
+
+    if (row < 0) row = 0;
+    if (row > last) row = last;
+    scroll_pos = row;
+
+    if (last > 0)
+        position = (short)((row * 1000L + last / 2) / last);
+    wind_set(win_handle, WF_VSLIDE, position, 0, 0, 0);
+}
+
+static void refresh_scrollbar(void)
+{
+    int page_rows = current_page_rows();
+    short size = 1000;
+
+    if (entry_count > page_rows) {
+        size = (short)((page_rows * 1000L) / entry_count);
+        if (size == 0) size = 1;
+    }
+    wind_set(win_handle, WF_VSLSIZE, size, 0, 0, 0);
+    set_scroll_row(scroll_pos, page_rows);
 }
 
 static void draw_progress_panel(short clip_x, short clip_y, short clip_w)
@@ -1104,14 +1157,14 @@ static void build_menu(void)
     menu_objs[1].ob_height = font_h + 2;
     menu_objs[1].ob_spec.index = 0x00FF1100L;
 
-    /* 2: active title strip */
+    /* 2: active title strip. AES uses this rectangle to start menu tracking. */
     menu_objs[2].ob_type   = G_IBOX;
     menu_objs[2].ob_next   = 1;
     menu_objs[2].ob_head   = MN_DESK;
     menu_objs[2].ob_tail   = MN_HELP;
     menu_objs[2].ob_x      = 0;
     menu_objs[2].ob_y      = 0;
-    menu_objs[2].ob_width  = scr_w;
+    menu_objs[2].ob_width  = (short)((MENU_HELP_X + MENU_HELP_TITLE_CHARS) * font_w);
     menu_objs[2].ob_height = font_h;
 
     /* 3-6: actual titles. The Desk title identifies this application. */
@@ -1128,7 +1181,7 @@ static void build_menu(void)
     menu_objs[MN_ARCHIVE].ob_spec.free_string = " Archive ";
     menu_objs[MN_ARCHIVE].ob_x      = (short)(MENU_ARCHIVE_X * font_w);
     menu_objs[MN_ARCHIVE].ob_y      = 0;
-    menu_objs[MN_ARCHIVE].ob_width  = (short)(9 * font_w);
+    menu_objs[MN_ARCHIVE].ob_width  = (short)(MENU_ARCHIVE_TITLE_CHARS * font_w);
     menu_objs[MN_ARCHIVE].ob_height = font_h + 2;
 
     menu_objs[MN_COMPRESS].ob_type   = G_TITLE;
@@ -1136,7 +1189,7 @@ static void build_menu(void)
     menu_objs[MN_COMPRESS].ob_spec.free_string = " Compression ";
     menu_objs[MN_COMPRESS].ob_x      = (short)(MENU_COMPRESS_X * font_w);
     menu_objs[MN_COMPRESS].ob_y      = 0;
-    menu_objs[MN_COMPRESS].ob_width  = (short)(13 * font_w);
+    menu_objs[MN_COMPRESS].ob_width  = (short)(MENU_COMPRESS_TITLE_CHARS * font_w);
     menu_objs[MN_COMPRESS].ob_height = font_h + 2;
 
     menu_objs[MN_HELP].ob_type   = G_TITLE;
@@ -1144,7 +1197,7 @@ static void build_menu(void)
     menu_objs[MN_HELP].ob_spec.free_string = " Help ";
     menu_objs[MN_HELP].ob_x      = (short)(MENU_HELP_X * font_w);
     menu_objs[MN_HELP].ob_y      = 0;
-    menu_objs[MN_HELP].ob_width  = (short)(6 * font_w);
+    menu_objs[MN_HELP].ob_width  = (short)(MENU_HELP_TITLE_CHARS * font_w);
     menu_objs[MN_HELP].ob_height = font_h + 2;
 
     /* 7: pull-down container */
@@ -1303,6 +1356,17 @@ static void build_menu(void)
     menu_objs[MN_DOC].ob_height = font_h + 2;
     menu_objs[MN_DOC].ob_flags  = OF_LASTOB;
 
+    /* Keep outside borders on-screen for the AES save and restore of the
+       pixels under each dropdown. */
+    for (i = MENU_DESK_BOX; i != MENU_PULLDOWNS; i = menu_objs[i].ob_next) {
+        OBJECT *box = &menu_objs[i];
+        short rightmost = scr_w - box->ob_width - 1;
+        if (box->ob_x < 1)
+            box->ob_x = 1;
+        else if (box->ob_x > rightmost)
+            box->ob_x = rightmost > 1 ? rightmost : 1;
+    }
+
     sync_compression_menu_checks();
 }
 
@@ -1310,7 +1374,8 @@ static void build_menu(void)
 /*  Window drawing                                                        */
 /* ====================================================================== */
 
-static void draw_list(short clip_x, short clip_y, short clip_w, short clip_h)
+static void draw_list(short work_x, short work_y, short work_w, short work_h,
+                      short clip[4])
 {
     short pxy[4];
     short progress_h;
@@ -1318,73 +1383,68 @@ static void draw_list(short clip_x, short clip_y, short clip_w, short clip_h)
     int i;
     int visible_lines;
 
-    /* Set clipping */
-    pxy[0] = clip_x;
-    pxy[1] = clip_y;
-    pxy[2] = clip_x + clip_w - 1;
-    pxy[3] = clip_y + clip_h - 1;
-    vs_clip(vdi_handle, 1, pxy);
+    vs_clip(vdi_handle, 1, clip);
 
     /* Clear background */
     vsf_color(vdi_handle, 0); /* white */
     vsf_interior(vdi_handle, 1);
-    v_bar(vdi_handle, pxy);
+    v_bar(vdi_handle, clip);
 
     /* Set text attributes */
     vst_color(vdi_handle, 1); /* black */
     vst_alignment(vdi_handle, 0, 5, &pxy[0], &pxy[1]);
 
     progress_h = progress_panel_height();
-    y = clip_y + 2;
+    y = work_y + 2;
     if (progress_h > 0) {
-        draw_progress_panel(clip_x, clip_y, clip_w);
-        y = clip_y + progress_h + 2;
+        draw_progress_panel(work_x, work_y, work_w);
+        y = work_y + progress_h + 2;
     }
 
     if (entry_count > 0) {
-        v_gtext(vdi_handle, clip_x + COL_NAME,   y, "Name");
-        v_gtext(vdi_handle, clip_x + COL_ORIG,   y, "Original");
-        v_gtext(vdi_handle, clip_x + COL_COMP,   y, "Packed");
-        v_gtext(vdi_handle, clip_x + COL_RATIO,  y, "Size%");
-        v_gtext(vdi_handle, clip_x + COL_METHOD, y, "Method");
-        v_gtext(vdi_handle, clip_x + COL_DATE,   y, "Date");
+        v_gtext(vdi_handle, work_x + COL_NAME,   y, "Name");
+        v_gtext(vdi_handle, work_x + COL_ORIG,   y, "Original");
+        v_gtext(vdi_handle, work_x + COL_COMP,   y, "Packed");
+        v_gtext(vdi_handle, work_x + COL_RATIO,  y, "Size%");
+        v_gtext(vdi_handle, work_x + COL_METHOD, y, "Method");
+        v_gtext(vdi_handle, work_x + COL_DATE,   y, "Date");
 
         y += LINE_HEIGHT;
-        pxy[0] = clip_x;
+        pxy[0] = work_x;
         pxy[1] = y;
-        pxy[2] = clip_x + clip_w - 1;
+        pxy[2] = work_x + work_w - 1;
         pxy[3] = y;
         v_pline(vdi_handle, 2, pxy);
-        y += 4;
+        y = work_y + progress_h + LIST_FIRST_ROW_Y;
 
-        visible_lines = (clip_h - (y - clip_y)) / LINE_HEIGHT;
+        visible_lines = visible_list_rows(work_h);
         for (i = 0; i < visible_lines && (scroll_pos + i) < entry_count; i++) {
             gui_entry_t *e = &entries[scroll_pos + i];
             short row_y = y + (short)(i * LINE_HEIGHT);
 
-            v_gtext(vdi_handle, clip_x + COL_NAME,   row_y, e->name);
-            v_gtext(vdi_handle, clip_x + COL_ORIG,   row_y, e->orig_str);
-            v_gtext(vdi_handle, clip_x + COL_COMP,   row_y, e->comp_str);
-            v_gtext(vdi_handle, clip_x + COL_RATIO,  row_y, e->ratio_str);
-            v_gtext(vdi_handle, clip_x + COL_METHOD, row_y, e->method_str);
-            v_gtext(vdi_handle, clip_x + COL_DATE,   row_y, e->date_str);
+            v_gtext(vdi_handle, work_x + COL_NAME,   row_y, e->name);
+            v_gtext(vdi_handle, work_x + COL_ORIG,   row_y, e->orig_str);
+            v_gtext(vdi_handle, work_x + COL_COMP,   row_y, e->comp_str);
+            v_gtext(vdi_handle, work_x + COL_RATIO,  row_y, e->ratio_str);
+            v_gtext(vdi_handle, work_x + COL_METHOD, row_y, e->method_str);
+            v_gtext(vdi_handle, work_x + COL_DATE,   row_y, e->date_str);
         }
     } else if (progress_h == 0) {
         vst_color(vdi_handle, 2); /* red/dark */
-        v_gtext(vdi_handle, clip_x + 60, clip_y + clip_h / 2,
+        v_gtext(vdi_handle, work_x + 60, work_y + work_h / 2,
                 "Drop a .bolt file to open, or use Archive > Open");
         vst_color(vdi_handle, 1);
     }
 
-    vs_clip(vdi_handle, 0, pxy);
+    vs_clip(vdi_handle, 0, clip);
 }
 
 static void redraw_window(short rx, short ry, short rw, short rh)
 {
     short wx, wy, ww, wh;
-    wind_get(win_handle, WF_WORKXYWH, &wx, &wy, &ww, &wh);
 
     wind_update(BEG_UPDATE);
+    wind_get(win_handle, WF_WORKXYWH, &wx, &wy, &ww, &wh);
     graf_mouse(M_OFF, NULL);
 
     /* Walk the rectangle list */
@@ -1397,8 +1457,14 @@ static void redraw_window(short rx, short ry, short rw, short rh)
             short y1 = cy > ry ? cy : ry;
             short x2 = (cx + cw < rx + rw) ? cx + cw : rx + rw;
             short y2 = (cy + ch < ry + rh) ? cy + ch : ry + rh;
-            if (x2 > x1 && y2 > y1)
-                draw_list(wx, wy, ww, wh);
+            if (x2 > x1 && y2 > y1) {
+                short clip[4];
+                clip[0] = x1;
+                clip[1] = y1;
+                clip[2] = x2 - 1;
+                clip[3] = y2 - 1;
+                draw_list(wx, wy, ww, wh, clip);
+            }
             wind_get(win_handle, WF_NEXTXYWH, &cx, &cy, &cw, &ch);
         }
     }
@@ -1439,6 +1505,7 @@ static void close_archive(void)
     archive_path[0] = '\0';
     memset(&archive_info, 0, sizeof(archive_info));
     archive_sidecars = 0;
+    refresh_scrollbar();
 }
 
 static int list_cb(const bp_entry_t *entry, void *user_data)
@@ -1540,6 +1607,7 @@ static void do_open(const char *path)
     }
 
     set_main_window_chrome();
+    refresh_scrollbar();
     redraw_window(win_x, win_y, win_w, win_h);
 }
 
@@ -3969,6 +4037,8 @@ static void do_create(void)
 
 static void handle_menu(short title, short item)
 {
+    if (title < MN_DESK || title > MN_HELP)
+        return;
     menu_tnormal(menu_tree, title, 1);
 
     if (title == MN_DESK) {
@@ -4032,6 +4102,29 @@ static void handle_menu(short title, short item)
     }
 }
 
+static void scroll_archive(short message, short value)
+{
+    int page_rows = current_page_rows();
+    int previous_row = scroll_pos;
+    int row = scroll_pos;
+
+    if (message == WM_VSLID) {
+        row = (int)((value * (long)last_scroll_row(page_rows) + 500L) / 1000L);
+    } else {
+        switch (value) {
+            case WA_UPLINE: row--; break;
+            case WA_DNLINE: row++; break;
+            case WA_UPPAGE: row -= page_rows; break;
+            case WA_DNPAGE: row += page_rows; break;
+            default: return;
+        }
+    }
+
+    set_scroll_row(row, page_rows);
+    if (scroll_pos != previous_row)
+        redraw_window(win_x, win_y, win_w, win_h);
+}
+
 static void event_loop(void)
 {
     short msg[8];
@@ -4087,6 +4180,8 @@ static void event_loop(void)
                                  msg[4], msg[5], msg[6], msg[7]);
                         win_x = msg[4]; win_y = msg[5];
                         win_w = msg[6]; win_h = msg[7];
+                        refresh_scrollbar();
+                        redraw_window(win_x, win_y, win_w, win_h);
                     }
                     break;
 
@@ -4095,18 +4190,10 @@ static void event_loop(void)
                         wind_set(win_handle, WF_TOP, 0, 0, 0, 0);
                     break;
 
+                case WM_VSLID:
                 case WM_ARROWED:
-                    if (msg[3] == win_handle) {
-                        if (msg[4] == WA_UPLINE && scroll_pos > 0)
-                            scroll_pos--;
-                        else if (msg[4] == WA_DNLINE)
-                            scroll_pos++;
-                        else if (msg[4] == WA_UPPAGE && scroll_pos > 10)
-                            scroll_pos -= 10;
-                        else if (msg[4] == WA_DNPAGE)
-                            scroll_pos += 10;
-                        redraw_window(win_x, win_y, win_w, win_h);
-                    }
+                    if (msg[3] == win_handle)
+                        scroll_archive(msg[0], msg[4]);
                     break;
             }
         }
@@ -4302,6 +4389,7 @@ int main(void)
         open_y = desk_y + (desk_h - open_h) / 2;
     wind_open(win_handle, open_x, open_y, open_w, open_h);
     wind_get(win_handle, WF_CURRXYWH, &win_x, &win_y, &win_w, &win_h);
+    refresh_scrollbar();
 
     graf_mouse(ARROW, NULL);
 

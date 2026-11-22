@@ -96,12 +96,13 @@ def png_black_count(path, region):
                if tuple(rows[y][x * 3:x * 3 + 3]) == (0, 0, 0))
 
 
-def screenshot_difference(left, right):
+def screenshot_difference(left, right, region=None):
     width1, height1, rows1 = png_rgb_rows(left)
     width2, height2, rows2 = png_rgb_rows(right)
     if (width1, height1) != (width2, height2):
         raise ValueError("screenshots have different dimensions")
-    return sum(1 for y in range(height1) for x in range(width1)
+    x1, y1, x2, y2 = region if region is not None else (0, 0, width1, height1)
+    return sum(1 for y in range(y1, y2) for x in range(x1, x2)
                if rows1[y][x * 3:x * 3 + 3] != rows2[y][x * 3:x * 3 + 3])
 
 
@@ -123,6 +124,7 @@ def main():
                         default=ROOT / "build/linux/boltpack")
     parser.add_argument("--action", choices=("archive-open", "help-about",
                                               "help-documentation",
+                                              "monochrome-about",
                                               "archive-validate",
                                               "archive-information",
                                               "archive-close",
@@ -139,6 +141,7 @@ def main():
     parser.add_argument("--output-root", type=Path,
                         default=ROOT / "build")
     args = parser.parse_args()
+    monochrome = args.action == "monochrome-about"
 
     if not os.environ.get("DISPLAY"):
         parser.error("run under xvfb-run or a desktop session so xdotool can inject clicks")
@@ -184,8 +187,11 @@ def main():
     env.pop("SDL_VIDEODRIVER", None)
     env.pop("SDL_AUDIODRIVER", None)
     env["PATH"] = str(Path(hatari_binary).resolve().parent) + os.pathsep + env.get("PATH", "")
+    display = ["--monitor", "mono", "--tos-res", "high"] if monochrome else [
+        "--monitor", "rgb", "--tos-res", "low"]
     command = [sys.executable, str(hconsole), str(script), "--exit", "--",
                "--machine", "ste", "--tos", str(tos), "--sound", "off",
+               *display,
                "--confirm-quit", "off", "--fast-forward", "on",
                "--fast-boot", "on", "--memsize", "4", "--harddrive",
                str(host), "--auto", r"C:\BOLTPACK.PRG"]
@@ -224,6 +230,8 @@ def main():
                                  "Open BoltPack Archive selector"),
                 "help-about": (650, 650, 38, "Help > About",
                                "About BoltPack dialog"),
+                "monochrome-about": (430, 40, 27, "BoltPack > About",
+                                     "About dialog and intact menu bar"),
                 "help-documentation": (650, 650, 56, "Help > Documentation",
                                        "documentation alert"),
                 "archive-validate": (330, 335, 92, "Archive > Validate",
@@ -253,10 +261,16 @@ def main():
             menu_delay = (3 if args.action in archive_actions else 1.5)
             title_click = [
                 ["xdotool", "windowfocus", "--sync", window],
-                ["xdotool", "mousemove", "--window", window,
-                 str(title_x), "6"],
-                ["xdotool", "click", "--delay", "250", "1"],
             ]
+            if monochrome:
+                # Enter the blank part of the menu bar from below.
+                title_click += [["xdotool", "mousemove", "--window", window,
+                                 str(title_x), str(y), "sleep", ".16"]
+                                for y in (295, 205, 120, 45, 20, 8, 0)]
+            else:
+                title_click += [["xdotool", "mousemove", "--window", window,
+                                 str(title_x), "6"],
+                                ["xdotool", "click", "--delay", "250", "1"]]
             for item in title_click:
                 result = run(item, out, timeout=10)
                 if result.returncode != 0:
@@ -271,13 +285,26 @@ def main():
             if not menu_capture.exists():
                 raise RuntimeError("menu checkpoint was not captured; evidence: " + str(out))
             menu_change = screenshot_difference(first_capture, menu_capture)
-            if menu_change < 1000:
+            if monochrome:
+                if screenshot_difference(first_capture, menu_capture, (0, 0, 310, 36)):
+                    raise RuntimeError("Hovering beside Help changed the menu bar; evidence: " + str(out))
+            elif menu_change < 1000:
                 raise RuntimeError(action_name + " title click did not open its menu; evidence: " + str(out))
+            if args.action.startswith(("compression-", "help-")):
+                left_edge = (96, 102, 200, 254)
+                if screenshot_difference(first_capture, menu_capture, left_edge) != 0:
+                    raise RuntimeError(action_name + " menu wrapped across the screen; evidence: " + str(out))
             item_click = [
                 ["xdotool", "mousemove", "--window", window,
                  str(item_x), str(item_y)],
                 ["xdotool", "click", "--delay", "250", "1"],
             ]
+            if monochrome:
+                # Cross below the bar before entering About from its title.
+                item_click = [["xdotool", "mousemove", "--window", window,
+                               str(x), str(y), "sleep", ".16"]
+                              for x, y in ((430, 60), (334, 60), (238, 60),
+                                           (142, 60), (40, 60), (40, 8), (40, 20))] + item_click
             for item in item_click:
                 result = run(item, out, timeout=10)
                 if result.returncode != 0:
@@ -317,9 +344,10 @@ def main():
     screenshots = sorted(out.glob("grab*.png"))
     if len(screenshots) < 2:
         raise RuntimeError("Hatari did not retain both screenshots; evidence: " + str(out))
-    region = (96, 90, 735, 450)
+    region = (145, 130, 510, 280) if monochrome else (96, 90, 735, 450)
     nonwhite = [png_nonwhite_count(path, region) for path in screenshots]
     threshold = {"help-documentation": 15000,
+                 "monochrome-about": 2400,
                  "archive-validate": 9000,
                  "archive-information": 9000,
                  "archive-extract": 5000,
@@ -331,6 +359,8 @@ def main():
                  "compression-profile": 9000}.get(args.action, 20000)
     if args.action not in ("archive-close", "archive-quit") and nonwhite[-1] < threshold:
         raise RuntimeError(action_name + " dialog marker absent from screenshots; evidence: " + str(out))
+    if monochrome and screenshot_difference(first_capture, result_capture, (0, 0, 310, 17)):
+        raise RuntimeError("Desk About changed the menu titles; evidence: " + str(out))
     pixel_diff = None
     if args.action in archive_actions:
         pixel_diff = screenshot_difference(screenshots[-2], screenshots[-1])
@@ -346,7 +376,7 @@ def main():
                        "compression-profile": (46, 58)}.get(args.action, (49, 59))
         check_top = item_y + top
         check_bottom = item_y + bottom
-        check_region = (403, check_top, 415, check_bottom)
+        check_region = (321, check_top, 333, check_bottom)
         check_pixels = png_black_count(screenshots[-1], check_region)
         if check_pixels < 20:
             raise RuntimeError(action_name + " checkmark missing from the reopened menu; evidence: " + str(out))
@@ -362,18 +392,20 @@ def main():
             "tos": tos.name,
             "tos_sha256": sha256(tos),
             "gui_sha256": sha256(gui),
-            "resolution": "832x588 Hatari window; STE, 4 MiB",
+            "resolution": "ST High" if monochrome else "ST Low",
         },
         "action": args.action,
         "archive_sha256": archive_hash,
-        "input": (["create ARCHIVE.BLT with Linux CLI",
+        "input": (["focus Hatari", "move up to the blank area beside Help",
+                   "move below the menu bar and select BoltPack > About"] if monochrome else
+                  (["create ARCHIVE.BLT with Linux CLI",
                    "open ARCHIVE.BLT in Atari GUI and wait for archive window"]
                   if args.action in ("archive-validate", "archive-information") else []) +
                  ["focus Hatari", "click menu title window-relative (%d,6)" % title_x,
                   "wait %s seconds" % menu_delay,
                   "click menu item window-relative (%d,%d)" % (item_x, item_y)] +
                  (["reopen Compression to verify selected-item checkmark"]
-                  if args.action.startswith("compression-") else []),
+                  if args.action.startswith("compression-") else [])),
         "verification": {
             "dialog_screenshot": screenshots[-1].name,
             "dialog_region_nonwhite_pixels": {
