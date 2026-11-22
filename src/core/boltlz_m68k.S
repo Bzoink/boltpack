@@ -52,13 +52,15 @@
 /* Locals below the frame pointer a6 */
 #define SRC   -4        /* block start */
 #define ANCH  -8        /* first unencoded byte */
-#define MISS -12        /* misses since the last match */
-#define BSAV -16        /* saving of the best candidate */
+#define BSTEP -12       /* BALANCED skip step (word) */
+#define BLEFT -10       /* misses until the next step increase (word) */
+#define BSAV -16        /* encoded cost minus length of the best candidate */
 #define ML   -20        /* lazy check: saved match length */
 #define MD   -24        /*             saved distance */
-#define MS   -28        /*             saved saving */
+#define MS   -28        /*             saved cost minus length */
 #define E0   -32        /* repeat-distance entry (pointer + 1) or 0 */
 #define FRAME -32
+#define BAL_SKIP_START 0x00010080 /* BSTEP = 1, BLEFT = 128 */
 
 /*
  * Registers in the loop:
@@ -68,6 +70,8 @@
  *   d4 table offset of P's bucket
  *   d3 best length (0: no match)            d2 best distance
  *   d0, d1, d6 scratch
+ * Until FAST accepts a match, d2 is the skip step, d3 counts misses to
+ * the next step increase, and d6 tracks how far P can advance safely.
  */
 
 /* d5 = the 4 bytes at a3. */
@@ -102,7 +106,7 @@
 	and.l	#0xFFF8,%d4
 .else
 	lsr.w	#1,%d4
-	and.l	#0x7FFC,%d4
+	and.w	#0x7FFC,%d4
 .endif
 .endm
 
@@ -115,7 +119,7 @@
 	move.l	(%a4),4(%a4)
 	move.l	%d0,(%a4)
 .else
-	move.l	%d0,(%a2,%d4.l)
+	move.l	%d0,(%a2,%d4.w)
 .endif
 .endm
 
@@ -253,19 +257,15 @@
 .endif
 	subq.l	#1,%d0
 	move.l	%d0,%a4
-	cmpa.l	%a3,%a4
-	bcc	\next
 	CMPV	\next
 	move.l	%a3,%d1
 	sub.l	%a4,%d1
 	COUNT
 	COST
-	cmp.l	%d6,%d0
-	bls	\next
-	sub.l	%d0,%d6
-	neg.l	%d6
+	sub.l	%d0,%d6		/* a borrow means the match saves bytes */
+	bcc	\next
 	cmp.l	BSAV(%a6),%d6
-	bhi	.Ltake\@
+	blt	.Ltake\@
 	bne	\next
 	cmp.l	%d3,%d0
 	bls	\next
@@ -273,9 +273,7 @@
 	move.l	%d0,%d3
 	move.l	%d1,%d2
 	move.l	%d6,BSAV(%a6)
-	move.l	%a0,%d6
-	sub.l	%a3,%d6
-	cmp.l	%d3,%d6
+	cmpa.l	%a0,%a5		/* COUNT leaves a5 at the first mismatch or end */
 	beq	\out
 .endm
 
@@ -342,39 +340,82 @@
 .Lskip\@:
 .endm
 
+/* FAST search at P: replace the bucket's only entry and use the old one
+ * as the candidate (bl_fast_find). d2 and d3 still hold the skip state on
+ * a miss, and d6 is the number of bytes P can advance and still read four. */
+.macro FIND_FAST miss
+	move.l	(%a2,%d4.w),%d0
+	lea	1(%a3),%a4
+	move.l	%a4,(%a2,%d4.w)
+	/* Subtracting one also makes an empty entry fail the unsigned test. */
+	subq.l	#1,%d0
+	move.l	%d0,%a4
+	cmpa.l	%a3,%a4
+	bcc	\miss
+	CMPV	\miss
+	move.l	%a3,%d1
+	sub.l	%a4,%d1
+	COUNT
+	/* Only a four-byte match with a three-byte explicit distance can
+	 * cost as many bytes as it replaces. */
+	cmpi.l	#4,%d0
+	bne	.Ltake\@
+	cmpi.l	#16384,%d1
+	bcs	.Ltake\@
+	cmp.l	%d7,%d1
+	beq	.Ltake\@
+	/* COUNT uses d6, so restore the limit when rejecting this match. */
+	move.l	%a0,%d6
+	sub.l	%a3,%d6
+	subq.l	#4,%d6
+	bra	\miss
+.Ltake\@:
+	move.l	%d0,%d3
+	move.l	%d1,%d2
+.endm
+
 /* The main loop. stride 8 = BALANCED (lazy step), 4 = FAST. */
-.macro ENCODE stride, find, shift
+.macro ENCODE stride
+.if \stride == 4
+.Lreset\@:
+	moveq	#1,%d2
+	moveq	#31,%d3
+	move.l	%a0,%d6
+	sub.l	%a3,%d6
+	subq.l	#4,%d6
+	bcs	.Lexit
+.else
+	move.l	#BAL_SKIP_START,BSTEP(%a6)
 	bra	.Lcheck\@
+.endif
 .Ltop\@:
 	LOADV
 	HASH	\stride
-	bsr	\find
+.if \stride == 4
+	FIND_FAST .Lmiss\@
+.else
+	bsr	.Lfind_bal
 .Lfound\@:
 	INSERT	\stride
 	tst.l	%d3
 	bne	.Lmatch\@
-	/* No match: step 1 + misses >> shift, at most 16 and the rest. */
-	move.l	MISS(%a6),%d0
-	lsr.l	#\shift,%d0
-	addq.l	#1,%d0
-	moveq	#16,%d1
-	cmp.l	%d1,%d0
-	bls	.Ls1\@
-	move.l	%d1,%d0
-.Ls1\@:
+	/* Step starts at 1 and grows every 128 misses, up to 16. */
+	moveq	#0,%d0
+	move.w	BSTEP(%a6),%d0
 	move.l	%a0,%d1
 	sub.l	%a3,%d1
+	subq.l	#4,%d1
 	cmp.l	%d1,%d0
-	bls	.Ls2\@
-	move.l	%d1,%d0
-.Ls2\@:
-	adda.l	%d0,%a3
-	cmpi.l	#2048,MISS(%a6)
-	bcc	.Lcheck\@
-	addq.l	#1,MISS(%a6)
-	bra	.Lcheck\@
+	bhi	.Lexit
+	adda.w	%d0,%a3
+	subq.w	#1,BLEFT(%a6)
+	bne	.Ltop\@
+	move.w	#128,BLEFT(%a6)
+	cmpi.w	#16,%d0
+	beq	.Ltop\@
+	addq.w	#1,BSTEP(%a6)
+	bra	.Ltop\@
 .Lmatch\@:
-.if \stride == 8
 	/* Lazy step: a match at P+1 saving two more bytes wins. Its search
 	 * result is reused as the search at the new position. */
 	moveq	#32,%d0
@@ -391,11 +432,11 @@
 	addq.l	#1,%a3
 	LOADV
 	HASH	\stride
-	bsr	\find
+	bsr	.Lfind_bal
 	move.l	MS(%a6),%d0
-	addq.l	#1,%d0
+	subq.l	#1,%d0
 	cmp.l	BSAV(%a6),%d0
-	bcs	.Lfound\@
+	bgt	.Lfound\@
 	subq.l	#1,%a3
 	move.l	ML(%a6),%d3
 	move.l	MD(%a6),%d2
@@ -421,19 +462,36 @@
 	EMIT
 	adda.l	%d3,%a3
 	move.l	%a3,ANCH(%a6)
-	clr.l	MISS(%a6)
+.if \stride == 8
+	move.l	#BAL_SKIP_START,BSTEP(%a6)
+.endif
 	/* Keep a little history at the end of the match. */
 	subq.l	#2,%a3
 	TAILINSERT \stride
 	addq.l	#1,%a3
 	TAILINSERT \stride
 	addq.l	#1,%a3
+.if \stride == 4
+	bra	.Lreset\@
+.Lmiss\@:
+	/* Step starts at 1 and grows every 32 misses, up to 16. */
+	sub.l	%d2,%d6
+	bcs	.Lexit
+	adda.w	%d2,%a3
+	dbra	%d3,.Ltop\@
+	moveq	#31,%d3
+	cmpi.w	#16,%d2
+	beq	.Ltop\@
+	addq.w	#1,%d2
+	bra	.Ltop\@
+.else
 .Lcheck\@:
 	move.l	%a0,%d0
 	sub.l	%a3,%d0
 	moveq	#4,%d1
 	cmp.l	%d1,%d0
 	bcc	.Ltop\@
+.endif
 .endm
 
 	.text
@@ -450,14 +508,13 @@ SYM(bl68_encode):
 	move.l	ST_OUT(%a4),%a1
 	move.l	ST_TABLE(%a4),%a2
 	moveq	#0,%d7
-	clr.l	MISS(%a6)
 	moveq	#1,%d0
 	cmp.l	ST_LEVEL(%a4),%d0
 	beq	.Lfast
-	ENCODE	8, .Lfind_bal, 7
+	ENCODE	8
 	bra	.Lexit
 .Lfast:
-	ENCODE	4, .Lfind_fast, 5
+	ENCODE	4
 .Lexit:
 	move.l	8(%a6),%a4
 	move.l	%a1,ST_OUT(%a4)
@@ -467,18 +524,15 @@ SYM(bl68_encode):
 	rts
 
 /* BALANCED search at P: the repeat distance, then the bucket's primary and
- * secondary entries (bl_find). Out: d3/d2 best, BSAV its saving. */
+ * secondary entries (bl_find). d7 comes from an earlier match and each
+ * nonempty table entry was inserted strictly before P. Out: d3/d2 best,
+ * BSAV its encoded cost minus length. */
 .Lfind_bal:
 	moveq	#0,%d3
-	moveq	#0,%d2
 	clr.l	BSAV(%a6)
 	moveq	#0,%d0
 	tst.l	%d7
 	beq	.Lfb_e0
-	move.l	%a3,%d1
-	sub.l	SRC(%a6),%d1
-	cmp.l	%d7,%d1
-	bcs	.Lfb_e0
 	move.l	%a3,%d0
 	sub.l	%d7,%d0
 	addq.l	#1,%d0
@@ -493,27 +547,6 @@ SYM(bl68_encode):
 	move.l	4(%a2,%d4.l),%d0
 	CAND	2, .Lfb_end, .Lfb_end
 .Lfb_end:
-	rts
-
-/* FAST search at P: the bucket's only entry (bl_fast_find). */
-.Lfind_fast:
-	moveq	#0,%d3
-	move.l	(%a2,%d4.l),%d0
-	beq	.Lff_end
-	subq.l	#1,%d0
-	move.l	%d0,%a4
-	cmpa.l	%a3,%a4
-	bcc	.Lff_end
-	CMPV	.Lff_end
-	move.l	%a3,%d1
-	sub.l	%a4,%d1
-	COUNT
-	COST
-	cmp.l	%d6,%d0
-	bls	.Lff_end
-	move.l	%d0,%d3
-	move.l	%d1,%d2
-.Lff_end:
 	rts
 
 /* Write d0 as LEB128 at a1. Clobbers d0, d6. */

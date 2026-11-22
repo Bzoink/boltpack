@@ -29,6 +29,7 @@ COMMANDS
 Options:
 
   -0        Store only (no compression; the default is BoltLZ)
+  -l N, --level N  Create/add: BoltLZ 1 (Fast), 2 (Balanced)
   -b SIZE   Block size: 8k, 16k, 32k, 64k or 256k
   -o PATH   Output folder for extraction
   -f        Overwrite existing files

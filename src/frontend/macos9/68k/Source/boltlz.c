@@ -374,7 +374,9 @@ bl_match bl_find(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
     value = bl_load32(src + pos);
     hash = bl_hash_value(value);
 #endif
-    entries[0] = last != 0 && last <= pos ? pos - last + 1 : 0;
+    /* The previous match distance and nonempty table entries always
+     * refer to positions before this search. */
+    entries[0] = last != 0 ? pos - last + 1 : 0;
     entries[1] = bl_table_get(table, hash BL_TABLE_ARGS);
     count = 2;
     if (level == BOLTLZ_BALANCED) {
@@ -401,7 +403,6 @@ bl_match bl_find(const bp_uint8 *src, bp_uint32 size, bp_uint32 pos,
 #endif
         if (entries[i] == 0 || (i != 0 && entries[i] == entries[0])) continue;
         ref = entries[i] - 1;
-        if (ref >= pos) continue;
         distance = pos - ref;
         if (value != bl_load32(src + ref)) continue;
 #if BOLTLZ_PRUNE_MATCH && !BOLTLZ_EXACT_COST
@@ -619,7 +620,9 @@ int boltlz_compress(const bp_uint8 *src, bp_uint32 src_len,
         pos = src_len;
     }
 #endif
-    while (src_len - pos >= 4) {
+    /* A skip may pass the end of the block. Only positions with a full
+     * prefix are searched, and the final literals start at anchor. */
+    while (pos + 4 <= src_len) {
 #if BOLTLZ_PIPELINE
         if (!prefix_valid) {
 #endif
@@ -651,7 +654,6 @@ int boltlz_compress(const bp_uint8 *src, bp_uint32 src_len,
 #else
             step = 1 + (misses >> (level == BOLTLZ_FAST ? 5 : 7));
             if (step > 16) step = 16;
-            if (step > src_len - pos) step = src_len - pos;
             pos += step;
 #endif
             if (misses < 2048) misses++;

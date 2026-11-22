@@ -174,24 +174,26 @@ resource 'DLOG' (128) {
 
 /* ============================================================
  * Compression method dialog (rDlgMixed = 129) -> DITL 130
- * Items: 1=Stored  2=BoltLite  3=boltlz  4=fluff  5=Profile  6=Cancel  7=prompt
  * ============================================================ */
 
 resource 'DITL' (130) {
     {
         /* 1 kMethodStored */ { 44,  20,  64, 145 }, Button     { enabled, "Stored" };
         /* 2 kMethodBoltLite   */ { 44, 165,  64, 300 }, Button     { enabled, "BoltLite" };
-        /* 3 kMethodBoltLZ    */ { 80,  20, 100, 145 }, Button     { enabled, "boltlz" };
-        /* 4 kMethodFluff  */ { 80, 165, 100, 300 }, Button     { enabled, "fluff (best)" };
-        /* 5 kMethodProfile */ {112,  20, 132, 300 }, Button     { enabled, "Interchange Profile 1" };
-        /* 6 kMethodCancel */  {150, 107, 170, 213 }, Button     { enabled, "Cancel" };
+        /* 3 kMethodBoltLZBalanced */ { 80, 165, 100, 300 }, Button { enabled, "BoltLZ Balanced (2)" };
+        /* 4 kMethodFluff   */ {116,  20, 136, 145 }, Button     { enabled, "Fluff" };
+        /* 5 kMethodProfile */ {152,  20, 172, 300 }, Button     { enabled, "Interchange Profile 1" };
+        /* 6 kMethodCancel  */ {190, 107, 210, 213 }, Button     { enabled, "Cancel" };
         /* 7 prompt */         {  8,  20,  34, 300 }, StaticText { disabled,
-            "Choose compression method:" }
+            "Choose compression method:" };
+        /* 8 kMethodBoltLZFast */ { 80,  20, 100, 145 }, Button  { enabled, "BoltLZ Fast (1)" };
+        /* 9 kFluffLevelField  */ {117, 260, 135, 300 }, EditText { enabled, "8" };
+        /* 10 Fluff level label */ {118, 165, 136, 250 }, StaticText { disabled, "Fluff level (1-9):" }
     }
 };
 
 resource 'DLOG' (129) {
-    { 140, 80, 340, 410 },
+    { 120, 80, 350, 410 },
     movableDBoxProc,
     invisible,
     noGoAway,

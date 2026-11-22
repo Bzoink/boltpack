@@ -1495,6 +1495,7 @@ static void usage(void)
         "Options:\n"
         "  -b SIZE   block size: 8k 16k 32k 64k 256k\n"
         "  -0        store only    -F fluff   -q quiet   -qq silent\n"
+        "  -l N, --level N  create/add: BoltLZ 1 (Fast), 2 (Balanced); Fluff 1-9\n"
         "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output path for extraction\n"
         "  -f        force overwrite    -n dry run\n",
@@ -1644,7 +1645,7 @@ static int cmd_list(const char *archive_name)
 
 /* create -v SIZE: write the archive as a volume set. */
 static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
-                              bp_uint8 method)
+                              bp_uint8 method, bp_uint8 level)
 {
     static bp_vol_files_t vf;
     bp_volume_sink_t sink;
@@ -1668,6 +1669,7 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
         else if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
     if (rc != BP_OK) { vol_report(&vf, rc, bp_strerror); return 1; }
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         const char *arcname = ql_strip_device(argv[i]);
         char arcbuf[BP_MAX_PATH];
@@ -1707,13 +1709,14 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
     return 0;
 }
 
-static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
+static int cmd_create(int argc, char **argv, bp_uint32 block_size,
+                      bp_uint8 method, bp_uint8 level)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     if (argc < 2) { fprintf(stderr, "boltpack: create needs archive + files\n"); return 1; }
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
-    if (g_volume_mode) return cmd_create_volumes(argc, argv, block_size, method);
+    if (g_volume_mode) return cmd_create_volumes(argc, argv, block_size, method, level);
     fp = fopen(argv[0], "w+b");
     if (!fp) { fprintf(stderr, "boltpack: cannot create: %s\n", argv[0]); return 1; }
     bp_io_from_file(&aio, fp);
@@ -1723,6 +1726,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); fclose(fp); return 1; }
     if (g_interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         /* Strip device prefix for archive name */
         const char *arcname = ql_strip_device(argv[i]);
@@ -1748,7 +1752,8 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size, bp_uint8 meth
 
 /* ---- cmd_add ---------------------------------------------------------- */
 
-static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
+static int cmd_add(int argc, char **argv, bp_uint32 block_size,
+                   bp_uint8 method, bp_uint8 level)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     if (argc < 2) { fprintf(stderr, "boltpack: add needs archive + files\n"); return 1; }
@@ -1772,6 +1777,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size, bp_uint8 method)
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         const char *arcname = ql_strip_device(argv[i]);
         rc = add_path(&ar, argv[i], arcname);
@@ -1914,6 +1920,7 @@ int main(int argc, char **argv)
     char       command;
     bp_uint32  block_size = 0;
     bp_uint8   method     = BP_METHOD_BOLTLZ;
+    bp_uint8   level      = 0;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
     int        codec_given = 0;
@@ -1940,6 +1947,12 @@ int main(int argc, char **argv)
             if (!block_size) { fprintf(stderr, "boltpack: invalid block size\n"); return 1; }
         } else if (!strcmp(argv[i], "--interchange-profile-1")) {
             g_interchange_profile = 1; i++;
+        } else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--level")) {
+            if (++i >= argc || argv[i][0] < '1' || argv[i][0] > '9' || argv[i][1]) {
+                fprintf(stderr, "boltpack: -l requires a level from 1 to 9\n");
+                return 1;
+            }
+            level = (bp_uint8)(argv[i++][0] - '0');
         } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-F"))  { method = BP_METHOD_FLUFF; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-qq")) { g_verbosity = VERB_SILENT; i++; }
@@ -1986,6 +1999,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "boltpack: --pause with create needs -v SIZE\n");
         return 1;
     }
+    if (level != 0) {
+        if ((command != 'c' && command != 'a') || g_interchange_profile ||
+            (method != BP_METHOD_BOLTLZ && method != BP_METHOD_FLUFF)) {
+            fprintf(stderr, "boltpack: -l applies to create/add with BoltLZ or Fluff outside Interchange Profile 1\n");
+            return 1;
+        }
+        if (method == BP_METHOD_BOLTLZ && level > 2) {
+            fprintf(stderr, "boltpack: BoltLZ level must be 1 or 2\n");
+            return 1;
+        }
+    }
     if (g_interchange_profile) {
         if ((command != 'c' && command != 'a') ||
             (block_size != 0 && block_size != BP_BLOCK_16K) ||
@@ -2004,8 +2028,8 @@ int main(int argc, char **argv)
     }
 
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method);
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method, level);
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method, level);
     case 'l': if (i >= argc) { fprintf(stderr, "boltpack: list needs archive\n"); return 1; }
               return cmd_list(argv[i]);
     case 'x': if (i >= argc) { fprintf(stderr, "boltpack: extract needs archive\n"); return 1; }

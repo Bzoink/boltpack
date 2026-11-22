@@ -388,6 +388,7 @@ static int add_path(bp_archive_t *ar, const char *path, const char *arcname)
     struct dos_filbuf fb;
 
     /* Use _dos_files to stat the path */
+    memset(&fb, 0, sizeof(fb)); /* run68 leaves some fields unset */
     if (_dos_files(&fb, path, FA_ANY) != 0) {
         fprintf(stderr, "boltpack: cannot stat: %s\n", path);
         return BP_ERR_IO;
@@ -995,6 +996,7 @@ static void usage(void)
         "Options:\n"
         "  -b SIZE   block size: 8k 16k 32k 64k 256k\n"
         "  -0        store only    -q quiet   -qq silent\n"
+        "  -l N, --level N  create/add: BoltLZ 1 (Fast), 2 (Balanced)\n"
         "  --interchange-profile-1  create/add mini-compatible archive\n"
         "  -o PATH   output path for extraction\n"
         "  -f        force overwrite    -n dry run\n",
@@ -1154,6 +1156,7 @@ static int cmd_list(const char *archive_name)
 static int x68k_preflight_path(const char *path, const char *arcname)
 {
     struct dos_filbuf source;
+    memset(&source, 0, sizeof(source));
     if (_dos_files(&source, path, FA_ANY) != 0)
         return BP_ERR_IO;
 
@@ -1229,7 +1232,8 @@ static int x68k_preflight_source_names(int argc, char **argv)
 
 /* create -v SIZE: write the archive as a volume set. */
 static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
-                              bp_uint8 method, int interchange_profile)
+                              bp_uint8 method, bp_uint8 level,
+                              int interchange_profile)
 {
     static bp_vol_files_t vf;
     bp_volume_sink_t sink;
@@ -1253,6 +1257,7 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
         else if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
     if (rc != BP_OK) { vol_report(&vf, rc, bp_strerror); return 1; }
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH];
         strcpy(buf, clean_path(argv[i]));
@@ -1293,7 +1298,7 @@ static int cmd_create_volumes(int argc, char **argv, bp_uint32 block_size,
 }
 
 static int cmd_create(int argc, char **argv, bp_uint32 block_size,
-                      bp_uint8 method, int interchange_profile)
+                      bp_uint8 method, bp_uint8 level, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     char stage[BP_MAX_PATH];
@@ -1309,7 +1314,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     rc = bp_compress_init();
     if (rc != BP_OK) { fprintf(stderr, "boltpack: %s\n", bp_strerror(rc)); return 1; }
     if (g_volume_mode)
-        return cmd_create_volumes(argc, argv, block_size, method,
+        return cmd_create_volumes(argc, argv, block_size, method, level,
                                   interchange_profile);
     rc = x68k_archive_target(argv[0], &target_exists, &target_attributes);
     if (rc == BP_OK) rc = x68k_create_archive_stage(argv[0], stage, sizeof(stage));
@@ -1333,6 +1338,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
     }
     if (interchange_profile && method == BP_METHOD_STORED)
         ar.method = BP_METHOD_STORED;
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH];
         strcpy(buf, clean_path(argv[i]));
@@ -1361,7 +1367,7 @@ static int cmd_create(int argc, char **argv, bp_uint32 block_size,
 /* ---- cmd_add ---------------------------------------------------------- */
 
 static int cmd_add(int argc, char **argv, bp_uint32 block_size,
-                   bp_uint8 method, int interchange_profile)
+                   bp_uint8 method, bp_uint8 level, int interchange_profile)
 {
     FILE *fp; bp_io_t aio; bp_archive_t ar; int rc, i;
     char stage[BP_MAX_PATH];
@@ -1410,6 +1416,7 @@ static int cmd_add(int argc, char **argv, bp_uint32 block_size,
         }
         if (method == BP_METHOD_STORED) ar.method = BP_METHOD_STORED;
     }
+    ar.method_level = level;
     for (i = 1; i < argc; i++) {
         char buf[BP_MAX_PATH]; strcpy(buf, clean_path(argv[i])); normalise_seps(buf);
         rc = add_path(&ar, argv[i], buf);
@@ -1619,6 +1626,7 @@ int main(int argc, char **argv)
     char       command;
     bp_uint32  block_size = 0;
     bp_uint8   method     = BP_METHOD_BOLTLZ;
+    bp_uint8   level      = 0;
     const char *out_dir   = NULL;
     int        force = 0, dry_run = 0, i;
     int        interchange_profile = 0, codec_given = 0;
@@ -1636,6 +1644,12 @@ int main(int argc, char **argv)
             if (!block_size) { fprintf(stderr, "boltpack: invalid block size\n"); return 1; }
         } else if (!strcmp(argv[i], "--interchange-profile-1")) {
             interchange_profile = 1; i++;
+        } else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--level")) {
+            if (++i >= argc || argv[i][0] < '1' || argv[i][0] > '2' || argv[i][1]) {
+                fprintf(stderr, "boltpack: BoltLZ level must be 1 or 2\n");
+                return 1;
+            }
+            level = (bp_uint8)(argv[i++][0] - '0');
         } else if (!strcmp(argv[i], "-0"))  { method = BP_METHOD_STORED; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-1"))  { method = BP_METHOD_BOLTLITE; codec_given = 1; i++; }
         else if (!strcmp(argv[i], "-qq")) { g_verbosity = VERB_SILENT; i++; }
@@ -1682,6 +1696,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "boltpack: --pause with create needs -v SIZE\n");
         return 1;
     }
+    if (level != 0 && ((command != 'c' && command != 'a') ||
+                       interchange_profile || method != BP_METHOD_BOLTLZ)) {
+        fprintf(stderr, "boltpack: -l applies to create/add with BoltLZ outside Interchange Profile 1\n");
+        return 1;
+    }
     if (interchange_profile) {
         if ((command != 'c' && command != 'a') ||
             (block_size != 0 && block_size != BP_BLOCK_16K) ||
@@ -1696,9 +1715,9 @@ int main(int argc, char **argv)
     }
 
     switch (command) {
-    case 'c': return cmd_create(argc - i, argv + i, block_size, method,
+    case 'c': return cmd_create(argc - i, argv + i, block_size, method, level,
                                 interchange_profile);
-    case 'a': return cmd_add(argc - i, argv + i, block_size, method,
+    case 'a': return cmd_add(argc - i, argv + i, block_size, method, level,
                              interchange_profile);
     case 'l': if (i >= argc) { fprintf(stderr, "boltpack: list needs archive\n"); return 1; }
               return cmd_list(argv[i]);

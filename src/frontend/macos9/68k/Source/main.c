@@ -73,10 +73,12 @@
 /* Method selection dialog items (rDlgMixed = 129 repurposed) */
 #define kMethodStored       1
 #define kMethodBoltLite         2
-#define kMethodBoltLZ          3
+#define kMethodBoltLZBalanced  3
 #define kMethodFluff        4
 #define kMethodProfile      5
 #define kMethodCancel       6
+#define kMethodBoltLZFast   8
+#define kFluffLevelField    9
 #define kMethodProfileResult (-2)
 
 /* New progress dialog items */
@@ -1262,17 +1264,18 @@ static int IsDirectory(const FSSpec *spec)
 
 /* ==== Compression Method Dialog ========================================= */
 
-/* Returns BP_METHOD_* (0-3), kMethodProfileResult, or -1 if cancelled. */
-static int AskCompressionMethod(void)
+/* Returns the method or profile choice and sets its level. -1 means cancel. */
+static int AskCompressionMethod(bp_uint8 *level)
 {
     DialogPtr dlg;
     short item;
     int result = -1;
 
+    *level = 0;
     dlg = GetNewDialog(rDlgMixed, nil, (WindowPtr)-1);
     if (dlg == nil) return -1;
 
-    SetDialogDefaultItem(dlg, kMethodBoltLZ);
+    SetDialogDefaultItem(dlg, kMethodBoltLZBalanced);
     SetDialogCancelItem(dlg, kMethodCancel);
     ShowWindow(GetDialogWindow(dlg));
 
@@ -1280,11 +1283,28 @@ static int AskCompressionMethod(void)
         ModalDialog(nil, &item);
         if (item == kMethodStored) { result = BP_METHOD_STORED; break; }
         if (item == kMethodBoltLite)   { result = BP_METHOD_BOLTLITE;   break; }
-        if (item == kMethodBoltLZ)    { result = BP_METHOD_BOLTLZ;  break; }
+        if (item == kMethodBoltLZBalanced || item == kMethodBoltLZFast) {
+            *level = item == kMethodBoltLZFast ? 1 : 2;
+            result = BP_METHOD_BOLTLZ;
+            break;
+        }
         if (item == kMethodFluff)  {
+            short itemType;
+            Handle itemHandle;
+            Rect itemRect;
+            Str255 levelText;
+
+            GetDialogItem(dlg, kFluffLevelField, &itemType, &itemHandle, &itemRect);
+            GetDialogItemText(itemHandle, levelText);
+            if (levelText[0] != 1 || levelText[1] < '1' || levelText[1] > '9') {
+                ShowErrorStr("Enter a Fluff level from 1 to 9.");
+                SelectDialogItemText(dlg, kFluffLevelField, 0, 32767);
+                continue;
+            }
             if (!EnsureFluffMemoryAvailable("AskCompressionMethod: fluff blocked largest=")) {
                 continue;
             }
+            *level = (bp_uint8)(levelText[1] - '0');
             result = BP_METHOD_FLUFF;
             break;
         }
@@ -2838,6 +2858,7 @@ static int DoPack(FSSpec *items, long count)
     bp_archive_t ar;
     progress_ctx_t prog;
     bp_uint32 blockSize;
+    bp_uint8 methodLevel;
     int method;
     int interchangeProfile;
     int rc;
@@ -2857,7 +2878,7 @@ static int DoPack(FSSpec *items, long count)
     LogWrite("DoPack: compress_init OK");
 
     /* choose compression method — always prompt */
-    method = AskCompressionMethod();
+    method = AskCompressionMethod(&methodLevel);
     if (method == -1) {
         LogWrite("DoPack: method cancelled");
         return BP_ERR_ABORTED;
@@ -3001,6 +3022,7 @@ static int DoPack(FSSpec *items, long count)
 
     ar.creator_os  = BP_OS_MACOS9;
     ar.creator_cpu = BP_CPU_M68K;
+    ar.method_level = methodLevel;
 
     gCurrentPack = &prog;
     ShowProgressDialog(&prog);

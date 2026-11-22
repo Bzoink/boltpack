@@ -59,6 +59,7 @@ OPTIONS
 -b SIZE   Block size: 8k, 16k, 32k, 64k, 256k
 -0        Store files without compression
 -F        Use Fluff compression
+-l N, --level N  Create/add: BoltLZ 1 (Fast), 2 (Balanced); Fluff 1-9
 -o PATH   Output path for extraction
 -f        Overwrite existing files on extract
 -n        Dry run
