@@ -79,6 +79,14 @@
 #include <unistd.h>
 #include "../amiga/amiga_time.h"
 
+#if defined(__GNUC__) && defined(__libnix__)
+/* Match the Workbench icon's 64 KiB stack for launches from a Shell.
+ * The reference links libnix's stack swap startup and cleanup hooks. */
+unsigned long __stack = 65536UL;
+extern void __stkinit(void);
+static void (*const amiga_stack_startup)(void) __attribute__((used)) = __stkinit;
+#endif
+
 /* ====================================================================== */
 /*  Constants                                                             */
 /* ====================================================================== */
@@ -1382,7 +1390,7 @@ static void refresh_idle_status(void)
 {
     char line1[160];
     char line2[160];
-    char line3[160];
+    char create_status[160];
     char free_buf[32];
     char orig_buf[32];
     char comp_buf[32];
@@ -1396,11 +1404,11 @@ static void refresh_idle_status(void)
     }
 
     format_size_compact((double)amiga_largest_free_block(), free_buf);
-    sprintf(line1, "Compression: %s   Largest free: %s",
+    sprintf(create_status, "Create using: %s   Largest free: %s",
             current_method_label(), free_buf);
-    if (current_disk > 0 && strlen(line1) + 40 < sizeof(line1)) {
-        strcat(line1, "   Disks: ");
-        strcat(line1, amiga_disks[current_disk].label);
+    if (current_disk > 0 && strlen(create_status) + 40 < sizeof(create_status)) {
+        strcat(create_status, "   Disks: ");
+        strcat(create_status, amiga_disks[current_disk].label);
     }
 
     if (archive_is_open) {
@@ -1410,22 +1418,20 @@ static void refresh_idle_status(void)
         comp = u64_to_dbl(archive_info.total_compressed);
         format_size_compact_u64(archive_info.total_original, orig_buf);
         format_size_compact_u64(archive_info.total_compressed, comp_buf);
-        sprintf(line2, "Archive: %lu files  %lu dirs  Method: %s",
+        sprintf(line1, "Archive compression: %s",
+                format_methods(archive_info.method_counts));
+        sprintf(line2, "%lu files  %lu dirs   %s -> %s",
                 (unsigned long)file_count,
                 (unsigned long)archive_info.dir_count,
-                format_methods(archive_info.method_counts));
+                orig_buf, comp_buf);
         if (orig > 0.0)
-            sprintf(line3, "Original: %s   Packed: %s (%d%%)",
-                    orig_buf, comp_buf, (int)(comp / orig * 100.0));
-        else
-            sprintf(line3, "Original: %s   Packed: %s",
-                    orig_buf, comp_buf);
+            sprintf(line2 + strlen(line2), " (%d%%)", (int)(comp / orig * 100.0));
+        set_status_lines(line1, line2, create_status);
     } else {
-        strcpy(line2, "Open a .bolt/.blt archive or drop files/folders here");
-        strcpy(line3, "Create New... archives the selected files recursively");
+        set_status_lines(create_status,
+                         "Open a .bolt/.blt archive or drop files/folders here",
+                         "Create New... archives the selected files recursively");
     }
-
-    set_status_lines(line1, line2, line3);
 }
 
 static void show_requester(const char *title, const char *msg)
