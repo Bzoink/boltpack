@@ -85,29 +85,27 @@ static unsigned int boltlite_hash3(const bp_uint8 *src, boltlite_index src_len,
 }
 
 static void boltlite_insert(const bp_uint8 *src, boltlite_index src_len, boltlite_index pos,
+                        unsigned int bucket,
                         unsigned short *heads, unsigned short *prev,
                         unsigned short *next)
 {
-    unsigned int bucket;
     unsigned int slot;
-    unsigned int old_bucket;
     unsigned short before;
-    unsigned short after;
 
     slot = (unsigned int)(pos & BOLTLITE_WINDOW_MASK);
     if (pos >= BOLTLITE_WINDOW_SIZE) {
-        old_bucket = boltlite_hash3(src, src_len, pos - BOLTLITE_WINDOW_SIZE);
+        /* Positions enter in order, so the oldest slot ends its chain.
+         * Recover its hash only if it is also the chain's head. */
         before = prev[slot];
-        after = next[slot];
-        if (before == (unsigned short)BOLTLITE_NIL)
-            heads[old_bucket] = after;
-        else
-            next[before] = after;
-        if (after != (unsigned short)BOLTLITE_NIL)
-            prev[after] = before;
+        if (before == (unsigned short)BOLTLITE_NIL) {
+            unsigned int old_bucket = boltlite_hash3(src, src_len,
+                                                    pos - BOLTLITE_WINDOW_SIZE);
+            heads[old_bucket] = (unsigned short)BOLTLITE_NIL;
+        } else {
+            next[before] = (unsigned short)BOLTLITE_NIL;
+        }
     }
 
-    bucket = boltlite_hash3(src, src_len, pos);
     before = heads[bucket];
     prev[slot] = (unsigned short)BOLTLITE_NIL;
     next[slot] = before;
@@ -116,12 +114,10 @@ static void boltlite_insert(const bp_uint8 *src, boltlite_index src_len, boltlit
 }
 
 static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_index pos,
-                      unsigned short *heads, unsigned short *next,
-                      boltlite_index produced,
+                      unsigned short *heads, unsigned short *next, unsigned int bucket,
                       boltlite_index previous_distance,
                       boltlite_index *best_distance, boltlite_index *best_length)
 {
-    unsigned int bucket;
     unsigned int searched;
     unsigned short candidate;
     boltlite_index distance;
@@ -138,9 +134,10 @@ static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_
     *best_distance = 0;
     *best_length = 0;
     limit = src_len - pos;
+    if (limit < BOLTLITE_MIN_MATCH) return;
     if (limit > BOLTLITE_MAX_MATCH) limit = BOLTLITE_MAX_MATCH;
 
-    if (previous_distance != 0 && previous_distance <= produced) {
+    if (previous_distance != 0) {
 #if defined(BOLTLITE_8086_ASM)
         length = boltlite_match_8086(src + pos, previous_distance, limit);
 #else
@@ -152,39 +149,35 @@ static void boltlite_find(const bp_uint8 *src, boltlite_index src_len, boltlite_
         if (length >= BOLTLITE_MIN_MATCH) {
             *best_distance = previous_distance;
             *best_length = length;
+            if (length == limit) return;
         }
     }
 
-    if (limit < BOLTLITE_MIN_MATCH) return;
-    bucket = boltlite_hash3(src, src_len, pos);
     candidate = heads[bucket];
     searched = 0;
     while (candidate != (unsigned short)BOLTLITE_NIL &&
            searched < BOLTLITE_SEARCH_LIMIT) {
         searched++;
+        /* Only earlier positions in the window are linked. A slot equal
+         * to the current slot is exactly one window back. */
         distance = (pos - (boltlite_index)candidate) & BOLTLITE_WINDOW_MASK;
-        if (distance == 0 && produced >= BOLTLITE_WINDOW_SIZE)
-            distance = BOLTLITE_WINDOW_SIZE;
-        if (distance == 0 || distance > produced || distance > BOLTLITE_WINDOW_SIZE)
-            candidate = next[candidate];
-        else {
-            if (distance != *best_distance) {
+        if (distance == 0) distance = BOLTLITE_WINDOW_SIZE;
+        if (distance != *best_distance) {
 #if defined(BOLTLITE_8086_ASM)
-                length = boltlite_match_8086(src + pos, distance, limit);
+            length = boltlite_match_8086(src + pos, distance, limit);
 #else
-                length = 0;
-                while (length < limit &&
-                       src[pos + length] == src[pos - distance + length])
-                    length++;
+            length = 0;
+            while (length < limit &&
+                   src[pos + length] == src[pos - distance + length])
+                length++;
 #endif
-                if (length > *best_length) {
-                    *best_distance = distance;
-                    *best_length = length;
-                    if (length == limit) return;
-                }
+            if (length > *best_length) {
+                *best_distance = distance;
+                *best_length = length;
+                if (length == limit) return;
             }
-            candidate = next[candidate];
         }
+        candidate = next[candidate];
     }
 }
 
@@ -211,6 +204,8 @@ static bp_uint32 boltlite_compress_capacity(const bp_uint8 *src, boltlite_index 
     boltlite_index next_length;
     boltlite_index previous_distance;
     boltlite_index consumed;
+    unsigned int bucket;
+    unsigned int next_bucket;
     unsigned int code_pos;
     unsigned int mask;
     unsigned int flags;
@@ -228,12 +223,8 @@ static bp_uint32 boltlite_compress_capacity(const bp_uint8 *src, boltlite_index 
     prev = (unsigned short *)(void *)(work + BOLTLITE_HASH_BUCKETS * 2U);
     next = (unsigned short *)(void *)(work + BOLTLITE_HASH_BUCKETS * 2U +
                                       BOLTLITE_WINDOW_SIZE * 2U);
-    for (i = 0; i < BOLTLITE_HASH_BUCKETS; i++)
-        heads[i] = (unsigned short)BOLTLITE_NIL;
-    for (i = 0; i < BOLTLITE_WINDOW_SIZE; i++) {
-        prev[i] = (unsigned short)BOLTLITE_NIL;
-        next[i] = (unsigned short)BOLTLITE_NIL;
-    }
+    /* A slot's links are initialized when it enters a chain. */
+    memset(heads, 0xFF, BOLTLITE_HASH_BUCKETS * sizeof(*heads));
 
     pos = 0;
     out = 0;
@@ -243,45 +234,35 @@ static bp_uint32 boltlite_compress_capacity(const bp_uint8 *src, boltlite_index 
     mask = 1;
     flags = 0;
     have_match = 0;
+    next_bucket = 0;
     next_distance = 0;
     next_length = 0;
 
     while (pos < src_len) {
         if (have_match) {
+            bucket = next_bucket;
             distance = next_distance;
             length = next_length;
             have_match = 0;
         } else {
-            boltlite_find(src, src_len, pos, heads, next, pos, previous_distance,
+            bucket = boltlite_hash3(src, src_len, pos);
+            boltlite_find(src, src_len, pos, heads, next, bucket, previous_distance,
                       &distance, &length);
         }
 
+        boltlite_insert(src, src_len, pos, bucket, heads, prev, next);
         if (length >= BOLTLITE_MIN_MATCH) {
-            /* Insert this position before checking whether one-byte lazy
-             * parsing produces a longer next-position match. */
-            boltlite_insert(src, src_len, pos, heads, prev, next);
-            if (pos + 1U < src_len) {
-                boltlite_find(src, src_len, pos + 1U, heads, next, pos + 1U,
+            /* Reuse the lookahead hash in the next search or insertion. */
+            next_bucket = boltlite_hash3(src, src_len, pos + 1U);
+            boltlite_find(src, src_len, pos + 1U, heads, next, next_bucket,
                           previous_distance, &next_distance, &next_length);
-                if (next_length > length) {
-                    flags |= mask;
-                    code[code_pos++] = src[pos++];
-                    have_match = 1;
-                    mask <<= 1;
-                    if (mask == 0x100U) {
-                        code[0] = (bp_uint8)flags;
-                        if (out + code_pos > dst_capacity) return 0;
-                        memcpy(dst + out, code, code_pos);
-                        out += code_pos;
-                        code[0] = 0;
-                        code_pos = 1;
-                        mask = 1;
-                        flags = 0;
-                    }
-                    continue;
-                }
+            if (next_length > length) {
+                have_match = 1;
+                length = 0;
             }
+        }
 
+        if (length >= BOLTLITE_MIN_MATCH) {
             if (distance != previous_distance && length > 10U)
                 length = 10U; /* explicit-distance form carries three length bits */
             if (distance <= 8U && length <= 10U) {
@@ -296,13 +277,15 @@ static bp_uint32 boltlite_compress_capacity(const bp_uint8 *src, boltlite_index 
             }
             previous_distance = distance;
             consumed = length;
-            for (i = 1; i < consumed; i++)
-                boltlite_insert(src, src_len, pos + i, heads, prev, next);
+            boltlite_insert(src, src_len, pos + 1U, next_bucket, heads, prev, next);
+            for (i = 2; i < consumed; i++) {
+                bucket = boltlite_hash3(src, src_len, pos + i);
+                boltlite_insert(src, src_len, pos + i, bucket, heads, prev, next);
+            }
             pos += consumed;
         } else {
             flags |= mask;
             code[code_pos++] = src[pos];
-            boltlite_insert(src, src_len, pos, heads, prev, next);
             pos++;
         }
 
