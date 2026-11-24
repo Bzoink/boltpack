@@ -26,19 +26,14 @@
  * BALANCED keeps the primary and secondary entry of a bucket side by side.
  */
 
+#include "boltlz_config.h"
+
 /* C symbol names: ELF targets (Retro68, elf2x68k) have no prefix, a.out
  * targets (MiNT, AmigaOS) prefix an underscore. */
 #ifdef __ELF__
 #define SYM(x) x
 #else
 #define SYM(x) _##x
-#endif
-
-#if defined(__mc68020__) || defined(__mc68030__) || \
-    defined(__mc68040__) || defined(__mc68060__)
-#define BL68_020 1
-#else
-#define BL68_020 0
 #endif
 
 /* bl68_state fields */
@@ -76,7 +71,7 @@
 
 /* d5 = the 4 bytes at a3. */
 .macro LOADV
-#if BL68_020
+#if BOLTLZ_M68K_020
 	move.l	(%a3),%d5
 #else
 	move.w	%a3,%d0
@@ -94,14 +89,21 @@
 #endif
 .endm
 
-/* d4 = table offset of hash(d5): fold the halves with a rotate, multiply
- * by 0x9E37, keep the top 13 bits of the low word (as bl_hash_value). */
+/* d4 = table offset of hash(d5), using the top 13 bits of the mixed
+ * word. Clobbers d0. Keep the mixer in sync with bl_hash_value. */
 .macro HASH stride
 	move.l	%d5,%d4
 	swap	%d4
 	rol.w	#5,%d4
 	eor.w	%d5,%d4
+#if BOLTLZ_M68K_020
 	mulu.w	#0x9E37,%d4
+#else
+	move.w	%d4,%d0
+	lsl.w	#3,%d0
+	add.w	%d0,%d4
+	ror.w	#4,%d4
+#endif
 .if \stride == 8
 	and.l	#0xFFF8,%d4
 .else
@@ -125,7 +127,7 @@
 
 /* Branch to fail unless the 4 bytes at a4 equal d5. Clobbers d0. */
 .macro CMPV fail
-#if BL68_020
+#if BOLTLZ_M68K_020
 	cmp.l	(%a4),%d5
 	bne	\fail
 #else
@@ -158,7 +160,7 @@
 	addq.l	#4,%a4
 	move.l	%a0,%d6
 	sub.l	%a5,%d6
-#if BL68_020
+#if BOLTLZ_M68K_020
 	moveq	#4,%d0
 	cmp.l	%d0,%d6
 	bcs	.Lbytes\@
@@ -571,7 +573,7 @@ SYM(bl68_encode):
 	moveq	#16,%d6
 	cmp.l	%d6,%d0
 	bcs	.Lcp_bytes
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 	/* Long moves need both pointers even. */
 	move.l	%a4,%d6
 	sub.l	%a1,%d6
@@ -764,7 +766,7 @@ SYM(bl68_decode):
 .Ld_litshort:
 	SHORTCOPY %a0, .Ld_match
 .Ld_litlong:
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 	move.l	%a0,%d1
 	sub.l	%a1,%d1
 	btst	#0,%d1
@@ -794,7 +796,7 @@ SYM(bl68_decode):
 	moveq	#15,%d1
 	and.l	%d1,%d0
 	bra	.Ld_litshort
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 .Ld_litbytes:
 	subq.l	#1,%d0
 .Ld_litb:
@@ -825,7 +827,7 @@ SYM(bl68_decode):
 	moveq	#4,%d1
 	cmp.l	%d1,%d5
 	bcs	.Ld_mdouble
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 	/* Longs need both sides even: an even distance, then align. */
 	btst	#0,%d5
 	bne	.Ld_mdouble
@@ -878,7 +880,7 @@ SYM(bl68_decode):
 	bra	.Ld_md
 .Ld_mdd:
 	suba.l	%d5,%a4
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 	bra	.Ld_malign
 #else
 	bra	.Ld_mal
@@ -886,7 +888,7 @@ SYM(bl68_decode):
 .Ld_mfill:
 	/* distance 1: a run of one byte */
 	move.b	(%a4),%d1
-#if !BL68_020
+#if !BOLTLZ_M68K_020
 	move.w	%a1,%d2
 	btst	#0,%d2
 	beq	.Ld_fal

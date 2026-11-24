@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- BoltLZ on the 68000 and 68008 uses a shift-and-add hash in the encoder.
+  In Hatari at 8 MHz, the assembly encoder's throughput rose from 40.2 to
+  42.6 KiB/s in Fast mode and from 18.0 to 18.6 KiB/s in Balanced mode
+  over 21 mixed 32 KiB blocks. Existing BoltLZ readers can decode the output.
 - Amiga and Atari ST GUIs write and read archive sets on several disks. The
   Amiga has a Disks menu (880K Amiga, 1.76M Amiga HD, 720K PC, 1.44M PC); the
   Atari ST steps through 360K, 720K, 800K and 1.44M with Compression > Disks

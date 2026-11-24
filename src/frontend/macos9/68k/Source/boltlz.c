@@ -63,13 +63,20 @@ BL_FORCE_INLINE bp_uint32 bl_load32(const bp_uint8 *p)
 #endif
 }
 
-/* Fold the halves with a rotate, then one 16x16 MULU.W. */
+/* Keep the mixer in sync with HASH in boltlz_m68k.S. */
 BL_FORCE_INLINE bp_uint32 bl_hash_value(bp_uint32 value)
 {
     bp_uint16 hi, lo;
     hi = (bp_uint16)(value >> 16);
     lo = (bp_uint16)((bp_uint16)value ^ (bp_uint16)((hi << 5) | (hi >> 11)));
-    return (bp_uint32)((bp_uint16)(lo * 0x9E37U) >> (16 - BL_HASH_BITS));
+#if BOLTLZ_M68K_020
+    lo = (bp_uint16)(lo * 0x9E37U);
+#else
+    /* Mix in word arithmetic to avoid the slow 68000/68008 MULU.W. */
+    lo = (bp_uint16)(lo + (lo << 3));
+    lo = (bp_uint16)((lo >> 4) | (lo << 12));
+#endif
+    return (bp_uint32)(lo >> (16 - BL_HASH_BITS));
 }
 #else
 #if BOLTLZ_ARM_ASM

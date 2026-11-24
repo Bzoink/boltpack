@@ -35,7 +35,7 @@ bounded literal copies, overlap-specific match copies, a common short-token
 decoder loop, encoder specialization, packed position tables, and a single
 encoder capacity decision. No caller padding or unaligned pointer casts are
 required. Search pipelining and broader decoder-loop experiments measured
-slower and are disabled. The selected speed changes preserve encoded bytes.
+slower and are disabled. These generic optimizations preserve encoded bytes.
 
 GCC/Clang builds use `-O2`. Guarded intrinsics have portable fallbacks, and
 memory-limited builds can exclude the encoder using `BOLTLZ_DECODE_ONLY`.
@@ -43,12 +43,22 @@ memory-limited builds can exclude the encoder using `BOLTLZ_DECODE_ONLY`.
 ## Motorola 68000 family
 
 The 68000 has no 32-bit multiply and traps on word or long access at an
-odd address, so on m68k compilers `BOLTLZ_M68K` (automatic) replaces the
-`memcpy` loads with aligned or byte-assembled loads, hashes with one 16x16
-`MULU.W`, compares match lengths a long at a time when both sides share
-parity, hashes each position once and selects the exact-copy decoder. The
-hash differs from other CPUs, so m68k output differs slightly (up to 0.25%
-larger); the format is unchanged. Other CPUs compile to the same code.
+odd address. On m68k compilers, `BOLTLZ_M68K` is automatic and selects aligned
+or byte-assembled loads, longword matching where alignment permits, one hash
+per position, and the exact-copy decoder where the compiler can inline it.
+The encoder folds the two halves of the four-byte prefix into a word.
+The 68000 and 68008 use a shift, add, and rotate to mix that word. Builds
+targeting the 68020 or later use one `MULU.W`. Hash selection can change
+which matches the encoder finds. All builds emit the same BoltLZ block format.
+
+On an emulated 8 MHz Atari STE, the new hash improved assembly encoding
+throughput by 6.1% in Fast mode and 3.3% in Balanced mode across 21 mixed
+32 KiB blocks. With GCC 4.6.4, the C encoder gained 2.6% in Fast mode and
+lost 1.8% in Balanced mode on the same blocks. Across Silesia, Calgary,
+Canterbury, and the fixed three-file Large subset, aggregate payload size
+changed by less than 0.02% in either mode at 16, 32, 64, or 256 KiB. The
+largest increase for an individual file was 1.17% for Calgary's `geo` at
+256 KiB in Balanced mode.
 
 `BOLTLZ_M68K_ASM=1` (`make atari amiga macos9-68k BOLTLZ_M68K_ASM=1`) adds
 [boltlz_m68k.S](../src/core/boltlz_m68k.S), 68000 assembly for the encoder
@@ -56,13 +66,14 @@ and decoder loops. It is off by default. A `-m68020` or later build also uses
 unaligned long access there.
 
 - The encoder loop (BALANCED and FAST) produces byte-identical output to
-  the C loop.
+  the C loop for the same CPU target.
 - The decoder loop decodes a sequence only after validating all of its
   fields, and stops at the start of anything else: a malformed field, the
   last ten input bytes, the final literals. The C decoder continues from
   there, so results, error codes and output bytes match the C decoder.
 
-Measured in Hatari on 384 KiB of mixed Silesia data (emulated time):
+The original assembly speedups were measured in Hatari on 384 KiB of mixed
+Silesia data before the shift-and-add hash was introduced.
 
 | CPU, build | Compress, default level | Compress, fast level | Decompress |
 | --- | --- | --- | --- |

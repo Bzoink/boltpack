@@ -20,6 +20,15 @@
 #define BOLTLZ_M68K 0
 #endif
 #endif
+
+/* Shared by the C hash and the assembly loops. */
+#if defined(__mc68020__) || defined(__mc68030__) || \
+    defined(__mc68040__) || defined(__mc68060__)
+#define BOLTLZ_M68K_020 1
+#else
+#define BOLTLZ_M68K_020 0
+#endif
+
 #if BOLTLZ_M68K
 #ifndef BOLTLZ_HASH_CACHE
 #define BOLTLZ_HASH_CACHE 1      /* hash once per position, not twice */
