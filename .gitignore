@@ -41,3 +41,6 @@ docs/fluff-improvement-plan.md
 scripts/rewrite_fluff_rc.py
 # Open Watcom diagnostic logs written to the current directory
 /*.err
+
+# Local work documents (drafts, analyses, scratch notes; not part of the public repo)
+work/

@@ -4333,3 +4333,40 @@ boltlz-bench: $(BOLTLZ_BUILD_DIR)/bench_boltlz
 boltlz-fuzz: $(BOLTLZ_BUILD_DIR)/fuzz_boltlz
 
 -include $(wildcard $(BOLTLZ_BUILD_DIR)/*.d)
+
+# boltpack-recover: standalone recovery tool for damaged archives and volume sets.
+# Built in its own directory and never routed through the recursive
+# $(TARGET)/$(BUILDDIR) rules above, so it cannot overwrite build/linux/boltpack.
+# It reads with its own CRC-32 and parsers plus the core decoders, and links the
+# core archiver only to write the archives that "rebuild" produces.
+RECOVER_DIR    = build/recover
+RECOVER_SRCS   = $(wildcard src/tools/recover/*.c)
+RECOVER_HDRS   = $(wildcard src/tools/recover/*.h $(COREDIR)/*.h)
+RECOVER_CFLAGS ?= -std=c11 -O2 -Wall -Wextra -pedantic -Wno-unused-function
+RECOVER_OBJS   = $(patsubst src/tools/recover/%.c,$(RECOVER_DIR)/obj/%.o,$(RECOVER_SRCS)) \
+                 $(RECOVER_DIR)/core/fluff.o $(RECOVER_DIR)/core/boltlite.o \
+                 $(RECOVER_DIR)/core/boltlz.o $(RECOVER_DIR)/core/compress.o \
+                 $(RECOVER_DIR)/core/archiver.o $(RECOVER_DIR)/core/bp_codepage.o
+
+.PHONY: recover recover-test
+recover: $(RECOVER_DIR)/boltpack-recover
+
+$(RECOVER_DIR)/boltpack-recover: $(RECOVER_OBJS)
+	$(CC) -o $@ $(RECOVER_OBJS)
+
+$(RECOVER_DIR)/obj/%.o: src/tools/recover/%.c $(RECOVER_HDRS)
+	@mkdir -p $(RECOVER_DIR)/obj
+	$(CC) $(RECOVER_CFLAGS) -I$(COREDIR) -c -o $@ $<
+
+$(RECOVER_DIR)/core/%.o: $(COREDIR)/%.c $(RECOVER_HDRS)
+	@mkdir -p $(RECOVER_DIR)/core
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -I$(COREDIR) -c -o $@ $<
+
+$(RECOVER_DIR)/core/fluff.o: $(COREDIR)/fluff.c $(RECOVER_HDRS)
+	@mkdir -p $(RECOVER_DIR)/core
+	$(CC) -std=c11 -O3 -Wall -Wextra -Wno-unused-function -I$(COREDIR) -c -o $@ $<
+
+# Needs build/linux/boltpack to create fixtures; does not rebuild it.
+recover-test: $(RECOVER_DIR)/boltpack-recover
+	python3 test/check_recover.py --recover $(RECOVER_DIR)/boltpack-recover \
+	    --boltpack build/linux/boltpack
