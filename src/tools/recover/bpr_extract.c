@@ -41,6 +41,8 @@ const char *bpr_outcome_name(int o)
     case BPR_X_SKIP_SUPPLEMENTARY: return "skipped-supplementary";
     case BPR_X_SKIP_PARTIAL: return "skipped-partial";
     case BPR_X_SKIP_DUPLICATE: return "skipped-duplicate-name";
+    case BPR_X_SKIP_HOST_NAME: return "skipped-host-name";
+    case BPR_X_SKIP_SYMLINK: return "skipped-symlink";
     case BPR_X_NO_HEADER: return "no-header";
     default: return "failed";
     }
@@ -248,6 +250,12 @@ static void do_file(bpr_ctx *c, bpr_xlist *x, bpr_xres *r, const bpr_entry *e)
     const char *why;
 
     if (name == NULL) { r->outcome = BPR_X_FAILED; r->detail = "no-memory"; return; }
+    if ((why = bpr_fs_check_name(name, 0)) != NULL) {
+        r->outcome = BPR_X_SKIP_HOST_NAME;
+        r->detail = why;
+        free(name);
+        return;
+    }
     if (bpr_fs_exists(x->root, name)) {
         r->outcome = BPR_X_SKIP_DUPLICATE;
         r->detail = "a file with this name was already written";
@@ -291,6 +299,7 @@ static void do_file(bpr_ctx *c, bpr_xlist *x, bpr_xres *r, const bpr_entry *e)
         return;
     }
     bpr_fs_restore_meta(x->root, name, e->flags, e->mtime, 0);
+    bpr_fs_commit_name(name, 0);
     r->written = name;
     r->outcome = !have_want ? BPR_X_UNVERIFIED
                : by_table ? BPR_X_VERIFIED_TABLE : BPR_X_VERIFIED;
@@ -332,6 +341,9 @@ static void do_symlink(bpr_ctx *c, bpr_xlist *x, bpr_xres *r,
     } else if (!symlink_target_safe(name, target)) {
         r->outcome = BPR_X_FAILED;
         r->detail = "unsafe symlink target refused";
+    } else if ((why = bpr_fs_check_name(name, 0)) != NULL) {
+        r->outcome = BPR_X_SKIP_HOST_NAME;
+        r->detail = why;
     } else if (bpr_fs_exists(x->root, name)) {
         r->outcome = BPR_X_SKIP_DUPLICATE;
         r->detail = "a file with this name was already written";
@@ -341,6 +353,7 @@ static void do_symlink(bpr_ctx *c, bpr_xlist *x, bpr_xres *r,
         r->detail = "cannot create the symlink";
     } else {
         bpr_fs_restore_meta(x->root, name, e->flags, e->mtime, 1);
+        bpr_fs_commit_name(name, 0);
         r->written = name;
         name = NULL;
         r->outcome = !have_want ? BPR_X_UNVERIFIED
@@ -466,10 +479,15 @@ int bpr_extract(bpr_ctx *c, const char *root, bpr_xlist *x)
                   e->entry_type == BP_TYPE_DATA)) continue;
             if (pass == 0 && e->entry_type == BP_TYPE_DIR) {
                 char *name = dup_name(e, "/");
-                if (name == NULL || bpr_fs_mkdir(root, name) != 0) {
+                const char *why = name ? bpr_fs_check_name(name, 1) : NULL;
+                if (why != NULL) {
+                    r->outcome = BPR_X_SKIP_HOST_NAME;
+                    r->detail = why;
+                } else if (name == NULL || bpr_fs_mkdir(root, name) != 0) {
                     r->outcome = BPR_X_FAILED;
                     r->detail = "cannot create the directory";
                 } else {
+                    bpr_fs_commit_name(name, 1);
                     r->written = name;
                     name = NULL;
                 }
@@ -479,7 +497,12 @@ int bpr_extract(bpr_ctx *c, const char *root, bpr_xlist *x)
             } else if (pass == 1 && e->entry_type == BP_TYPE_DATA) {
                 do_file(c, x, r, e);
             } else if (pass == 2 && e->entry_type == BP_TYPE_SYMLINK) {
-                do_symlink(c, x, r, e);
+                if (!bpr_fs_symlinks_supported()) {
+                    r->outcome = BPR_X_SKIP_SYMLINK;
+                    r->detail = "symlinks are not extracted on this host";
+                } else {
+                    do_symlink(c, x, r, e);
+                }
             }
         }
     }

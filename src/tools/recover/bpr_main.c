@@ -96,7 +96,7 @@ static bpr_ctx *choose_ties(bpr_ctx *c, int nfiles, char **files)
     return c;
 }
 
-int main(int argc, char **argv)
+int bpr_main(int argc, char **argv)
 {
     const char *format = "text", *report = NULL;
     char **files;
@@ -234,7 +234,7 @@ int main(int argc, char **argv)
     }
     out = stdout;
     if (report != NULL) {
-        out = fopen(report, "w");
+        out = bpr_fopen_write(report);
         if (out == NULL) {
             fprintf(stderr, "boltpack-recover: cannot write %s\n", report);
             rc = 3;
@@ -252,7 +252,7 @@ int main(int argc, char **argv)
     if (have_x) {
         unsigned got = xl.counts[BPR_X_VERIFIED] + xl.counts[BPR_X_VERIFIED_TABLE] +
                        xl.counts[BPR_X_UNVERIFIED] + xl.counts[BPR_X_CREATED];
-        unsigned bad = xl.n - got;
+        unsigned bad = (unsigned)xl.n - got;
         if (got == 0 && xl.counts[BPR_X_PARTIAL] == 0) rc = 2;
         else if (bad == 0 && c->complete && c->table.status == BPR_TBL_TRUSTED &&
                  ok == found && c->nspan == 0)

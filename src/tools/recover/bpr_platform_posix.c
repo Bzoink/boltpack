@@ -6,6 +6,7 @@
 #include "bpr.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -354,4 +355,32 @@ int bpr_path_rename_new(const char *from, const char *to)
 int bpr_path_remove(const char *path)
 {
     return unlink(path);
+}
+
+/* ---- host rules ---------------------------------------------------------- */
+
+const char *bpr_fs_check_name(const char *name, int is_dir)
+{
+    (void)name; (void)is_dir;
+    return NULL;                    /* any name an archive can hold is fine */
+}
+
+void bpr_fs_commit_name(const char *name, int is_dir)
+{
+    (void)name; (void)is_dir;
+}
+
+int bpr_fs_symlinks_supported(void)
+{
+    return 1;
+}
+
+FILE *bpr_fopen_write(const char *path)
+{
+    return fopen(path, "w");
+}
+
+int main(int argc, char **argv)
+{
+    return bpr_main(argc, argv);
 }

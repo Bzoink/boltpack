@@ -25,12 +25,50 @@ Usage: python3 test/check_recover.py [--recover BIN] [--boltpack BIN]
                                      [--seed N] [--sweep N] [--keep DIR]
 """
 import argparse
+import collections
 import json
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
+
+
+# No single process may hang the suite: every child gets a time limit, and one
+# that exceeds it is killed and shows up as a failed run (exit status -999).
+CALL_TIMEOUT = 600
+WINE_CALL_TIMEOUT = 180     # under Wine a launch occasionally stalls once
+_real_run = subprocess.run
+timeouts = {"retried": 0}
+
+
+def _run_with_timeout(*args, **kw):
+    limit = kw.pop("timeout", None)
+    if limit is None:
+        limit = WINE_CALL_TIMEOUT if WIN["runner"] else CALL_TIMEOUT
+    argv = args[0] if args else kw.get("args", [])
+    # Only a read-only command is retried: a timed-out extract or rebuild may
+    # have written into its output, and a second try would be refused.
+    attempts = 2 if WIN["runner"] and "analyze" in argv else 1
+    for attempt in range(attempts):
+        try:
+            return _real_run(*args, timeout=limit, **kw)
+        except subprocess.TimeoutExpired as exc:
+            cmd = " ".join(str(x) for x in (args[0] if args else kw.get("args", [])))[:200]
+            print("TIMEOUT after %ds (attempt %d of %d): %s" % (
+                limit, attempt + 1, attempts, cmd), flush=True)
+            timeouts["retried"] += 1
+            last = exc
+    return subprocess.CompletedProcess(args[0] if args else None, -999,
+                                       last.stdout or b"", last.stderr or b"timed out")
+
+
+subprocess.run = _run_with_timeout
+
+
+class NamesOnlyDone(Exception):
+    pass
 import sys
 import tempfile
 
@@ -61,8 +99,92 @@ def check(cond, what):
         print("FAIL: " + what)
 
 
+# --- Windows mode ---------------------------------------------------------
+#
+# With --windows-runner the tool under test is a Windows executable run through
+# Wine.  Every path handed to it is converted to a drive-letter path (Z:\...),
+# which is what a Windows user types, and paths in its reports are converted
+# back.  The tool's host rules then apply: names Windows cannot hold are
+# reported and not written, symlink entries are skipped (as the Windows CLI
+# does), and Unix modes are not restored.  Checks that cannot mean the same
+# thing there are skipped, counted, and printed at the end.
+
+WIN = {"runner": None}
+skipped = collections.Counter()
+
+
+def host_path(p):
+    """A path as the tool under test wants it."""
+    if WIN["runner"] and os.path.isabs(p):
+        return "Z:" + p.replace("/", "\\")
+    return p
+
+
+def unhost(p):
+    """A path from the tool's report, as a local path."""
+    if WIN["runner"] and re.match(r"^[A-Za-z]:\\", p):
+        return p[2:].replace("\\", "/")
+    return p
+
+
+def tool_cmd(binary):
+    return ([WIN["runner"]] if WIN["runner"] else []) + [binary]
+
+
+def skip(reason):
+    skipped[reason] += 1
+
+
+_DEVICES = ("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$")
+
+
+def win_name_reason(name):
+    """Why Windows cannot hold this archive name, or None.  An independent model
+    of the rules, written from their description (reserved device names with or
+    without an extension, forbidden characters, trailing dot or space, a
+    component over 255, a path of 260 or more); used to say what the tool must
+    refuse on Windows."""
+    import unicodedata
+    if isinstance(name, bytes):
+        name = name.decode("utf-8")
+    name = unicodedata.normalize("NFC", name).rstrip("/")
+    if len(name) >= 260:
+        return "path-too-long"
+    for ch in name:
+        if ch in ':<>"|?*' or ord(ch) < 32:
+            return "forbidden-character"
+    for comp in name.split("/"):
+        if comp.endswith(".") or comp.endswith(" "):
+            return "trailing-dot-or-space"
+        if len(comp) > 255:
+            return "component-too-long"
+        base = comp.split(".")[0].rstrip(" .").upper()
+        if base in _DEVICES or (len(base) == 4 and base[:3] in ("COM", "LPT") and
+                                (base[3] in "123456789" or base[3] in "\u00b9\u00b2\u00b3")):
+            return "reserved-device-name"
+    return None
+
+
+def host_expected(fx, te):
+    """What extracting entry te by name must produce on this host: fx.expected(),
+    except that on Windows symlinks are not extracted and names Windows cannot
+    hold are refused."""
+    want = fx.expected(te)
+    if want is not None and WIN["runner"]:
+        if want[0] == "symlink":
+            skip("symlink entries (not extracted on Windows)")
+            return None
+        if win_name_reason(te.name) is not None:
+            skip("entries whose names Windows cannot hold")
+            return None
+    return want
+
+
+
+
 def analyze(binary, paths):
-    r = subprocess.run([binary, "analyze", "--format", "json"] + list(paths),
+    r = subprocess.run(tool_cmd(binary) + ["analyze", "--format", "json"] +
+                       [host_path(p) for p in paths],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if r.returncode not in (0, 1, 2):
         return None, r.returncode, r.stderr.decode(errors="replace")
@@ -492,9 +614,10 @@ scenarios.update({"extract clean": 0, "extract damaged": 0,
 
 
 def run_extract(binary, paths, outdir, fmt="json", allow=(0, 1, 2), extra=()):
-    r = subprocess.run([binary, "extract", "--format", fmt, "-o", outdir] +
-                       list(extra) + list(paths), stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+    r = subprocess.run(tool_cmd(binary) + ["extract", "--format", fmt, "-o",
+                                           host_path(outdir)] +
+                       list(extra) + [host_path(p) for p in paths],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Any status outside the documented ones (a sanitizer exit, a crash) is a
     # failure in every extraction test, not only where the status is asserted.
     check(r.returncode in allow,
@@ -536,7 +659,7 @@ def truth_paths(fx):
     return out
 
 
-def verify_tree(tag, fx, outdir, required, siblings=()):
+def verify_tree(tag, fx, outdir, required, siblings=(), neutral=False):
     """Safety and correctness of an extraction.  Everything written under a
     real name must be exactly right; required entries must be present; the
     only other things allowed are NAME.damaged files and parent directories."""
@@ -556,16 +679,16 @@ def verify_tree(tag, fx, outdir, required, siblings=()):
             check(kind == "dir" and rel in parents,
                   "%s: unexpected %s %r in the output" % (tag, kind, rel))
             continue
-        want = fx.expected(te)
+        want = fx.expected(te) if neutral else host_expected(fx, te)
         if want is None:
-            check(False, "%s: %r is not extractable by name" % (tag, rel))
+            check(False, "%s: %r is not extractable by name here" % (tag, rel))
         elif want[0] == "dir":
             check(kind == "dir", "%s: %r should be a directory" % (tag, rel))
         else:
             check(kind == want[0] and data == want[1],
                   "%s: %r has the wrong content or kind (%s)" % (tag, rel, kind))
     for te in required:
-        want = fx.expected(te)
+        want = fx.expected(te) if neutral else host_expected(fx, te)
         if want is None:
             continue
         rel = te.name.decode("utf-8").rstrip("/")
@@ -595,14 +718,37 @@ def check_extract_clean(binary, boltpack, fx, workdir):
     if rep is None:
         return
     supplementary = any(e.entry_type in (1, 2) for e in fx.vs.entries)
-    check(rc == (1 if supplementary else 0),
+    windows_skips = WIN["runner"] and any(
+        e.entry_type == 3 or win_name_reason(e.name) is not None
+        for e in fx.vs.entries)
+    check(rc == (1 if supplementary or windows_skips else 0),
           "%s: exit status %d (supplementary entries: %s)" %
           (tag, rc, supplementary))
     snap = verify_tree(tag, fx, out, fx.vs.entries)
     counts = rep["extraction"]["counts"]
     allowed = ("verified", "created", "skipped-supplementary")
+    if WIN["runner"]:
+        allowed += ("skipped-symlink", "skipped-host-name")
     check(all(n == 0 for k, n in counts.items() if k not in allowed),
           "%s: only verified/created/supplementary outcomes: %r" % (tag, counts))
+    if WIN["runner"]:
+        # The model says exactly which entries Windows must refuse and why.
+        by_loc = dict(((e.volume, e.offset), e) for e in fx.vs.entries)
+        for r_ in rep["extraction"]["results"]:
+            te_ = by_loc.get((r_["volume"], r_["offset"]))
+            if te_ is None:
+                continue
+            reason = win_name_reason(te_.name)
+            if te_.entry_type == 3:
+                check(r_["outcome"] == "skipped-symlink",
+                      "%s: symlink %r is skipped (%s)" % (tag, r_["name"], r_["outcome"]))
+            elif reason is not None:
+                check(r_["outcome"] == "skipped-host-name" and r_["detail"] == reason,
+                      "%s: %r refused for %r (got %s %r)" %
+                      (tag, r_["name"], reason, r_["outcome"], r_["detail"]))
+            else:
+                check(r_["outcome"] != "skipped-host-name",
+                      "%s: %r wrongly refused (%r)" % (tag, r_["name"], r_["detail"]))
     # Metadata: mode and mtime come from the entry flags.
     for te in fx.vs.entries:
         if te.entry_type not in (0, 4):
@@ -614,6 +760,9 @@ def check_extract_clean(binary, boltpack, fx, workdir):
             check(got[3] == te.mtime, "%s: mtime of %r: %r != %r" %
                   (tag, te.name, got[3], te.mtime))
         if te.flags & 0x8000:
+            if WIN["runner"]:
+                skip("Unix mode bits (not restored on Windows)")
+                continue
             want = te.flags & 0o1777
             check(got[2] == want, "%s: mode of %r: %o != %o" %
                   (tag, te.name, got[2], want))
@@ -627,6 +776,16 @@ def check_extract_clean(binary, boltpack, fx, workdir):
               (tag, r.stdout.decode(errors="replace")[:200]))
         if r.returncode == 0:
             want = snapshot(ref)
+            if WIN["runner"]:
+                # the CLI on Linux extracts symlinks and every name; the tool on
+                # Windows does not
+                refused = set(te.name.decode("utf-8").rstrip("/")
+                              for te in fx.vs.entries
+                              if te.entry_type == 3 or win_name_reason(te.name))
+                for k in list(want):
+                    if k in refused or any(k.startswith(r_ + "/") for r_ in refused):
+                        del want[k]
+                        skip("CLI-extracted entries Windows does not extract")
             check(sorted(want) == sorted(snap),
                   "%s: same file set as the CLI (%r)" %
                   (tag, sorted(set(want) ^ set(snap))[:5]))
@@ -639,7 +798,12 @@ def check_extract_clean(binary, boltpack, fx, workdir):
                 # mtime is just when each run last wrote into it.
                 has_mtime = te is not None and bool(te.flags & 0x4000)
                 same_mtime = (not has_mtime) or want[rel][3] == snap[rel][3]
-                check(want[rel][:3] == snap[rel][:3] and same_mtime,
+                if WIN["runner"]:
+                    skip("Unix mode bits (not restored on Windows)")
+                    same_mode = want[rel][:2] == snap[rel][:2]
+                else:
+                    same_mode = want[rel][:3] == snap[rel][:3]
+                check(same_mode and same_mtime,
                       "%s: %r differs from the CLI's extraction "
                       "(mode/mtime %r vs %r)" %
                       (tag, rel, want[rel][2:], snap[rel][2:]))
@@ -812,17 +976,34 @@ def check_hostile(binary, workdir):
         res = results(rep)
         snap = snapshot(out)
         check(sorted(os.listdir(base)) == ["out"], "hostile symlinks: nothing outside the output")
-        check(snap.get("good") == ("symlink", "target.txt", None, None),
-              "hostile symlinks: safe link created")
-        for bad in ("escape", "deep/escape", "absolute", "drive", "backslash"):
-            check(bad not in snap and res[bad]["outcome"] == "failed",
-                  "hostile symlinks: %s refused (%s)" % (bad, res[bad]["outcome"]))
-        check(snap.get("evil/pwn.txt", (None,))[0] == "file" and
-              snap["evil"][0] == "dir",
-              "hostile symlinks: a file named through a link stays a real directory")
-        check(res["evil"]["outcome"] == "skipped-duplicate-name",
-              "hostile symlinks: the colliding link was skipped (%s)" %
-              res["evil"]["outcome"])
+        if WIN["runner"]:
+            # Windows does not extract symlinks at all (as the CLI): every link
+            # entry is skipped, none exists, and the file "through" the link is
+            # an ordinary file in an ordinary directory.
+            for lk in ("good", "escape", "deep/escape", "absolute", "drive",
+                       "backslash", "evil"):
+                check(lk not in snap or snap[lk][0] == "dir"
+                      if lk == "evil" else lk not in snap,
+                      "hostile symlinks: %s not created on Windows" % lk)
+                check(res[lk]["outcome"] == "skipped-symlink",
+                      "hostile symlinks: %s skipped as a symlink (%s)" %
+                      (lk, res[lk]["outcome"]))
+            check(snap.get("evil/pwn.txt", (None,))[0] == "file" and
+                  snap["evil"][0] == "dir",
+                  "hostile symlinks: the file is an ordinary file in a real directory")
+            skip("symlink target safety (symlinks are not extracted on Windows)")
+        else:
+            check(snap.get("good") == ("symlink", "target.txt", None, None),
+                  "hostile symlinks: safe link created")
+            for bad in ("escape", "deep/escape", "absolute", "drive", "backslash"):
+                check(bad not in snap and res[bad]["outcome"] == "failed",
+                      "hostile symlinks: %s refused (%s)" % (bad, res[bad]["outcome"]))
+            check(snap.get("evil/pwn.txt", (None,))[0] == "file" and
+                  snap["evil"][0] == "dir",
+                  "hostile symlinks: a file named through a link stays a real directory")
+            check(res["evil"]["outcome"] == "skipped-duplicate-name",
+                  "hostile symlinks: the colliding link was skipped (%s)" %
+                  res["evil"]["outcome"])
     # an existing, non-empty output directory is refused before writing
     scenarios["extract hostile"] += 1
     base = fresh("exists")
@@ -834,14 +1015,19 @@ def check_hostile(binary, workdir):
     check(rc == 3 and os.listdir(out) == ["precious"],
           "hostile: non-empty output directory refused (rc %d)" % rc)
     # an output directory that is a symlink is refused
-    scenarios["extract hostile"] += 1
-    base = fresh("linkroot")
-    os.makedirs(os.path.join(base, "real"))
-    os.symlink("real", os.path.join(base, "out"))
-    rep, rc, err = run_extract(binary, [cases["duplicates"]],
-                               os.path.join(base, "out"), allow=(3,))
-    check(rc == 3 and os.listdir(os.path.join(base, "real")) == [],
-          "hostile: output directory that is a symlink refused (rc %d)" % rc)
+    if WIN["runner"]:
+        # Wine follows a Unix symlink as if it were an ordinary directory and
+        # does not show it as a reparse point, so this cannot be tested there.
+        skip("output directory that is a symlink (Wine hides reparse points)")
+    else:
+        scenarios["extract hostile"] += 1
+        base = fresh("linkroot")
+        os.makedirs(os.path.join(base, "real"))
+        os.symlink("real", os.path.join(base, "out"))
+        rep, rc, err = run_extract(binary, [cases["duplicates"]],
+                                   os.path.join(base, "out"), allow=(3,))
+        check(rc == 3 and os.listdir(os.path.join(base, "real")) == [],
+              "hostile: output directory that is a symlink refused (rc %d)" % rc)
     # duplicate names
     scenarios["extract hostile"] += 1
     base = fresh("dups")
@@ -850,8 +1036,11 @@ def check_hostile(binary, workdir):
     check(rep is not None, "hostile duplicates: extract ran: %s" % err)
     if rep:
         snap = snapshot(out)
+        # (on Windows the second one is refused by the host name rules, as a
+        # name that collides, before the duplicate check is reached)
+        dup_kind = "skipped-host-name" if WIN["runner"] else "skipped-duplicate-name"
         check(snap.get("same.txt", (0, 0))[1] == b"first" and
-              rep["extraction"]["counts"]["skipped-duplicate-name"] == 1,
+              rep["extraction"]["counts"][dup_kind] == 1,
               "hostile duplicates: first kept, second skipped, nothing overwritten")
     # a verified file keeps its name against a partial recovery's .damaged
     scenarios["extract hostile"] += 1
@@ -863,7 +1052,8 @@ def check_hostile(binary, workdir):
         snap = snapshot(out)
         check(snap.get("foo.damaged", (0, 0))[1] == b"a real file with a partial's name",
               "hostile collision: the real foo.damaged kept its name (%r)" % sorted(snap))
-        check(results(rep)["foo"]["outcome"] in ("skipped-duplicate-name", "skipped-partial"),
+        check(results(rep)["foo"]["outcome"] in ("skipped-duplicate-name", "skipped-partial") or
+              (WIN["runner"] and results(rep)["foo"]["outcome"] == "skipped-host-name"),
               "hostile collision: the partial of foo was not written over it (%s)" %
               results(rep)["foo"]["outcome"])
     # wrong payload checksum behind a valid trailer
@@ -891,6 +1081,191 @@ def check_hostile(binary, workdir):
         check("garbage.txt" not in snap and
               results(rep)["garbage.txt"]["outcome"] in ("failed", "skipped-partial"),
               "hostile undecodable: no file under the real name (%r)" % sorted(snap))
+
+
+# --- host name rules ------------------------------------------------------
+
+scenarios.update({"host names": 0, "path styles": 0})
+
+# (name, entry type, reason Windows must give for refusing it, or None).  The
+# table is the oracle: written from the rules, not from the tool.  Order matters
+# where names collide (the first claimant keeps the name).
+HOST_NAMES = [
+    ("ok.txt", 0, None), ("good/ok2.txt", 0, None),
+    ("aux.txt", 0, "reserved-device-name"), ("Nul", 0, "reserved-device-name"),
+    ("COM1", 0, "reserved-device-name"), ("LPT9", 0, "reserved-device-name"),
+    ("COM\u00b2", 0, "reserved-device-name"),
+    ("CON.damaged", 0, "reserved-device-name"),
+    ("dir/PRN/inner.txt", 0, "reserved-device-name"),
+    ("trail.", 0, "trailing-dot-or-space"), ("space ", 0, "trailing-dot-or-space"),
+    ("dotdir./f", 0, "trailing-dot-or-space"),
+    ("ab:c", 0, "forbidden-character"), ("a<b", 0, "forbidden-character"),
+    ("a>b", 0, "forbidden-character"), ("a\"b", 0, "forbidden-character"),
+    ("a|b", 0, "forbidden-character"), ("a?b", 0, "forbidden-character"),
+    ("a*b", 0, "forbidden-character"), ("ctl\x01x", 0, "forbidden-character"),
+    ("x" * 256, 0, "component-too-long"),
+    ("/".join(["p" * 60] * 5), 0, "path-too-long"),
+    ("README", 0, None), ("readme", 0, "name-collision"),
+    ("caf\u00e9", 0, None), ("cafe\u0301", 0, "name-collision"),
+    ("x", 0, None), ("X/y", 0, "file-and-directory-conflict"),
+    ("Dd/", 4, None), ("dd/", 4, "name-collision"),
+    ("a.damaged", 0, None),
+]
+
+
+# A 256-byte component is over Linux's own limit (255 bytes), so it cannot be
+# created there either; the tool reports a failure rather than a host-name skip.
+LINUX_CANNOT_CREATE = {"x" * 256}
+
+
+def check_host_names(binary, workdir):
+    """Names the host cannot hold or that collide.  On Linux every name is
+    written.  On Windows each refused name is reported with its reason and
+    nothing is written for it; the first claimant keeps a name; a partial
+    recovery A.damaged never takes the name of a real a.damaged, whatever the
+    case.  The reported outcome and reason are asserted, not just the file's
+    absence (Wine's own filesystem would refuse some of these anyway)."""
+    e = rf.bab.entry
+    rng = random.Random(11)
+    entries = []
+    payloads = {}
+    for name, etype, _why in HOST_NAMES:
+        data = b"" if etype == 4 else b"payload of " + name.encode("utf-8")
+        entries.append(e(name, data, entry_type=etype))
+        payloads[name] = data
+    a_payload = rng.randbytes(3000)
+    entries.insert(5, e("A", a_payload, block_size=1000))
+    base = os.path.join(workdir, "hostnames")
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base)
+    src = os.path.join(base, "names.bolt")
+    with open(src, "wb") as f:
+        f.write(rf.bab.build7({"entries": entries}))
+    vs = rf.sb.parse_set([src])
+    raw = bytearray(open(src, "rb").read())
+    blk = [x for x in vs.entries[5].structures if x.kind == rf.sb.KIND_BLOCK][1]
+    raw[blk.start + 12 + 10] ^= 0x20            # A's middle block fails its CRC
+    with open(src, "wb") as f:
+        f.write(bytes(raw))
+    out = os.path.join(base, "out")
+    tag = "host names (%s)" % ("Windows" if WIN["runner"] else "Linux")
+    scenarios["host names"] += 1
+    rep, rc, err = run_extract(binary, [src], out)
+    check(rep is not None and rc == 1, "%s: extract ran, exit 1 (rc %s, %s)" %
+          (tag, rc, err[:120]))
+    if rep is None:
+        return
+    res = dict((r["name"], r) for r in rep["extraction"]["results"])
+    snap = snapshot(out)
+    written = set()
+    for name, etype, why in HOST_NAMES:
+        r = res.get(name)
+        check(r is not None, "%s: %r is in the report" % (tag, name))
+        if r is None:
+            continue
+        refused = WIN["runner"] and why is not None
+        if not WIN["runner"] and name in LINUX_CANNOT_CREATE:
+            check(r["outcome"] == "failed" and
+                  r["detail"] == "cannot create the output file",
+                  "%s: a 256-byte name is over the filesystem's limit (%s %r)" %
+                  (tag, r["outcome"], r["detail"]))
+            continue
+        if refused:
+            check(r["outcome"] == "skipped-host-name" and r["detail"] == why,
+                  "%s: %r refused for %r (got %s %r)" %
+                  (tag, name, why, r["outcome"], r["detail"]))
+        else:
+            want = "created" if etype == 4 else "verified"
+            check(r["outcome"] == want,
+                  "%s: %r written (got %s %r)" % (tag, name, r["outcome"], r["detail"]))
+            rel = name.rstrip("/")
+            written.add(rel)
+            parts = rel.split("/")
+            for i in range(1, len(parts)):
+                written.add("/".join(parts[:i]))
+            if etype == 0:
+                got = snap.get(rel)
+                check(got is not None and got[0] == "file" and
+                      got[1] == payloads[name],
+                      "%s: %r has the right content" % (tag, name))
+    # The partial: on Linux A.damaged is written beside the real a.damaged; on
+    # Windows A.damaged would be the same file name, so it is refused.
+    ra = res.get("A")
+    if WIN["runner"]:
+        check(ra is not None and ra["outcome"] == "skipped-host-name" and
+              ra["detail"] == "name-collision",
+              "%s: the partial A.damaged yields to the real a.damaged (%r)" %
+              (tag, ra and (ra["outcome"], ra["detail"])))
+    else:
+        check(ra is not None and ra["outcome"] == "partial",
+              "%s: A is recovered as A.damaged (%r)" % (tag, ra and ra["outcome"]))
+        written.add("A.damaged")
+        got = snap.get("A.damaged")
+        check(got is not None and len(got[1]) == 3000 and
+              got[1][:1000] == a_payload[:1000] and got[1][2000:] == a_payload[2000:],
+              "%s: A.damaged holds the intact blocks" % tag)
+    # Nothing else is on disk: no refused name, in any spelling, and no parent
+    # directory that only a refused name would have needed.
+    check(set(snap) == written,
+          "%s: exactly the expected files exist (extra %r, missing %r)" %
+          (tag, sorted(set(snap) - written)[:5], sorted(written - set(snap))[:5]))
+    real = snap.get("a.damaged")
+    check(real is not None and real[1] == payloads["a.damaged"],
+          "%s: the real a.damaged is intact" % tag)
+
+
+def check_path_styles(binary, boltpack, fx, workdir):
+    """The ways a user spells paths: relative to the current directory, with a
+    trailing separator on the output directory, and (Windows) forward slashes
+    after the drive letter.  The result must be the same extraction."""
+    base = os.path.join(workdir, "pathstyles")
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base)
+    vols = []
+    for p in fx.paths:
+        shutil.copy(p, base)
+        vols.append(os.path.basename(p))
+    styles = [("relative", "outrel", vols, base, os.path.join(base, "outrel")),
+              ("relative, trailing slash", "outrel2/", vols, base,
+               os.path.join(base, "outrel2"))]
+    if WIN["runner"]:
+        absout = host_path(os.path.join(base, "outwin"))
+        styles.append(("drive, trailing backslash", absout + "\\",
+                       [host_path(os.path.join(base, v)) for v in vols], base,
+                       os.path.join(base, "outwin")))
+        styles.append(("drive, forward slashes",
+                       host_path(os.path.join(base, "outwin2")).replace("\\", "/"),
+                       [host_path(os.path.join(base, v)).replace("\\", "/")
+                        for v in vols], base, os.path.join(base, "outwin2")))
+    for label, outarg, volargs, cwd, outdir in styles:
+        scenarios["path styles"] += 1
+        tag = "path style %s / %s" % (label, fx.name)
+        r = subprocess.run(tool_cmd(binary) + ["extract", "--format", "json",
+                                               "-o", outarg] + volargs,
+                           cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        check(r.returncode in (0, 1), "%s: exit status %d (%s)" %
+              (tag, r.returncode, r.stderr.decode(errors="replace")[:150]))
+        if not os.path.isdir(outdir):
+            check(False, "%s: output directory %r exists" % (tag, outdir))
+            continue
+        snap = snapshot(outdir)
+        for te in fx.vs.entries:
+            want = host_expected(fx, te)
+            if want is None or want[0] != "file":
+                continue
+            got = snap.get(te.name.decode("utf-8"))
+            check(got is not None and got[1] == want[1],
+                  "%s: %r extracted correctly" % (tag, te.name))
+    # rebuild with a relative output name
+    scenarios["path styles"] += 1
+    tag = "path style relative rebuild / %s" % fx.name
+    r = subprocess.run(tool_cmd(binary) + ["rebuild", "--format", "json", "-o",
+                                           "rebuilt.bolt"] + vols,
+                       cwd=base, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    check(r.returncode == 0, "%s: exit status %d" % (tag, r.returncode))
+    t = subprocess.run([boltpack, "test", os.path.join(base, "rebuilt.bolt")],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    check(t.returncode == 0, "%s: the CLI tests the new archive" % tag)
 
 
 # --- phase 3: partial recovery -------------------------------------------
@@ -1612,8 +1987,11 @@ def check_excised_block(binary, fx, rng, workdir):
             name = e.name.decode("utf-8").rstrip("/")
             outs = got.get(name, [])
             if not extra:
-                check(any(o in ("verified", "verified-by-table", "created",
-                                "complete-unverified") for o in outs),
+                okset = ("verified", "verified-by-table", "created",
+                         "complete-unverified")
+                if WIN["runner"] and e.entry_type == 3:
+                    okset += ("skipped-symlink",)
+                check(any(o in okset for o in outs),
                       "%s: %s still extracted (%r)" % (tag, name, outs))
             exp = fx.expected(e)
             path = os.path.join(out, name)
@@ -1633,11 +2011,11 @@ scenarios.update({"rebuild clean": 0, "rebuild damaged": 0, "rebuild hostile": 0
 
 
 def run_rebuild(binary, paths, out, vsize=None, extra=()):
-    cmd = [binary, "rebuild", "--format", "json", "-o", out]
+    cmd = tool_cmd(binary) + ["rebuild", "--format", "json", "-o", host_path(out)]
     if vsize:
         cmd += ["--volume-size", str(vsize)]
-    r = subprocess.run(cmd + list(extra) + list(paths), stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+    r = subprocess.run(cmd + list(extra) + [host_path(p) for p in paths],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     check(r.returncode in (0, 1, 2, 3),
           "rebuild exit status %d outside the documented ones: %s" %
           (r.returncode, r.stderr.decode(errors="replace")[:300]))
@@ -1645,6 +2023,8 @@ def run_rebuild(binary, paths, out, vsize=None, extra=()):
         rep = json.loads(r.stdout)
     except ValueError:
         rep = None
+    if rep is not None and "rebuild" in rep:
+        rep["rebuild"]["files"] = [unhost(f) for f in rep["rebuild"]["files"]]
     return rep, r.returncode, r.stderr.decode(errors="replace")
 
 
@@ -1774,7 +2154,7 @@ def check_rebuild(binary, boltpack, fx, workdir, vsize=None, damage=None,
               (tag, x.stdout.decode(errors="replace")[-200:]))
         if x.returncode == 0:
             verify_tree(tag, fx, xo, [t_ for t_ in intact if t_.entry_type in (0, 3, 4)],
-                        siblings=siblings)
+                        siblings=siblings, neutral=True)
     # 5b. The CLI's other commands treat it as an ordinary archive: list, info,
     # and (for one volume) add a file and delete it again.
     if fx.payloads is None:
@@ -1812,6 +2192,8 @@ def check_rebuild(binary, boltpack, fx, workdir, vsize=None, damage=None,
     # (exit status 1 only because extraction cannot restore resource forks and
     # metadata entries, which a rebuilt archive keeps)
     want_rc = 1 if any(oe.entry_type in (1, 2) for oe in ovs.entries) else 0
+    if WIN["runner"] and any(oe.entry_type == 3 for oe in ovs.entries):
+        want_rc = 1             # symlinks are skipped on Windows (exit status 1)
     check(rep2 is not None and rc2 == want_rc,
           "%s: boltpack-recover reads its own output cleanly (rc %s, want %d)" %
           (tag, rc2, want_rc))
@@ -2115,7 +2497,14 @@ def main():
     ap.add_argument("--sweep", type=int, default=12,
                     help="random damage runs per fixture")
     ap.add_argument("--keep", help="keep generated files in this directory")
+    ap.add_argument("--names-only", action="store_true",
+                    help="run only the clean fixtures, hostile, host-name and "
+                         "path-style scenarios")
+    ap.add_argument("--windows-runner", metavar="CMD",
+                    help="--recover is a Windows executable; run it with CMD "
+                         "(for example wine) and check the Windows host rules")
     args = ap.parse_args()
+    WIN["runner"] = args.windows_runner
     args.recover = os.path.abspath(args.recover)
     args.boltpack = os.path.abspath(args.boltpack)
     for p in (args.recover, args.boltpack):
@@ -2142,6 +2531,13 @@ def main():
         for fx in fixtures.values():
             check_extract_clean(args.recover, args.boltpack, fx, xwork)
 
+        if args.names_only:
+            # quick mode for the host name rules (a few minutes under Wine)
+            check_hostile(args.recover, xwork)
+            check_host_names(args.recover, xwork)
+            for name in ("tree-lz", "vol-fluff"):
+                check_path_styles(args.recover, args.boltpack, fixtures[name], xwork)
+            raise NamesOnlyDone()
         oracle = fo.FluffOracle(root)
         work = os.path.join(root, "work")
         os.makedirs(work, exist_ok=True)
@@ -2186,6 +2582,9 @@ def main():
             check_rebuilt_header(args.recover, fixtures[name], rng, xwork)
             check_trailer_cases(args.recover, fixtures[name], rng, xwork)
         check_hostile(args.recover, xwork)
+        check_host_names(args.recover, xwork)
+        for name in ("tree-lz", "vol-fluff"):
+            check_path_styles(args.recover, args.boltpack, fixtures[name], xwork)
         for name in ("tree-stored", "tree-lite", "tree-lz", "tree-fluff",
                      "vol-stored", "vol-fluff", "vol-lz", "vol-lite"):
             for _ in range(3):
@@ -2291,6 +2690,8 @@ def main():
                     continue
                 check_damage(args.recover, fx, kind, rng, work,
                              label="sweep " + name)
+    except NamesOnlyDone:
+        pass
     finally:
         if not args.keep:
             shutil.rmtree(root, ignore_errors=True)
@@ -2299,6 +2700,13 @@ def main():
         print("\nKnown limitations (not failures):")
         for item in limitations:
             print("  " + item)
+    if skipped:
+        print("\nChecks that cannot mean the same thing on this host (skipped, counted):")
+        for k, n in sorted(skipped.items()):
+            print("  %6d  %s" % (n, k))
+    if timeouts["retried"]:
+        print("\nProcess time limits hit: %d (each retried once under Wine)" %
+              timeouts["retried"])
     print("\nScenarios: " + ", ".join("%d %s" % (n, k)
                                        for k, n in scenarios.items()))
     print("%d passed, %d failed (checks include per-entry assertions; "

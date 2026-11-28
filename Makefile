@@ -4340,7 +4340,9 @@ boltlz-fuzz: $(BOLTLZ_BUILD_DIR)/fuzz_boltlz
 # It reads with its own CRC-32 and parsers plus the core decoders, and links the
 # core archiver only to write the archives that "rebuild" produces.
 RECOVER_DIR    = build/recover
-RECOVER_SRCS   = $(wildcard src/tools/recover/*.c)
+RECOVER_PLATFORM_SRCS = src/tools/recover/bpr_platform_posix.c src/tools/recover/bpr_platform_win.c
+RECOVER_COMMON_SRCS   = $(filter-out $(RECOVER_PLATFORM_SRCS),$(wildcard src/tools/recover/*.c))
+RECOVER_SRCS   = $(RECOVER_COMMON_SRCS) src/tools/recover/bpr_platform_posix.c
 RECOVER_HDRS   = $(wildcard src/tools/recover/*.h $(COREDIR)/*.h)
 RECOVER_CFLAGS ?= -std=c11 -O2 -Wall -Wextra -pedantic -Wno-unused-function
 RECOVER_OBJS   = $(patsubst src/tools/recover/%.c,$(RECOVER_DIR)/obj/%.o,$(RECOVER_SRCS)) \
@@ -4370,3 +4372,46 @@ $(RECOVER_DIR)/core/fluff.o: $(COREDIR)/fluff.c $(RECOVER_HDRS)
 recover-test: $(RECOVER_DIR)/boltpack-recover
 	python3 test/check_recover.py --recover $(RECOVER_DIR)/boltpack-recover \
 	    --boltpack build/linux/boltpack
+
+# boltpack-recover for Windows (MinGW).  Same engine; bpr_platform_win.c replaces
+# the POSIX platform layer and shares the CLI's name rules (win_names.h).
+RECOVER_WIN_SRCS  = $(RECOVER_COMMON_SRCS) src/tools/recover/bpr_platform_win.c \
+                    $(COREDIR)/archiver.c $(COREDIR)/compress.c $(COREDIR)/boltlite.c \
+                    $(COREDIR)/fluff.c $(COREDIR)/bp_codepage.c $(BOLTLZDIR)/boltlz.c
+RECOVER_WIN_FLAGS = -std=c11 -O2 -Wall -Wextra -Wno-unused-function \
+                    -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -I$(COREDIR) -I$(BOLTLZDIR)
+
+.PHONY: win32-recover win64-recover win64-recover-test win32-recover-test
+win32-recover:
+	mkdir -p $(WIN32_BUILDDIR)
+	i686-w64-mingw32-gcc $(RECOVER_WIN_FLAGS) -m32 $(RECOVER_WIN_SRCS) \
+	    -lshell32 -static -o $(WIN32_BUILDDIR)/boltpack-recover.exe
+	@echo "  OK    $(WIN32_BUILDDIR)/boltpack-recover.exe"
+
+win64-recover:
+	mkdir -p $(WIN64_BUILDDIR)
+	x86_64-w64-mingw32-gcc $(RECOVER_WIN_FLAGS) $(RECOVER_WIN_SRCS) \
+	    -lshell32 -static -o $(WIN64_BUILDDIR)/boltpack-recover.exe
+	@echo "  OK    $(WIN64_BUILDDIR)/boltpack-recover.exe"
+
+# Runs the recovery test suite against the Windows build under Wine, with its own
+# prefix and a persistent wineserver (about 40 ms per launch instead of seconds).
+# Needs build/linux/boltpack to create fixtures.  Slow: use WIN_RECOVER_SWEEP to
+# set the sweep size (default 0, the sweep is a Linux-side exhaustive check).
+RECOVER_WINE_PREFIX ?= $(abspath build/win64/wineprefix-recover)
+WIN_RECOVER_SWEEP   ?= 0
+define recover_wine_test
+	@set -e; export WINEPREFIX="$(RECOVER_WINE_PREFIX)" WINEDEBUG=-all DISPLAY=; \
+	$(or $(WINE),wine) wineboot -i >/dev/null 2>&1 || true; \
+	(nohup wineserver -p >/dev/null 2>&1 &); \
+	rc=0; python3 -u test/check_recover.py --recover $(1) \
+	    --boltpack build/linux/boltpack --windows-runner "$(or $(WINE),wine)" \
+	    --sweep $(WIN_RECOVER_SWEEP) || rc=$$?; \
+	wineserver -k >/dev/null 2>&1 || true; exit $$rc
+endef
+
+win64-recover-test: win64-recover
+	$(call recover_wine_test,$(WIN64_BUILDDIR)/boltpack-recover.exe)
+
+win32-recover-test: win32-recover
+	$(call recover_wine_test,$(WIN32_BUILDDIR)/boltpack-recover.exe)

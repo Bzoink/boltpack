@@ -97,6 +97,20 @@ int       bpr_wfile_seek(bpr_wfile *f, int64_t off, int origin);   /* 0 ok */
 int64_t   bpr_wfile_tell(bpr_wfile *f);
 int       bpr_wfile_close(bpr_wfile *f);                           /* 0 ok */
 int       bpr_path_exists(const char *path);
+/* The host's rules for names (platform layer).  bpr_fs_check_name says whether an
+ * archive name can be written here: NULL if so, else a short reason (reserved
+ * device name, forbidden character, collision with a name already written, ...).
+ * It registers nothing; bpr_fs_commit_name does, once the file was written, so
+ * that an entry that failed does not keep its name from a later one.  On POSIX
+ * every name is acceptable. */
+const char *bpr_fs_check_name(const char *name, int is_dir);
+void      bpr_fs_commit_name(const char *name, int is_dir);
+/* Are symlink entries extracted on this host?  (Not on Windows, as in the CLI.) */
+int       bpr_fs_symlinks_supported(void);
+/* Open a report file for writing (UTF-8 path). */
+FILE     *bpr_fopen_write(const char *path);
+/* Entry point shared by the platform mains. */
+int       bpr_main(int argc, char **argv);
 /* Rename from to to unless to exists.  0 ok. */
 int       bpr_path_rename_new(const char *from, const char *to);
 int       bpr_path_remove(const char *path);
@@ -310,7 +324,8 @@ const char *bpr_dec_block(bpr_decoder *d, uint32_t comp, uint32_t orig);
 /* bpr_extract.c */
 enum { BPR_X_VERIFIED = 0, BPR_X_VERIFIED_TABLE, BPR_X_UNVERIFIED,
        BPR_X_CREATED, BPR_X_PARTIAL, BPR_X_SKIP_SUSPECT, BPR_X_SKIP_SUPPLEMENTARY,
-       BPR_X_SKIP_PARTIAL, BPR_X_SKIP_DUPLICATE, BPR_X_NO_HEADER,
+       BPR_X_SKIP_PARTIAL, BPR_X_SKIP_DUPLICATE, BPR_X_SKIP_HOST_NAME,
+       BPR_X_SKIP_SYMLINK, BPR_X_NO_HEADER,
        BPR_X_FAILED, BPR_X_COUNT };
 
 typedef struct {

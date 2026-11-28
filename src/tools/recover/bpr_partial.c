@@ -1026,11 +1026,13 @@ static void promote_whole(pctx *p, bpr_xlist *x, bpr_xres *r, char *name)
     if (real == NULL) return;
     memcpy(real, name, n);
     real[n] = '\0';
-    if (bpr_fs_exists(x->root, real) || bpr_fs_rename(x->root, name, real) != 0) {
+    if (bpr_fs_check_name(real, 0) != NULL || bpr_fs_exists(x->root, real) ||
+        bpr_fs_rename(x->root, name, real) != 0) {
         free(real);
         return;
     }
     bpr_fs_restore_meta(x->root, real, e->flags, e->mtime, 0);
+    bpr_fs_commit_name(real, 0);
     r->written = real;
     r->detail = NULL;
     r->outcome = !have_want ? BPR_X_UNVERIFIED
@@ -1062,6 +1064,14 @@ void bpr_extract_partial(bpr_ctx *c, bpr_xlist *x, bpr_xres *r,
     p.e = e;
     p.r = r;
     if (name == NULL) { r->outcome = BPR_X_FAILED; r->detail = "no-memory"; return; }
+    {
+        const char *why = bpr_fs_check_name(name, 0);
+        if (why != NULL) {
+            r->outcome = BPR_X_SKIP_HOST_NAME;
+            r->detail = why;
+            goto out;
+        }
+    }
     if (bpr_fs_exists(x->root, name)) {
         r->outcome = BPR_X_SKIP_DUPLICATE;
         r->detail = "a file with this name was already written";
@@ -1153,6 +1163,7 @@ void bpr_extract_partial(bpr_ctx *c, bpr_xlist *x, bpr_xres *r,
         promote_whole(&p, x, r, name);
         if (r->outcome != BPR_X_PARTIAL) goto out;
     }
+    bpr_fs_commit_name(name, 0);
     r->outcome = BPR_X_PARTIAL;
     r->detail = NULL;
     r->written = name;
