@@ -142,3 +142,31 @@ def pool_model(imported, draws):
         state = block[n:]
         ctr += 1
     return out
+
+
+# --- limits, budget, commitments (draft 8.1, 9.1, 6, 7)
+
+def limits(aead, kind):
+    """(min, max) plaintext length of a frame, or None for an invalid kind."""
+    if kind == 1: return (0, 27 + (65501 if aead == S1 else 1024))
+    if kind == 2: return (0, 8 + (16777216 if aead == S1 else 32768))
+    if kind == 3: return (16, 16)
+    if kind == 4: return (0, 1048576 if aead == S1 else 16384)
+    if kind == 5: return (0, 0)
+    return None
+
+MAX_REVISION = 4096
+
+def budget_ok(aead, frames, nbytes, revision, table_chunks, add_frames, add_bytes):
+    est = frames + min(revision, MAX_REVISION) * table_chunks + add_frames
+    if est > (2**24 if aead == S2 else 2**32): return 0
+    if aead == S2 and nbytes + add_bytes > 2**40: return 0
+    return 1
+
+def commit(aead, tags):
+    """table record `commit`: Hu(tag of the header frame || tags of the blocks || tag of the trailer, 16)"""
+    return hu(aead, b"".join(tags), 16)
+
+def table_hash(aead, chunk_tags):
+    """Hu(tag of each table chunk frame in order, 16)"""
+    return hu(aead, b"".join(chunk_tags), 16)

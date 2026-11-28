@@ -26,6 +26,13 @@ typedef struct { const bp_uint8 *p; bp_uint32 n; } bp_s1_part;
 int bp_s1_blake2b(const bp_uint8 *key32, const bp_s1_part *parts, int nparts,
                   bp_uint8 *out, bp_uint32 outlen);
 
+/* Incremental BLAKE2b in caller storage of BP_S1_HASH_STATE_BYTES bytes (8-byte aligned).
+ * key32 NULL for unkeyed; outlen 1..64.  Returns 0, or -1 for a bad outlen. */
+#define BP_S1_HASH_STATE_BYTES 288
+int  bp_s1_hash_init(void *state, const bp_uint8 *key32, bp_uint32 outlen);
+void bp_s1_hash_update(void *state, const bp_uint8 *data, bp_uint32 len);
+void bp_s1_hash_final(void *state, bp_uint8 *out);
+
 /* Argon2id (version 0x13).  The caller has checked the parameters:
  * lanes >= 1, passes >= 1, m_kib >= 8 * lanes.  Returns 0, or -1 if the
  * work area cannot be allocated.  secret/ad may be NULL with length 0. */

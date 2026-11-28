@@ -24,7 +24,7 @@ int bp_s1_aead_open(const bp_uint8 key[32], const bp_uint8 nonce[24],
                     const bp_uint8 *ct, bp_uint32 ct_len, const bp_uint8 tag[16],
                     bp_uint8 *pt)
 {
-    /* crypto_aead_unlock wipes pt on failure */
+    /* Monocypher checks the tag before it writes any plaintext; bp_crypto.c wipes pt on failure */
     return crypto_aead_unlock(pt, tag, key, nonce, ad, ad_len, ct, ct_len) == 0 ? 0 : -1;
 }
 
@@ -41,6 +41,29 @@ int bp_s1_blake2b(const bp_uint8 *key32, const bp_s1_part *parts, int nparts,
     crypto_blake2b_final(&ctx, out);
     crypto_wipe(&ctx, sizeof ctx);
     return 0;
+}
+
+/* the caller's state must hold a Monocypher BLAKE2b context */
+typedef char bp_s1_state_fits[(sizeof(crypto_blake2b_ctx) <= BP_S1_HASH_STATE_BYTES) ? 1 : -1];
+
+int bp_s1_hash_init(void *state, const bp_uint8 *key32, bp_uint32 outlen)
+{
+    crypto_blake2b_ctx *ctx = (crypto_blake2b_ctx *)state;
+    if (outlen < 1 || outlen > 64) return -1;
+    if (key32 != NULL) crypto_blake2b_keyed_init(ctx, outlen, key32, 32);
+    else               crypto_blake2b_init(ctx, outlen);
+    return 0;
+}
+
+void bp_s1_hash_update(void *state, const bp_uint8 *data, bp_uint32 len)
+{
+    if (len != 0) crypto_blake2b_update((crypto_blake2b_ctx *)state, data, len);
+}
+
+void bp_s1_hash_final(void *state, bp_uint8 *out)
+{
+    crypto_blake2b_final((crypto_blake2b_ctx *)state, out);
+    crypto_wipe(state, sizeof(crypto_blake2b_ctx));
 }
 
 int bp_s1_argon2id(bp_uint8 *out, bp_uint32 outlen,

@@ -10,8 +10,10 @@
  * lives in bp_s1.c, which is C99/C11 and is compiled only when BP_CRYPTO_S1 is
  * defined.  Suite S2 sits on a swappable backend (bp_ascon.h).
  *
- * Threads: none of this is thread-safe.  Seal frames on one thread (the writer
- * thread), or add locking around bp_frame_seal and the entropy pool.
+ * Threads: none of this is thread-safe.  The entropy pool and the process-wide
+ * frame counter of bp_frame_seal are shared state with one serialisation
+ * contract: seal frames and draw random bytes on one thread (the writer thread),
+ * or put the same lock around bp_frame_seal and every entropy call.
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
@@ -41,7 +43,17 @@
 
 #define BP_TAG_LEN      16
 #define BP_ENVELOPE_LEN 8
-#define BP_AAD_EXTRA_MAX 64
+#define BP_AAD_EXTRA_MAX 64     /* the end structure: 48 end record bytes + 16 table hash */
+
+/* frame kinds (draft section 4) */
+#define BP_KIND_ENTRY_HEADER  1
+#define BP_KIND_BLOCK         2
+#define BP_KIND_ENTRY_TRAILER 3
+#define BP_KIND_TABLE_CHUNK   4
+#define BP_KIND_END           5     /* the end structure: an empty plaintext */
+
+/* Key-use budget (draft 9.1, decision D16) */
+#define BP_MAX_REVISION       4096UL
 
 /* Which suites this build contains (S2 is always present). */
 int bp_suite_available(int aead);
@@ -56,6 +68,11 @@ void bp_wipe(void *p, bp_uint32 n);
 
 /* 1 if the n bytes are equal, 0 otherwise; time independent of the contents. */
 int bp_ct_equal(const bp_uint8 *a, const bp_uint8 *b, bp_uint32 n);
+
+/* Limits of one frame's plaintext by suite and kind (draft 8.1, decision D17).
+ * Kinds 3 and 5 have a fixed size (min == max).  bp_frame_seal and bp_frame_open
+ * refuse a frame outside them with BP_CRYPTO_E_ARG.  E_ARG for an unknown kind. */
+int bp_frame_body_limits(int aead, int kind, bp_uint32 *min_len, bp_uint32 *max_len);
 
 /* ---- hashes ------------------------------------------------------------- */
 
@@ -72,6 +89,37 @@ int bp_hu(int aead, const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 o
  * S2: Ascon-XOF128 over key || data, outlen bytes. */
 int bp_hk(int aead, const bp_uint8 key[32], const bp_part *parts, int nparts,
           bp_uint8 *out, bp_uint32 outlen);
+
+/* Incremental form of bp_hu / bp_hk, for hashes over many pieces (the table `commit`
+ * over the tags of an entry's frames, the `table_hash` over the tags of the chunks).
+ * key32 NULL means unkeyed.  The context is plain data: copy or wipe it freely. */
+typedef struct {
+    double    align_;       /* alignment for the backend state */
+    int       aead;
+    bp_uint32 outlen;
+    bp_uint32 w[72];        /* backend state: an Ascon XOF (S2) or a BLAKE2b context (S1) */
+} bp_hash_ctx;
+
+int  bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, bp_uint32 outlen);
+void bp_hash_update(bp_hash_ctx *c, const bp_uint8 *data, bp_uint32 len);
+void bp_hash_final(bp_hash_ctx *c, bp_uint8 *out);   /* writes outlen bytes and wipes the context */
+
+/* ---- key-use budget ------------------------------------------------------- */
+
+/* What the archive layer knows about a key set at append (draft 9.1). */
+typedef struct {
+    bp_uint32 frames;         /* frames present in the archive (from the frame walk) */
+    bp_uint64 bytes;          /* their total size, envelope through fcrc */
+    bp_uint32 revision;       /* the end record's revision */
+    bp_uint32 table_chunks;   /* table chunk frames present */
+} bp_budget_use;
+
+/* 1 if sealing add_frames more frames of add_bytes bytes keeps the key set within
+ * its budget, 0 if not, E_UNSUPPORTED for an unknown suite.  The frames of earlier
+ * revisions that an append overwrote are estimated as revision * table_chunks.
+ * The revision limit is separate: an append is allowed while revision <
+ * BP_MAX_REVISION. */
+int bp_budget_ok(int aead, const bp_budget_use *present, bp_uint32 add_frames, bp_uint32 add_bytes);
 
 /* ---- keys --------------------------------------------------------------- */
 
@@ -118,10 +166,17 @@ int bp_keyparams_pack32(const bp_keyparams *kp, bp_uint8 out[32]);
  * undefined or unbuilt pair, E_LIMIT for a cost above lim, E_ARG otherwise. */
 int bp_keyparams_check(const bp_keyparams *kp, const bp_kdf_limits *lim);
 
+/* What the caller of bp_frame_seal/bp_frame_open still owns (the archive layer, phase 3):
+ * the frame kind and flags, the per-kind length bounds of the draft (section 8), the
+ * exact AAD tail (entry_id, block index, counts, chunk index and count: derived from
+ * the keyless frame walk, never read from sealed plaintext), placement in volumes,
+ * the fcrc, the key-header comparison across volumes, and the table and end-record
+ * checks.  These functions authenticate one frame against the bytes they are given. */
+
 /* Derive the keys and the verifier.  secret is the password bytes (already
  * normalised, kdf 1) or the 32-byte key (kdf 0).  The caller compares
  * verifier_out with the archive's verifier using bp_ct_equal (a mismatch is a
- * wrong secret, section 10.1 of the plan).  On error nothing is left in *out. */
+ * wrong secret, section 10.1 of the plan).  On every error *out and verifier_out are zeroed. */
 int bp_keys_derive(bp_keys *out, bp_uint8 verifier_out[16], const bp_keyparams *kp,
                    const bp_uint8 set8[8], const bp_uint8 *secret, bp_uint32 secret_len,
                    const bp_kdf_limits *lim);

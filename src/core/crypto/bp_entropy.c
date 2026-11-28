@@ -42,11 +42,22 @@ static bp_uint32 source_cap(int source)
     }
 }
 
+static bp_uint32 g_import_fp[8][4];   /* fingerprints of imported buffers, so the same bytes earn credit once */
+static int       g_import_n;
+
 static bp_uint32 total_credit(void)
 {
     bp_uint32 t = 0;
     int i;
     for (i = 1; i < NSRC; i++) t += g_credit[i];
+    return t > 256 ? 256 : t;
+}
+
+/* Credit that can back a secret key: OS, hardware and imported bytes, never the
+ * gathered timing (its estimate is unvalidated) and never weak data. */
+static bp_uint32 strong_credit(void)
+{
+    bp_uint32 t = g_credit[BP_ENT_OS] + g_credit[BP_ENT_HW] + g_credit[BP_ENT_IMPORT];
     return t > 256 ? 256 : t;
 }
 
@@ -93,7 +104,27 @@ bp_uint32 bp_entropy_add(int source, const bp_uint8 *data, bp_uint32 len, bp_uin
 
 bp_uint32 bp_entropy_import(const bp_uint8 *data, bp_uint32 len)
 {
-    return bp_entropy_add(BP_ENT_IMPORT, data, len, len > 32 ? 256U : len * 8U);
+    /* Imported bytes are trusted seed material: the caller says they are random.
+     * The same buffer is credited once, so importing a file twice (or in a loop)
+     * cannot raise the credit; it is still mixed in. */
+    bp_xof x;
+    bp_uint32 fp[4];
+    bp_uint8 fpb[16];
+    int i, j, seen = 0;
+
+    if (data == NULL && len != 0) return total_credit();
+    bp_xof_init(&x);
+    bp_xof_absorb(&x, data, len);
+    bp_xof_squeeze(&x, fpb, 16);
+    bp_wipe(&x, (bp_uint32)sizeof x);
+    for (i = 0; i < 4; i++) fp[i] = bp_read_le32(fpb + 4 * i);
+    for (i = 0; i < g_import_n; i++) {
+        int same = 1;
+        for (j = 0; j < 4; j++) if (g_import_fp[i][j] != fp[j]) same = 0;
+        if (same) seen = 1;
+    }
+    if (!seen && g_import_n < 8) { memcpy(g_import_fp[g_import_n], fp, sizeof fp); g_import_n++; }
+    return bp_entropy_add(BP_ENT_IMPORT, data, len, seen ? 0U : (len > 32 ? 256U : len * 8U));
 }
 
 void bp_entropy_add_weak(void)
@@ -156,7 +187,7 @@ int bp_entropy_seed_os(void)
     return 0;
 }
 
-static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need)
+static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need, int secret)
 {
     bp_xof x;
     bp_uint8 fresh[32], ctr8[8], ns[32];
@@ -164,9 +195,16 @@ static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need)
 
     if (buf == NULL && n != 0) return BP_CRYPTO_E_ARG;
     if (!g_os_tried) { g_os_tried = 1; bp_entropy_seed_os(); }
-    if (total_credit() < need) return BP_CRYPTO_E_ENTROPY;
+    if ((secret ? strong_credit() : total_credit()) < need) return BP_CRYPTO_E_ENTROPY;
 
-    if (g_os_ok && os_read(fresh, 32) == 0) have_fresh = 1;
+    /* Where the OS source seeded the pool, every output mixes 32 fresh OS bytes (a
+     * forked process or a restored snapshot must not repeat earlier output).  If that
+     * read fails the call fails closed and outputs nothing.  Where the OS never
+     * worked (tiers 2 and 3) the pool runs on its imported and gathered credit. */
+    if (g_os_ok) {
+        if (os_read(fresh, 32) != 0) { bp_wipe(fresh, sizeof fresh); return BP_CRYPTO_E_ENTROPY; }
+        have_fresh = 1;
+    }
     bp_write_le32(ctr8, g_ctr_lo);
     bp_write_le32(ctr8 + 4, g_ctr_hi);
     bp_xof_init(&x);
@@ -190,12 +228,12 @@ static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need)
 
 int bp_random_bytes(bp_uint8 *buf, bp_uint32 n)
 {
-    return draw(buf, n, BP_ENT_SEEDED_BITS);
+    return draw(buf, n, BP_ENT_SEEDED_BITS, 0);
 }
 
 int bp_random_secret(bp_uint8 *buf, bp_uint32 n)
 {
-    return draw(buf, n, BP_ENT_SECRET_BITS);
+    return draw(buf, n, BP_ENT_SECRET_BITS, 1);
 }
 
 #ifdef BP_CRYPTO_TESTING
@@ -204,6 +242,8 @@ void bp_entropy_test_reset(void)
     memset(g_state, 0, sizeof g_state);
     g_ctr_lo = g_ctr_hi = 0;
     memset(g_credit, 0, sizeof g_credit);
+    memset(g_import_fp, 0, sizeof g_import_fp);
+    g_import_n = 0;
     g_os_tried = 0;
     g_os_ok = 0;
     g_out_count = 0;

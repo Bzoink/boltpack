@@ -24,9 +24,9 @@ static int os_replay(bp_uint8 *b, bp_uint32 n)   /* the same byte sequence after
     return 0;
 }
 static int os_ok_then_fail_count;
-static int os_one_good_then_fail(bp_uint8 *b, bp_uint32 n)
+static int os_two_good_then_fail(bp_uint8 *b, bp_uint32 n)   /* the seed read, one draw's fresh read, then failure */
 {
-    if (os_ok_then_fail_count++ == 0) { memset(b, 0x5A, n); return 0; }
+    if (os_ok_then_fail_count++ < 2) { memset(b, 0x5A, n); return 0; }
     return -1;
 }
 static bp_uint8 g_E[32];
@@ -109,10 +109,33 @@ static void test_pool(void)
     CHECK(bp_entropy_credit() == 256);
     CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_OK);
 
-    /* the OS source failing later does not break an already seeded pool */
-    fresh(os_one_good_then_fail);
+    /* where the OS source seeded the pool, a later failing fresh read fails the call closed */
+    fresh(os_two_good_then_fail);
     CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_OK);
-    CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_OK);
+    memset(buf, 0xAA, sizeof buf);
+    CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_E_ENTROPY);
+    CHECK(buf[0] == 0xAA && buf[31] == 0xAA);
+    CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_E_ENTROPY);
+
+    /* the same imported buffer earns credit once; different buffers each earn theirs */
+    fresh(os_fail);
+    CHECK(bp_entropy_import(data, 16) == 128);
+    CHECK(bp_entropy_import(data, 16) == 128);       /* the same bytes again: no new credit */
+    { int k; for (k = 0; k < 10; k++) bp_entropy_import(data, 16); }
+    CHECK(bp_entropy_credit() == 128);
+    memset(buf, 0x11, 16);
+    CHECK(bp_entropy_import(buf, 16) == 256);        /* a different buffer counts */
+
+    /* a secret needs 256 bits of OS, hardware or imported credit; gathered timing never counts */
+    fresh(os_fail);
+    { bp_uint8 d2[24]; int k; memset(d2, 0x21, sizeof d2);
+      CHECK(bp_entropy_import(d2, 24) == 192);
+      for (k = 0; k < 20; k++) bp_entropy_gather();
+      CHECK(bp_random_bytes(buf, 16) == BP_CRYPTO_OK);                  /* enough for salts and nonces */
+      CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_E_ENTROPY);          /* 192 strong bits: not enough, even with timing */
+      memset(d2, 0x22, 8);
+      CHECK(bp_entropy_import(d2, 8) == 256);
+      CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_OK); }
 
     /* outputs never repeat, even with a constant OS source (zeros): state is replaced and a counter runs */
     fresh(os_zero);
@@ -234,6 +257,14 @@ static void test_frames(void)
           bp_test_ctr_get(&lo2, &hi2);
           CHECK(lo1 == 6 && lo2 == 7 && hi1 == 0 && hi2 == 0 && k.seals != 0 && k2.seals == k.seals); }
 
+        /* a body length whose frame length would wrap is refused before the addition: the
+         * envelope below carries exactly the wrapped sum, which an unguarded check would accept */
+        { bp_uint8 e2[8]; bp_uint32 body = 0xFFFFFFFAU;
+          e2[0] = 2; e2[1] = 0; e2[2] = e2[3] = 0;
+          bp_write_le32(e2 + 4, (bp_uint32)(bp_suite_nonce_len(aead) + body + 16U));
+          CHECK(bp_frame_open(&k, e2, NULL, 0, nonce, ct, body, tag, out) == BP_CRYPTO_E_ARG);
+          CHECK(bp_frame_seal(&k, e2, NULL, 0, pt, body, nonce, ct, tag) == BP_CRYPTO_E_ARG); }
+
         /* argument checks: envelope length, zero bytes, oversize extra, unknown suite */
         put_env(env, 2, 0, aead, 41);
         CHECK(bp_frame_seal(&k, env, extra, 20, pt, 40, nonce, ct, tag) == BP_CRYPTO_E_ARG);
@@ -283,7 +314,7 @@ static void test_frames(void)
               CHECK(memcmp(nonces[0], nonces[2], bp_suite_nonce_len(aead)) != 0);
               x2[pos] ^= 1;
           }
-          bp_test_ctr_set(0, 0); env[0] = 3;   /* another kind: the envelope is in the AAD */
+          bp_test_ctr_set(0, 0); env[0] = 1;   /* another valid kind: the envelope is in the AAD */
           CHECK(bp_frame_seal(&k, env, extra, 20, pt, 40, nonces[2], out, tag) == BP_CRYPTO_OK);
           CHECK(memcmp(nonces[0], nonces[2], bp_suite_nonce_len(aead)) != 0);
           env[0] = 2; }
@@ -305,11 +336,108 @@ static void test_frames(void)
           set8[0] ^= 1; kp.salt[0] ^= 1;
           CHECK(bp_keys_derive(&b, v2, &kp, set8, secret, 32, NULL) == 0);
           CHECK(!bp_ct_equal(v1, v2, 16)); }
-        /* an error leaves nothing behind */
-        { bp_keys z; bp_uint8 vz[16];
+        /* every error leaves both outputs zeroed, whichever check fails */
+        { bp_keys z; bp_uint8 vz[16]; bp_uint32 zi; int zero;
+          bp_keyparams bad = kp;
+          bp_uint8 *zp = (bp_uint8 *)&z;
+          bad.m_cost_kib = 5;   /* kdf none with a cost field: refused before any work */
           memset(&z, 0x55, sizeof z); memset(vz, 0x55, 16);
-          kp.m_cost_kib = 5;   /* kdf none with a cost field */
-          CHECK(bp_keys_derive(&z, vz, &kp, set8, secret, 32, NULL) == BP_CRYPTO_E_ARG); }
+          CHECK(bp_keys_derive(&z, vz, &bad, set8, secret, 32, NULL) == BP_CRYPTO_E_ARG);
+          for (zero = 1, zi = 0; zi < sizeof z; zi++) if (zp[zi]) zero = 0;
+          for (zi = 0; zi < 16; zi++) if (vz[zi]) zero = 0;
+          CHECK(zero);
+          memset(&z, 0x55, sizeof z); memset(vz, 0x55, 16);
+          CHECK(bp_keys_derive(&z, vz, &kp, set8, secret, 31, NULL) == BP_CRYPTO_E_ARG);   /* wrong secret length */
+          for (zero = 1, zi = 0; zi < sizeof z; zi++) if (zp[zi]) zero = 0;
+          for (zi = 0; zi < 16; zi++) if (vz[zi]) zero = 0;
+          CHECK(zero);
+          memset(&z, 0x55, sizeof z); memset(vz, 0x55, 16);
+          bad = kp; bad.aead = 3;
+          CHECK(bp_keys_derive(&z, vz, &bad, set8, secret, 32, NULL) == BP_CRYPTO_E_UNSUPPORTED);
+          for (zero = 1, zi = 0; zi < sizeof z; zi++) if (zp[zi]) zero = 0;
+          for (zi = 0; zi < 16; zi++) if (vz[zi]) zero = 0;
+          CHECK(zero); }
+    }
+}
+
+static void test_limits_budget_hash(void)
+{
+    int aead;
+    bp_uint32 lo, hi;
+    bp_keys k;
+    bp_uint8 env[8], nonce[24], tag[16], big[40000], ct[40000];
+    bp_budget_use u;
+
+    CHECK(bp_frame_body_limits(1, 3, &lo, &hi) == 0 && lo == 16 && hi == 16);
+    CHECK(bp_frame_body_limits(2, 1, &lo, &hi) == 0 && hi == 1051);
+    CHECK(bp_frame_body_limits(2, 2, &lo, &hi) == 0 && hi == 32776);
+    CHECK(bp_frame_body_limits(2, 4, &lo, &hi) == 0 && hi == 16384);
+    CHECK(bp_frame_body_limits(1, 1, &lo, &hi) == 0 && hi == 65528);
+    CHECK(bp_frame_body_limits(1, 4, &lo, &hi) == 0 && hi == 1048576UL);
+    CHECK(bp_frame_body_limits(2, 5, &lo, &hi) == 0 && lo == 0 && hi == 0);
+    CHECK(bp_frame_body_limits(2, 0, &lo, &hi) == BP_CRYPTO_E_ARG && bp_frame_body_limits(2, 6, &lo, &hi) == BP_CRYPTO_E_ARG);
+    CHECK(bp_frame_body_limits(3, 2, &lo, &hi) == BP_CRYPTO_E_UNSUPPORTED);
+
+    /* the limits are enforced by seal and open at the byte */
+    memset(big, 0, sizeof big);
+    for (aead = 1; aead <= 2; aead++) {
+        int kind;
+        if (!bp_suite_available(aead)) continue;
+        make_keys(&k, aead);
+        fresh(os_zero);
+        for (kind = 1; kind <= 5; kind++) {
+            bp_uint32 mn, mx;
+            bp_frame_body_limits(aead, kind, &mn, &mx);
+            if (mx < sizeof big) {
+                put_env(env, kind, 0, aead, mx);
+                CHECK(bp_frame_seal(&k, env, NULL, 0, big, mx, nonce, ct, tag) == BP_CRYPTO_OK);
+                put_env(env, kind, 0, aead, mx + 1);
+                CHECK(bp_frame_seal(&k, env, NULL, 0, big, mx + 1, nonce, ct, tag) == BP_CRYPTO_E_ARG);
+                CHECK(bp_frame_open(&k, env, NULL, 0, nonce, big, mx + 1, tag, ct) == BP_CRYPTO_E_ARG);
+            }
+            if (mn > 0) {
+                put_env(env, kind, 0, aead, mn - 1);
+                CHECK(bp_frame_seal(&k, env, NULL, 0, big, mn - 1, nonce, ct, tag) == BP_CRYPTO_E_ARG);
+            }
+        }
+        put_env(env, 0, 0, aead, 16);
+        CHECK(bp_frame_seal(&k, env, NULL, 0, big, 16, nonce, ct, tag) == BP_CRYPTO_E_ARG);
+    }
+
+    /* budget */
+    memset(&u, 0, sizeof u);
+    CHECK(bp_budget_ok(2, &u, 0, 0) == 1 && bp_budget_ok(1, &u, 0, 0) == 1);
+    u.frames = 16777216UL;
+    CHECK(bp_budget_ok(2, &u, 0, 0) == 1 && bp_budget_ok(2, &u, 1, 0) == 0);
+    CHECK(bp_budget_ok(1, &u, 1000000UL, 0) == 1);               /* S1 allows 2^32 frames */
+    u.frames = 0xFFFFFFFFUL;
+    CHECK(bp_budget_ok(1, &u, 1, 0) == 1 && bp_budget_ok(1, &u, 2, 0) == 0);
+    u.frames = 16777216UL - 100; u.revision = 3; u.table_chunks = 30;   /* 3 * 30 dead table frames */
+    CHECK(bp_budget_ok(2, &u, 10, 0) == 1 && bp_budget_ok(2, &u, 11, 0) == 0);
+    u.frames = 0; u.revision = 4096; u.table_chunks = 5000;             /* 4096 * 5000 > 2^24 */
+    CHECK(bp_budget_ok(2, &u, 0, 0) == 0);
+    memset(&u, 0, sizeof u);
+    u.bytes.hi = 256; u.bytes.lo = 0;                                    /* exactly 2^40 bytes */
+    CHECK(bp_budget_ok(2, &u, 0, 0) == 1 && bp_budget_ok(2, &u, 0, 1) == 0);
+    CHECK(bp_budget_ok(1, &u, 0, 1000) == 1);                            /* S1 sets no byte limit */
+    CHECK(bp_budget_ok(3, &u, 0, 0) == BP_CRYPTO_E_UNSUPPORTED && bp_budget_ok(2, NULL, 0, 0) == BP_CRYPTO_E_ARG);
+
+    /* incremental hash equals the one-shot hash and wipes its state */
+    for (aead = 1; aead <= 2; aead++) {
+        bp_hash_ctx c; bp_uint8 d[100], o1[16], o2[16], key[32]; bp_part pp; bp_uint32 i, nz = 0; const bp_uint8 *cp;
+        if (!bp_suite_available(aead)) continue;
+        for (i = 0; i < 100; i++) d[i] = (bp_uint8)i;
+        for (i = 0; i < 32; i++) key[i] = (bp_uint8)(0xA0 + i);
+        pp.p = d; pp.n = 100;
+        CHECK(bp_hk(aead, key, &pp, 1, o1, 16) == 0);
+        CHECK(bp_hash_init(&c, aead, key, 16) == 0);
+        bp_hash_update(&c, d, 33); bp_hash_update(&c, d + 33, 0); bp_hash_update(&c, d + 33, 67);
+        bp_hash_final(&c, o2);
+        CHECK(memcmp(o1, o2, 16) == 0);
+        cp = (const bp_uint8 *)&c;
+        for (i = 0; i < sizeof c; i++) if (cp[i]) nz++;
+        CHECK(nz == 0);                       /* final wipes the context */
+        CHECK(bp_hash_init(&c, aead, NULL, 0) == BP_CRYPTO_E_ARG);
     }
 }
 
@@ -318,6 +446,7 @@ int main(void)
     test_helpers();
     test_pool();
     test_frames();
+    test_limits_budget_hash();
     printf("%d checks, %d failed\n", total, failed);
     return failed ? 1 : 0;
 }

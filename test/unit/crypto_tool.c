@@ -18,6 +18,9 @@
  *   XOF2  data n1 n2                          -> squeeze n1 then n2 (two calls), hex of both
  *   XOFC  chunk n data                        -> absorb in chunks of `chunk` bytes, squeeze n, hex
  *   POOL  import n1 n2 ...                    -> pool with no OS source, import bytes, draw n1, n2, ... (hex)
+ *   HINC  aead outlen key|- chunk data        -> incremental hash, data fed in pieces of `chunk` bytes (hex)
+ *   BUDGET aead frames bytes_hi bytes_lo revision table_chunks add_frames add_bytes -> 1 | 0 | ERR code
+ *   LIMITS aead kind                          -> "min max" of the plaintext of a frame, or ERR code
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -195,6 +198,28 @@ int main(void)
                 printf("\n");
             }
             bp_entropy_test_set_os(NULL); bp_entropy_test_reset();
+        } else if (!strcmp(cmd, "HINC")) {
+            int aead = atoi(tok(&p)); bp_uint32 ol = (bp_uint32)atoi(tok(&p)), ch, dl, off = 0, kl; bp_uint8 key[32]; char *kt; bp_hash_ctx hc; int rc;
+            kt = tok(&p); kl = unhex(kt, key, 32);
+            ch = (bp_uint32)atoi(tok(&p)); dl = unhex(tok(&p), b1, MAXB);
+            rc = bp_hash_init(&hc, aead, kl ? key : NULL, ol);
+            if (rc) printf("ERR %d", rc);
+            else {
+                while (off < dl) { bp_uint32 t = dl - off < ch ? dl - off : ch; bp_hash_update(&hc, b1 + off, t); off += t; }
+                bp_hash_final(&hc, b2); phex(b2, ol);
+            }
+            printf("\n");
+        } else if (!strcmp(cmd, "BUDGET")) {
+            int aead = atoi(tok(&p)); bp_budget_use u; bp_uint32 af, ab; int rc;
+            u.frames = (bp_uint32)strtoul(tok(&p), NULL, 10);
+            u.bytes.hi = (bp_uint32)strtoul(tok(&p), NULL, 10); u.bytes.lo = (bp_uint32)strtoul(tok(&p), NULL, 10);
+            u.revision = (bp_uint32)strtoul(tok(&p), NULL, 10); u.table_chunks = (bp_uint32)strtoul(tok(&p), NULL, 10);
+            af = (bp_uint32)strtoul(tok(&p), NULL, 10); ab = (bp_uint32)strtoul(tok(&p), NULL, 10);
+            rc = bp_budget_ok(aead, &u, af, ab);
+            printf(rc < 0 ? "ERR %d\n" : "%d\n", rc);
+        } else if (!strcmp(cmd, "LIMITS")) {
+            int aead = atoi(tok(&p)), kind = atoi(tok(&p)); bp_uint32 lo = 0, hi = 0; int rc = bp_frame_body_limits(aead, kind, &lo, &hi);
+            if (rc) printf("ERR %d\n", rc); else printf("%lu %lu\n", (unsigned long)lo, (unsigned long)hi);
         } else printf("BAD\n");
         fflush(stdout);
     }

@@ -205,14 +205,19 @@ if not s2_only: derive_case("lanes above the cap", 1, 1, 1, 64, 1, 5, expect=-7)
 def env_for(aead, kind, fflags, ptlen):
     return M.envelope(kind, fflags, aead, ptlen)
 
-extras = {1: b"", 2: b"E" * 16 + b"\x03\0\0\0", 3: b"F" * 16 + b"\x09\0\0\0", 4: b"\x01\0\0\0\x05\0\0\0", 5: b"\xAB" * 48}
-sizes = [0, 1, 2, 15, 16, 17, 31, 32, 33, 100, 1000, 65535]
-if quick: sizes = sizes[:8]
+extras = {1: b"", 2: b"E" * 16 + b"\x03\0\0\0", 3: b"F" * 16 + b"\x09\0\0\0",
+          4: b"\x01\0\0\0\x05\0\0\0\x03\0\0\0",          # chunk_index, chunk_count, revision
+          5: b"\xAB" * 48 + b"\xCD" * 16}                         # end record + table_hash
+base_sizes = [0, 1, 2, 15, 16, 17, 28, 31, 32, 33, 100, 1000, 16384, 32776, 65528]
+if quick: base_sizes = base_sizes[:9]
+def kind_sizes(aead, kind):
+    lo, hi = M.limits(aead, kind)
+    if lo == hi: return [lo]
+    return sorted(set([n for n in base_sizes if lo <= n <= hi] + [hi if hi < 70000 else 65535]))
 for aead in ((2,) if s2_only else (1, 2)):
     set8 = rng.randbytes(8); k_seal = rng.randbytes(32); k_nonce = rng.randbytes(32)
     for kind in (1, 2, 3, 4, 5):
-        for n in sizes:
-            if kind == 5: n = 0
+        for n in kind_sizes(aead, kind):
             pt = rng.randbytes(n); E = rng.randbytes(32); ctr = rng.choice([0, 1, 2**32 - 1, 2**32, 2**40 + 7])
             fflags = 1 if kind == 2 and rng.random() < 0.5 else 0
             env = env_for(aead, kind, fflags, n); extra = extras[kind]
@@ -233,7 +238,10 @@ for aead in ((2,) if s2_only else (1, 2)):
                     if i in (2, 3): continue
                     b = bytearray(env); b[i] ^= 1
                     if i >= 4: check("envelope len change", op(env=bytes(b)), "ERR -1")      # no longer matches the body length
-                    else: check("tamper envelope kind/fflags", op(env=bytes(b)), "ERR -3")    # AAD mismatch
+                    elif i == 0:      # another kind: refused outright if it is invalid or the body is outside its limits, else an AAD mismatch
+                        lim = M.limits(aead, b[0])
+                        check("tamper envelope kind", op(env=bytes(b)), "ERR -1" if (lim is None or not lim[0] <= len(ct) <= lim[1]) else "ERR -3")
+                    else: check("tamper envelope fflags", op(env=bytes(b)), "ERR -3")         # AAD mismatch
                 for i in (2, 3):
                     b = bytearray(env); b[i] = 1; check("nonzero envelope zero byte", op(env=bytes(b)), "ERR -1")
                 for i in range(len(extra)):
@@ -255,9 +263,9 @@ LIT = [  # (aead, kind, fflags, ptlen, extra_hex, literal AAD hex written out by
     (1, 1, 0, 40, "", "6270382f616164" + "00" + "01" + "0102030405060708" + "01000000" + "50000000"),
     (2, 2, 1, 100, "e" * 32 + "03000000", "6270382f616164" + "00" + "02" + "0102030405060708" + "02010000" + "84000000" + "e" * 32 + "03000000"),
     (1, 3, 0, 16, "f" * 32 + "09000000", "6270382f616164" + "00" + "01" + "0102030405060708" + "03000000" + "38000000" + "f" * 32 + "09000000"),
-    (2, 4, 0, 1000, "01000000" + "05000000", "6270382f616164" + "00" + "02" + "0102030405060708" + "04000000" + "08040000" + "01000000" + "05000000"),
-    (2, 5, 0, 0, "ab" * 48, "6270382f616164" + "00" + "02" + "0102030405060708" + "05000000" + "20000000" + "ab" * 48),   # end record, S2: len = 16 + 16
-    (1, 5, 0, 0, "ab" * 48, "6270382f616164" + "00" + "01" + "0102030405060708" + "05000000" + "28000000" + "ab" * 48),   # end record, S1: len = 24 + 16
+    (2, 4, 0, 1000, "01000000" + "05000000" + "03000000", "6270382f616164" + "00" + "02" + "0102030405060708" + "04000000" + "08040000" + "01000000" + "05000000" + "03000000"),
+    (2, 5, 0, 0, "ab" * 48 + "cd" * 16, "6270382f616164" + "00" + "02" + "0102030405060708" + "05000000" + "20000000" + "ab" * 48 + "cd" * 16),   # end structure, S2: len = 16 + 16; extra = end record + table_hash
+    (1, 5, 0, 0, "ab" * 48 + "cd" * 16, "6270382f616164" + "00" + "01" + "0102030405060708" + "05000000" + "28000000" + "ab" * 48 + "cd" * 16),   # end structure, S1: len = 24 + 16
 ]
 for (aead, kind, fflags, ptlen, extra_hex, literal) in LIT:
     if aead == 1 and s2_only: continue
@@ -303,21 +311,30 @@ def golden_cases():
     for aead in (1, 2):
         ks = bytes(range(0x60, 0x80)); kn = bytes(range(0x80, 0xA0)); E = bytes(range(0xA0, 0xC0))
         for kind, fflags, n, extra in ((1, 0, 45, b""), (2, 1, 100, b"\x11" * 16 + b"\x02\0\0\0"), (3, 0, 16, b"\x11" * 16 + b"\x03\0\0\0"),
-                                       (4, 0, 70, b"\0\0\0\0\x02\0\0\0"), (5, 0, 0, bytes(range(48)))):
+                                       (4, 0, 70, b"\0\0\0\0\x02\0\0\0\x07\0\0\0"), (5, 0, 0, bytes(range(48)) + bytes(range(0x90, 0xA0)))):
             pt = bytes((i * 7 + kind) & 255 for i in range(n)); ctr = 7 + kind
             env = M.envelope(kind, fflags, aead, n)
             nonce, ct, tag = M.seal_frame(aead, set8, ks, kn, ctr, E, env, extra, pt)
             cases.append(dict(kind="frame", name="s%d-kind%d" % (aead, kind), aead=aead, set8=set8.hex(), k_seal=ks.hex(), k_nonce=kn.hex(),
                               ctr=ctr, E=E.hex(), envelope=env.hex(), extra=extra.hex(), pt=pt.hex(),
                               aad=M.aad(aead, set8, env, extra).hex(), nonce=nonce.hex(), ct=ct.hex(), tag=tag.hex()))
+    for aead in (1, 2):    # table_hash and entry commit over fixed tags
+        tags = [bytes((i * 16 + j) & 255 for j in range(16)) for i in range(1, 6)]
+        cases.append(dict(kind="commit", name="s%d-commit" % aead, aead=aead, tags=[t.hex() for t in tags],
+                          commit=M.commit(aead, tags).hex(), table_hash=M.table_hash(aead, tags[:3]).hex()))
     return cases
 if "--write-golden" in sys.argv:
-    json.dump(dict(version=1, note="pinned by test/check_crypto.py --write-golden from test/bp8_crypto.py; checked against the C", cases=golden_cases()), open(GOLD, "w"), indent=1)
+    json.dump(dict(version=2, note="pinned by test/check_crypto.py --write-golden from test/bp8_crypto.py; checked against the C", cases=golden_cases()), open(GOLD, "w"), indent=1)
     print("wrote", GOLD)
 gold = json.load(open(GOLD))
 check("golden regenerates identically from the model", json.dumps(gold["cases"], sort_keys=True), json.dumps(golden_cases(), sort_keys=True))
 for c in gold["cases"]:
     if c["aead"] == 1 and s2_only: continue
+    if c["kind"] == "commit":
+        tg = [bytes.fromhex(t) for t in c["tags"]]
+        check("golden %s commit (C, incremental)" % c["name"], ask("HINC %d 16 - 7 %s" % (c["aead"], h(b"".join(tg)))), c["commit"])
+        check("golden %s table_hash (C, incremental)" % c["name"], ask("HINC %d 16 - 5 %s" % (c["aead"], h(b"".join(tg[:3])))), c["table_hash"])
+        continue
     if c["kind"] == "derive":
         got = ask("DERIVE %d %d %d %d %d %d %s %s %s" % (c["kdf"], c["aead"], c["norm"], c["m"], c["t"], c["lanes"], c["salt"], c["set8"], c["secret"]))
         check("golden %s" % c["name"], got, "OK %s %s %s" % (c["k_seal"], c["k_nonce"], c["verifier"]))
@@ -327,10 +344,60 @@ for c in gold["cases"]:
         check("golden %s" % c["name"], got, "OK %s %s %s" % (c["nonce"], c["ct"] or "-", c["tag"]))
         check("golden %s aad" % c["name"], ask("AAD %d %s %s %s" % (c["aead"], c["set8"], c["envelope"], c["extra"] or "-")), c["aad"])
 
+# ---- 12. limits by kind and suite, invalid kinds, the budget, incremental hashing ----
+for aead in ((2,) if s2_only else (1, 2)):
+    for kind in range(0, 8):
+        lim = M.limits(aead, kind)
+        got = ask("LIMITS %d %d" % (aead, kind))
+        check("limits s%d kind%d" % (aead, kind), got, "%d %d" % lim if lim else "ERR -1")
+    set8 = rng.randbytes(8); k_seal = rng.randbytes(32); k_nonce = rng.randbytes(32); E = rng.randbytes(32)
+    for kind in range(1, 6):
+        lo, hi = M.limits(aead, kind)
+        if hi < 70000:       # one byte over the maximum, and (for the fixed-size kinds) one under or over
+            n = hi + 1
+            env = M.envelope(kind, 0, aead, n)
+            check("seal refuses s%d kind%d %d bytes (over the limit)" % (aead, kind, n),
+                  ask("SEAL %d %s %s %s 0 0 %s %s - %s" % (aead, h(set8), h(k_seal), h(k_nonce), h(E), h(env), h(bytes(n)))), "ERR -1")
+        if lo > 0:
+            env = M.envelope(kind, 0, aead, lo - 1)
+            check("seal refuses s%d kind%d %d bytes (under the limit)" % (aead, kind, lo - 1),
+                  ask("SEAL %d %s %s %s 0 0 %s %s - %s" % (aead, h(set8), h(k_seal), h(k_nonce), h(E), h(env), h(bytes(lo - 1)))), "ERR -1")
+    for kind in (0, 6, 255):
+        env = bytes([kind, 0, 0, 0]) + (M.NONCE_LEN[aead] + 16 + 16).to_bytes(4, "little")
+        check("seal refuses s%d invalid kind %d" % (aead, kind), ask("SEAL %d %s %s %s 0 0 %s %s - %s" % (aead, h(set8), h(k_seal), h(k_nonce), h(E), h(env), h(bytes(16)))), "ERR -1")
+        check("open refuses s%d invalid kind %d" % (aead, kind), ask("OPEN %d %s %s %s - %s %s %s" % (aead, h(set8), h(k_seal), h(env), h(bytes(M.NONCE_LEN[aead])), h(bytes(16)), h(bytes(16)))), "ERR -1")
+    # incremental hash: any split of the data gives the one-shot value
+    for ch in (1, 5, 8, 16, 100):
+        for n in (0, 1, 15, 16, 17, 100, 999):
+            data = rng.randbytes(n); key = rng.randbytes(32)
+            if aead == 1 and 16 <= 64: ols = (16, 64)
+            else: ols = (16, 100)
+            for ol in ols:
+                check("HINC unkeyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d - %d %s" % (aead, ol, ch, h(data))), M.hu(aead, data, ol).hex())
+                check("HINC keyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d %s %d %s" % (aead, ol, h(key), ch, h(data))), M.hk(aead, key, data, ol).hex())
+check("HINC S1 outlen 65 refused", ask("HINC 1 65 - 4 -"), "ERR -1") if not s2_only else None
+check("HINC unknown suite", ask("HINC 3 16 - 4 -"), "ERR -2")
+# budget: at, one over, the dead table frames of earlier revisions, the byte limit
+cases = []
+for aead in ((2,) if s2_only else (1, 2)):
+    flim = 2**24 if aead == 2 else 2**32
+    for (frames, nbytes, rev, tc, af, ab) in [
+            (0, 0, 0, 0, 0, 0), (flim - 1 if flim < 2**32 else 2**32 - 1, 0, 0, 0, 1, 0), (2**24, 0, 0, 0, 0, 0), (2**24, 0, 0, 0, 1, 0),
+            (2**24 - 100, 0, 3, 30, 10, 0), (2**24 - 100, 0, 3, 30, 11, 0), (2**24 - 100, 0, 4096, 0, 100, 0), (2**24 - 100, 0, 5000, 1, 0, 0),
+            (10, 2**40, 0, 0, 0, 0), (10, 2**40, 0, 0, 0, 1), (10, 2**40 - 1, 0, 0, 0, 1), (10, 2**40 - 5, 0, 0, 0, 6), (10, 2**41, 0, 0, 0, 0)]:
+        want = M.budget_ok(aead, frames, nbytes, rev, tc, af, ab)
+        got = ask("BUDGET %d %d %d %d %d %d %d %d" % (aead, frames, nbytes >> 32, nbytes & 0xFFFFFFFF, rev, tc, af, ab))
+        check("budget s%d frames=%d bytes=%d rev=%d tc=%d +%d/%d" % (aead, frames, nbytes, rev, tc, af, ab), got, str(want))
+check("budget unknown suite", ask("BUDGET 3 0 0 0 0 0 0 0"), "ERR -2")
+
 proc.stdin.close()
 try:
-    proc.wait(timeout=30)
+    rc = proc.wait(timeout=60)
 except subprocess.TimeoutExpired:
-    proc.kill()
+    proc.kill(); rc = -999
+total += 1
+if rc != 0:       # a sanitizer or leak report at exit ends the helper with a non-zero status
+    fails += 1
+    print("the C helper exited with status", rc)
 print("%d checks, %d failed%s" % (total, fails, ("; skipped: " + ", ".join(skipped)) if skipped else ""))
 sys.exit(1 if fails else 0)

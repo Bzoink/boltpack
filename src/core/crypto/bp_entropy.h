@@ -12,7 +12,13 @@
  *   OS source 256, hardware instruction 128, imported entropy 8 per byte,
  *   gathered timing at most 64, weak data (clock, pid, addresses) 0.
  *
- * Not thread-safe.
+ * Policy: imported bytes are trusted seed material, and the same buffer earns
+ * credit once.  A secret (bp_random_secret) needs 256 bits from the OS source,
+ * hardware instructions and imported bytes only: gathered timing never counts
+ * toward it.  Where the OS source seeded the pool, an output call whose fresh OS
+ * read fails returns BP_CRYPTO_E_ENTROPY and outputs nothing.
+ *
+ * Not thread-safe (the frame counter in bp_crypto.c shares this contract).
  *
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License

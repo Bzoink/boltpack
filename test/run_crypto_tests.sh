@@ -63,11 +63,13 @@ run_variant() {
     if timeout 300 $CC $COMMON $flags "$ROOT/test/unit/crypto_tool.c" $srcs -o "$OUT/tool_$name" 2>"$OUT/b.log" &&
        timeout 300 $CC $COMMON $flags "$ROOT/test/unit/test_crypto.c" $srcs -o "$OUT/unit_$name" 2>>"$OUT/b.log"; then ok "built"
     else bad "build"; head -30 "$OUT/b.log"; return; fi
-    r=$(timeout 600 "$OUT/unit_$name" 2>&1 | tail -3)
-    case "$r" in *" 0 failed") ok "unit tests: $r";; *) bad "unit tests: $r";; esac
+    timeout 600 "$OUT/unit_$name" >"$OUT/unit_$name.log" 2>&1; rc=$?
+    r=$(tail -3 "$OUT/unit_$name.log")
+    case "$r" in *" 0 failed") [ "$rc" = 0 ] && ok "unit tests: $r" || bad "unit tests: summary says ok but the process exited with status $rc";; *) bad "unit tests (status $rc): $r";; esac
     if [ "$oracle_ok" = 1 ]; then
-        r=$(timeout 900 python3 -I "$ROOT/test/check_crypto.py" "$OUT/tool_$name" $QUICK $drv 2>&1 | tail -3)
-        case "$r" in *" 0 failed"*) ok "oracle comparison: $r";; *) bad "oracle comparison: $r";; esac
+        timeout 900 python3 -I "$ROOT/test/check_crypto.py" "$OUT/tool_$name" $QUICK $drv >"$OUT/oracle_$name.log" 2>&1; rc=$?
+        r=$(tail -3 "$OUT/oracle_$name.log")
+        case "$r" in *" 0 failed"*) [ "$rc" = 0 ] && ok "oracle comparison: $r" || { bad "oracle comparison: summary says ok but status $rc"; tail -5 "$OUT/oracle_$name.log"; };; *) bad "oracle comparison (status $rc): $r";; esac
     else echo "  SKIPPED oracle comparison (prerequisites missing)"; fi
 }
 cd "$ROOT" || exit 1
@@ -75,7 +77,14 @@ run_variant native   "-O2 -DBP_CRYPTO_S1"                                       
 if printf 'int main(void){return 0;}' | $CC -m32 -x c - -o "$OUT/m32probe" 2>/dev/null; then
     run_variant m32 "-O2 -m32 -DBP_CRYPTO_S1" "$BASE $S1SRC" ""
 else echo "== variant: m32"; echo "  SKIPPED (no 32-bit libraries: install gcc-multilib)"; skips=1; fi
-run_variant san      "-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DBP_CRYPTO_S1" "$BASE $S1SRC" ""
+# LeakSanitizer needs ptrace; where it cannot run (some sandboxes) it ends every process with
+# a fatal error, so probe it and, if it is unusable, run the sanitizers without leak detection
+# and say so.
+SANFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DBP_CRYPTO_S1"
+printf '#include <stdlib.h>\nint main(void){free(malloc(8));return 0;}\n' > "$OUT/lsan_probe.c"
+if $CC -fsanitize=address "$OUT/lsan_probe.c" -o "$OUT/lsan_probe" 2>/dev/null && timeout 60 "$OUT/lsan_probe" >/dev/null 2>&1; then :
+else echo "  note: LeakSanitizer cannot run here; the sanitizer variant runs with detect_leaks=0 (leaks are NOT checked)"; ASAN_OPTIONS="detect_leaks=0"; export ASAN_OPTIONS; skips=1; fi
+run_variant san      "$SANFLAGS" "$BASE $S1SRC" ""
 run_variant s2only   "-O2"                                                               "$BASE"        "--s2-only"
 
 echo "== 16-bit smoke: compile-only with Open Watcom wcc (DOS, compact model, -0), not run"
@@ -98,7 +107,7 @@ if command -v valgrind >/dev/null 2>&1 && [ -f /usr/include/valgrind/memcheck.h 
         if timeout 600 valgrind --error-exitcode=9 -q "$OUT/ctgrind" >"$OUT/ct.log" 2>&1; then ok "no secret-dependent branch or index (compare, derive, seal; both suites)"
         else bad "valgrind reported a secret-dependent branch"; head -20 "$OUT/ct.log"; fi
     else bad "ctgrind build"; head -20 "$OUT/b.log"; fi
-else echo "  skipped (valgrind or valgrind/memcheck.h not installed)"; fi
+else echo "  SKIPPED (valgrind or valgrind/memcheck.h not installed): the constant-time check did not run"; skips=1; fi
 
 if [ "$fail" != 0 ]; then echo "crypto-test: FAILED"; elif [ "$skips" != 0 ]; then echo "crypto-test: passed, with SKIPPED checks (see above)"; else echo "crypto-test: all passed"; fi
 exit $fail

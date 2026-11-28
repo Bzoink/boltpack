@@ -15,6 +15,9 @@
 
 #define BP_MAX_PARTS 8
 
+/* the S2 hash state must fit the shared bp_hash_ctx storage */
+typedef char bp_xof_fits_hash_ctx[(sizeof(bp_xof) <= sizeof(((bp_hash_ctx *)0)->w)) ? 1 : -1];
+
 /* Labels include their terminating NUL (sizeof counts it), as the draft writes "\0". */
 static const bp_uint8 L_MASTER[] = "bp8/master";
 static const bp_uint8 L_SEAL[]   = "bp8/seal";
@@ -68,6 +71,25 @@ bp_uint32 bp_frame_overhead(int aead)
     return nl == 0 ? 0U : BP_ENVELOPE_LEN + nl + BP_TAG_LEN + 4U;
 }
 
+/* ---- frame limits (draft 8.1) ---------------------------------------------- */
+
+int bp_frame_body_limits(int aead, int kind, bp_uint32 *min_len, bp_uint32 *max_len)
+{
+    bp_uint32 lo = 0, hi;
+    if (aead != BP_SUITE_S1 && aead != BP_SUITE_S2) return BP_CRYPTO_E_UNSUPPORTED;
+    switch (kind) {
+    case BP_KIND_ENTRY_HEADER:  hi = 27UL + (aead == BP_SUITE_S1 ? 65501UL : 1024UL); break;
+    case BP_KIND_BLOCK:         hi = 8UL + (aead == BP_SUITE_S1 ? 16777216UL : 32768UL); break;
+    case BP_KIND_ENTRY_TRAILER: lo = 16; hi = 16; break;
+    case BP_KIND_TABLE_CHUNK:   hi = aead == BP_SUITE_S1 ? 1048576UL : 16384UL; break;
+    case BP_KIND_END:           hi = 0; break;
+    default: return BP_CRYPTO_E_ARG;
+    }
+    if (min_len != NULL) *min_len = lo;
+    if (max_len != NULL) *max_len = hi;
+    return BP_CRYPTO_OK;
+}
+
 /* ---- hashes ------------------------------------------------------------- */
 
 static int hash_parts(int aead, const bp_uint8 *key32, const bp_part *parts, int nparts,
@@ -110,6 +132,68 @@ int bp_hk(int aead, const bp_uint8 key[32], const bp_part *parts, int nparts,
 {
     if (key == NULL) return BP_CRYPTO_E_ARG;
     return hash_parts(aead, key, parts, nparts, out, outlen);
+}
+
+int bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, bp_uint32 outlen)
+{
+    if (c == NULL || outlen == 0) return BP_CRYPTO_E_ARG;
+    if (!bp_suite_available(aead)) return BP_CRYPTO_E_UNSUPPORTED;
+    memset(c, 0, sizeof *c);
+    c->aead = aead;
+    c->outlen = outlen;
+    if (aead == BP_SUITE_S2) {
+        bp_xof_init((bp_xof *)c->w);
+        if (key32 != NULL) bp_xof_absorb((bp_xof *)c->w, key32, 32);
+        return BP_CRYPTO_OK;
+    }
+#ifdef BP_CRYPTO_S1
+    return bp_s1_hash_init(c->w, key32, outlen) == 0 ? BP_CRYPTO_OK : BP_CRYPTO_E_ARG;
+#else
+    return BP_CRYPTO_E_UNSUPPORTED;
+#endif
+}
+
+void bp_hash_update(bp_hash_ctx *c, const bp_uint8 *data, bp_uint32 len)
+{
+    if (len == 0) return;
+    if (c->aead == BP_SUITE_S2) bp_xof_absorb((bp_xof *)c->w, data, len);
+#ifdef BP_CRYPTO_S1
+    else if (c->aead == BP_SUITE_S1) bp_s1_hash_update(c->w, data, len);
+#endif
+}
+
+void bp_hash_final(bp_hash_ctx *c, bp_uint8 *out)
+{
+    if (c->aead == BP_SUITE_S2) bp_xof_squeeze((bp_xof *)c->w, out, c->outlen);
+#ifdef BP_CRYPTO_S1
+    else if (c->aead == BP_SUITE_S1) bp_s1_hash_final(c->w, out);
+#endif
+    bp_wipe(c, (bp_uint32)sizeof *c);
+}
+
+/* ---- key-use budget ----------------------------------------------------- */
+
+int bp_budget_ok(int aead, const bp_budget_use *present, bp_uint32 add_frames, bp_uint32 add_bytes)
+{
+    bp_uint64 frames, bytes, limit;
+    bp_uint32 i;
+    if (present == NULL) return BP_CRYPTO_E_ARG;
+    if (aead != BP_SUITE_S1 && aead != BP_SUITE_S2) return BP_CRYPTO_E_UNSUPPORTED;
+    frames = bp_u64_from_u32(present->frames);
+    /* the table chunk frames of earlier revisions that appends overwrote */
+    for (i = 0; i < present->revision && i < BP_MAX_REVISION; i++)
+        frames = bp_u64_add(frames, bp_u64_from_u32(present->table_chunks));
+    frames = bp_u64_add(frames, bp_u64_from_u32(add_frames));
+    limit.hi = 0; limit.lo = 0;
+    if (aead == BP_SUITE_S2) limit.lo = 16777216UL;      /* 2^24 */
+    else                     limit.hi = 1;               /* 2^32 */
+    if (bp_u64_cmp(frames, limit) > 0) return 0;
+    if (aead == BP_SUITE_S2) {                           /* 2^40 bytes; S1 sets no byte limit */
+        bytes = bp_u64_add(present->bytes, bp_u64_from_u32(add_bytes));
+        limit.hi = 256; limit.lo = 0;
+        if (bp_u64_cmp(bytes, limit) > 0) return 0;
+    }
+    return 1;
 }
 
 /* ---- keys --------------------------------------------------------------- */
@@ -162,9 +246,11 @@ int bp_keys_derive(bp_keys *out, bp_uint8 verifier_out[16], const bp_keyparams *
     bp_part p[3];
     int rc;
 
-    if (out == NULL || verifier_out == NULL || kp == NULL || set8 == NULL ||
-        (secret == NULL && secret_len != 0))
-        return BP_CRYPTO_E_ARG;
+    if (out == NULL || verifier_out == NULL) return BP_CRYPTO_E_ARG;
+    /* every failure below leaves both outputs empty */
+    memset(out, 0, sizeof *out);
+    memset(verifier_out, 0, 16);
+    if (kp == NULL || set8 == NULL || (secret == NULL && secret_len != 0)) return BP_CRYPTO_E_ARG;
     rc = bp_keyparams_check(kp, lim);
     if (rc != BP_CRYPTO_OK) return rc;
 
@@ -185,7 +271,6 @@ int bp_keys_derive(bp_keys *out, bp_uint8 verifier_out[16], const bp_keyparams *
 #endif
     }
 
-    memset(out, 0, sizeof *out);
     out->aead = kp->aead;
     memcpy(out->set8, set8, 8);
 
@@ -261,10 +346,15 @@ static int aead_open(int aead, const bp_uint8 *key, const bp_uint8 *nonce,
 
 static int check_envelope(int aead, const bp_uint8 envelope[8], bp_uint32 body_len)
 {
-    bp_uint32 nl = bp_suite_nonce_len(aead);
+    bp_uint32 nl = bp_suite_nonce_len(aead), lo, hi;
     if (nl == 0 || !bp_suite_available(aead)) return BP_CRYPTO_E_UNSUPPORTED;
     if (envelope[2] != 0 || envelope[3] != 0) return BP_CRYPTO_E_ARG;
-    /* len = nonce + plaintext + tag */
+    /* the kind must be valid and the body inside its limits for this suite (draft 8.1) */
+    if (bp_frame_body_limits(aead, envelope[0], &lo, &hi) != BP_CRYPTO_OK) return BP_CRYPTO_E_ARG;
+    if (body_len < lo || body_len > hi) return BP_CRYPTO_E_ARG;
+    /* len = nonce + plaintext + tag; refuse a body whose frame length cannot be
+     * represented before adding the overhead (it would wrap) */
+    if (body_len > 0xFFFFFFFFUL - nl - BP_TAG_LEN) return BP_CRYPTO_E_ARG;
     if (bp_read_le32(envelope + 4) != nl + body_len + BP_TAG_LEN) return BP_CRYPTO_E_ARG;
     return BP_CRYPTO_OK;
 }
