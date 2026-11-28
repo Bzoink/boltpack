@@ -7,6 +7,11 @@
  */
 #include "bp_entropy.h"
 
+int bp_entropy_os_present(void)
+{
+    return 0;
+}
+
 int bp_entropy_os_read(bp_uint8 *buf, bp_uint32 n)
 {
     (void)buf; (void)n;

@@ -24,7 +24,6 @@ static const bp_uint8 L_OUT[] = "bp8/pool/out";
 static bp_uint8  g_state[32];
 static bp_uint32 g_ctr_lo, g_ctr_hi;
 static bp_uint32 g_credit[NSRC];
-static int       g_os_tried;
 static int       g_os_ok;
 
 #ifdef BP_CRYPTO_TESTING
@@ -65,6 +64,20 @@ static bp_uint32 strong_credit(void)
 bp_uint32 bp_entropy_credit(void)
 {
     return total_credit();
+}
+
+#ifdef BP_CRYPTO_TESTING
+static int g_os_present_override = -1;     /* -1: follow the platform file; 0 or 1: pretend */
+#endif
+
+/* Does this build have an OS random source at all?  Decided by the platform file, not by a read. */
+static int os_present(void)
+{
+#ifdef BP_CRYPTO_TESTING
+    if (g_os_present_override >= 0) return g_os_present_override;
+    if (g_os_fn != NULL) return 1;
+#endif
+    return bp_entropy_os_present();
 }
 
 static int os_read(bp_uint8 *buf, bp_uint32 n)
@@ -115,7 +128,7 @@ bp_uint32 bp_entropy_import(const bp_uint8 *data, bp_uint32 len)
     bp_xof x;
     bp_uint32 fp[4];
     bp_uint8 fpb[16];
-    int i, j, seen = 0;
+    int i, j, seen = 0, retained = 0;
 
     if (data == NULL && len != 0) return total_credit();
     bp_xof_init(&x);
@@ -128,8 +141,10 @@ bp_uint32 bp_entropy_import(const bp_uint8 *data, bp_uint32 len)
         for (j = 0; j < 4; j++) if (g_import_fp[i][j] != fp[j]) same = 0;
         if (same) seen = 1;
     }
-    if (!seen && g_import_n < 8) { memcpy(g_import_fp[g_import_n], fp, sizeof fp); g_import_n++; }
-    return bp_entropy_add(BP_ENT_IMPORT, data, len, seen ? 0U : (len > 32 ? 256U : len * 8U));
+    /* A buffer earns credit only if its fingerprint can be kept, so that it cannot earn credit twice:
+     * at most eight imports are credited; further ones are mixed in and earn nothing. */
+    if (!seen && g_import_n < 8) { memcpy(g_import_fp[g_import_n], fp, sizeof fp); g_import_n++; retained = 1; }
+    return bp_entropy_add(BP_ENT_IMPORT, data, len, retained ? (len > 32 ? 256U : len * 8U) : 0U);
 }
 
 void bp_entropy_add_weak(void)
@@ -199,7 +214,10 @@ static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need, int secret)
     int have_fresh = 0;
 
     if (buf == NULL && n != 0) return BP_CRYPTO_E_ARG;
-    if (!g_os_tried) { g_os_tried = 1; bp_entropy_seed_os(); }
+    /* Where the build has an OS source it is required: seed from it (retrying on every call until it
+     * works) and fail closed if it does not.  Only a build with no OS source runs on imported and
+     * gathered credit. */
+    if (os_present() && !g_os_ok && bp_entropy_seed_os() != 0) return BP_CRYPTO_E_ENTROPY;
     if ((secret ? strong_credit() : total_credit()) < need) return BP_CRYPTO_E_ENTROPY;
 
     /* Where the OS source seeded the pool, every output mixes 32 fresh OS bytes (a
@@ -253,14 +271,19 @@ void bp_entropy_test_reset(void)
     memset(g_credit, 0, sizeof g_credit);
     memset(g_import_fp, 0, sizeof g_import_fp);
     g_import_n = 0;
-    g_os_tried = 0;
     g_os_ok = 0;
+    g_os_present_override = -1;
     g_out_count = 0;
 }
 
 void bp_entropy_test_set_os(int (*fn)(bp_uint8 *buf, bp_uint32 n))
 {
     g_os_fn = fn;
+}
+
+void bp_entropy_test_set_os_present(int present)
+{
+    g_os_present_override = present;
 }
 
 bp_uint32 bp_entropy_test_output_count(void)

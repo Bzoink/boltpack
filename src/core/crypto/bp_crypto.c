@@ -219,23 +219,41 @@ void bp_hash_final(bp_hash_ctx *c, bp_uint8 *out)
 
 /* ---- key-use budget ----------------------------------------------------- */
 
+/* a * m for a small m (below 2^16), by doubling; the result fits 64 bits for the values used here */
+static bp_uint64 u64_mul_small(bp_uint64 a, bp_uint32 m)
+{
+    bp_uint64 r = bp_u64_from_u32(0);
+    while (m != 0) {
+        if (m & 1) r = bp_u64_add(r, a);
+        a = bp_u64_add(a, a);
+        m >>= 1;
+    }
+    return r;
+}
+
+/* the largest S2 table chunk frame: envelope 8 + nonce 16 + plaintext 16384 + tag 16 + fcrc 4 */
+#define BP_S2_MAX_CHUNK_FRAME 16428UL
+
 int bp_budget_ok(int aead, const bp_budget_use *present, bp_uint32 add_frames, bp_uint32 add_bytes)
 {
-    bp_uint64 frames, bytes, limit;
+    bp_uint64 frames, bytes, limit, dead;
     bp_uint32 i;
     if (present == NULL) return BP_CRYPTO_E_ARG;
     if (aead != BP_SUITE_S1 && aead != BP_SUITE_S2) return BP_CRYPTO_E_UNSUPPORTED;
-    frames = bp_u64_from_u32(present->frames);
-    /* the table chunk frames of earlier revisions that appends overwrote */
+    /* Every earlier revision sealed its table chunks and one end structure, and an append overwrote them:
+     * revision x (chunks + 1) dead frames, an upper bound as long as appends never reduce the number of
+     * table chunks (draft 6).  The history is assumed to be linear (one copy, draft 9.1). */
+    dead = bp_u64_from_u32(0);
     for (i = 0; i < present->revision && i < BP_MAX_REVISION; i++)
-        frames = bp_u64_add(frames, bp_u64_from_u32(present->table_chunks));
-    frames = bp_u64_add(frames, bp_u64_from_u32(add_frames));
+        dead = bp_u64_add(dead, bp_u64_from_u32(present->table_chunks + 1));
+    frames = bp_u64_add(bp_u64_add(bp_u64_from_u32(present->frames), dead), bp_u64_from_u32(add_frames));
     limit.hi = 0; limit.lo = 0;
     if (aead == BP_SUITE_S2) limit.lo = 16777216UL;      /* 2^24 */
     else                     limit.hi = 1;               /* 2^32 */
     if (bp_u64_cmp(frames, limit) > 0) return 0;
     if (aead == BP_SUITE_S2) {                           /* 2^40 bytes; S1 sets no byte limit */
         bytes = bp_u64_add(present->bytes, bp_u64_from_u32(add_bytes));
+        bytes = bp_u64_add(bytes, u64_mul_small(dead, BP_S2_MAX_CHUNK_FRAME & 0xFFFFUL));
         limit.hi = 256; limit.lo = 0;
         if (bp_u64_cmp(bytes, limit) > 0) return 0;
     }

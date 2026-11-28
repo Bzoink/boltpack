@@ -32,10 +32,20 @@ static int os_two_good_then_fail(bp_uint8 *b, bp_uint32 n)   /* the seed read, o
 static bp_uint8 g_E[32];
 static int E_fixed(bp_uint8 E[32]) { memcpy(E, g_E, 32); return 0; }
 
+static int os_fail_once_count;
+static int os_fail_then_ok(bp_uint8 *b, bp_uint32 n)     /* the first read fails, later ones work */
+{
+    if (os_fail_once_count++ == 0) return -1;
+    memset(b, 0x3C, n);
+    return 0;
+}
+
 static void fresh(int (*os)(bp_uint8 *, bp_uint32))
 {
     bp_entropy_test_reset();
     bp_entropy_test_set_os(os);
+    os_fail_once_count = 0;
+    if (os == os_fail) bp_entropy_test_set_os_present(0);    /* os_fail stands for a build with no OS source */
     replay_pos = 0;
     os_ok_then_fail_count = 0;
 }
@@ -116,6 +126,28 @@ static void test_pool(void)
     CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_E_ENTROPY);
     CHECK(buf[0] == 0xAA && buf[31] == 0xAA);
     CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_E_ENTROPY);
+
+    /* a build WITH an OS source needs it: a failing read fails the call even with plenty of imported credit,
+     * and the read is retried on every call (a source that recovers is used) */
+    fresh(os_fail);
+    bp_entropy_test_set_os_present(1);
+    bp_entropy_import(data, 16);
+    memset(buf, 0xAA, sizeof buf);
+    CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_E_ENTROPY && buf[0] == 0xAA);
+    CHECK(bp_random_secret(buf, 32) == BP_CRYPTO_E_ENTROPY);
+    fresh(os_fail_then_ok);
+    bp_entropy_import(data, 16);
+    CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_E_ENTROPY);      /* first read fails */
+    CHECK(bp_random_bytes(buf, 32) == BP_CRYPTO_OK);             /* the source recovered: used */
+    CHECK(bp_entropy_credit() == 256);
+
+    /* only eight imports are credited, and a ninth buffer repeated cannot earn credit again */
+    fresh(os_fail);
+    { bp_uint8 one; int k, j;
+      for (k = 0; k < 8; k++) { one = (bp_uint8)(0x90 + k); bp_entropy_import(&one, 1); }
+      CHECK(bp_entropy_credit() == 64);
+      for (j = 0; j < 30; j++) { one = 0xEE; bp_entropy_import(&one, 1); }
+      CHECK(bp_entropy_credit() == 64); }
 
     /* the same imported buffer earns credit once; different buffers each earn theirs */
     fresh(os_fail);
@@ -412,8 +444,11 @@ static void test_limits_budget_hash(void)
     CHECK(bp_budget_ok(1, &u, 1000000UL, 0) == 1);               /* S1 allows 2^32 frames */
     u.frames = 0xFFFFFFFFUL;
     CHECK(bp_budget_ok(1, &u, 1, 0) == 1 && bp_budget_ok(1, &u, 2, 0) == 0);
-    u.frames = 16777216UL - 100; u.revision = 3; u.table_chunks = 30;   /* 3 * 30 dead table frames */
-    CHECK(bp_budget_ok(2, &u, 10, 0) == 1 && bp_budget_ok(2, &u, 11, 0) == 0);
+    u.frames = 16777216UL - 100; u.revision = 3; u.table_chunks = 30;   /* 3 * (30 + 1) dead frames */
+    CHECK(bp_budget_ok(2, &u, 7, 0) == 1 && bp_budget_ok(2, &u, 8, 0) == 0);
+    memset(&u, 0, sizeof u);                                              /* the dead frames also count as bytes */
+    u.bytes.hi = 255; u.bytes.lo = 0xFFFFFFFFUL - 16428UL * 3UL * 2UL; u.revision = 3; u.table_chunks = 1;
+    CHECK(bp_budget_ok(2, &u, 0, 0) == 1 && bp_budget_ok(2, &u, 0, 17) == 0);
     u.frames = 0; u.revision = 4096; u.table_chunks = 5000;             /* 4096 * 5000 > 2^24 */
     CHECK(bp_budget_ok(2, &u, 0, 0) == 0);
     memset(&u, 0, sizeof u);

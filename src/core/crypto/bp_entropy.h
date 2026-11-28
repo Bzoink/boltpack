@@ -13,7 +13,7 @@
  *   gathered timing at most 64, weak data (clock, pid, addresses) 0.
  *
  * Policy: imported bytes are trusted seed material, and the same buffer earns
- * credit once.  A secret (bp_random_secret) needs 256 bits from the OS source,
+ * credit once (at most eight imports are credited, later ones are mixed in only).  A secret (bp_random_secret) needs 256 bits from the OS source,
  * hardware instructions and imported bytes only: gathered timing never counts
  * toward it.  Where the OS source seeded the pool, an output call whose fresh OS
  * read fails returns BP_CRYPTO_E_ENTROPY and outputs nothing.
@@ -67,11 +67,18 @@ int bp_random_secret(bp_uint8 *buf, bp_uint32 n);
 /* Platform file (bp_entropy_os_*.c): n bytes from the OS source, 0 or -1. */
 int bp_entropy_os_read(bp_uint8 *buf, bp_uint32 n);
 
+/* Platform file: 1 if this build has an OS random source (a read can still fail), 0 if it has none.
+ * With a source, the pool needs it: a failing read fails the call (it is retried on every call);
+ * without one, the pool runs on its imported and gathered credit. */
+int bp_entropy_os_present(void);
+
 #ifdef BP_CRYPTO_TESTING
 /* Forget everything (state, credits, the OS-seeded flag). */
 void bp_entropy_test_reset(void);
 /* Replace the OS source: NULL restores the real one. */
 void bp_entropy_test_set_os(int (*fn)(bp_uint8 *buf, bp_uint32 n));
+/* Pretend the build has (1) or has no (0) OS source; -1 follows the platform file. */
+void bp_entropy_test_set_os_present(int present);
 /* Total bytes the pool has handed out since the last reset. */
 bp_uint32 bp_entropy_test_output_count(void);
 #endif

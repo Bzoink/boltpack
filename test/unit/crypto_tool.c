@@ -188,7 +188,7 @@ int main(void)
             bp_xof_squeeze(&x, b2, n); phex(b2, n); printf("\n");
         } else if (!strcmp(cmd, "POOL")) {
             bp_uint32 il = unhex(tok(&p), b1, MAXB), tot = 0; char *t;
-            bp_entropy_test_reset(); bp_entropy_test_set_os(os_none);
+            bp_entropy_test_reset(); bp_entropy_test_set_os(os_none); bp_entropy_test_set_os_present(0);
             bp_entropy_import(b1, il);
             {
                 int err = 0;

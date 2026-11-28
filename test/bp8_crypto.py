@@ -162,9 +162,11 @@ def limits(aead, kind):
 MAX_REVISION = 4096
 
 def budget_ok(aead, frames, nbytes, revision, table_chunks, add_frames, add_bytes):
-    est = frames + min(revision, MAX_REVISION) * table_chunks + add_frames
-    if est > (2**24 if aead == S2 else 2**32): return 0
-    if aead == S2 and nbytes + add_bytes > 2**40: return 0
+    """Draft 9.1: every earlier revision left (table_chunks + 1) dead frames (its chunks and one end structure),
+    each at most 16,428 bytes for S2; appends must never reduce the number of table chunks."""
+    dead = min(revision, MAX_REVISION) * (table_chunks + 1)
+    if frames + dead + add_frames > (2**24 if aead == S2 else 2**32): return 0
+    if aead == S2 and nbytes + add_bytes + dead * 16428 > 2**40: return 0
     return 1
 
 def commit(aead, tags):

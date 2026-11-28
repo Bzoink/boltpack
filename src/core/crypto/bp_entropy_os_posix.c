@@ -39,6 +39,11 @@ static int urandom_read(bp_uint8 *buf, bp_uint32 n)
     return 0;
 }
 
+int bp_entropy_os_present(void)
+{
+    return 1;
+}
+
 int bp_entropy_os_read(bp_uint8 *buf, bp_uint32 n)
 {
 #if defined(__linux__)
