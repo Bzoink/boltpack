@@ -4350,6 +4350,11 @@ RECOVER_OBJS   = $(patsubst src/tools/recover/%.c,$(RECOVER_DIR)/obj/%.o,$(RECOV
                  $(RECOVER_DIR)/core/boltlz.o $(RECOVER_DIR)/core/compress.o \
                  $(RECOVER_DIR)/core/archiver.o $(RECOVER_DIR)/core/bp_codepage.o
 
+# Phase 1 of the encryption plan: the cryptographic layer (src/core/crypto).  Not part of `all`.
+.PHONY: crypto-test
+crypto-test:
+	sh test/run_crypto_tests.sh
+
 .PHONY: recover recover-test
 recover: $(RECOVER_DIR)/boltpack-recover
 
