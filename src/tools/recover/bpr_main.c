@@ -7,6 +7,7 @@
  * set is damaged or incomplete, 2 no entry found, 3 usage or I/O error.
  */
 #include "bpr.h"
+#include "bpr_sc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,9 @@ static void usage(FILE *o)
     fputs("Usage: boltpack-recover analyze [options] VOLUME...\n"
           "       boltpack-recover extract [options] -o DIR VOLUME...\n"
           "       boltpack-recover rebuild [options] -o OUT.bolt [--volume-size N] VOLUME...\n"
+          "       boltpack-recover protect [options] -r PERCENT [-o SET.bpr] VOLUME...\n"
+          "       boltpack-recover check [options] SET.bpr [VOLUME...]\n"
+          "       boltpack-recover repair [options] -o DIR SET.bpr VOLUME...\n"
           "\n"
           "analyze reads damaged BoltPack format 7 archives or volume sets and\n"
           "reports what is found, without changing anything.\n"
@@ -32,6 +36,10 @@ static void usage(FILE *o)
           "metadata entries, which extract cannot restore.  Blocks are copied, not\n"
           "recompressed, except where a volume boundary splits one.  Entries that\n"
           "are not whole are left out and listed in the report.  OUT must not exist.\n"
+          "\n"
+          "protect writes a recovery file (.bpr) with parity for an intact archive;\n"
+          "check compares volumes with it and repair rebuilds damaged or missing\n"
+          "volumes from it into a new directory.  See each command's --help.\n"
           "\n"
           "Options:\n"
           "  -o DIR | -o OUT      extraction directory (extract) or new archive (rebuild)\n"
@@ -116,6 +124,9 @@ int bpr_main(int argc, char **argv)
         usage(stdout);
         return 0;
     }
+    if (strcmp(argv[1], "protect") == 0) return bpr_cmd_protect(argc, argv);
+    if (strcmp(argv[1], "check") == 0) return bpr_cmd_check(argc, argv);
+    if (strcmp(argv[1], "repair") == 0) return bpr_cmd_repair(argc, argv);
     if (strcmp(argv[1], "analyze") == 0) extract = 0;
     else if (strcmp(argv[1], "extract") == 0) extract = 1;
     else if (strcmp(argv[1], "rebuild") == 0) extract = rebuild = 1;

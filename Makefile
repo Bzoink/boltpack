@@ -4400,14 +4400,17 @@ win64-recover:
 # set the sweep size (default 0, the sweep is a Linux-side exhaustive check).
 RECOVER_WINE_PREFIX ?= $(abspath build/win64/wineprefix-recover)
 WIN_RECOVER_SWEEP   ?= 0
-define recover_wine_test
+define recover_wine_run
 	@set -e; export WINEPREFIX="$(RECOVER_WINE_PREFIX)" WINEDEBUG=-all DISPLAY=; \
+	(nohup wineserver -p >/dev/null 2>&1 &); sleep 1; \
 	$(or $(WINE),wine) wineboot -i >/dev/null 2>&1 || true; \
-	(nohup wineserver -p >/dev/null 2>&1 &); \
-	rc=0; python3 -u test/check_recover.py --recover $(1) \
+	rc=0; python3 -u $(1) --recover $(2) \
 	    --boltpack build/linux/boltpack --windows-runner "$(or $(WINE),wine)" \
-	    --sweep $(WIN_RECOVER_SWEEP) || rc=$$?; \
+	    $(3) || rc=$$?; \
 	wineserver -k >/dev/null 2>&1 || true; exit $$rc
+endef
+define recover_wine_test
+	$(call recover_wine_run,test/check_recover.py,$(1),--sweep $(WIN_RECOVER_SWEEP))
 endef
 
 win64-recover-test: win64-recover
@@ -4415,3 +4418,15 @@ win64-recover-test: win64-recover
 
 win32-recover-test: win32-recover
 	$(call recover_wine_test,$(WIN32_BUILDDIR)/boltpack-recover.exe)
+
+# The recovery-file commands (protect, check, repair): seconds on Linux and under Wine.
+.PHONY: recover-sidecar-test win64-recover-sidecar-test win32-recover-sidecar-test
+recover-sidecar-test: $(RECOVER_DIR)/boltpack-recover
+	python3 test/check_sidecar.py --recover $(RECOVER_DIR)/boltpack-recover \
+	    --boltpack build/linux/boltpack
+
+win64-recover-sidecar-test: win64-recover
+	$(call recover_wine_run,test/check_sidecar.py,$(WIN64_BUILDDIR)/boltpack-recover.exe,)
+
+win32-recover-sidecar-test: win32-recover
+	$(call recover_wine_run,test/check_sidecar.py,$(WIN32_BUILDDIR)/boltpack-recover.exe,)

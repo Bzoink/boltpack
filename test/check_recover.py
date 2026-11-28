@@ -33,6 +33,7 @@ import re
 import shutil
 import struct
 import subprocess
+import time
 
 
 # No single process may hang the suite: every child gets a time limit, and one
@@ -69,6 +70,23 @@ subprocess.run = _run_with_timeout
 
 class NamesOnlyDone(Exception):
     pass
+
+
+def warm_up(binary):
+    """The first launch after a Wine server starts also starts its helper
+    processes (winedevice.exe), which inherit the launcher's stdout and stderr.
+    With pipes they never reach end of file and the caller waits for them
+    (this stalled runs for minutes, twice).  So the first launch writes to
+    /dev/null; later ones find the helpers already running."""
+    if not WIN["runner"]:
+        return
+    t0 = time.time()
+    try:
+        _real_run(tool_cmd(binary) + ["--help"], stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL, timeout=900)
+    except subprocess.TimeoutExpired:
+        print("warm-up launch did not finish in 900 s", flush=True)
+    print("warm-up launch: %.1f s" % (time.time() - t0), flush=True)
 import sys
 import tempfile
 
@@ -2511,6 +2529,7 @@ def main():
         if not os.path.exists(p):
             print("missing %s (build it first)" % p)
             return 2
+    warm_up(args.recover)
 
     root = args.keep or tempfile.mkdtemp(prefix="bpr-test-")
     os.makedirs(root, exist_ok=True)
