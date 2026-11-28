@@ -38,6 +38,7 @@ make
 | [target-compatibility-profiles.md](target-compatibility-profiles.md) | Writer-side target profiles, automatic filename aliases, and compatibility limits |
 | [emulator-setup.md](emulator-setup.md) | Verified local Atari and Amiga emulator startup settings |
 | [same-system-transfer.md](same-system-transfer.md) | What data and filesystem resources survive create-then-extract between two systems of the same type, per system |
+| [recovery.md](recovery.md) | `boltpack-recover`: analyse, extract, rebuild and repair damaged archives and volume sets; the `.bpr` recovery file |
 | [usable-roundtrip.md](usable-roundtrip.md) | Acceptance gate that runs restored applications, checks essential metadata and verifies failure preservation |
 | [hardware-testing.md](hardware-testing.md) | How to test on real machines and report results; per-system test steps |
 | [interoperability-matrix.md](interoperability-matrix.md) | Per-frontend capabilities and validation evidence |

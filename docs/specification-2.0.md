@@ -1425,6 +1425,12 @@ the entries by the table header magic. It cannot check names for uniqueness
 in advance and MUST still apply the name rules of §2.3.1 to each entry before
 writing it.
 
+The `boltpack-recover` program (see [recovery.md](recovery.md)) is a reader of
+this kind: it also finds entries by scanning for self-delimiting structures
+when the table or a volume is damaged, and reports what it can and cannot
+verify. That is a separate tool, not a conformance requirement for the readers
+specified here; the strict reading rules of this section are unchanged.
+
 ---
 
 ## 6. Creator Identification

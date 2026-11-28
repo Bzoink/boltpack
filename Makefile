@@ -4368,8 +4368,13 @@ $(RECOVER_DIR)/core/fluff.o: $(COREDIR)/fluff.c $(RECOVER_HDRS)
 	@mkdir -p $(RECOVER_DIR)/core
 	$(CC) -std=c11 -O3 -Wall -Wextra -Wno-unused-function -I$(COREDIR) -c -o $@ $<
 
-# Needs build/linux/boltpack to create fixtures; does not rebuild it.
-recover-test: $(RECOVER_DIR)/boltpack-recover
+# The tests make their archives with the Linux CLI: build it first if it is missing
+# (an existing build/linux/boltpack is used as it is).
+.PHONY: recover-cli
+recover-cli:
+	@test -x build/linux/boltpack || $(MAKE) all
+
+recover-test: $(RECOVER_DIR)/boltpack-recover recover-cli
 	python3 test/check_recover.py --recover $(RECOVER_DIR)/boltpack-recover \
 	    --boltpack build/linux/boltpack
 
@@ -4381,7 +4386,17 @@ RECOVER_WIN_SRCS  = $(RECOVER_COMMON_SRCS) src/tools/recover/bpr_platform_win.c 
 RECOVER_WIN_FLAGS = -std=c11 -O2 -Wall -Wextra -Wno-unused-function \
                     -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -I$(COREDIR) -I$(BOLTLZDIR)
 
-.PHONY: win32-recover win64-recover win64-recover-test win32-recover-test
+.PHONY: win-recover win-recover-test win32-recover win64-recover win64-recover-test win32-recover-test
+win-recover: win32-recover win64-recover
+
+# Both Windows builds, both suites, under Wine.  Run one after the other: they share a
+# Wine prefix and server, so do not combine them with -j.
+win-recover-test:
+	$(MAKE) win64-recover-test
+	$(MAKE) win32-recover-test
+	$(MAKE) win64-recover-sidecar-test
+	$(MAKE) win32-recover-sidecar-test
+
 win32-recover:
 	mkdir -p $(WIN32_BUILDDIR)
 	i686-w64-mingw32-gcc $(RECOVER_WIN_FLAGS) -m32 $(RECOVER_WIN_SRCS) \
@@ -4402,6 +4417,9 @@ RECOVER_WINE_PREFIX ?= $(abspath build/win64/wineprefix-recover)
 WIN_RECOVER_SWEEP   ?= 0
 define recover_wine_run
 	@set -e; export WINEPREFIX="$(RECOVER_WINE_PREFIX)" WINEDEBUG=-all DISPLAY=; \
+	if [ ! -f "$(RECOVER_WINE_PREFIX)/system.reg" ]; then \
+	    $(or $(WINE),wine) wineboot -i >/dev/null 2>&1 || true; wineserver -w >/dev/null 2>&1 || true; \
+	fi; \
 	(nohup wineserver -p >/dev/null 2>&1 &); sleep 1; \
 	$(or $(WINE),wine) wineboot -i >/dev/null 2>&1 || true; \
 	rc=0; python3 -u $(1) --recover $(2) \
@@ -4413,20 +4431,20 @@ define recover_wine_test
 	$(call recover_wine_run,test/check_recover.py,$(1),--sweep $(WIN_RECOVER_SWEEP))
 endef
 
-win64-recover-test: win64-recover
+win64-recover-test: win64-recover recover-cli
 	$(call recover_wine_test,$(WIN64_BUILDDIR)/boltpack-recover.exe)
 
-win32-recover-test: win32-recover
+win32-recover-test: win32-recover recover-cli
 	$(call recover_wine_test,$(WIN32_BUILDDIR)/boltpack-recover.exe)
 
-# The recovery-file commands (protect, check, repair): seconds on Linux and under Wine.
+# The recovery-file commands (protect, check, repair): seconds on Linux, about a minute under Wine.
 .PHONY: recover-sidecar-test win64-recover-sidecar-test win32-recover-sidecar-test
-recover-sidecar-test: $(RECOVER_DIR)/boltpack-recover
+recover-sidecar-test: $(RECOVER_DIR)/boltpack-recover recover-cli
 	python3 test/check_sidecar.py --recover $(RECOVER_DIR)/boltpack-recover \
 	    --boltpack build/linux/boltpack
 
-win64-recover-sidecar-test: win64-recover
+win64-recover-sidecar-test: win64-recover recover-cli
 	$(call recover_wine_run,test/check_sidecar.py,$(WIN64_BUILDDIR)/boltpack-recover.exe,)
 
-win32-recover-sidecar-test: win32-recover
+win32-recover-sidecar-test: win32-recover recover-cli
 	$(call recover_wine_run,test/check_sidecar.py,$(WIN32_BUILDDIR)/boltpack-recover.exe,)

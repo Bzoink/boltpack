@@ -130,6 +130,19 @@ Windows environment and remain separate qualification steps. If Mono is
 installed outside `PATH`, pass its compiler and runtime using `MCS` and
 `MONO` make variables.
 
+### Recovery tool
+
+`boltpack-recover` (damaged-archive recovery, see [recovery.md](recovery.md)) is
+built separately and is not part of the default target:
+
+```sh
+make recover                  # build/recover/boltpack-recover
+make win-recover              # Win32 and Win64 builds with MinGW
+make recover-test             # recovery suite on Linux (builds the CLI if missing)
+make recover-sidecar-test     # protect / check / repair
+make win-recover-test         # the same suites for both Windows builds, under Wine
+```
+
 ### For Compile Packages
 
 When a target is not part of the aggregate Linux-hosted build workflow, create
