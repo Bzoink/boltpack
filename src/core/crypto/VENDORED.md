@@ -28,8 +28,7 @@ by `make crypto-test`.
 | Files | `ref/` (the AEAD128 reference: `aead.c`, `api.h`, `ascon.h`, `constants.h`, `permutations.h`, `printstate.[ch]`, `round.h`, `word.h`) and `crypto_aead.h` from `tests/`; `LICENSE` |
 | Licence | CC0-1.0 |
 | Language | C99 |
-| Use | `bp_ascon_ref.c` includes the permutation, round, word and constant headers (not `aead.c`). `ref/aead.c` is not compiled into the library: it is the reference that phase 1b tests the strict C89 replacement against. The NIST known-answer files are in `test/reference/encryption/` |
+| Use | `bp_ascon_ref.c` (test reference only) includes the permutation, round, word and constant headers. `ref/aead.c` is not compiled into the library: it is the reference the C89 port is tested against. The NIST known-answer files are in `test/reference/encryption/` |
 
-Phase 1b replaces `bp_ascon_ref.c` with a strict C89 implementation behind the
-same interface (`bp_ascon.h`); the vendored reference then stays only as the test
-reference.
+Since phase 1b the library backend is `bp_ascon_c89.c` (strict C89, 32-bit or 16-bit limbs);
+`bp_ascon_ref.c` and the vendored `ref/aead.c` are compiled only into the differential test.

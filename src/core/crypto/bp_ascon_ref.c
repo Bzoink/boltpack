@@ -2,9 +2,10 @@
  * bp_ascon_ref.c -- the Ascon backend (bp_ascon.h) on the vendored ascon-c
  * reference permutation.  C99 (the reference uses stdint.h and inline).
  *
- * This file is the phase 1 stand-in.  Phase 1b replaces it with a strict C89
- * implementation behind the same interface; vendor/ascon-c/ref/aead.c stays in
- * the tree as the reference the replacement is tested against.
+ * Since phase 1b this file is NOT part of the library: bp_ascon_c89.c is the
+ * backend.  This one is compiled only into the differential test
+ * (test/unit/ascon_diff.c, with its symbols renamed), together with
+ * vendor/ascon-c/ref/aead.c, as the reference the C89 port is checked against.
  *
  * AEAD logic follows ascon-c ref/aead.c (Ascon-AEAD128, SP 800-232);
  * XOF logic follows ascon-c crypto_hash/asconxof128/ref/hash.c.

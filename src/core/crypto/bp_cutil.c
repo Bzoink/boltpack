@@ -13,7 +13,15 @@ static void *(*volatile bp_memset_v)(void *, int, size_t) = memset;
 
 void bp_wipe(void *p, bp_uint32 n)
 {
-    if (p != NULL && n != 0) bp_memset_v(p, 0, (size_t)n);
+    bp_uint8 *q = (bp_uint8 *)p;
+    if (q == NULL) return;
+    while (n != 0) {
+        /* where size_t is 16 bits (DOS, 16-bit Windows) a long count is wiped in pieces */
+        size_t chunk = (sizeof(size_t) < 4 && n > 0x4000UL) ? (size_t)0x4000U : (size_t)n;
+        bp_memset_v(q, 0, chunk);
+        q += chunk;
+        n -= (bp_uint32)chunk;
+    }
 }
 
 int bp_ct_equal(const bp_uint8 *a, const bp_uint8 *b, bp_uint32 n)

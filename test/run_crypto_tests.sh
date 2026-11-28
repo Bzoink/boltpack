@@ -14,7 +14,11 @@ OUT=${CRYPTO_BUILD:-$ROOT/build/crypto}
 CC=${CC:-gcc}
 C=$ROOT/src/core/crypto
 QUICK=""
-[ "${1:-}" = "--quick" ] && QUICK="--quick"
+LONG=0
+for a in "$@"; do
+    [ "$a" = "--quick" ] && QUICK="--quick"
+    [ "$a" = "--long" ] && LONG=1      # 10 million differential iterations (about 2 minutes per variant)
+done
 mkdir -p "$OUT"
 fail=0
 skips=0
@@ -22,12 +26,12 @@ ok()   { echo "  ok    $*"; }
 bad()  { echo "  FAIL  $*"; fail=1; }
 
 COMMON="-std=c99 -Wall -Wextra -Wno-unused-function -DBP_CRYPTO_TESTING -I$C -I$C/vendor/ascon-c/ref"
-BASE="$C/bp_cutil.c $C/bp_crypto.c $C/bp_entropy.c $C/bp_entropy_os_posix.c $C/bp_ascon_ref.c"
+BASE="$C/bp_cutil.c $C/bp_crypto.c $C/bp_entropy.c $C/bp_entropy_os_posix.c $C/bp_ascon_c89.c"
 S1SRC="$C/bp_s1.c $C/vendor/monocypher/monocypher.c"
 
 echo "== strict C89 compile of the C89 files (no S1; with and without test hooks)"
-for f in bp_cutil.c bp_crypto.c bp_entropy.c; do
-    for extra in "" "-DBP_CRYPTO_TESTING"; do
+for f in bp_cutil.c bp_crypto.c bp_entropy.c bp_ascon_c89.c; do
+    for extra in "" "-DBP_CRYPTO_TESTING" "-DBP_ASCON_WORD16" "-DBP_ASCON_WORD16 -DBP_ASCON_LIMB_SHORT"; do
         if timeout 120 $CC -std=c89 -pedantic -Wall -Wextra -Werror -Wno-unused-function $extra \
               -I"$C" -c "$C/$f" -o "$OUT/c89_$f.o" 2>"$OUT/c89.log"; then ok "$f $extra"
         else bad "$f $extra"; cat "$OUT/c89.log"; fi
@@ -86,19 +90,40 @@ if $CC -fsanitize=address "$OUT/lsan_probe.c" -o "$OUT/lsan_probe" 2>/dev/null &
 else echo "  note: LeakSanitizer cannot run here; the sanitizer variant runs with detect_leaks=0 (leaks are NOT checked)"; ASAN_OPTIONS="detect_leaks=0"; export ASAN_OPTIONS; skips=1; fi
 run_variant san      "$SANFLAGS" "$BASE $S1SRC" ""
 run_variant s2only   "-O2"                                                               "$BASE"        "--s2-only"
+run_variant w16      "-O2 -DBP_ASCON_WORD16 -DBP_CRYPTO_S1"                              "$BASE $S1SRC" ""
+run_variant w16short "-O2 -DBP_ASCON_WORD16 -DBP_ASCON_LIMB_SHORT -DBP_CRYPTO_S1"        "$BASE $S1SRC" ""
+
+echo "== differential test: the C89 Ascon against ascon-c ref/aead.c and the reference-permutation backend"
+N=200000; [ "$LONG" = 1 ] && N=10000000
+for v in "w32:" "w16:-DBP_ASCON_WORD16" "w16short:-DBP_ASCON_WORD16 -DBP_ASCON_LIMB_SHORT"; do
+    vn=${v%%:*}; vf=${v#*:}
+    dfail=0
+    timeout 300 $CC -std=c99 -O2 -w -I"$C" -I"$C/vendor/ascon-c/ref" -Dbp_xof_init=ref_xof_init -Dbp_xof_absorb=ref_xof_absorb \
+        -Dbp_xof_squeeze=ref_xof_squeeze -Dbp_ascon_aead_seal=ref_aead_seal -Dbp_ascon_aead_open=ref_aead_open \
+        -c "$C/bp_ascon_ref.c" -o "$OUT/dref.o" 2>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -std=c99 -O2 -w -I"$C/vendor/ascon-c/ref" -c "$C/vendor/ascon-c/ref/aead.c" -o "$OUT/daead.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -std=c99 -O2 -w -I"$C" $vf -c "$C/bp_ascon_c89.c" -o "$OUT/dc89_$vn.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -std=c99 -O2 -w -I"$C" -c "$C/bp_cutil.c" -o "$OUT/dcutil.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -std=c99 -O2 -w -I"$C" -c "$ROOT/test/unit/ascon_diff.c" -o "$OUT/ddiff.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -o "$OUT/ascon_diff_$vn" "$OUT/ddiff.o" "$OUT/dc89_$vn.o" "$OUT/dref.o" "$OUT/daead.o" "$OUT/dcutil.o" 2>>"$OUT/d.log" || dfail=1
+    if [ "$dfail" = 1 ]; then bad "differential build ($vn)"; head -10 "$OUT/d.log"; continue; fi
+    timeout 1800 "$OUT/ascon_diff_$vn" "$N" >"$OUT/diff_$vn.log" 2>&1; rc=$?
+    r=$(tail -1 "$OUT/diff_$vn.log")
+    case "$r" in *" 0 failed") [ "$rc" = 0 ] && ok "$vn: $r" || bad "$vn: status $rc";; *) bad "$vn (status $rc): $r";; esac
+done
 
 echo "== 16-bit smoke: compile-only with Open Watcom wcc (DOS, compact model, -0), not run"
 WCC=${WCC16:-/opt/watcom/binl64/wcc}
 if [ -x "$WCC" ]; then
     wfail=0
-    for f in bp_cutil bp_crypto bp_entropy; do
-        for extra in "" "-DBP_CRYPTO_TESTING"; do
+    for f in bp_cutil bp_crypto bp_entropy bp_ascon_c89; do
+        for extra in "" "-DBP_CRYPTO_TESTING" "-DBP_ASCON_WORD16"; do
             if WATCOM=/opt/watcom INCLUDE=/opt/watcom/h timeout 120 "$WCC" -bt=dos -mc -0 -za -os -zm -w4 -we -wcd=202 \
                  -DSIZEOF_INT=2 -DSIZEOF_LONG=4 $extra -I"$C" -fo="$OUT/w16_$f.obj" "$C/$f.c" >"$OUT/w16.log" 2>&1; then :
             else wfail=1; echo "  wcc failed on $f $extra"; cat "$OUT/w16.log" | head -10; fi
         done
     done
-    [ "$wfail" = 0 ] && ok "bp_cutil.c bp_crypto.c bp_entropy.c compile with wcc -bt=dos -mc -0 -za (warnings are errors)" || bad "16-bit compile"
+    [ "$wfail" = 0 ] && ok "the four C89 files compile with wcc -bt=dos -mc -0 -za (warnings are errors)" || bad "16-bit compile"
 else echo "  SKIPPED ($WCC not found): no 16-bit compiler was run"; skips=1; fi
 
 echo "== constant time (valgrind secret-taint)"

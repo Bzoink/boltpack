@@ -4355,6 +4355,17 @@ RECOVER_OBJS   = $(patsubst src/tools/recover/%.c,$(RECOVER_DIR)/obj/%.o,$(RECOV
 crypto-test:
 	sh test/run_crypto_tests.sh
 
+# Phase 1b: the strict C89 Ascon run on emulated 16-bit and 68k hardware (emulators needed; not part of crypto-test).
+#   make crypto-dos-test                  Open Watcom 8086 build under DOSBox-X: known answers, both limb widths
+#   make crypto-hatari-test HATARI_TOS=tos162se.img [EMUTOS_ROM=etos512se.img]
+#                                         the crypto layer on a 68000 (and a 68030 TT with EmuTOS): known answers, golden frames, timings
+.PHONY: crypto-dos-test crypto-hatari-test
+crypto-dos-test:
+	python3 test/check_dos_crypto.py
+crypto-hatari-test:
+	@test -n "$(HATARI_TOS)" || { echo "Set HATARI_TOS to a TOS ROM image"; exit 2; }
+	python3 test/check_hatari_crypto.py --tos "$(HATARI_TOS)" $(if $(EMUTOS_ROM),--emutos "$(EMUTOS_ROM)")
+
 .PHONY: recover recover-test
 recover: $(RECOVER_DIR)/boltpack-recover
 
