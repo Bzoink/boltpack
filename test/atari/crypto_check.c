@@ -113,10 +113,10 @@ static void goldens(void)
     for (i = 0; i < N_COMMIT; i++) {
         const commit_case *c = &COMMITS[i];
         bp_hash_ctx hc; bp_uint8 t[16], d[16], want[16]; unsigned j;
-        DOK(bp_hash_init(&hc, c->aead, NULL, 16) == 0, "commit init");
+        DOK(bp_hash_init(&hc, c->aead, NULL, NULL, 0, 16) == 0, "commit init");
         for (j = 0; j < 5; j++) { hex2bin(c->tags[j], t); bp_hash_update(&hc, t, 16); }
         bp_hash_final(&hc, d); hex2bin(c->commit, want); DOK(memcmp(d, want, 16) == 0, "commit");
-        DOK(bp_hash_init(&hc, c->aead, NULL, 16) == 0, "table_hash init");
+        DOK(bp_hash_init(&hc, c->aead, NULL, NULL, 0, 16) == 0, "table_hash init");
         for (j = 0; j < 3; j++) { hex2bin(c->tags[j], t); bp_hash_update(&hc, t, 16); }
         bp_hash_final(&hc, d); hex2bin(c->table_hash, want); DOK(memcmp(d, want, 16) == 0, "table_hash");
     }

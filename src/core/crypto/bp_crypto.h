@@ -85,22 +85,30 @@ typedef struct {
 /* Hu: unkeyed.  S1: BLAKE2b with digest size outlen (1..64).  S2: Ascon-XOF128, outlen bytes. */
 int bp_hu(int aead, const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 outlen);
 
-/* Hk: keyed with a 32-byte key.  S1: BLAKE2b keyed, digest size outlen.
- * S2: Ascon-XOF128 over key || data, outlen bytes. */
-int bp_hk(int aead, const bp_uint8 key[32], const bp_part *parts, int nparts,
-          bp_uint8 *out, bp_uint32 outlen);
+/* Hk: keyed with a 32-byte key and labelled (label of 1 to 64 bytes, no terminator).
+ *   S1: BLAKE2b keyed with key, digest size outlen, over label || 0x00 || data.
+ *   S2: Ascon-CXOF128 with the label as customisation string, over key || data || outlen
+ *       (outlen as a 32-bit little-endian number), outlen bytes.  This is the idiom of KMAC
+ *       (key and data in a customised XOF, output length bound in); SP 800-232 has no
+ *       MAC or KDF of its own.  Decision D10. */
+int bp_hk(int aead, const bp_uint8 key[32], const bp_uint8 *label, bp_uint32 label_len,
+          const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 outlen);
 
 /* Incremental form of bp_hu / bp_hk, for hashes over many pieces (the table `commit`
  * over the tags of an entry's frames, the `table_hash` over the tags of the chunks).
- * key32 NULL means unkeyed.  The context is plain data: copy or wipe it freely. */
+ * key32 NULL means unkeyed (label must then be NULL and label_len 0).  The context is plain
+ * data: copy or wipe it freely. */
 typedef struct {
     double    align_;       /* alignment for the backend state */
+    bp_uint32 w[72];        /* backend state: an Ascon XOF (S2) or a BLAKE2b context (S1); keep it
+                             * right after align_ so that it stays 8-byte aligned */
     int       aead;
+    int       keyed;
     bp_uint32 outlen;
-    bp_uint32 w[72];        /* backend state: an Ascon XOF (S2) or a BLAKE2b context (S1) */
 } bp_hash_ctx;
 
-int  bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, bp_uint32 outlen);
+int  bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, const bp_uint8 *label,
+                  bp_uint32 label_len, bp_uint32 outlen);
 void bp_hash_update(bp_hash_ctx *c, const bp_uint8 *data, bp_uint32 len);
 void bp_hash_final(bp_hash_ctx *c, bp_uint8 *out);   /* writes outlen bytes and wipes the context */
 

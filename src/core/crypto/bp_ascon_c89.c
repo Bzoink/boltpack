@@ -341,6 +341,44 @@ void bp_xof_init(bp_xof *x)
     bp_wipe(&s, (bp_uint32)sizeof s);
 }
 
+/* a 32-bit value as a 64-bit word */
+static void w_from_u32(word w, bp_uint32 v)
+{
+    unsigned i;
+    for (i = 0; i < NL; i++)
+        w[i] = (i * AW_BITS < 32) ? LOW((v >> (i * AW_BITS)) & AW_MASK) : (aw)0;
+}
+
+int bp_cxof_init(bp_xof *x, const bp_uint8 *z, bp_uint32 zlen)
+{
+    astate s;
+    word a;
+    unsigned i;
+    if (zlen > 256) return -1;
+    /* Ascon-CXOF128 IV 0x0000080000cc0004 */
+    w_const(s.x[0], 0x00CC0004UL, 0x00000800UL);
+    for (i = 1; i < 5; i++) { unsigned l; for (l = 0; l < NL; l++) s.x[i][l] = 0; }
+    p12(&s);
+    w_from_u32(a, zlen * 8UL);             /* the length of z in bits */
+    w_xor(s.x[0], a);
+    p12(&s);
+    while (zlen >= 8) {
+        w_load(a, z, 8); w_xor(s.x[0], a);
+        p12(&s);
+        z += 8; zlen -= 8;
+    }
+    w_load(a, z, zlen); w_xor(s.x[0], a);
+    w_pad(s.x[0], zlen);
+    p12(&s);
+    xof_store(x, &s);
+    memset(x->buf, 0, sizeof x->buf);
+    x->pos = 0;
+    x->squeezing = 0;
+    bp_wipe(&s, (bp_uint32)sizeof s);
+    bp_wipe(a, (bp_uint32)sizeof a);
+    return 0;
+}
+
 void bp_xof_absorb(bp_xof *x, const bp_uint8 *data, bp_uint32 len)
 {
     astate s;

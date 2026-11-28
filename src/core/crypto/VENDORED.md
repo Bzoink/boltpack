@@ -30,5 +30,7 @@ by `make crypto-test`.
 | Language | C99 |
 | Use | `bp_ascon_ref.c` (test reference only) includes the permutation, round, word and constant headers. `ref/aead.c` is not compiled into the library: it is the reference the C89 port is tested against. The NIST known-answer files are in `test/reference/encryption/` |
 
+`ref_cxof/` holds ascon-c's Ascon-CXOF128 reference (`hash.c`, its `api.h`, and `crypto_hash.h` from `tests/`); the differential test compares the port's CXOF with it, and the NIST-format known-answer file is in `test/reference/encryption/`.
+
 Since phase 1b the library backend is `bp_ascon_c89.c` (strict C89, 32-bit or 16-bit limbs);
 `bp_ascon_ref.c` and the vendored `ref/aead.c` are compiled only into the differential test.

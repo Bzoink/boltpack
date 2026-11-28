@@ -125,3 +125,27 @@ def hash256(msg):
 
 def xof128(msg, outlen):
     return _sponge(XOF_IV, msg, outlen)
+
+CXOF_IV = 0x0000080000CC0004
+
+def cxof128(msg, outlen, z=b""):
+    """Ascon-CXOF128(msg, outlen, customization string z), SP 800-232."""
+    assert len(z) <= 256
+    S = perm([CXOF_IV, 0, 0, 0, 0], 12)
+    S[0] ^= len(z) * 8                      # the length of z in bits, as a 64-bit word
+    S = perm(S, 12)
+    i = 0
+    while len(z) - i >= 8:
+        S[0] ^= le(z[i:i+8]); S = perm(S, 12); i += 8
+    S[0] ^= le(pad(z[i:], 8)); S = perm(S, 12)
+    i = 0
+    while len(msg) - i >= 8:
+        S[0] ^= le(msg[i:i+8]); S = perm(S, 12); i += 8
+    S[0] ^= le(pad(msg[i:], 8))
+    out = b""
+    while True:
+        S = perm(S, 12)
+        out += tob(S[0], 8)
+        if len(out) >= outlen:
+            return out[:outlen]
+

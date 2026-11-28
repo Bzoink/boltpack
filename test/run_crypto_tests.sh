@@ -93,7 +93,7 @@ run_variant s2only   "-O2"                                                      
 run_variant w16      "-O2 -DBP_ASCON_WORD16 -DBP_CRYPTO_S1"                              "$BASE $S1SRC" ""
 run_variant w16short "-O2 -DBP_ASCON_WORD16 -DBP_ASCON_LIMB_SHORT -DBP_CRYPTO_S1"        "$BASE $S1SRC" ""
 
-echo "== differential test: the C89 Ascon against ascon-c ref/aead.c and the reference-permutation backend"
+echo "== differential test: the C89 Ascon (AEAD, XOF, CXOF) against ascon-c ref/aead.c, ref cxof and the reference-permutation backend"
 N=200000; [ "$LONG" = 1 ] && N=10000000
 for v in "w32:" "w16:-DBP_ASCON_WORD16" "w16short:-DBP_ASCON_WORD16 -DBP_ASCON_LIMB_SHORT"; do
     vn=${v%%:*}; vf=${v#*:}
@@ -102,10 +102,11 @@ for v in "w32:" "w16:-DBP_ASCON_WORD16" "w16short:-DBP_ASCON_WORD16 -DBP_ASCON_L
         -Dbp_xof_squeeze=ref_xof_squeeze -Dbp_ascon_aead_seal=ref_aead_seal -Dbp_ascon_aead_open=ref_aead_open \
         -c "$C/bp_ascon_ref.c" -o "$OUT/dref.o" 2>"$OUT/d.log" || dfail=1
     timeout 300 $CC -std=c99 -O2 -w -I"$C/vendor/ascon-c/ref" -c "$C/vendor/ascon-c/ref/aead.c" -o "$OUT/daead.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -std=c99 -O2 -w -I"$C/vendor/ascon-c/ref_cxof" -I"$C/vendor/ascon-c/ref" -c "$C/vendor/ascon-c/ref_cxof/hash.c" -o "$OUT/dcxof.o" 2>>"$OUT/d.log" || dfail=1
     timeout 300 $CC -std=c99 -O2 -w -I"$C" $vf -c "$C/bp_ascon_c89.c" -o "$OUT/dc89_$vn.o" 2>>"$OUT/d.log" || dfail=1
     timeout 300 $CC -std=c99 -O2 -w -I"$C" -c "$C/bp_cutil.c" -o "$OUT/dcutil.o" 2>>"$OUT/d.log" || dfail=1
     timeout 300 $CC -std=c99 -O2 -w -I"$C" -c "$ROOT/test/unit/ascon_diff.c" -o "$OUT/ddiff.o" 2>>"$OUT/d.log" || dfail=1
-    timeout 300 $CC -o "$OUT/ascon_diff_$vn" "$OUT/ddiff.o" "$OUT/dc89_$vn.o" "$OUT/dref.o" "$OUT/daead.o" "$OUT/dcutil.o" 2>>"$OUT/d.log" || dfail=1
+    timeout 300 $CC -o "$OUT/ascon_diff_$vn" "$OUT/ddiff.o" "$OUT/dc89_$vn.o" "$OUT/dref.o" "$OUT/daead.o" "$OUT/dcxof.o" "$OUT/dcutil.o" 2>>"$OUT/d.log" || dfail=1
     if [ "$dfail" = 1 ]; then bad "differential build ($vn)"; head -10 "$OUT/d.log"; continue; fi
     timeout 1800 "$OUT/ascon_diff_$vn" "$N" >"$OUT/diff_$vn.log" 2>&1; rc=$?
     r=$(tail -1 "$OUT/diff_$vn.log")

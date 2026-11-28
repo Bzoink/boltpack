@@ -39,6 +39,11 @@ typedef struct {
 } bp_xof;
 
 void bp_xof_init(bp_xof *x);
+
+/* Ascon-CXOF128 (SP 800-232): like bp_xof_init, but customised by the string z of at most 256
+ * bytes (0 on success, -1 if zlen is larger).  The message is then absorbed and the output
+ * squeezed with bp_xof_absorb and bp_xof_squeeze, exactly as for the XOF. */
+int bp_cxof_init(bp_xof *x, const bp_uint8 *z, bp_uint32 zlen);
 void bp_xof_absorb(bp_xof *x, const bp_uint8 *data, bp_uint32 len);
 void bp_xof_squeeze(bp_xof *x, bp_uint8 *out, bp_uint32 len);
 

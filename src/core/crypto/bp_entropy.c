@@ -17,6 +17,7 @@
 
 #define NSRC 6   /* source ids 1..5 */
 
+/* customisation strings of Ascon-CXOF128, no terminator; the state is the key-like input */
 static const bp_uint8 L_ADD[] = "bp8/pool/add";
 static const bp_uint8 L_OUT[] = "bp8/pool/out";
 
@@ -83,11 +84,15 @@ bp_uint32 bp_entropy_add(int source, const bp_uint8 *data, bp_uint32 len, bp_uin
     if (source < 1 || source >= NSRC || (data == NULL && len != 0)) return total_credit();
     meta[0] = (bp_uint8)source;
     bp_write_le32(meta + 1, len);
-    bp_xof_init(&x);
-    bp_xof_absorb(&x, L_ADD, (bp_uint32)sizeof L_ADD);
-    bp_xof_absorb(&x, g_state, 32);
-    bp_xof_absorb(&x, meta, 5);
-    bp_xof_absorb(&x, data, len);
+    {   /* CXOF128(Z = "bp8/pool/add", M = state || source || len || data || 32 as a u32, 32 bytes) */
+        bp_uint8 ol[4];
+        bp_write_le32(ol, 32);
+        bp_cxof_init(&x, L_ADD, (bp_uint32)sizeof L_ADD - 1);
+        bp_xof_absorb(&x, g_state, 32);
+        bp_xof_absorb(&x, meta, 5);
+        bp_xof_absorb(&x, data, len);
+        bp_xof_absorb(&x, ol, 4);
+    }
     bp_xof_squeeze(&x, ns, 32);
     memcpy(g_state, ns, 32);
     bp_wipe(ns, sizeof ns);
@@ -207,11 +212,15 @@ static int draw(bp_uint8 *buf, bp_uint32 n, bp_uint32 need, int secret)
     }
     bp_write_le32(ctr8, g_ctr_lo);
     bp_write_le32(ctr8 + 4, g_ctr_hi);
-    bp_xof_init(&x);
-    bp_xof_absorb(&x, L_OUT, (bp_uint32)sizeof L_OUT);
-    bp_xof_absorb(&x, g_state, 32);
-    bp_xof_absorb(&x, ctr8, 8);
-    if (have_fresh) bp_xof_absorb(&x, fresh, 32);
+    {   /* CXOF128(Z = "bp8/pool/out", M = state || ctr || [fresh OS bytes] || (n + 32) as a u32, n + 32 bytes) */
+        bp_uint8 ol[4];
+        bp_write_le32(ol, n + 32);
+        bp_cxof_init(&x, L_OUT, (bp_uint32)sizeof L_OUT - 1);
+        bp_xof_absorb(&x, g_state, 32);
+        bp_xof_absorb(&x, ctr8, 8);
+        if (have_fresh) bp_xof_absorb(&x, fresh, 32);
+        bp_xof_absorb(&x, ol, 4);
+    }
     bp_xof_squeeze(&x, buf, n);
     bp_xof_squeeze(&x, ns, 32);
     memcpy(g_state, ns, 32);          /* replace the state */

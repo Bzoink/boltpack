@@ -4,7 +4,7 @@
  * Built with BP_CRYPTO_TESTING.  Hex fields use "-" for the empty string.
  *
  *   HU    aead outlen data                    -> hex
- *   HK    aead outlen key32 data              -> hex
+ *   HK    aead outlen key32 label data        -> hex   (label is hex, not empty)
  *   PACK  kdf aead norm m t lanes salt16      -> 32-byte header prefix, hex
  *   DERIVE kdf aead norm m t lanes salt16 set8 secret [maxm maxt maxl]
  *                                             -> OK kseal knonce verifier | ERR code
@@ -18,7 +18,9 @@
  *   XOF2  data n1 n2                          -> squeeze n1 then n2 (two calls), hex of both
  *   XOFC  chunk n data                        -> absorb in chunks of `chunk` bytes, squeeze n, hex
  *   POOL  import n1 n2 ...                    -> pool with no OS source, import bytes, draw n1, n2, ... (hex)
- *   HINC  aead outlen key|- chunk data        -> incremental hash, data fed in pieces of `chunk` bytes (hex)
+ *   HINC  aead outlen key|- label|- chunk data -> incremental hash, data fed in pieces of `chunk` bytes (hex)
+ *   CXOF  z msg outlen                        -> Ascon-CXOF128 (z is the customisation string), hex
+ *   CXOFC z chunk outlen msg                  -> the same, absorbing the message in pieces and squeezing in two calls
  *   BUDGET aead frames bytes_hi bytes_lo revision table_chunks add_frames add_bytes -> 1 | 0 | ERR code
  *   LIMITS aead kind                          -> "min max" of the plaintext of a frame, or ERR code
  */
@@ -78,14 +80,15 @@ int main(void)
         if (!strcmp(cmd, "HU") || !strcmp(cmd, "HK")) {
             int aead = atoi(tok(&p));
             bp_uint32 ol = (bp_uint32)atoi(tok(&p));
-            bp_uint8 key[32];
+            bp_uint8 key[32], label[80];
+            bp_uint32 ll = 0;
             bp_part part;
             int rc;
-            if (cmd[1] == 'K') unhex(tok(&p), key, 32);
+            if (cmd[1] == 'K') { unhex(tok(&p), key, 32); ll = unhex(tok(&p), label, sizeof label); }
             part.n = unhex(tok(&p), b1, MAXB);
             part.p = b1;
             if (ol > MAXB) { printf("ERR -1\n"); fflush(stdout); continue; }
-            rc = cmd[1] == 'K' ? bp_hk(aead, key, &part, 1, b2, ol) : bp_hu(aead, &part, 1, b2, ol);
+            rc = cmd[1] == 'K' ? bp_hk(aead, key, label, ll, &part, 1, b2, ol) : bp_hu(aead, &part, 1, b2, ol);
             if (rc) printf("ERR %d", rc); else phex(b2, ol);
             printf("\n");
         } else if (!strcmp(cmd, "PACK") || !strcmp(cmd, "DERIVE")) {
@@ -199,14 +202,31 @@ int main(void)
             }
             bp_entropy_test_set_os(NULL); bp_entropy_test_reset();
         } else if (!strcmp(cmd, "HINC")) {
-            int aead = atoi(tok(&p)); bp_uint32 ol = (bp_uint32)atoi(tok(&p)), ch, dl, off = 0, kl; bp_uint8 key[32]; char *kt; bp_hash_ctx hc; int rc;
+            int aead = atoi(tok(&p)); bp_uint32 ol = (bp_uint32)atoi(tok(&p)), ch, dl, off = 0, kl, ll; bp_uint8 key[32], label[80]; char *kt; bp_hash_ctx hc; int rc;
             kt = tok(&p); kl = unhex(kt, key, 32);
+            ll = unhex(tok(&p), label, sizeof label);
             ch = (bp_uint32)atoi(tok(&p)); dl = unhex(tok(&p), b1, MAXB);
-            rc = bp_hash_init(&hc, aead, kl ? key : NULL, ol);
+            rc = bp_hash_init(&hc, aead, kl ? key : NULL, kl ? label : NULL, kl ? ll : 0, ol);
             if (rc) printf("ERR %d", rc);
             else {
                 while (off < dl) { bp_uint32 t = dl - off < ch ? dl - off : ch; bp_hash_update(&hc, b1 + off, t); off += t; }
                 bp_hash_final(&hc, b2); phex(b2, ol);
+            }
+            printf("\n");
+        } else if (!strcmp(cmd, "CXOF") || !strcmp(cmd, "CXOFC")) {
+            bp_xof x; bp_uint8 z[300]; bp_uint32 zl, ml, ol, ch = 0, off = 0, half; int rc;
+            zl = unhex(tok(&p), z, sizeof z);
+            if (cmd[4] == 'C') ch = (bp_uint32)atoi(tok(&p));
+            if (cmd[4] == 'C') { ol = (bp_uint32)atoi(tok(&p)); ml = unhex(tok(&p), b1, MAXB); }
+            else { ml = unhex(tok(&p), b1, MAXB); ol = (bp_uint32)atoi(tok(&p)); }
+            rc = bp_cxof_init(&x, z, zl);
+            if (rc) printf("ERR %d", rc);
+            else {
+                if (ch == 0) ch = ml ? ml : 1;
+                while (off < ml) { bp_uint32 t = ml - off < ch ? ml - off : ch; bp_xof_absorb(&x, b1 + off, t); off += t; }
+                half = ol / 3;
+                bp_xof_squeeze(&x, b2, half); bp_xof_squeeze(&x, b2 + half, ol - half);
+                phex(b2, ol);
             }
             printf("\n");
         } else if (!strcmp(cmd, "BUDGET")) {

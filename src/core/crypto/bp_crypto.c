@@ -5,6 +5,7 @@
  * Copyright (C) 2026 Tony Mattsson
  * Licensed under the BSD 2-Clause License
  */
+#include <stddef.h>
 #include <string.h>
 #include "bp_crypto.h"
 #include "bp_ascon.h"
@@ -13,15 +14,21 @@
 #include "bp_s1.h"
 #endif
 
-#define BP_MAX_PARTS 8
+#define BP_MAX_PARTS 10
+#define BP_LABEL_MAX 64
+
+/* the state of bp_hash_ctx must be 8-byte aligned (BLAKE2b has 64-bit members) */
+typedef char bp_hash_ctx_state_aligned[(offsetof(bp_hash_ctx, w) % 8 == 0) ? 1 : -1];
 
 /* the S2 hash state must fit the shared bp_hash_ctx storage */
 typedef char bp_xof_fits_hash_ctx[(sizeof(bp_xof) <= sizeof(((bp_hash_ctx *)0)->w)) ? 1 : -1];
 
-/* Labels include their terminating NUL (sizeof counts it), as the draft writes "\0". */
+/* Hash labels, without a terminator (S1 hashes a 0x00 after the label, S2 uses the label as the
+ * CXOF customisation string).  L_AAD is different: it is AAD data and keeps its NUL. */
 static const bp_uint8 L_MASTER[] = "bp8/master";
 static const bp_uint8 L_SEAL[]   = "bp8/seal";
-static const bp_uint8 L_NONCE[]  = "bp8/nonce";
+static const bp_uint8 L_NONCE[]  = "bp8/nonce-key";   /* derives k_nonce from the master key */
+static const bp_uint8 L_HEDGE[]  = "bp8/hedge";       /* the hedged nonce, keyed with k_nonce */
 static const bp_uint8 L_VERIFY[] = "bp8/verify";
 static const bp_uint8 L_AAD[]    = "bp8/aad";
 
@@ -92,20 +99,32 @@ int bp_frame_body_limits(int aead, int kind, bp_uint32 *min_len, bp_uint32 *max_
 
 /* ---- hashes ------------------------------------------------------------- */
 
-static int hash_parts(int aead, const bp_uint8 *key32, const bp_part *parts, int nparts,
-                      bp_uint8 *out, bp_uint32 outlen)
+/* Keyed hashes (draft 2).  S1: BLAKE2b keyed with key32 over label || 0x00 || data, digest size
+ * outlen.  S2: Ascon-CXOF128 customised by the label (no terminator), over key32 || data ||
+ * outlen as a 32-bit little-endian number, outlen bytes (the output length is bound into the
+ * message, as KMAC does, so outputs of different lengths are unrelated). */
+static int hash_parts(int aead, const bp_uint8 *key32, const bp_uint8 *label, bp_uint32 label_len,
+                      const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 outlen)
 {
     int i;
-    if (parts == NULL || nparts < 0 || nparts > BP_MAX_PARTS || out == NULL || outlen == 0)
+    if (parts == NULL || nparts < 0 || nparts > BP_MAX_PARTS - 2 || out == NULL || outlen == 0)
         return BP_CRYPTO_E_ARG;
     for (i = 0; i < nparts; i++)
         if (parts[i].n != 0 && parts[i].p == NULL) return BP_CRYPTO_E_ARG;
+    if (key32 == NULL ? (label != NULL || label_len != 0) : (label == NULL || label_len == 0 || label_len > BP_LABEL_MAX))
+        return BP_CRYPTO_E_ARG;
     if (!bp_suite_available(aead)) return BP_CRYPTO_E_UNSUPPORTED;
     if (aead == BP_SUITE_S2) {
         bp_xof x;
-        bp_xof_init(&x);
-        if (key32 != NULL) bp_xof_absorb(&x, key32, 32);
+        bp_uint8 ol[4];
+        if (key32 != NULL) {
+            if (bp_cxof_init(&x, label, label_len) != 0) return BP_CRYPTO_E_ARG;
+            bp_xof_absorb(&x, key32, 32);
+        } else {
+            bp_xof_init(&x);
+        }
         for (i = 0; i < nparts; i++) bp_xof_absorb(&x, parts[i].p, parts[i].n);
+        if (key32 != NULL) { bp_write_le32(ol, outlen); bp_xof_absorb(&x, ol, 4); }
         bp_xof_squeeze(&x, out, outlen);
         bp_wipe(&x, (bp_uint32)sizeof x);
         return BP_CRYPTO_OK;
@@ -113,9 +132,15 @@ static int hash_parts(int aead, const bp_uint8 *key32, const bp_part *parts, int
 #ifdef BP_CRYPTO_S1
     {
         bp_s1_part sp[BP_MAX_PARTS];
-        for (i = 0; i < nparts; i++) { sp[i].p = parts[i].p; sp[i].n = parts[i].n; }
+        static const bp_uint8 nul = 0;
+        int n = 0;
         if (outlen > 64) return BP_CRYPTO_E_ARG;
-        return bp_s1_blake2b(key32, sp, nparts, out, outlen) == 0 ? BP_CRYPTO_OK : BP_CRYPTO_E_ARG;
+        if (key32 != NULL) {
+            sp[n].p = label; sp[n].n = label_len; n++;
+            sp[n].p = &nul; sp[n].n = 1; n++;
+        }
+        for (i = 0; i < nparts; i++) { sp[n].p = parts[i].p; sp[n].n = parts[i].n; n++; }
+        return bp_s1_blake2b(key32, sp, n, out, outlen) == 0 ? BP_CRYPTO_OK : BP_CRYPTO_E_ARG;
     }
 #else
     return BP_CRYPTO_E_UNSUPPORTED;
@@ -124,30 +149,44 @@ static int hash_parts(int aead, const bp_uint8 *key32, const bp_part *parts, int
 
 int bp_hu(int aead, const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 outlen)
 {
-    return hash_parts(aead, NULL, parts, nparts, out, outlen);
+    return hash_parts(aead, NULL, NULL, 0, parts, nparts, out, outlen);
 }
 
-int bp_hk(int aead, const bp_uint8 key[32], const bp_part *parts, int nparts,
-          bp_uint8 *out, bp_uint32 outlen)
+int bp_hk(int aead, const bp_uint8 key[32], const bp_uint8 *label, bp_uint32 label_len,
+          const bp_part *parts, int nparts, bp_uint8 *out, bp_uint32 outlen)
 {
     if (key == NULL) return BP_CRYPTO_E_ARG;
-    return hash_parts(aead, key, parts, nparts, out, outlen);
+    return hash_parts(aead, key, label, label_len, parts, nparts, out, outlen);
 }
 
-int bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, bp_uint32 outlen)
+int bp_hash_init(bp_hash_ctx *c, int aead, const bp_uint8 *key32, const bp_uint8 *label,
+                 bp_uint32 label_len, bp_uint32 outlen)
 {
     if (c == NULL || outlen == 0) return BP_CRYPTO_E_ARG;
+    if (key32 == NULL ? (label != NULL || label_len != 0) : (label == NULL || label_len == 0 || label_len > BP_LABEL_MAX))
+        return BP_CRYPTO_E_ARG;
     if (!bp_suite_available(aead)) return BP_CRYPTO_E_UNSUPPORTED;
     memset(c, 0, sizeof *c);
     c->aead = aead;
     c->outlen = outlen;
+    c->keyed = key32 != NULL;
     if (aead == BP_SUITE_S2) {
-        bp_xof_init((bp_xof *)c->w);
-        if (key32 != NULL) bp_xof_absorb((bp_xof *)c->w, key32, 32);
+        if (key32 != NULL) {
+            if (bp_cxof_init((bp_xof *)c->w, label, label_len) != 0) return BP_CRYPTO_E_ARG;
+            bp_xof_absorb((bp_xof *)c->w, key32, 32);
+        } else {
+            bp_xof_init((bp_xof *)c->w);
+        }
         return BP_CRYPTO_OK;
     }
 #ifdef BP_CRYPTO_S1
-    return bp_s1_hash_init(c->w, key32, outlen) == 0 ? BP_CRYPTO_OK : BP_CRYPTO_E_ARG;
+    if (bp_s1_hash_init(c->w, key32, outlen) != 0) return BP_CRYPTO_E_ARG;
+    if (key32 != NULL) {
+        static const bp_uint8 nul = 0;
+        bp_s1_hash_update(c->w, label, label_len);
+        bp_s1_hash_update(c->w, &nul, 1);
+    }
+    return BP_CRYPTO_OK;
 #else
     return BP_CRYPTO_E_UNSUPPORTED;
 #endif
@@ -164,7 +203,14 @@ void bp_hash_update(bp_hash_ctx *c, const bp_uint8 *data, bp_uint32 len)
 
 void bp_hash_final(bp_hash_ctx *c, bp_uint8 *out)
 {
-    if (c->aead == BP_SUITE_S2) bp_xof_squeeze((bp_xof *)c->w, out, c->outlen);
+    if (c->aead == BP_SUITE_S2) {
+        if (c->keyed) {
+            bp_uint8 ol[4];
+            bp_write_le32(ol, c->outlen);
+            bp_xof_absorb((bp_xof *)c->w, ol, 4);
+        }
+        bp_xof_squeeze((bp_xof *)c->w, out, c->outlen);
+    }
 #ifdef BP_CRYPTO_S1
     else if (c->aead == BP_SUITE_S1) bp_s1_hash_final(c->w, out);
 #endif
@@ -256,10 +302,9 @@ int bp_keys_derive(bp_keys *out, bp_uint8 verifier_out[16], const bp_keyparams *
 
     if (kp->kdf == BP_KDF_NONE) {
         if (secret_len != 32) return BP_CRYPTO_E_ARG;
-        p[0].p = L_MASTER; p[0].n = (bp_uint32)sizeof L_MASTER;
-        p[1].p = kp->salt; p[1].n = 16;
-        p[2].p = secret;   p[2].n = 32;
-        rc = bp_hu(kp->aead, p, 3, master, 32);
+        /* master = Hk(secret32, "bp8/master", salt, 32): the 32-byte key is the key of the hash */
+        p[0].p = kp->salt; p[0].n = 16;
+        rc = bp_hk(kp->aead, secret, L_MASTER, (bp_uint32)sizeof L_MASTER - 1, p, 1, master, 32);
         if (rc != BP_CRYPTO_OK) return rc;
     } else {
 #ifdef BP_CRYPTO_S1
@@ -274,18 +319,14 @@ int bp_keys_derive(bp_keys *out, bp_uint8 verifier_out[16], const bp_keyparams *
     out->aead = kp->aead;
     memcpy(out->set8, set8, 8);
 
-    p[0].p = L_SEAL; p[0].n = (bp_uint32)sizeof L_SEAL;
-    p[1].p = set8;   p[1].n = 8;
-    rc = bp_hk(kp->aead, master, p, 2, out->k_seal, 32);
-    if (rc == BP_CRYPTO_OK) {
-        p[0].p = L_NONCE; p[0].n = (bp_uint32)sizeof L_NONCE;
-        rc = bp_hk(kp->aead, master, p, 2, out->k_nonce, 32);
-    }
+    p[0].p = set8; p[0].n = 8;
+    rc = bp_hk(kp->aead, master, L_SEAL, (bp_uint32)sizeof L_SEAL - 1, p, 1, out->k_seal, 32);
+    if (rc == BP_CRYPTO_OK)
+        rc = bp_hk(kp->aead, master, L_NONCE, (bp_uint32)sizeof L_NONCE - 1, p, 1, out->k_nonce, 32);
     if (rc == BP_CRYPTO_OK) {
         bp_keyparams_pack32(kp, packed);
-        p[0].p = L_VERIFY; p[0].n = (bp_uint32)sizeof L_VERIFY;
-        p[2].p = packed;   p[2].n = 32;
-        rc = bp_hk(kp->aead, master, p, 3, verifier_out, 16);
+        p[1].p = packed; p[1].n = 32;
+        rc = bp_hk(kp->aead, master, L_VERIFY, (bp_uint32)sizeof L_VERIFY - 1, p, 2, verifier_out, 16);
     }
     bp_wipe(master, sizeof master);
     if (rc != BP_CRYPTO_OK) {
@@ -389,13 +430,12 @@ int bp_frame_seal(bp_keys *k, const bp_uint8 envelope[8],
     bp_write_le32(ctr8, g_ctr_lo);
     bp_write_le32(ctr8 + 4, g_ctr_hi);
     bp_write_le32(aadlen4, aad_len);
-    p[0].p = L_NONCE; p[0].n = (bp_uint32)sizeof L_NONCE;
-    p[1].p = E;       p[1].n = 32;
-    p[2].p = ctr8;    p[2].n = 8;
-    p[3].p = aadlen4; p[3].n = 4;
-    p[4].p = aad;     p[4].n = aad_len;
-    p[5].p = pt;      p[5].n = pt_len;
-    rc = bp_hk(k->aead, k->k_nonce, p, 6, nonce, nl);
+    p[0].p = E;       p[0].n = 32;
+    p[1].p = ctr8;    p[1].n = 8;
+    p[2].p = aadlen4; p[2].n = 4;
+    p[3].p = aad;     p[3].n = aad_len;
+    p[4].p = pt;      p[4].n = pt_len;
+    rc = bp_hk(k->aead, k->k_nonce, L_HEDGE, (bp_uint32)sizeof L_HEDGE - 1, p, 5, nonce, nl);
     bp_wipe(E, sizeof E);
     if (rc != BP_CRYPTO_OK) return rc;
 

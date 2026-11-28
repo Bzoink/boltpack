@@ -57,11 +57,14 @@ def hu(aead, data, n):
         return hashlib.blake2b(data, digest_size=n).digest()
     return ascon.xof128(data, n)
 
-def hk(aead, key32, data, n):
-    assert len(key32) == 32
+def hk(aead, key32, label, data, n):
+    """Keyed, labelled hash (draft 2).  S1: BLAKE2b keyed with key32 over label || 0x00 || data.
+    S2: Ascon-CXOF128 with the label as customisation string over key32 || data || n (u32 LE),
+    n bytes: the idiom of KMAC, with the output length bound into the message."""
+    assert len(key32) == 32 and 1 <= len(label) <= 64
     if aead == S1:
-        return hashlib.blake2b(data, digest_size=n, key=key32).digest()
-    return ascon.xof128(key32 + data, n)
+        return hashlib.blake2b(label + b"\0" + data, digest_size=n, key=key32).digest()
+    return ascon.cxof128(key32 + data + struct.pack("<I", n), n, label)
 
 def raw_seal(aead, key, nonce, ad, pt):
     if aead == S1:
@@ -98,12 +101,12 @@ def pack32(kdf, aead, norm, m, t, lanes, salt):
 
 def derive(kdf, aead, norm, m, t, lanes, salt, set8, secret):
     if kdf == 0:
-        master = hu(aead, b"bp8/master\0" + salt + secret, 32)
+        master = hk(aead, secret, b"bp8/master", salt, 32)      # the 32-byte key is the key of the hash
     else:
         master = argon2id(secret, salt, m, t, lanes, 32)
-    k_seal = hk(aead, master, b"bp8/seal\0" + set8, 32)
-    k_nonce = hk(aead, master, b"bp8/nonce\0" + set8, 32)
-    verifier = hk(aead, master, b"bp8/verify\0" + set8 + pack32(kdf, aead, norm, m, t, lanes, salt), 16)
+    k_seal = hk(aead, master, b"bp8/seal", set8, 32)
+    k_nonce = hk(aead, master, b"bp8/nonce-key", set8, 32)
+    verifier = hk(aead, master, b"bp8/verify", set8 + pack32(kdf, aead, norm, m, t, lanes, salt), 16)
     return master, k_seal, k_nonce, verifier
 
 # --- frames (draft section 4)
@@ -115,8 +118,8 @@ def aad(aead, set8, env, extra):
     return b"bp8/aad\0" + bytes([aead]) + set8 + env + extra
 
 def hedged_nonce(aead, k_nonce, E, ctr, aad_bytes, pt):
-    data = b"bp8/nonce\0" + E + struct.pack("<Q", ctr) + struct.pack("<I", len(aad_bytes)) + aad_bytes + pt
-    return hk(aead, k_nonce, data, NONCE_LEN[aead])
+    data = E + struct.pack("<Q", ctr) + struct.pack("<I", len(aad_bytes)) + aad_bytes + pt
+    return hk(aead, k_nonce, b"bp8/hedge", data, NONCE_LEN[aead])
 
 def seal_frame(aead, set8, k_seal, k_nonce, ctr, E, env, extra, pt):
     a = aad(aead, set8, env, extra)
@@ -131,13 +134,14 @@ def open_frame(aead, set8, k_seal, env, extra, nonce, ct, tag):
 # --- the entropy pool (plan 7.1) with no OS source: imported bytes, then draws
 
 def pool_model(imported, draws):
-    """State: 32 bytes.  Add: XOF("bp8/pool/add\0" | state | source | len u32 | data, 32).
-    Draw n: XOF("bp8/pool/out\0" | state | ctr u64, n + 32): first n returned, last 32 the new state."""
+    """State: 32 bytes.  Add: CXOF128(Z = "bp8/pool/add", M = state | source | len u32 | data | 32 as u32, 32).
+    Draw n: CXOF128(Z = "bp8/pool/out", M = state | ctr u64 | (n + 32) as u32, n + 32): first n returned, last 32 the new state."""
     IMPORT = 3
-    state = ascon.xof128(b"bp8/pool/add\0" + bytes(32) + bytes([IMPORT]) + struct.pack("<I", len(imported)) + imported, 32)
+    msg = bytes(32) + bytes([IMPORT]) + struct.pack("<I", len(imported)) + imported + struct.pack("<I", 32)
+    state = ascon.cxof128(msg, 32, b"bp8/pool/add")
     ctr, out = 0, b""
     for n in draws:
-        block = ascon.xof128(b"bp8/pool/out\0" + state + struct.pack("<Q", ctr), n + 32)
+        block = ascon.cxof128(state + struct.pack("<Q", ctr) + struct.pack("<I", n + 32), n + 32, b"bp8/pool/out")
         out += block[:n]
         state = block[n:]
         ctr += 1

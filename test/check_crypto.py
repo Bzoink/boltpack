@@ -25,6 +25,8 @@ skipped = []
 proc = subprocess.Popen([tool], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
 
 def ask(line, timeout=120):
+    if os.environ.get('CRYPTO_DRIVER_LOG'):
+        open(os.environ['CRYPTO_DRIVER_LOG'], 'a').write(line[:300] + '\n')
     box = []
     def go():
         proc.stdin.write(line + "\n"); proc.stdin.flush()
@@ -72,6 +74,9 @@ for r in records(os.path.join(REF, "LWC_XOF_KAT_128_512_first129.txt")):
 for r in records(os.path.join(REF, "LWC_HASH_KAT_128_256_first129.txt")):
     check("model hash256 kat %s" % r["Count"], A.hash256(bytes.fromhex(r["Msg"])).hex(), r["MD"].lower())
 
+for r in records(os.path.join(REF, "LWC_CXOF_KAT_128_512.txt")):
+    check("model cxof128 kat %s" % r["Count"], A.cxof128(bytes.fromhex(r["Msg"]), 64, bytes.fromhex(r["Z"])).hex(), r["MD"].lower())
+
 # ---- 1. Ascon known answers (SP 800-232 LWC files) -------------------------
 n_aead = 0
 for r in records(os.path.join(REF, "LWC_AEAD_KAT_128_128.txt")):
@@ -86,6 +91,20 @@ for r in records(os.path.join(REF, "LWC_XOF_KAT_128_512_first129.txt")):
     for n in (1, 7, 8, 9, 16, 33):        # every shorter output is a prefix of the KAT output
         check("xof128 prefix %s/%d" % (r["Count"], n), ask("HU 2 %d %s" % (n, h(msg))), md[:n].hex())
 # (Ascon-Hash256 is not used by BoltPack; its KAT file stays in the tree for 1b.)
+
+# C Ascon-CXOF128 against the NIST-format KAT (Z of 0 to 32 bytes, messages of 0 to 32 bytes)
+n_c = 0
+for r in records(os.path.join(REF, "LWC_CXOF_KAT_128_512.txt")):
+    n_c += 1
+    if quick and n_c > 300: break
+    check("cxof128 kat %s (C)" % r["Count"], ask("CXOF %s %s 64" % (h(bytes.fromhex(r["Z"])), h(bytes.fromhex(r["Msg"])))), r["MD"].lower())
+for zl in (0, 1, 7, 8, 9, 15, 16, 17, 100, 256):
+    for ml in (0, 1, 7, 8, 9, 100):
+        for ol in (1, 16, 33, 100):
+            z = rng.randbytes(zl); mm = rng.randbytes(ml)
+            check("cxof128 z=%d m=%d o=%d" % (zl, ml, ol), ask("CXOF %s %s %d" % (h(z), h(mm), ol)), A.cxof128(mm, ol, z).hex())
+            check("cxof128 chunked z=%d m=%d o=%d" % (zl, ml, ol), ask("CXOFC %s 5 %d %s" % (h(z), ol, h(mm))), A.cxof128(mm, ol, z).hex())
+check("cxof128 refuses a customisation string over 256 bytes", ask("CXOF %s - 16" % h(bytes(257))), "ERR -1")
 
 # ---- 2. XChaCha20-Poly1305: published vector -------------------------------
 if not s2_only:
@@ -142,7 +161,8 @@ for aead in ((2,) if s2_only else (1, 2)):
         data = rng.randbytes(n); key = rng.randbytes(32)
         for ol in outs:
             check("HU s%d n=%d ol=%d" % (aead, n, ol), ask("HU %d %d %s" % (aead, ol, h(data))), M.hu(aead, data, ol).hex())
-            check("HK s%d n=%d ol=%d" % (aead, n, ol), ask("HK %d %d %s %s" % (aead, ol, h(key), h(data))), M.hk(aead, key, data, ol).hex())
+            for label in (b"bp8/seal", b"x", b"bp8/a-longer-label-of-more-than-sixteen-bytes"):
+                check("HK s%d n=%d ol=%d label=%s" % (aead, n, ol, label[:8]), ask("HK %d %d %s %s %s" % (aead, ol, h(key), h(label), h(data))), M.hk(aead, key, label, data, ol).hex())
 if not s2_only: check("HU S1 outlen 65 refused", ask("HU 1 65 -"), "ERR -1")
 check("HU unknown suite", ask("HU 3 16 -"), "ERR -2")
 
@@ -324,7 +344,7 @@ def golden_cases():
                           commit=M.commit(aead, tags).hex(), table_hash=M.table_hash(aead, tags[:3]).hex()))
     return cases
 if "--write-golden" in sys.argv:
-    json.dump(dict(version=2, note="pinned by test/check_crypto.py --write-golden from test/bp8_crypto.py; checked against the C", cases=golden_cases()), open(GOLD, "w"), indent=1)
+    json.dump(dict(version=3, note="pinned by test/check_crypto.py --write-golden from test/bp8_crypto.py; checked against the C", cases=golden_cases()), open(GOLD, "w"), indent=1)
     print("wrote", GOLD)
 gold = json.load(open(GOLD))
 check("golden regenerates identically from the model", json.dumps(gold["cases"], sort_keys=True), json.dumps(golden_cases(), sort_keys=True))
@@ -332,8 +352,8 @@ for c in gold["cases"]:
     if c["aead"] == 1 and s2_only: continue
     if c["kind"] == "commit":
         tg = [bytes.fromhex(t) for t in c["tags"]]
-        check("golden %s commit (C, incremental)" % c["name"], ask("HINC %d 16 - 7 %s" % (c["aead"], h(b"".join(tg)))), c["commit"])
-        check("golden %s table_hash (C, incremental)" % c["name"], ask("HINC %d 16 - 5 %s" % (c["aead"], h(b"".join(tg[:3])))), c["table_hash"])
+        check("golden %s commit (C, incremental)" % c["name"], ask("HINC %d 16 - - 7 %s" % (c["aead"], h(b"".join(tg)))), c["commit"])
+        check("golden %s table_hash (C, incremental)" % c["name"], ask("HINC %d 16 - - 5 %s" % (c["aead"], h(b"".join(tg[:3])))), c["table_hash"])
         continue
     if c["kind"] == "derive":
         got = ask("DERIVE %d %d %d %d %d %d %s %s %s" % (c["kdf"], c["aead"], c["norm"], c["m"], c["t"], c["lanes"], c["salt"], c["set8"], c["secret"]))
@@ -373,10 +393,10 @@ for aead in ((2,) if s2_only else (1, 2)):
             if aead == 1 and 16 <= 64: ols = (16, 64)
             else: ols = (16, 100)
             for ol in ols:
-                check("HINC unkeyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d - %d %s" % (aead, ol, ch, h(data))), M.hu(aead, data, ol).hex())
-                check("HINC keyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d %s %d %s" % (aead, ol, h(key), ch, h(data))), M.hk(aead, key, data, ol).hex())
-check("HINC S1 outlen 65 refused", ask("HINC 1 65 - 4 -"), "ERR -1") if not s2_only else None
-check("HINC unknown suite", ask("HINC 3 16 - 4 -"), "ERR -2")
+                check("HINC unkeyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d - - %d %s" % (aead, ol, ch, h(data))), M.hu(aead, data, ol).hex())
+                check("HINC keyed s%d ch=%d n=%d ol=%d" % (aead, ch, n, ol), ask("HINC %d %d %s %s %d %s" % (aead, ol, h(key), h(b"bp8/inc"), ch, h(data))), M.hk(aead, key, b"bp8/inc", data, ol).hex())
+check("HINC S1 outlen 65 refused", ask("HINC 1 65 - - 4 -"), "ERR -1") if not s2_only else None
+check("HINC unknown suite", ask("HINC 3 16 - - 4 -"), "ERR -2")
 # budget: at, one over, the dead table frames of earlier revisions, the byte limit
 cases = []
 for aead in ((2,) if s2_only else (1, 2)):

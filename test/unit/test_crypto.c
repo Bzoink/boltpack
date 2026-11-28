@@ -429,15 +429,17 @@ static void test_limits_budget_hash(void)
         for (i = 0; i < 100; i++) d[i] = (bp_uint8)i;
         for (i = 0; i < 32; i++) key[i] = (bp_uint8)(0xA0 + i);
         pp.p = d; pp.n = 100;
-        CHECK(bp_hk(aead, key, &pp, 1, o1, 16) == 0);
-        CHECK(bp_hash_init(&c, aead, key, 16) == 0);
+        CHECK(bp_hk(aead, key, (const bp_uint8 *)"bp8/test", 8, &pp, 1, o1, 16) == 0);
+        CHECK(bp_hash_init(&c, aead, key, (const bp_uint8 *)"bp8/test", 8, 16) == 0);
         bp_hash_update(&c, d, 33); bp_hash_update(&c, d + 33, 0); bp_hash_update(&c, d + 33, 67);
         bp_hash_final(&c, o2);
         CHECK(memcmp(o1, o2, 16) == 0);
         cp = (const bp_uint8 *)&c;
         for (i = 0; i < sizeof c; i++) if (cp[i]) nz++;
         CHECK(nz == 0);                       /* final wipes the context */
-        CHECK(bp_hash_init(&c, aead, NULL, 0) == BP_CRYPTO_E_ARG);
+        CHECK(bp_hash_init(&c, aead, NULL, NULL, 0, 0) == BP_CRYPTO_E_ARG);
+        CHECK(bp_hash_init(&c, aead, key, NULL, 0, 16) == BP_CRYPTO_E_ARG);                 /* a keyed hash needs a label */
+        CHECK(bp_hash_init(&c, aead, NULL, (const bp_uint8 *)"x", 1, 16) == BP_CRYPTO_E_ARG); /* and an unkeyed one has none */
     }
 }
 

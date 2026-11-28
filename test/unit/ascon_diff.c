@@ -3,6 +3,7 @@
  *   - ascon-c's own reference AEAD (vendor/ascon-c/ref/aead.c: crypto_aead_encrypt and
  *     crypto_aead_decrypt), and
  *   - bp_ascon_ref.c (our code on the reference permutation), for the XOF and the AEAD,
+ * and, for Ascon-CXOF128, ascon-c's reference crypto_cxof (vendor/ascon-c/ref_cxof/hash.c),
  * on random inputs of every length around the 8- and 16-byte rates, long inputs,
  * chunked absorbs, split squeezes and tampered frames.
  *
@@ -24,6 +25,8 @@ void ref_xof_squeeze(bp_xof *x, bp_uint8 *o, bp_uint32 n);
 int crypto_aead_encrypt(unsigned char *c, unsigned long long *clen, const unsigned char *m, unsigned long long mlen,
                         const unsigned char *ad, unsigned long long adlen, const unsigned char *nsec,
                         const unsigned char *npub, const unsigned char *k);
+int crypto_cxof(unsigned char *out, unsigned long long outlen, const unsigned char *in, unsigned long long inlen,
+                const unsigned char *cs, unsigned long long cslen);
 int crypto_aead_decrypt(unsigned char *m, unsigned long long *mlen, unsigned char *nsec, const unsigned char *c,
                         unsigned long long clen, const unsigned char *ad, unsigned long long adlen,
                         const unsigned char *npub, const unsigned char *k);
@@ -94,6 +97,24 @@ int main(int argc, char **argv)
             rc = crypto_aead_decrypt(out2, &mlen2, NULL, ct_ref, (unsigned long long)ml + 16, a2, al, n2, k2);
             CHECK(rc != 0, "open tampered (ref) refuses");
             free(acopy); free(ccopy);
+        }
+
+        /* CXOF128: random customisation string, chunked absorb, split squeeze, against ascon-c's reference */
+        {
+            bp_xof c;
+            unsigned zl = (rn(10) < 8) ? rn(40) : rn(257), ml = pick_len() % 300, ol = rn(150), off = 0, got = 0;
+            fill(blk, ml); fill(ad, zl);
+            CHECK(bp_cxof_init(&c, ad, zl) == 0, "cxof init");
+            while (off < ml) {
+                unsigned t = 1 + rn(20); if (t > ml - off) t = ml - off;
+                bp_xof_absorb(&c, blk + off, t); off += t;
+            }
+            while (got < ol) {
+                unsigned t = rn(40); if (t > ol - got) t = ol - got;
+                bp_xof_squeeze(&c, o1 + got, t); got += t;
+            }
+            crypto_cxof(o2, ol, blk, ml, ad, zl);
+            CHECK(memcmp(o1, o2, ol) == 0, "cxof vs ascon-c reference");
         }
 
         /* XOF: random absorb splits and squeeze splits against the reference-permutation XOF */
